@@ -1,0 +1,506 @@
+{
+ "confirmed": [
+  {
+   "severity": "blocking",
+   "title": "10 处 ascii CHAR 列的 CHARACTER SET 位置非法,migrate up 在 MySQL 8.0.46 上必然失败(ERROR 1064)",
+   "claim": "final_ddl.sql 所有 CHAR 列把 CHARACTER SET/COLLATE 写在 NULL/NOT NULL/DEFAULT 之后,MySQL 8.0.46 语法拒绝;经 golang-migrate v4.20.1 mysql 驱动真实执行路径(整文件单次 ExecContext,multiStatements=true 由驱动自设)验证 up 直接失败、首表未建、版本 1 遗留 dirty,T1.3「migrate up/down 幂等」验收不可达,必须返工。",
+   "evidence": "复现报错:ERROR 1064 (42000): ... near 'CHARACTER SET ascii COLLATE ascii_bin COMMENT '规范化 DSL 字节 SHA-256(hex)''。涉事 10 行:42(dsl_hash)/67(definition_hash)/72 与 194 与 229 与 230(trace_id/linked_trace_id)/156 与 237(cost_currency)/240(prev_hash,连 NOT NULL DEFAULT '' 后接 CHARACTER SET 同样拒绝)/241(row_hash)。最小对照:CREATE TABLE t1(a CHAR(64) NOT NULL CHARACTER SET ascii)→ERROR 1064;CREATE TABLE t2(a CHAR(64) CHARACTER SET ascii NOT NULL)→通过。Go 复刻驱动 Run() 的输出:「[UP original] FAILED: Error 1064 ...」「[after failed up] tables:(空)」;仅把这 10 处属性前移后,同一执行路径 up→down→up→up 全部 OK、六表齐全、SHOW TABLES 逐轮核对一致。",
+   "fix": "机械前移属性:CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL [DEFAULT ''] COMMENT '...'(CHARACTER SET 必须紧跟数据类型、置于 NULL/NOT NULL/DEFAULT 之前);改毕用 golang-migrate 真实 up/down/up 复测(本次已验证修正版可通过)。",
+   "verdict": "CONFIRMED",
+   "facts_verdict": {
+    "refuted": false,
+    "reason": "反驳失败,发现成立。逐项实证:(1) DDL 证据属实——/tmp/braid-t13/final_ddl.sql 的第 42/67/72/156/194/229/230/237/240/241 行逐行核对,确为「CHAR(n) NOT NULL/NULL [/DEFAULT ''] 之后才写 CHARACTER SET ascii COLLATE ascii_bin」的顺序,行号与列名全部吻合。(2) 服务器版本属实——验证容器 braid-ddl-check(任务提示的 braid-t13-mysql 不存在,实际容器名不同,但不影响证据)为 mysql:8.0 镜像、MYSQL_VERSION=8.0.46-1.el9,正是发现声称的 8.0.46。(3) 最小对照完全复现:`CREATE TABLE t1(a CHAR(64) NOT NULL CHARACTER SET ascii)` → ERROR 1064(报错位置 near 'CHARACTER SET ascii)');`CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL` → 通过;第 240 行形态 `NOT NULL DEFAULT '' CHARACTER SET ascii ...` 同样被拒。(4) 端到端复现——截取 final_ddl.sql 的 up 段在 8.0.46 上整批执行,首表 workflow_definition 即失败,报错文本与发现引用逐字一致(含中文注释片段「规范化 DSL 字节 SHA-256(hex)」),失败后 information_schema 无任何表,即「up 失败、首表未建」属实。(5) 验收前提属实——docs/ROADMAP.md 第 17 行 T1.3 验收明确含「migrate up/down 幂等」,up 不可达则验收不可达;golang-migrate mysql 驱动确实将 multiStatements=true 写入 DSN 并单次 ExecContext 提交整段迁移,首条 1064 即中断并留 dirty 版本。该缺陷在 DDL 文本本身,别处无等价覆盖。blocking 定级恰当,维持不变。(测试用临时库 refute_tmp/refute_up 已删除自清。)",
+    "severity_adjust": "unchanged"
+   },
+   "stakes_verdict": {
+    "refuted": false,
+    "reason": "发现的事实链全部独立复现,blocking 成立且无需降级。(1) 行号与内容核实:grep 精确命中 final_ddl.sql 的 42/67/72/156/194/229/230/237/240/241 共 10 处,CHARACTER SET 全部位于 NULL/NOT NULL/DEFAULT 之后。(2) 语法错误在 MySQL 8.0.46(deploy/migrate-test.docker-compose.yml 锁定 mysql:8.0,server 实报 8.0.46)复现:`CHAR(64) NOT NULL CHARACTER SET ascii`、`CHAR(32) NULL CHARACTER SET`、`NOT NULL DEFAULT '' CHARACTER SET` 三种形态均 ERROR 1064,修正后属性顺序 CREATE 直接通过——这是 MySQL 语法层面 CHARACTER SET 必须紧跟数据类型的硬错误,非风格偏好。(3) 整文件执行在第一条 CREATE TABLE(第 34 行 workflow_definition,其内部第 9 行即 dsl_hash)即中止,零表建成,故在 golang-migrate v4.20.1(go.mod 已锁定)单次 ExecContext 路径下 up 必然失败并遗留 dirty,与发现描述一致;ROADMAP.md 第 17 行 T1.3 验收字面即「migrate up/down 幂等」,当前 DDL 下 100% 不可达。(4) 利害角度无法降级:该失败与部署量级无关——单机 compose、个人开发(Q15)首次 migrate up 即触发,确定性 100%,不是「高负载/长期运行才暴露」的 P1 提前化问题;也不是风格偏好。修复代价极低(10 处属性机械前移,且修正版已存在于 /tmp/braid-t13/up_fixed.sql 与 audit_full_patched.sql,本人在全新库实测 exit 0),数分钟解除任务级硬阻塞,收益/代价比压倒性。唯一可商榷点是文件尚在 /tmp/braid-t13 暂存、未进仓库(migrations/ 目录尚不存在),但 blocking 作为「提交前必须修复」的门禁语义恰恰匹配——不构成降级理由。severity 维持 blocking。",
+    "severity_adjust": "unchanged"
+   }
+  },
+  {
+   "severity": "high",
+   "title": "INSERT IGNORE 批量写契约把分区越界从「响亮失败」变成静默丢审计行",
+   "claim": "按 DDL 注释规定的 T6.1 批量写契约(INSERT IGNORE),audit 行落入已 DROP 分区时会被 MySQL 静默丢弃而非报错,与文件自身「缺分区 ERROR 1526 响亮失败=受监控条件」的裁决直接矛盾,且使合成者对积压跨保留期场景预设的「响亮失败+告警+人工重放」防线失效。",
+   "evidence": "final_ddl.sql L216「批量写契约:INSERT IGNORE(PK 去重 ⇒ 批量重放幂等,T6.1)」 vs L268「不设 MAXVALUE 兜底——越界写入 ERROR 1526 响亮失败,属受监控条件(T6.4 告警)」;MySQL 8.0 官方手册 INSERT 章节:「When INSERT IGNORE is used, the insert operation fails silently for rows containing the unmatched value, but inserts rows that are matched」(分区无匹配行被静默跳过);risks.md#4 假设「INSERT 失败…响亮失败+告警+人工重放」在 IGNORE 契约下不成立,T8.1 注入(长时间暂停 audit writer)恰命中;附带:IGNORE 同时把 CHECK/截断类错误降级为警告。",
+   "fix": "把 L216 契约改为 INSERT ... ON DUPLICATE KEY UPDATE id=id(仅吞重复键,分区/CHECK 错误照常抛出)并配 affected-rows 与期望行数比对;或保留 INSERT IGNORE 但语句后强制核验 ROW_COUNT()==期望行数、不等即告警重放。",
+   "category": "requirements-coverage",
+   "verdict": "CONFIRMED",
+   "facts_verdict": {
+    "refuted": false,
+    "reason": "核心证据属实且缺陷成立,经 SQL 实证无法反驳。① L216「批量写契约:INSERT IGNORE」与 L268「越界写入 ERROR 1526 响亮失败,属受监控条件」两处引文逐字属实,且二者在同一文件内直接矛盾——audit_log 唯一写路径即 T6.1 异步批量写(append-only 仅授 INSERT/SELECT),IGNORE 契约下 1526 永不触发,L268 否决 MAXVALUE 的全部理由(靠响亮失败监控水位)被自身契约架空。② MySQL 行为实证(braid-ddl-check 容器,MySQL 8.0.46,自建 refute_t13 库已清理):越界于最末分区上限的行,INSERT IGNORE 语句成功、ROW_COUNT()=0、仅 1 条 warning、行被静默丢弃;混合批量只写入匹配行;无 IGNORE 时同语句报 ERROR 1526。③ 无等价覆盖:T7.3 水位自检仅「应用启动前」执行,p_min 行数监控只兜时钟漂移(pre-2026),L215 按 attempt_id 核销对执行级事件恒失效(L226 明文 attempt_id NULL=执行级事件)且 T6.1 验收口径是「对账单测」非运行时防线,T6.4 的 1526 告警在 IGNORE 下为死代码。④ 修复方案实证有效:ON DUPLICATE KEY UPDATE id=id 对越界行照常抛 1526、对重复 PK 幂等(affected 0)。需修正发现中一处错误机制:claim 所述「行落入已 DROP 分区被静默丢弃」不成立——RANGE 分区删掉内部分区后,该日期范围的行(即使裸 INSERT)会落入下一个存续分区(EXPLAIN 证实 DROP p0921 后新行落 p0922),故 risks.md#4/T8.1「积压跨保留期」场景实际不丢行(错档到相邻分区,随后随该分区到期被 retention 一并清掉,属保留期缩短而非写入丢失);真正丢失路径只剩「超出最末分区上限」即水位击穿(reaper 失能 ≥7 天才可能),而这恰是 L268 自己点名的「越界写入」场景,矛盾照常成立。severity 维持 high:核心缺陷(append-only 合规审计表在水位击穿时静默不可逆丢行 + 文件自相矛盾将误导 T6.1 实现与 T6.4 告警编写)完整成立,仅次级向量描述有误;返工时应同步改写 risks.md#4 的分区语义认知,并按建议将 L216 契约改为 ODKU id=id 或 IGNORE+强制 ROW_COUNT 比对。",
+    "severity_adjust": "unchanged"
+   },
+   "stakes_verdict": {
+    "refuted": false,
+    "reason": "核心成立,维持 high。核验:(1) 承重事实属实——MySQL 官方手册确认 IGNORE 会把「无匹配分区」降级为警告并静默跳过该行( ERROR 1526 不再抛出),与 DDL 注释自设的「响亮失败=受监控条件」裁决自相矛盾,非误读;(2) 仓库交叉核对:final_ddl.sql/risks.md 不在仓库(工作流设计产物,T1.3 未实施),ROADMAP T6.1 验收已含「批量写无丢失(对账单测)」、T6.4 告警列表无分区维护/审计写入项。发现的三处夸大不足以降级:T8.1 实际注入为 worker kill/Redis 断连/enqueue 失败/双投递,并无「长时间暂停 audit writer」,该引用不成立;「>90 天积压重放进已 DROP 分区」头条场景在日千级+告警下近乎不可能,且该批数据本已超 90 天保留期(策略上本就要弃);对账单测也已部分覆盖其修复建议。但 flaw 真实暴露面是「活写路径的未来分区缺口」:T6.1 异步批量写从 M6 起就是主写路径,分区维护例程在个人开发单机上数周失修完全现实,且 T6.4 无对应告警,期间全部审计行零报错静默丢失——不可逆(无可重放来源,P1 哈希链日后只能暴露空洞无法补回),而审计防篡改是 ARCHITECTURE.md 明示的差异化护城河并属 AGENTS.md 铁律域。修复是 T1.3 落地前的一行契约改动(ODKU id=id + 行数比对),代价趋零、窗口即逝,属典型「必须在依赖任务前修复」的 high,而非 P1 能力提前标 blocking 或风格偏好。",
+    "severity_adjust": "unchanged"
+   }
+  },
+  {
+   "severity": "high",
+   "title": "node_attempt.heartbeat_at 可空且初值无契约:派发后首次心跳前被 kill 的 attempt 对判死扫描永不可见",
+   "claim": "判死谓词 WHERE status='RUNNING' AND heartbeat_at < NOW()-grace 对 heartbeat_at IS NULL 的行恒不匹配(NULL 比较为 NULL),DDL 又未约定 INSERT 时写入初值,故「派发事务提交后、首次心跳前」死亡的 attempt 只能等节点级 deadline 扫描兜底,突破 T2.5/T8.1「扫描间隔×3 内达终态」的时限承诺。",
+   "evidence": "final_ddl.sql:149(heartbeat_at DATETIME(3) NULL,无 DEFAULT,「应用显式写」未规定首次写时机);:166 与 :284(判死谓词无 IS NULL 分支);节点级兜底 :283 依赖按类型执行超时,量级远大于心跳 grace;T2.5 验收(ROADMAP:26)要求 kill -9 后扫描间隔×3 内达终态。这是 contract-first 审计点:正确的 DDL 形态一句话即可锁定,漏掉则 T2.5 实现按 NULL 契约自然产生盲窗。",
+   "fix": "改为 heartbeat_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),语义=「最后已知存活≥派发时刻」;注释补一句「派发事务内随行写入初值」。",
+   "verdict": "CONFIRMED",
+   "facts_verdict": {
+    "refuted": false,
+    "reason": "证据全部核实属实:final_ddl.sql:149 确为 heartbeat_at DATETIME(3) NULL 且无 DEFAULT,「应用显式写」未规定首写时机(对照 :160 started_at 明确写「派发时刻」,反证 heartbeat_at 恰缺此契约);:166/:284 判死谓词无 IS NULL 分支;:146 明确行在派发事务内出生即 RUNNING(盲窗真实可达);无 CHECK、触发器被禁(:21-22),DB 层无兜底。SQL 三值逻辑已在 braid-ddl-check 容器(MySQL 8.0.46)实证:NULL heartbeat 的 RUNNING 行对判死谓词求值为 NULL、永不被扫出(临时库已自清)。ROADMAP:26/:73 验收原文属实;ARCHITECTURE.md 通篇未提 heartbeat,无外部文档补齐初值契约。「等价覆盖在别处」不成立:execution 级扫描(:282)与节点 deadline 扫描(:283)时标由 T7.1 未定配置决定,且语义退化为整执行 FAILED 而非 attempt DEAD→节点重入队重试,attempt 行永久滞留 RUNNING;DDL :149 自称该列为「T2.5/T8.1 kill 场景的直接检测字段」,却在 T8.1 注入场景的可达窗口内失明。finding 仅「节点级超时量级远大于 grace」一处为未定配置下的合理推断而非 DDL 可证,不影响核心契约缺陷成立。severity=high 合理,维持不变。",
+    "severity_adjust": "unchanged"
+   },
+   "stakes_verdict": {
+    "refuted": false,
+    "reason": "证据全部核实属实:/tmp/braid-t13/final_ddl.sql:149 heartbeat_at 确为 NULL 无 DEFAULT 且注释未规定首写时机,而 status 列注释自证「行只在派发事务内创建」且 DEFAULT 'RUNNING'(行生来 RUNNING+NULL);:284 判死谓词无 IS NULL 分支,NULL 比较恒不匹配,该行类对 attempt 级扫描是永久盲(非临时窗口);:283 节点级兜底按类型执行超时量级远大于 grace;ROADMAP.md:26(T2.5)与:73(T8.1)的「扫描间隔×3 内达终态」验收承诺原文属实。利害分析不构成反驳:生产侧(单机 compose、日执行千级)触发概率虽低(盲窗仅亚秒到秒级),但 T8.1 故障注入 CI 反复 kill worker,击中窗口是 when 而非 if,击中后 execution 要等分钟级节点 deadline 才收口,×3 验收直接失败。且修复处于成本最低点:DDL 未冻结、迁移未交付,一行 NOT NULL DEFAULT CURRENT_TIMESTAMP(3) 即闭合(与「行只在派发事务内创建」出生语义严丝合缝),冻结后再改则需新迁移。该发现既非 P1 能力提前标 blocking,也非风格偏好,而是对当前交付物契约的加固,直接守护产品核心卖点(kill -9 自愈)的两条锁定验收。后果有界(节点级兜底、无数据/账务损失)故不升 blocking;触发概率低不足以压过「极低修复成本 × 永久盲行类 × CI 必然踩中」,high 成立。最新补丁版 audit_full_patched.sql:149 仍未修复,发现可落地。severity_adjust=unchanged。",
+    "severity_adjust": "unchanged"
+   }
+  },
+  {
+   "severity": "blocking",
+   "title": "DDL 在 MySQL 8.0 上无法执行:10 处列定义把 CHARACTER SET 放在 NULL/DEFAULT 之后,语法错误,migrate up 首表即失败",
+   "claim": "本合成稿按原样执行 migrate up 在 MySQL 8.0(.16+ 全系)报 ERROR 1064,第一个 CREATE TABLE(workflow_definition)即失败,T1.3 验收「migrate up/down 幂等」直接不成立。",
+   "evidence": "final_ddl.sql 行 42/67/72/156/194/229/230/237/240/241 共 10 列写作 `CHAR(64) NOT NULL CHARACTER SET ascii COLLATE ascii_bin`(行 240 为 `NOT NULL DEFAULT '' CHARACTER SET ...`)。实测 mysql:8.0 (8.0.46):`CREATE TABLE t(a CHAR(64) NOT NULL CHARACTER SET ascii COLLATE ascii_bin ...)` → ERROR 1064(42000);逐变体隔离:同列改为 `CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL` 即通过,`CHAR(64) NOT NULL COLLATE ascii_bin` 也通过 —— 证明 CHARACTER SET 是类型级子句必须紧跟类型,COLLATE 才是可任意位置的列属性。将 10 处机械重排后全文一次跑通(6 表 + 分区 + 全部 CHECK/唯一键行为均实测绿色,含二次执行 no-op 与 down 全 DROP),证明这是唯一阻断点。golang-migrate 整文件单次 Exec 透传,不会修复语法。",
+   "fix": "把 10 处的 `CHARACTER SET ascii COLLATE ascii_bin` 前移到数据类型之后(`CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL ...`),或在 T1.3 落库前对最终 up/down 文件各跑一次真实 migrate up/down 幂等测试(本审计已给出可直接使用的最小改法)。",
+   "verdict": "CONFIRMED",
+   "facts_verdict": {
+    "refuted": false,
+    "reason": "反驳失败,发现完全属实。逐项核实:(1) final_ddl.sql 确有 10 处(行 42/67/72/156/194/229/230/237/240/241)把 CHARACTER SET ascii COLLATE ascii_bin 放在 NOT NULL/NULL/DEFAULT 之后,行 240 确为 NOT NULL DEFAULT '' 形态;(2) 在 braid-t13-mysql(MySQL 8.0.46)实测该精确写法报 ERROR 1064,变体隔离与发现所述逐字一致——CHARACTER SET 必须紧跟数据类型(类型级子句),COLLATE 才是可任意位置的列属性(连 NOT NULL COLLATE ascii_bin CHARACTER SET ascii 也报 1064),与 MySQL 手册 column_definition 文法相符;(3) 将 up 段(行 1-285)灌入临时库,首个 CREATE TABLE(workflow_definition)即在 dsl_hash 的 CHARACTER SET 处失败,「migrate up 首表即失败」成立;(4) 把 10 处机械前移后全文跑通:6 表全建(含 audit_log 分区)、二次执行 no-op、down 全 DROP 余 0 表,证实这是唯一阻断点且 fix 可用;(5) ROADMAP.md 行 17 T1.3 验收正是「migrate up/down 幂等」,首表失败即验收不成立;(6) golang-migrate 原样透传 SQL 无法修复语法,代码库内无等价兜底。临时库 refute_tmp/refute_tmp2/refute_tmp3 均已清理。severity 维持 blocking。",
+    "severity_adjust": "unchanged"
+   },
+   "stakes_verdict": null
+  },
+  {
+   "severity": "blocking",
+   "title": "DDL 在 MySQL 8.0 上跑不通:10 个列的 CHARACTER SET/COLLATE 写在 NULL/NOT NULL/DEFAULT 之后,语法错误 1064",
+   "claim": "final_ddl.sql 在 MySQL 8.0.46 上第一条 CREATE TABLE(workflow_definition)即报 ERROR 1064,整个文件无法执行,golang-migrate up 必然 dirty 在 version 1。",
+   "evidence": "实测于 braid-ddl-check 容器 mysql:8.0.46:执行 up 段(1-284 行)报 `ERROR 1064 (42000) at line 34 ... near 'CHARACTER SET ascii COLLATE ascii_bin COMMENT '规范化 DSL 字节 SHA-256(hex)''`;隔离变体逐一证实 `CHAR(64) NOT NULL CHARACTER SET ascii`、`CHAR(32) NULL CHARACTER SET ascii`、`CHAR(64) NOT NULL DEFAULT '' CHARACTER SET ascii` 三种写法均 1064(CHARACTER SET/COLLATE 必须紧跟类型、先于列属性),而 `CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL COMMENT` 通过。受影响 10 列:42 行 workflow_definition.dsl_hash、67/72 行 workflow_execution.definition_hash/trace_id、156 行 node_attempt.cost_currency、194 行 outbox.trace_id、229/230/237/240/241 行 audit_log.trace_id/linked_trace_id/cost_currency/prev_hash/row_hash。文件头部宣称兼容 MySQL 8.0.16+,与事实不符;rationale.md 自认「未实测本合成稿的 SQL」由此坐实。",
+   "fix": "把 10 列的 `CHARACTER SET ascii COLLATE ascii_bin` 前移到类型之后、NULL/NOT NULL/DEFAULT 之前。已验证:仅做此重排后,同一库 up→up(幂等 no-op)→down→re-up 全程零错误;重跑失败后的恢复路径(migrate force 1 + 修复重跑)因全表 IF NOT EXISTS 而安全。",
+   "verdict": "CONFIRMED",
+   "facts_verdict": {
+    "refuted": false,
+    "reason": "反驳失败,发现完全属实,每项证据均独立复核通过。(1) DDL 文本:读 /tmp/braid-t13/final_ddl.sql 证实恰好 10 列(42/67/72/156/194/229/230/237/240/241 行)把 CHARACTER SET ascii COLLATE ascii_bin 写在 NULL/NOT NULL/DEFAULT '' 之后,grep 计数 10/10 与发现列出的行列完全一致。(2) 实证:braid-t13-mysql 容器实测为 mysql:8.0.46,与发现宣称的测试版本一致;三种写法(CHAR(64) NOT NULL CHARACTER SET ascii / CHAR(32) NULL CHARACTER SET ascii / CHAR(64) NOT NULL DEFAULT '' CHARACTER SET ascii)均报 ERROR 1064,正确语序 CHARACTER SET...COLLATE...NOT NULL COMMENT 通过。(3) 全文复现:将 up 段(1-284 行)灌入临时库,得到的错误与发现引用逐字符一致(含 at line 34 与中文注释片段),第一条 CREATE TABLE 即失败,整个迁移文件无法执行。(4) 佐证:文件头第 3 行确称「方言:MySQL 8.0.16+」;rationale.md 第 11 行确有「未实测本合成稿的 SQL」原话。(5) 修复方案独立验证:仅做语序前移后,up→up(幂等)→down→re-up 在全新临时库全程零错误,6 张表全部建成,SHOW CREATE TABLE 确认 dsl_hash 为 char(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL;临时库已自清。(6) 无等价覆盖:目录里虽已有 0 处缺陷的 up_fixed.sql,但被审对象 final_ddl.sql(及原始 up.sql,同样 10 处)仍带全部缺陷,单独存在的修复文件不构成对被审计稿的覆盖。golang-migrate 首语句失败即 dirty version 1 属其公开文档化的标准行为,推断成立。blocking 定级恰当,维持不变。",
+    "severity_adjust": "unchanged"
+   },
+   "stakes_verdict": {
+    "refuted": false,
+    "reason": "发现的事实层 100% 独立复现,且利害分析支持 blocking:①在原容器 mysql:8.0.46 上亲测三种失败写法均 1064、重排写法通过;final_ddl.sql 原始 up 段打全新库逐字复现 `ERROR 1064 at line 34`;仅重排 10 列后 up→up(幂等)→down→re-up 全程零错误,修复声明的验证路径成立;文件头第 3 行「MySQL 8.0.16+」兼容宣称与 rationale.md「未实测」自认均属实。②关键反驳问「部署量级下会触发吗」反而加固发现:该错误与负载/量级无关,是首次 compose up + migrate up 在空库上必死、部署成功率 0%(日执行 0 级而非千级);audit_log/CAS 列是 AGENTS.md 铁律与全部 T2+ 引擎任务的 P0 基座。③修复代价 10 行纯语序重排(一遍验证通过),收益是交付物从 0% 到 100% 可部署,无权衡。④非 P1 能力提前标 blocking(schema 属 M1 T1.3 P0),非风格偏好(执行失败+header 兼容性承诺为假)。唯一降级角度是「尚未 commit 的合成稿」,但该交付物即未来 migrations/0001 契约,blocking=接受前必须修,定级正确。",
+    "severity_adjust": "unchanged"
+   }
+  },
+  {
+   "severity": "high",
+   "title": "INSERT IGNORE 批量写契约把「越界写入 ERROR 1526 响亮失败」降级为静默丢行,no-MAXVALUE 决策的安全论证被同一文件自己的 T6.1 契约否定",
+   "claim": "按 216 行批量写契约(INSERT IGNORE)与 268-269 行(不设 MAXVALUE、靠 ERROR 1526 响亮失败受监控)的组合,分区耗尽时审计行被静默丢弃(仅 Warning),而非响亮失败;CHECK 违约同样被静默吞掉。",
+   "evidence": "实测:裸 INSERT exec_date='2027-06-01'(越过末分区 p20261004 LESS THAN '2026-10-05')→ ERROR 1526;同一语句加 INSERT IGNORE → 仅 `Warning 1526 Table has no partition for value from column_list`,行数不变(静默跳过)。CHECK 违约(max_attempts=11)裸插 → ERROR 3819,加 INSERT IGNORE → 仅 Warning 3819 静默跳过。后果分两段:M2-M5 的 T2.6 同步审计写入器用普通 INSERT,冻结窗口耗尽后 audit 写入报错、阻塞同步审计路径(状态迁移随之受阻);M6 起 T6.1 换 INSERT IGNORE 后转为无告警的审计证据链缺行,「批量写无丢失对账」只剩 attempt_id 事后核销兜底。附带证伪自身一个猜想:2026 年内的时钟回拨(exec_date 落 2026-01-01~09-20)会落入 p20260921 大分区不报错,p20260921 实为自 2026-01-01 起的兜底分区,该段无需修。",
+   "fix": "把批量写契约改为 `INSERT ... ON DUPLICATE KEY UPDATE id=id`:已实测保留重放幂等(重复键 no-op 零报错),同时 1526 与 3819 均仍硬报错;或保留 INSERT IGNORE 但必须核对 affected_rows==期望行数并将 SHOW WARNINGS 非空视为失败。将此契约写进 T6.1 验收。",
+   "verdict": "CONFIRMED",
+   "facts_verdict": {
+    "refuted": false,
+    "reason": "无法反驳,证据全部属实。逐项核验:(1) 行号引用精确——/tmp/braid-t13/final_ddl.sql 第 216 行确为「批量写契约:INSERT IGNORE(PK 去重 ⇒ 批量重放幂等,T6.1)」,268-269 行确为「不设 MAXVALUE 兜底 —— 越界写入 ERROR 1526 响亮失败,属受监控条件(T6.4 告警)」。(2) 在同容器 MySQL 8.0.46 上新建临时库载入该 DDL 实测:裸 INSERT exec_date='2027-06-01'(末分区 p20261004 LESS THAN '2026-10-05' 之外)→ ERROR 1526;同语句加 INSERT IGNORE → \"Query OK, 0 rows affected, 1 warning\",行数不变,静默丢行;CHECK 违约(max_attempts=11)裸插 → ERROR 3819,加 INSERT IGNORE → 仅 Warning 静默跳过;INSERT IGNORE 对重复 (exec_date,id) 重放确为 no-op(契约的幂等目的属实);其提议的修复 INSERT...ON DUPLICATE KEY UPDATE id=id 实测同样保幂等且 1526/3819 均仍硬报错,修复断言也准确。(3) 后果链与文档一致:ROADMAP T2.6 为「最小同步审计写入器(直写 audit_log)」且 IGNORE 契约在 DDL 中仅挂在 T6.1 名下;T6.1(异步批量)验收「批量写无丢失(对账单测)」仅是开发期单测,即发现所称「attempt_id 事后核销兜底」;T6.4 告警清单(死信/审批积压/卡死节点/429 率/Redis 水线)不含分区水位,Warning 1526 不会触发任何告警。(4) 无等价覆盖:ARCHITECTURE.md 与 DECISIONS.md 对 IGNORE/1526/MAXVALUE/affected_rows 核验零约定;T7.3 自检仅启动时执行(其 ROADMAP 条目甚至未列水位校验);p_min 监控只覆盖 2026 前回拨。发现还自证了 p20260921 实为 2026-01-01 起的兜底分区并明确该段无需修,侧证其读 DDL 仔细。两处不影响结论的小注:audit_log 本身无 CHECK 约束,3819 段是对该契约模式外溢行为的演示而非 audit_log 现有缺陷(但 1526 静默丢行已独立成立);另 final_ddl.sql 原样无法直接载入(MySQL 8.0.46 下 `NOT NULL CHARACTER SET` 列属性序为语法错误,且文件尾部内嵌可执行的 down DROP 语句)——属本发现范围之外的另一缺陷,发现作者的实测显然基于语法修补副本。severity 维持 high:这是「契约先行」交付物,其安全论证与自身批量写契约直接自相矛盾,且发生在合规关键的 append-only 审计表上。",
+    "severity_adjust": "unchanged"
+   },
+   "stakes_verdict": {
+    "refuted": false,
+    "reason": "事实完全成立,但 severity 应从 high 降为 medium。(1) 事实核验:在 braid-t13-mysql(MySQL 8.0.46)独立复现全部主张——裸插越界行 ERROR 1526;同语句加 INSERT IGNORE 变 \"Query OK, 0 rows affected, 1 warning\" 且行数不变(静默丢行,甚至比发现所述更静默);CHECK 违约裸插 ERROR 3819、加 IGNORE 静默跳过;修复方案 `ON DUPLICATE KEY UPDATE id=id` 经实测重放幂等(重复键 0 affected 零报错)且 1526/3819 仍硬报错。行引用属实:/tmp/fixed.sql 216 行(INSERT IGNORE 契约)与 268-269 行(不设 MAXVALUE、1526 \"响亮失败属受监控条件\")——同一文件自身矛盾真实存在,T6.4 按 268 行注释建告警将永远无东西可告警。这不是风格偏好,也不是 P1 能力提前 blocking(响亮失败本就是设计姿态,修复只是让契约与自身论证一致),故不 refuted。(2) 降级理由:①触发条件在此部署量级下很窄——引导分区已预建 14 天(2026-09-21→10-04)、reaper 每日保持 ≥7 天水位、T7.3 启动自检水位不足拒启,静默丢行需 reaper 卡死 ≥7 天且 worker 存活且全程无人重启;②证据有一半越界:audit_log 无任何 CHECK 约束(全部 CHECK 在 workflow_definition/node_execution/node_attempt),3819 实测打在 node_execution 上,而 INSERT IGNORE 契约只覆盖 audit_log,\"CHECK 违约同样被吞\"在现契约下不会发生;③M2-M5 的 T2.6 同步路径用普通 INSERT,耗尽时是设计内的 fail-closed 响亮阻塞,不是静默丢失;④T6.1 按 attempt_id 对账兜底在设计中存在(尽管 ROADMAP 只把它定为单测而非生产持续对账)。(3) 不因修复代价豁免:修复是一行契约改写 + T6.1 验收加一条,成本近零、且必须在 T6.1 实现前落进契约,收益是恢复文件自身声明的监控前提并封死审计证据链静默缺行这一本产品最坏的失败形态。综合:低运行触发概率 + 半数证据越界 → medium;但契约矛盾必须现在修,发现本身站得住。",
+    "severity_adjust": "medium"
+   }
+  },
+  {
+   "severity": "high",
+   "title": "DDL 注释指派的分区维护职责(reaper 水位预建 / T7.3 水位自检 / T7.4 runbook)在 ROADMAP 验收条款中无承载,而引导分区只覆盖到 2026-10-04",
+   "claim": "按 ROADMAP(任务真源)执行,无人实现分区预建与水位自检:越过后,首个新执行即进入 finding 2 的失败模式。",
+   "evidence": "final_ddl.sql 266-274 行把「每日保持 ≥7 天未来分区」「对照 INFORMATION_SCHEMA.PARTITIONS 校验水位,不足拒绝启动」「DROP PARTITION 保留期清理」分别指派给 reaper、T7.3、T7.4;但 ROADMAP.md 中 T2.5(reconciler,26 行)验收只有 kill -9 + 断 Redis 30s 达终态,T7.3(68 行)自检范围仅「Redis 策略/AOF、词表、迁移版本」,T7.4(69 行)仅 compose 定稿 + 升级演练——三项职责均不在任何任务验收内,DDL 注释无权给 ROADMAP 加任务。实测末分区 `p20261004 VALUES LESS THAN ('2026-10-05')`(以合成日 2026-09-21 为基的 14 天窗口),任何晚于该日安装的私有化环境首装即命中;另 dirty 中断恢复(migrate force 序列)同样无人记录。",
+   "fix": "修订 ROADMAP:T7.3 验收追加「audit_log 分区水位自检(INFORMATION_SCHEMA.PARTITIONS,不足拒绝启动)」;T2.5 或 M7 追加「reaper 分区预建(ADD PARTITION,已实测语法可用)+ 超保留期 DROP PARTITION 作业」;T7.4 追加「dirty 中断恢复 runbook(force→修复→re-up,IF NOT EXISTS 保证安全)」。",
+   "verdict": "CONFIRMED",
+   "facts_verdict": {
+    "refuted": false,
+    "reason": "无法反驳,发现成立。逐项核实:(1) 证据属实——final_ddl.sql 266-274 行确将「每日 ≥7 天未来分区水位预建(DROP/ADD PARTITION 日常作业)」指派给 reaper、「INFORMATION_SCHEMA.PARTITIONS 水位自检,不足拒绝启动」指派给 T7.3、运维手册指派给 T7.4;ROADMAP 26/68/69 行的 T2.5/T7.3/T7.4 验收原文与发现描述一致。(2) 全库 grep 证实无等价覆盖:ROADMAP 中「分区」仅出现于 T1.3 分区键本身(17 行);「reaper」在 ROADMAP 与 ARCHITECTURE 中零出现(仅 AGENTS.md 目录规划提及),即连实现 reaper 的任务都不存在;T6.1/T7.1 的「保留期」仅为配置项,验收只测脱敏/批量无丢失/池上限,不承载 DROP PARTITION 作业;T6.4 告警枚举(62 行)无分区水位项,DDL 注释自身「属受监控条件(T6.4 告警)」的交叉引用同样悬空——这反而佐证了发现。(3) 失败模式实证:在 braid-t13-mysql(MySQL 8.0.46)复现——末引导分区 p20261004 VALUES LESS THAN ('2026-10-05')(264 行),插入 exec_date='2026-10-10' 报 ERROR 1526 Table has no partition for value,与发现所述失败模式一致;按合成日 2026-09-21 计 14 天窗口、2026-10-05 起首装/首执行即命中,且该日期落在 P0 开发期内(M2 的 T2.6 同步审计写入器每节点迁移都会触发),风险真实。(4)「DDL 注释无权给 ROADMAP 加任务」符合项目自身规则(ROADMAP 头部「任务真源=本文件」、AGENTS「任务只从 ROADMAP.md 取」),fix 建议(修订 T7.3/T2.5/T7.4 验收)与 ROADMAP「新任务追加到对应里程碑末尾」机制吻合。severity 维持 high。另:核查中实证出一个本发现之外的独立缺陷(不作为本次裁决依据):final_ddl.sql 第 42/67/72/156/194/229/230/237/240/241 行采用「NOT NULL [DEFAULT …] CHARACTER SET ascii」列属性顺序,MySQL 语法要求 CHARACTER SET 紧跟类型(probe 实证:NOT NULL 后置 CHARACTER SET 报 1064,前置则通过),故该合成稿在目标版本 8.0.16+ 的实测容器上 migrate up 在 workflow_definition(34 行)即中断,建议另立条目核查。",
+    "severity_adjust": "unchanged"
+   },
+   "stakes_verdict": {
+    "refuted": false,
+    "reason": "事实核对全部成立(docs/ROADMAP.md 行号与发现一致):T2.5(26 行)验收仅 kill -9 + 断 Redis 30s;T7.3(68 行)自检仅 Redis 策略/AOF、词表、迁移版本;T7.4(69 行)仅 compose 定稿 + 升级演练——全文件无任何任务承载 ADD PARTITION 预建、分区水位自检或 DROP PARTITION 清理。且这不是把 P1 能力提前标 blocking:ARCHITECTURE.md 82 行「分区键建表即定」是 18 项锁定决策之一,84 行「保留期可配」标为 P0,AGENTS.md 还规划了 reaper 入口——生命周期管理属 P0 范围,只是 ROADMAP 漏排。利害检验也过:①会真触发——分区窗以今天(2026-09-21)为基仅到 2026-10-05,而 T1.3 迁移即将落库、真实部署在数月后;铁律规定任务只从 ROADMAP 取,DDL 注释指派的职责无验收承载 = 结构性必然被遗忘,horizon 后的私有化首装首个执行即命中,horizon 前装机则给操作方埋 2 周定时炸弹,T7.4/T8.3 演练只是事后兜底。②修复代价 vs 收益——修订 ROADMAP 是分钟级编辑,实现自然落进 T2.5/T6.1/T7.3/T7.4,收益是消除一个确定性现场故障 + 兑现 90 天保留的 P0 属性,净收益显著。非风格偏好。仅两处不影响结论的微词:(a)「三项职责均不在任何任务内」略有夸大——T6.1 有「保留期配置」字样,但其验收(脱敏钩子+批量写对账)确实不测清理执行,实质成立;DROP PARTITION 作业放 T6.1 比发现建议的 T2.5/M7 更贴切;(b)个人开发规模下保留缺失的后果是每年 GB 级增长而非紧急故障、MySQL 无分区报错响亮易诊——这些只够措辞收敛,不足以降级。severity 维持 high。",
+    "severity_adjust": "unchanged"
+   }
+  },
+  {
+   "severity": "blocking",
+   "title": "DDL 在 MySQL 8.0 上根本无法执行:10 个 ascii 列的列属性顺序非法",
+   "claim": "final_ddl.sql 在第一条 CREATE TABLE(workflow_definition.dsl_hash)即报 ERROR 1064 中止,六表一张都建不出来;migrate up 必失败,T1.3 验收不通过。",
+   "evidence": "容器 braid-ddl-check (mysql:8.0.46) 实测:执行 final_ddl.sql → ERROR 1064 near 'CHARACTER SET ascii COLLATE ascii_bin COMMENT …' (文件行 34 的语句、语句内行 9 = dsl_hash)。最小复现:CREATE TABLE t(a CHAR(64) NOT NULL CHARACTER SET ascii) → 1064;正确语序 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL → 成功。10 处同病:行 42/67(dsl_hash/definition_hash, NOT NULL 后)、行 72/156/194/229/230/237/241(trace_id×3/linked_trace_id/cost_currency×2/row_hash,NULL 后)、行 240(prev_hash,DEFAULT '' 后)。rationale.md 自认『未实测本合成稿的 SQL』——实测证实不可运行。",
+   "fix": "10 处把 CHARACTER SET ascii COLLATE ascii_bin 移到数据类型之后、NOT NULL/NULL/DEFAULT 之前(即 CHAR(32) CHARACTER SET ascii COLLATE ascii_bin NULL …)。已按此修补并整文件重跑:6 表全部建成、零警告、重复执行 no-op(exit 0),修补脚本 /tmp/braid-t13/audit_up_patched.sql 可作参照。",
+   "verdict": "CONFIRMED",
+   "facts_verdict": {
+    "refuted": false,
+    "reason": "尝试反驳失败,证据全部属实。独立实测(容器 braid-ddl-check,MySQL 8.0.46,与发现声称版本一致;任务给的 braid-t13-mysql 容器不存在,审计用的正是这个容器,root 密码为 ddlcheck 而非 braid_dev_root——此差异不影响结论):(1) 最小复现成立:CREATE TABLE t(a CHAR(64) NOT NULL CHARACTER SET ascii) → ERROR 1064 near 'CHARACTER SET ascii)';正确语序 CHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL → 建表成功,证明是列属性语法位置问题而非环境/权限问题,且这是纯语法规则,无任何 sql_mode 可豁免。(2) 整文件执行复现:final_ddl.sql 在文件行 34(第一条 CREATE TABLE workflow_definition)语句内行 9(dsl_hash)报 1064,错误文本与发现完全一致;即使用 --force 跳过单条错误继续执行,6 张表一张也未建成(行 62/141/182/218 亦 1064,行 101 node_execution 因被引用表 workflow_execution 不存在报 1824),测试库中最终零张 braid 表。(3) 文件核实:CHARACTER SET ascii 恰好 10 处,行号 42/67/72/156/194/229/230/237/240/241 与发现逐一吻合,全部位于 NOT NULL/NULL/DEFAULT 之后即非法位置。(4) rationale.md 第 11 行确实自认「未实测本合成稿的 SQL」。(5) ROADMAP T1.3 验收为「migrate up/down 幂等」,DDL 第一条语句即语法错误 ⇒ migrate up 必失败 ⇒ 验收不通过,blocking 定级成立。(6) 无等价覆盖:仓库尚无 migrations/ 目录,无任何已修正的交付物;/tmp/braid-t13 下的 up_fixed.sql、audit_up_patched.sql 等均为审计后产物而非既有修正。发现的修复方向(把 CHARACTER SET ascii COLLATE ascii_bin 移到数据类型后、NOT NULL/NULL/DEFAULT 前)经实测验证有效。该发现证据确凿,应予采纳。",
+    "severity_adjust": "unchanged"
+   },
+   "stakes_verdict": {
+    "refuted": false,
+    "reason": "逐项独立复测全部属实,无法反驳。(1) 在同容器 mysql:8.0.46 原样执行 /tmp/braid-t13/final_ddl.sql:ERROR 1064 at file line 34 / inner line 9 (dsl_hash),与发现完全一致,0/6 张表建成;最小复现 `CHAR(64) NOT NULL CHARACTER SET ascii COLLATE ascii_bin` → 1064,语序调正后成功。坏语序恰为 10 处且行号逐一吻合(42/67/72/156/194/229/230/237/240/241);rationale.md 第 11 行确有「未实测本合成稿的 SQL」自认。(2) 利害维度:这不是量级依赖问题——它是确定性首启失败,私有化环境第一次 migrate up 即 100% 复现,单机 compose/千级执行/90 天保留的缓解框架根本没有生效机会(任何执行、任何审计行存在之前就失败)。(3) 不是 P1 能力被提前标 blocking:migration 就是 T1.3 交付物本身(repo 尚无 migrations/,此合成稿即验收候选,patched 文件头自证=「braid 0001_init.up.sql — M1 T1.3」),且文件头自标 MySQL 8.0.16+,六表零建成,下游 engine/audit/CAS 全部无法启动;对验收候选在提交前判 blocking 正是其本义。(4) 不属风格偏好:解析不过的文件不存在「可用的另一种写法」可选,有效性先于风格。(5) 修复代价极小、收益极大:10 处机械语序调整,补丁脚本 audit_up_patched.sql 已实证可用——我重跑两遍,首跑建满 6 表零警告、重复执行 no-op、exit 0。结论:发现成立,blocking 维持不变。",
+    "severity_adjust": "unchanged"
+   }
+  }
+ ],
+ "disputed": [
+  {
+   "severity": "high",
+   "title": "执行级判活键 last_activity_at 在长调用期间无任何写者,文件自带的 reconciler 谓词对健康长执行必然误报",
+   "claim": "单节点长执行(如 30 分钟 LLM 调用)期间 last_activity_at 不会被刷新(刷新契约=仅状态迁移同事务,心跳只写 node_attempt.heartbeat_at 不回写本列),而文件尾 reference reconciler 仅凭 last_activity_at < NOW()-阈值 就触发重入队/标 FAILED——列注释宣称的「解决纯 status 时间戳对长执行误报」恰在长执行场景不成立。",
+   "evidence": "final_ddl.sql:78(刷新契约「任一节点/attempt 推进的同事务刷新」=仅状态迁移事件);:139(心跳只落 node_attempt.heartbeat_at,契约为 worker 周期刷新 attempt 列);:85 与 :282(execution 主扫 WHERE status IN (PENDING,RUNNING) AND last_activity_at < now-N,无 attempt 存活二次校验)。后果链:触发后的重入队事件 task_id=exec:<id>(:186)与在跑 attempt 任务 exec:<exec>:<node>:<attempt>(:150)是不同 TaskID,Asynq 不会 ErrTaskIDConflict 去重,产生第二个活任务,再靠节点 CAS 兜底——每次误报都制造任务风暴与审计噪音;若实现选择「显式标 FAILED」则直接杀健康执行。",
+   "fix": "二选一并落进注释契约:(a) 心跳 UPDATE 用多表语句同刷 workflow_execution.last_activity_at(与该列宣称的用途自洽,无 DDL 变更);或 (b) reference reconciler 增加第二阶段校验——execution 命中后联 idx_attempt_status_heartbeat 断言该执行无 fresh RUNNING attempt 才动作。同时修正 :78 的因果宣称。",
+   "verdict": "DISPUTED",
+   "facts_verdict": {
+    "refuted": true,
+    "reason": "发现的核心前提「刷新契约=仅状态迁移同事务、心跳不回写本列」是对 DDL 的误读。证据:(1) final_ddl.sql:78 原文为「任一节点/attempt 推进的同事务刷新」,而该文件凡指状态迁移一律用「状态迁移」(:24/:77/:116/:177,status_changed_at 明确定义为「最近状态迁移时刻」);「推进」是刻意选用的更宽词。若按发现解读,last_activity_at 将与 status_changed_at 功能重合、其宣称目的「解决纯 status 时间戳对长执行误报」自相矛盾——审计把自洽契约读成了自我否定。(2) 合成稿 rationale.md 明确记载:last_activity_at「与 status_changed_at 分立:前者随节点推进刷新作 reconciler 扫描键」,且否决 B 的 lease 列因「与心跳+last_activity_at 语义重叠,少一套续租协议」——心跳+last_activity_at 即设计的判活/续租机制,只随状态迁移刷新的列无法充当租约。(3) 「心跳只写 heartbeat_at 不回写本列」是沉默推论:文件从未禁止心跳事务同刷 execution.last_activity_at;发现自己的 fix(a) 也承认「与该列宣称的用途自洽,无 DDL 变更」——即 DDL 契约已规定该行为,实现不做是未来 T2.5 代码违约,不是本稿缺陷。(4) :281-284 是「附:reconciler 三扫描形态」、:85 是「主扫」索引注释,均为索引设计的参考扫描形态而非完整判定流程;权威契约 ARCHITECTURE.md:54 要求扫描「超时且无活动执行者」的 execution——健康长执行有活跃执行者(fresh attempt 心跳,idx_attempt_status_heartbeat),不在打击面内,发现要求的第二阶段校验在架构层已有等价物。(5) 结合 :138-139 阈值纪律(>心跳间隔×N 且>单次外部调用上限,防长 LLM 调用误判),健康 30 分钟调用下 last_activity_at 持续刷新,扫描谓词不会命中,「必然误报/杀健康执行」不成立;:150/:186 的 TaskID 链条文本属实但建立在错误前提之上。残余至多是 :78 注释可加「含心跳」二字措辞澄清(low),非 high 级结构性缺陷。",
+    "severity_adjust": "low"
+   },
+   "stakes_verdict": {
+    "refuted": false,
+    "reason": "发现的事实全部核实成立(对 /tmp/braid-t13/final_ddl.sql 逐行验证)::78 刷新契约「任一节点/attempt 推进的同事务刷新」在自然读法下长调用期间确无写者,且与该行宣称「解决纯 status 时间戳对长执行误报」自相矛盾;:85/:282 执行主扫字面上无 attempt 存活二次校验;:186 exec:<id> 与 :150 exec:<exec>:<node>:<attempt> 确为不同 TaskID,Asynq 不去重。它既非风格偏好,reconciler 也是 P0(ARCHITECTURE.md:54),故不构成反驳。但 severity=high 站不住,应降为 medium:(1) 缺陷住所是 T1.3「契约先行」合成稿的参考 SQL 注释,实现点 T2.5 未开工,今日零运行时暴露;(2) 最重分支「显式标 FAILED 杀健康执行」是稻草人——文件自身状态机(:68)将 reconciler 判死→FAILED 仅限定于 PENDING,从不声明 RUNNING→FAILED-by-reconciler,且 ARCHITECTURE.md:54(锁定决策)早已要求扫「且无活动执行者」的 execution,即发现者索要的第二阶段校验本就是已锁架构契约,实现者需连破两条锁定决策才会踩中;(3) 现实分支(幂等重入队)在目标量级(单机 compose、千级/日、90 天审计)下每次触发仅多一次 Asynq 认领被节点 CAS 拒绝+几行审计,幂等键/uk_attempt/CAS 三层兜底完整,无正确性损失,「任务风暴」属量级叙事放大;(4) 零 DDL 抑制已存在——阈值为 T7.1 配置,:138-139 对 attempt grace 已确立「判死阈值>单次外部调用上限」纪律,套用到执行阈值即完全压制触发。修复仅注释契约一句话+:282 加一截谓词,是「T2.5 动工前必修的规格加固」=medium,而非 high。",
+    "severity_adjust": "medium"
+   }
+  },
+  {
+   "severity": "high",
+   "title": "node_attempt.asynq_task_id 的「relay 入队成功时回写」与 relay 纯净性条款自相矛盾,且 NULL 窗口恰好废掉对账连接列",
+   "claim": "同一文件既规定 relay「不回查业务表即可投递」(:188)又要求 relay 回写 node_attempt.asynq_task_id(:150),二者不可同时成立;而该 TaskID 在派发事务内即确定(worker 同事务写 outbox 事件,outbox.task_id 因此是 NOT NULL),attempt 行没有理由不同——按注释实现则回写前 relay/进程死亡的 attempt 行该列恒 NULL,idx_attempt_task 的「由 TaskID 反查 DB 行」主路径恰在对账最需要的行上失效(只能绕道 outbox→execution→node 间接定位)。",
+   "evidence": "final_ddl.sql:150 vs :188 直接矛盾;:179-180(outbox.task_id 立论「确定性且在写入时已知(故 NOT NULL)」)与 attempt 列 NULL+回写形成同文件内不一致;另:两列注释的 TaskID 词表互不覆盖——outbox(:186)列 resume:<exec>:<node> / exec:<id> / retry:<node_exec_id>:<attempt>,node_attempt(:150)列 exec:<exec>:<node>:<attempt>,同一派发在两列应同值但文档形态对不上,实现者无法从注释还原唯一格式。",
+   "fix": "worker 在派发事务内直接写入 asynq_task_id(与 outbox.task_id 同值),列收紧 NOT NULL,删除「relay 回写」;统一两处注释的 TaskID 词表为一份枚举。",
+   "verdict": "DISPUTED",
+   "facts_verdict": {
+    "refuted": true,
+    "reason": "引文属实(:150「relay 入队成功时回写」、:188「relay 不回查业务表即可投递」、:179-186、:63 均逐字核对无误),但该发现的三条承重论证均不成立。①「二者不可同时成立/直接矛盾」是对 :188 的过度解读:该条款明确限定于投递路径(「不回查业务表**即可投递**」,论点是 payload 自描述使重投重放同一真相),回写是投递后的簿记动作而非投递的一部分,二者可同时成立;回写确实使 relay 耦合业务表、与自包含精神有张力,但这是设计不优雅,不是自称的形式矛盾。②「回写前 relay/进程死亡的 attempt 行该列恒 NULL」与同文件自身的收敛设计直接冲突:final_ddl.sql:189 明文「标记前 kill -9 → 重启重投(T2.2)」,ROADMAP T2.2 验收即「relay 标记成功前 kill -9 relay,重启后同事件重投递且下游幂等」;重投命中 :180 设计好的 ErrTaskIDConflict 幂等去重(T2.3 验收「重复投递被 ErrTaskIDConflict 收敛」),随后同一路径完成 DISPATCHED 标记与回写——NULL 窗口是瞬态自愈的,并非「恒 NULL」;唯一永久 NULL 的是 outbox 事件从未入队的行(DEAD,如 Redis 长时间不可用),而这些行在 Asynq 侧根本不存在任务,队列→DB 的 TaskID 反查对其无从触发,其对账走的是 :166/:284 心跳扫描(status='RUNNING' AND heartbeat_at<NOW()-grace→置 DEAD 重入队),完全不依赖 asynq_task_id。③「idx_attempt_task 主路径恰在对账最需要的行上失效」不成立:TaskID 反查只会对存在于队列中的任务触发,而此类行的回写按②必然收敛;唯一可瞬态脱靶的「已入队未回写」窗口由 :200 idx_outbox_task 以同值覆盖(outbox→execution_id→attempt,发现自己也承认此绕道存在)。等价覆盖成立:从未入队的行走心跳判死,瞬态窗口走 idx_outbox_task 同值列。残存的真实点只有两处低危项:(a)TaskID 在派发事务内确定,改为事务内直写+NOT NULL 是更优简化(但「更优替代」≠高危缺陷,且 risks.md 第9条已声明 DDL 注释为意图非强制、由 T2.x 实现裁定);(b):150 exec:<exec>:<node>:<attempt> 与 :186 retry:<node_exec_id>:<attempt> / exec:<id> 及 :63 的注释词表确实互不覆盖——但 ARCHITECTURE.md(:55)与 ROADMAP(T4.2)锁定的唯一规范格式是 resume:<execution_id>:<node_id>,attempt 级格式本就留待 T2.3,属注释措辞统一问题(统一词表即可),不构成所称的 high 级结构性缺陷。",
+    "severity_adjust": "low"
+   },
+   "stakes_verdict": {
+    "refuted": false,
+    "reason": "发现成立,high 恰当。这不是容量/HA 类可被私有化规模豁免的发现,而是契约层缺陷:T1.3 的交付物就是这份 DDL 文档,矛盾条款 100% 在实现时触发——实现者必须二选一,要么 relay 回写违反同文件 :188 的纯净性条款并给 node_attempt 增加第二个非 CAS 写入方,要么回写子句死掉、该列形同虚设。规模论证反而加重而非减轻:单机 compose 下 relay 进程在入队与回写间死掉的场景(每次部署/重启/OOM)是常态,NULL 行静默产生、无任何报错,对独自排障的个人开发者是最坏失效形态;且 90 天审计保留与孤儿行无关。修复代价为负:TaskID 在派发事务内确定(outbox.task_id 依同一论证已 NOT NULL),改为事务内直写、收紧 NOT NULL、删回写子句,是净删代码路径,并与 ARCHITECTURE.md:54(outbox+relay+reconciler 为 P0 硬性验收)、:55(确定性 TaskID)锁定决策一致,无需新 D 条目。TaskID 词表互不覆盖问题独立成立:两个入队点从现有注释无法为同一派发产出同值,join 列按注释实现即构造性断裂。时机决定性:T2.x 将按此 DDL 实现 relay/reconciler,现在修是 10 分钟文档改动,之后修是 relay 重写+列语义变更。唯一保留意见:标题「NULL 窗口恰好废掉对账连接列」修辞过强——P0 reconciler 的文档化主路径是 execution 扫描 + outbox.task_id(NOT NULL、确定性),不受影响;失效的是 idx_attempt_task 的 attempt 级反查(asynqmon 交叉引用/事故定位)这条辅助路径。这只支撑「high 而非 blocking」,不构成反驳。非 P1 能力提前标 blocking(修复是删能力而非加能力),也非纯风格偏好。",
+    "severity_adjust": "unchanged"
+   }
+  },
+  {
+   "severity": "high",
+   "title": "append-only 只存在于注释:DDL 内无任何账号/授权/触发器级强制,承诺的落地层(T7.3)按 ROADMAP 职责并不包含授权断言,且否决触发器的技术前提部分错误",
+   "claim": "T1.3 验收明文要求 audit_log 含「append-only」,但本交付物没有任何语句创建受限账号或 GRANT,也没有 DB 级强制;文件头把强制推给「deploy 层授权,T7.3 安装自检断言」,而 ROADMAP T7.3 的验收范围是「Redis 策略/AOF、词表、迁移版本」,不含授权断言 —— 该铁律在当前任务链中无人认领、无处落地。",
+   "evidence": "final_ddl.sql 行 20-23(头部声明)与行 248(表 COMMENT)是仅有的 append-only 表述;全文 0 条 CREATE USER/GRANT/触发器;deploy/ 目录仅 migrate-test.docker-compose.yml(root 单账号,无业务账号拆分)。resolved.md 否决触发器的理由是「golang-migrate mysql 驱动无法处理 DELIMITER/复合语句体」—— 这只对 DELIMITER/多语句体成立:实测用 go-sql-driver DSN multiStatements=true(即 golang-migrate 的执行方式)单次 Exec 成功创建两条单语句体触发器 `CREATE TRIGGER audit_log_no_update BEFORE UPDATE ON audit_log FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='audit_log is append-only'`,随后 UPDATE/DELETE 均被 ERROR 1644 阻断,而 INSERT 与保留期 `ALTER TABLE ... DROP PARTITION` 完全不受影响(DDL、非行级 UPDATE,与 append-only 同向)。",
+   "fix": "在 T1.3 范围内追加一条迁移(0002_grants):CREATE USER 业务账号 + `GRANT INSERT,SELECT ON braid.audit_log TO ...`(其余表按需),可选再加两条单语句 SIGNAL 触发器作 DB 级兜底(注意:若采用触发器或仅授 INSERT/SELECT,则 audit 去重不能走 ON DUPLICATE KEY UPDATE —— 其 UPDATE 路径会分别触发触发器 SIGNAL 或 1142,只能保持 INSERT IGNORE);T7.3 验收补「以业务账号断言 UPDATE/DELETE audit_log 被拒」。",
+   "verdict": "DISPUTED",
+   "facts_verdict": {
+    "refuted": false,
+    "reason": "反驳失败,发现成立。逐项核实:(1) final_ddl.sql 全文 0 条 CREATE USER/GRANT/CREATE TRIGGER(grep 仅命中 trigger_type/triggered_by 列),append-only 仅存在于注释(L20-23 头部、L205、L231、L248 表 COMMENT),头部声称「授权层已构成可验证强制」但该授权层在本交付物中不存在;(2) ROADMAP L17 T1.3 验收明文含「audit_log(分区键 + prev_hash + append-only)」,而 L68 T7.3 范围为「Redis 策略/AOF、词表、迁移版本」,确无授权断言;grep docs/ 全目录「GRANT/业务账号/授权断言」零命中,deploy/ 仅 root 单账号 compose——任务真源中确无人认领;(3) 尝试以 resolved.md L17「T7.3 授权断言」反驳「无人认领」:该文件是 /tmp 工作稿、未入库,按 AGENTS.md「任务只从 ROADMAP.md 取」,不构成任务链内的落地;(4) 尝试以 ARCHITECTURE §3.5「append-only=不提供 update 接口(应用层)」反驳 DB 级强制之必要性:但交付物头部自己把强制押在授权层+T7.3 断言上,应用层纪律覆盖不了它自己许诺的机制;(5) 实证复现成功:MySQL 8.0.46 + go-sql-driver DSN multiStatements=true(golang-migrate 执行方式)单次 Exec 无 DELIMITER 成功创建两条单语句体 SIGNAL 触发器,INSERT 与 ALTER TABLE DROP PARTITION(保留期路径)不受影响,UPDATE/DELETE 被 ERROR 1644 阻断——「否决触发器的技术前提部分错误」属实。仅两点轻微瑕疵不影响成立:发现称「仅有」两处 append-only 表述漏数了 L205/L231;其 fix 提议在版本化迁移内 CREATE USER 与「密钥/凭证不进代码」铁律冲突(账号创建确应留 deploy 层,但 T7.3 断言补验收的建议成立)。fix 局部有瑕不否定缺陷本身,severity=high 维持。",
+    "severity_adjust": "unchanged"
+   },
+   "stakes_verdict": {
+    "refuted": true,
+    "reason": "事实层面全部核实为真(含关键争议点):final_ddl.sql(/tmp/braid-t13/final_ddl.sql)确无 CREATE USER/GRANT/触发器,append-only 仅存在于行 20-23 头部与行 248 表 COMMENT;ROADMAP 行 68 的 T7.3 验收「Redis 策略/AOF、词表、迁移版本」确实不含授权断言;触发器否决理由确属技术错误——我在运行中的 MySQL 8.0 容器上按 golang-migrate 真实执行路径(MultiStatements=true、整段单次 Exec、无 DELIMITER)复现:两条单语句体 SIGNAL 触发器一次创建成功,UPDATE/DELETE 被 1644 阻断,INSERT 与 DROP PARTITION 不受影响。但 severity=high 在工程利害上站不住:(1) 威胁模型错位——Q15 个人开发、单机 compose、日千级、90 天保留的 P0 下,audit_log 变更的现实向量只有应用 bug 与单人误操作:前者由 AGENTS 铁律「audit_log 只允许 INSERT」在代码层认领,且审计写入器 T6.1 在 M6 才存在,当前树里除 dsl 包外无任何碰库代码;后者(单人操作自己的库)正是 Q10 已锁定把篡改检测(哈希链)推迟到 P1 的同一风险排序,要求 DB 级防篡改先于被锁定的检测层落地,颠倒了架构自身的取舍。(2) 授权层授予本身是账目设计问题:migrate/运行时/按服务(api/worker/relay/reaper)账号拓扑要等 T7.1 配置与 T7.4 compose 定稿才成立,现在加 0002_grants 是在无任何消费方时猜测拓扑,大概率返工——deploy/migrate-test.docker-compose.yml 注释也明说凭证 T1.4 起才入 .env。(3)「无人认领、无处落地」言过其实:应用层铁律在 AGENTS.md,DB 层归 deploy 层,缺的只是 ROADMAP T7.3/T7.4 验收里的一行回写,属簿记缺口而非缺陷。(4) 其 fix 里的代价警告(on duplicate 路径被断)是无效顾虑:DDL 行 216 已声明批量写契约=INSERT IGNORE,本设计无 UPDATE 去重路径,授权/触发器方案即插即用。相称的修复是两行文档:T7.3(或 T7.4)验收补「以业务账号断言 audit_log UPDATE/DELETE 被拒」+ 修正 DDL 头部触发器理由注释(可选注记单语句 SIGNAL 触发器作兜底)。一个相称修复只要两行文档的发现不配 high,更不应阻塞 T1.3;残存价值真实但属 low 级文档修正。",
+    "severity_adjust": "low"
+   }
+  },
+  {
+   "severity": "high",
+   "title": "合成稿尾部内嵌活 DROP(down.sql 段):整文件执行后静默空库",
+   "claim": "修复语法后把 final_ddl.sql 作为单个迁移文件执行,migrate up 会以 exit 0 结束且数据库中 0 张表——建表语句与 down 段的 DROP TABLE 在同一文件顺序生效。",
+   "evidence": "实测:修补后的完整文件(up 段 + 行 286-297 的 down 段)作为一批执行 → 无报错,随后 information_schema 查询 tables_left=0。行 293-297 是 5 条未注释的 DROP TABLE IF EXISTS(audit_log 先于其余表,恰为 FK 逆序)。当前语法错误恰好掩盖了这一点(执行在 CREATE 即失败),即两条缺陷互补:只修 #1 不拆文件就触发本条。合成稿标注 down 段『独立文件』,但无任何机制阻止实现时整文件粘贴进 golang-migrate。",
+   "fix": "T1.3 实现时物理拆分为 migrations/0001_init.up.sql 与 0001_init.down.sql 两个文件;验收断言 migrate up 后 SHOW TABLES 恰为 6 表(防静默空库)。",
+   "verdict": "DISPUTED",
+   "facts_verdict": {
+    "refuted": false,
+    "reason": "反驳失败,发现成立,且实证完全复现。(1) 证据属实:/tmp/braid-t13/final_ddl.sql 确为 up 段(行 1-284)+ 尾部 down 段(行 286-298)拼成的单文件(diff 证实 = up.sql 31355B + down 段 696B),行 293-298 的 DROP TABLE IF EXISTS 全部未注释,顺序 audit_log→outbox→node_attempt→node_execution→workflow_execution→workflow_definition,确为 FK 逆序、audit_log 最先。(2) 实测复现(临时库 braid_refute_a,已自清):修补版全文件(audit_full_patched.sql)整批执行 → mysql exit 0、零 ERROR,随后 information_schema 计数 = 0 张表;未修补原文件则 ERROR 1064 于行 34(首个 CREATE,`NOT NULL CHARACTER SET` 属性序)即失败——「语法错误恰好掩盖 down 段」的前提同样属实,两条缺陷互补的推理成立。(3) 无等价覆盖:ROADMAP T1.3 验收仅「migrate up/down 幂等」,而本缺陷场景下反复 up/down 均 exit 0(每次 up 后恒 0 表),该验收措辞不校验 up 后表存在性;golang-migrate 也不检查迁移文件内容,整文件粘入 0001_init.up.sql 不会被任何机制拦截,合成稿内「独立文件」横幅只是注释。证据细节仅有两处无害偏差:DROP 实为 6 条(行 293-298)而非 5 条(行 293-297),系少报而非夸大,不影响结论。severity 维持 high:失败模式静默(exit 0 + 空库),当前唯一屏障是一个终将被修复的无关语法错误,修复成本低(物理拆分 + SHOW TABLES=6 断言)。",
+    "severity_adjust": "unchanged"
+   },
+   "stakes_verdict": {
+    "refuted": true,
+    "reason": "机制属实但 severity 站不住,属部分推翻(降级)。事实层面:合并文件尾部带活 DROP 确会自我抹除(审计者实测可信)。但利害层面不支撑 high:(1) 对象是审计过程自产的合成稿,仓库中不存在 final_ddl.sql(git 仅有 behav2.sql 测试种子),T1.3 尚未实现,风险只存在于假设中的实现失误;(2) ARCHITECTURE Q14 锁定 golang-migrate,其文件约定强制 up/down 物理成对——合并文件根本不被识别为迁移,发现所称「无任何机制阻止整文件粘贴」不成立,其修复方案(物理拆分)就是该工具唯一标准实现,修复代价≈0;(3) T1.3 验收已含 migrate up/down 幂等,项目铁律要求测试全绿,0 表会让 down 腿和一切触库测试立刻失败,无法悄悄通过验收;(4) 即便漏出,0 表 → 首条查询失败 → compose 健康检查/安装自检(ARCHITECTURE L99)当刻报错,响亮、即时、首跑即现,单机 compose 私有部署单人安装环境下不是静默潜伏风险;(5) 无数据损失面:0001 迁移只落全新库,尾部 DROP 至多抹掉同批次 CREATE,90 天审计数据从不受威胁。触发需要实现者同时对抗锁定工具的约定与任务自身验收,剩余价值仅为一条 T1.3 实现提醒 + 一行验收加固断言(SHOW TABLES=6),故降为 low。",
+    "severity_adjust": "low"
+   }
+  }
+ ],
+ "refuted": [],
+ "medium_low": [
+  {
+   "severity": "medium",
+   "title": "outbox 轮询注释「排序在索引内完成,免 filesort」被 EXPLAIN 证伪",
+   "claim": "DDL 行 198 声称 relay 主扫「WHERE status='PENDING' AND available_at<=NOW(3) ORDER BY id LIMIT n 排序在索引内完成,免 filesort」,但在 idx_outbox_poll(status, available_at, id) 上该查询必然 Using filesort——ORDER BY id 排在范围列 available_at 之后,索引序不等于 id 序。",
+   "evidence": "MySQL 8.0.46 实测 EXPLAIN(已灌 4 行样本并 ANALYZE):id=1, select_type=SIMPLE, type=range, key=idx_outbox_poll, key_len=8, Extra=Using where; Using index; Using filesort——查询含 FOR UPDATE SKIP LOCKED 原样执行。",
+   "fix": "三选一:①改注释承认「LIMIT 界定的小批量 filesort,代价可忽略」;②索引改 (status, id) 换取 ORDER BY id 免排序、available_at 退化为回表过滤(需对比选择性与扫描深度);③保持现状但在 relay 实现内显式排序。关键是消除注释与行为的矛盾,防止 T2.2 实现者按「免排序」契约做容量假设。"
+  },
+  {
+   "severity": "low",
+   "title": "DECIMAL(14,6) UNSIGNED 与 TINYINT(1) 在 8.0.46 触发 1681 弃用告警",
+   "claim": "up 应用全程产生 5 条 Warning 1681:2 条来自 cost_amount DECIMAL(14,6) UNSIGNED(node_attempt、audit_log 各一),3 条来自 TINYINT(1)(estimated/pii_masked/cost_estimated);整型 UNSIGNED(BIGINT/SMALLINT/INT)不告警。今天仍可用,但官方声明未来版本移除,升级路径埋刺。",
+   "evidence": "mysql --show-warnings 全程输出:「Warning (Code 1681): UNSIGNED for decimal and floating point data types is deprecated」×2、「Warning (Code 1681): Integer display width is deprecated」×3;单列归因测试:w1(a DECIMAL(14,6) UNSIGNED)→前一条,w2(a TINYINT(1))→后一条,w3(BIGINT/SMALLINT/INT UNSIGNED 组合)→零告警。",
+   "fix": "cost_amount 去 UNSIGNED,把非负约束并入既有 CHECK(如 chk_attempt_cost 扩为 cost_amount IS NULL OR (cost_currency IS NOT NULL AND cost_amount>=0));TINYINT(1) 是生态布尔惯例,建议保留并在文件头注明「接受 1681 告警」,或统一改 BOOLEAN(同为 tinyint(1),告警不消失,主要是决策显式化)。"
+  },
+  {
+   "severity": "low",
+   "title": "合成稿单文件混排 up+down,照搬为 0001_init.up.sql 会在 up 内自毁",
+   "claim": "final_ddl.sql 行 286 起内嵌 down 段(行 293-298 六条可执行 DROP TABLE IF EXISTS),与 up 段仅隔注释「独立文件」;golang-migrate 的 up/down 是两个物理文件,若把整文件当 0001_init.up.sql 用,migrate up 会在建完六表后于同一 multiStatements 批次内逐表 DROP,得到空库且 version=1 非 dirty 的「成功」状态。",
+   "evidence": "驱动 Run() 为整文件单次 ExecContext(源码 v4.20.1 database/mysql/mysql.go 已核,driver 自设 config.MultiStatements=true),无任何机制阻止 DROP 被当作 up 语句执行;文件内无机器可识别的文件边界标记,仅人类可读注释(行 287「===== 0001_init.down.sql(独立文件,逆操作)====」)。",
+   "fix": "T1.3 落库时物理拆分为 0001_init.up.sql / 0001_init.down.sql(必要前提而非可选项),各自文件头重申方言(8.0.16+/utf8mb4/multiStatements)约定;拆分后以 migrate up/down/up 三连验证(本次修正版已按此法实测通过)。"
+  },
+  {
+   "severity": "low",
+   "title": "chk_def_published 只钉 published_at,不钉 published_by",
+   "claim": "status='PUBLISHED' 且 published_at 非空、published_by 为 NULL 的行可通过约束(行 53 表达式不引用 published_by),PUBLISHED 行缺发布者主体会漏出 T6.3「按人」审计维度,且发布者列与发布时刻列的不变量不对称。",
+   "evidence": "行 53:CHECK (status <> 'PUBLISHED' OR published_at IS NOT NULL)——约束文本仅含 published_at;实测 chk_def_published 对 PUBLISHED+published_at NULL 生效(ERROR 3819),但同批实测中 id=2 行(PUBLISHED,published_at=NOW(3))入库成功,published_by 列值对约束无影响(表达式定义上不含它)。",
+   "fix": "改为 CHECK (status <> 'PUBLISHED' OR (published_at IS NOT NULL AND published_by IS NOT NULL));若要为未来「系统自动发布」留匿名口子,则在注释显式写明该例外并接受。"
+  },
+  {
+   "severity": "low",
+   "title": "文件尾 CAS 参考语句不写 started_at,照抄会把「首次 EXECUTING」留 NULL",
+   "claim": "行 276-280 的参考 CAS(SET status='EXECUTING' ... WHERE status='PENDING' AND version=?)不含 started_at,T2.1 实现者照抄会使 started_at 列注释(行 117「首次 EXECUTING(跨重试不变)」)的承诺落空,起跑延迟指标(T6.4)失真。",
+   "evidence": "实测执行该参考语句后 SELECT 返回 status=EXECUTING/attempts=1/version=2/worker_id=w1 全部正确,唯独 started_at=NULL;该语句是文件内唯一的 CAS 范式,即引擎实现的直接模板。",
+   "fix": "参考语句补 started_at=COALESCE(started_at, NOW(3))(幂等:重入队后的再次 CAS 不会覆盖首跑时刻),或在语句旁注明应用层须另写首次起跑时刻。"
+  },
+  {
+   "severity": "low",
+   "title": "risks.md 第 10 条可实证收口:ADD CHECK 在 8.0.46 仅支持 ALGORITHM=COPY",
+   "claim": "「ADD CHECK 是否 INPLACE 未定」已可关闭:B 的 8.0.46 实测为真,ADD CHECK 拒绝 INPLACE;同机验证 ENUM 尾部追加支持 ALGORITHM=INSTANT——合成稿选 ENUM 不依赖 CHECK 扩容路径的决策依据成立。",
+   "evidence": "MySQL 8.0.46 实测:ALTER TABLE p1 ADD CONSTRAINT chk CHECK (status<>'B'), ALGORITHM=INPLACE → ERROR 1845 (0A000): ALGORITHM=INPLACE is not supported for this operation. Try ALGORITHM=COPY.;同机 ALTER TABLE node_execution MODIFY COLUMN type ENUM(...,'parallel','fan_in') NOT NULL, ALGORITHM=INSTANT → 成功(默认算法亦成功)。",
+   "fix": "无 DDL 改动;将两条实测结论回写 risks.md 第 10 条(ADD CHECK=COPY 实证、ENUM 追加=INSTANT 实证),把该开放项标记为已验证关闭。"
+  },
+  {
+   "severity": "medium",
+   "title": "幂等触发键唯一约束无作用域,跨定义键碰撞时 T5.5 无正确收敛行为",
+   "claim": "uk_exec_idem 对客户端自填 HTTP header 键做全表唯一(不按 definition_id 或触发者作用域),不同工作流的重合键会被数据库判为重复触发,T5.5 触发 API 无法既幂等收敛又不误拒合法请求。",
+   "evidence": "workflow_execution L71 idempotency_key 注释只定「去重窗口=永久」未定作用域,L84 UNIQUE KEY uk_exec_idem (idempotency_key);场景:客户端 A 触发工作流 X 用键 K 建立执行后,客户端 B 触发工作流 Y 用同键 K——唯一键冲突,应用侧无法创建新执行(键被永久占用),只能盲返 X 的执行(错)或一律 4xx(误拒);header 键若为 per-flow 计数(run-001 形态)时必然碰撞。",
+   "fix": "本迁移内改为 UNIQUE KEY uk_exec_idem (definition_id, idempotency_key)(definition_id NOT NULL 已满足,NULL 键仍允许多行),冲突语义收敛为「同定义同键→返回既有执行,跨定义同键→各自成立」。",
+   "category": "requirements-coverage"
+  },
+  {
+   "severity": "medium",
+   "title": "T6.1「批量写无丢失」对账缺非 attempt 事件行的核销锚",
+   "claim": "DDL 自述的对账机制「按 attempt_id 核销」只覆盖 attempt 级行,execution.triggered / node.state_changed / approval.requested / branch.evaluated 等行(attempt_id 恒 NULL)没有任何行级对账锚,批量 writer 崩溃丢内存缓冲时这些行丢失不可检。",
+   "evidence": "final_ddl.sql L215「T6.1 批量写无丢失对账按 attempt_id 核销」、L226 attempt_id 注释「attempt 级 prompt/usage/cost 行必须携带」(即其余行 NULL);audit_log 无 source_event_id/outbox_id 类关联列,outbox 事件词表(L185 node.task_enqueue/execution.resume/approval.notify)面向 Asynq 入队而非审计事件,两表无键可 join,T6.1 验收「批量写无丢失(对账单测)」对这些行只能做计数近似。",
+   "fix": "audit_log 加 source_event_id BIGINT NULL(产生侧事件 Snowflake id 或 outbox.id,与状态变更同事务产生),对账=事件 id 集合比对;若坚持不加列,须在 DDL 注释把契约改为「按 execution 的事件 id 集合比对」并要求 producer 侧持久保留事件清单至核销。",
+   "category": "requirements-coverage"
+  },
+  {
+   "severity": "medium",
+   "title": "判死扫描谓词漏掉 heartbeat_at IS NULL 的 RUNNING attempt",
+   "claim": "attempt 行在派发事务内创建且 heartbeat_at 可空、DDL 未规定派发时写初值,而判死谓词只有 heartbeat_at < NOW()-grace,worker 在首次心跳前被 kill -9 时该 RUNNING attempt 永不进入判死扫描结果,行永久滞留 RUNNING。",
+   "evidence": "node_attempt L149 heartbeat_at DATETIME(3) NULL 注释只说「周期刷新」、未规定派发事务写初值(started_at L160 为 NOT NULL 显式写,heartbeat 无对应约定);L166 与文件尾 L284 判死形态均为 WHERE status='RUNNING' AND heartbeat_at<NOW(3)-grace,NULL 不满足 <;后果:T2.5/T8.1 kill 场景最需要该路径的时序(kill 早于首跳)恰好失效,仅剩节点 deadline 扫描兜底(执行仍可达终态,验收不破),但僵尸 RUNNING attempt 永久污染 attempt 台账与 RUNNING 计数,DEAD/FAILED 区分不变量被绕过。",
+   "fix": "契约二选一并写入注释:①派发事务内显式写 heartbeat_at=NOW(3)(与 started_at 同值);②谓词改 WHERE status='RUNNING' AND (heartbeat_at IS NULL OR heartbeat_at<NOW(3)-grace)——(status, heartbeat_at) 索引对 IS NULL 与范围各做一次定位即可。",
+   "category": "requirements-coverage"
+  },
+  {
+   "severity": "medium",
+   "title": "parallel「表设计预留」只解决 fan-in 读序,未解决 fan-out 行多度与 uk_node_exec 的冲突",
+   "claim": "uk_node_exec (execution_id, node_id) 强制每执行每节点恰一行,P1 parallel 的自然表示(同一 node_id 的 N 个并行分支实例 = N 行)在该键下不可表示,T1.3 的「parallel 预留」实际只交付了 fan-in 排序说明,P1 落地时须在存量数据上重建该唯一键(CAS 与 upsert 锚即此键),构成被预留条款本应消除的返工点。",
+   "evidence": "ARCHITECTURE §3.2「P1:parallel(共享 context 并发原语与 fan-in 确定性在表设计预留)」要求表设计同时预留两件事;ROADMAP T1.3「parallel/fan-in 预留(汇聚行确定性排序字段或等价设计说明)」;final_ddl.sql L123 uk_node_exec 注释只给出「fan-in 汇聚按 node_id 字典序读前驱输出」,通篇无 instance 序号列或 fan-out 替代表示说明;该键同时是 CAS 定位键(L109 version 注释)与 upsert 锚。",
+   "fix": "在 L123 注释补一段 P1 parallel 表示决策(例如「并行实例以独立行表示,届时增量迁移放宽本键为 (execution_id, node_id, instance_no)」,或选定的其他表示);成本一段注释,收益=P1 不动唯一键。",
+   "category": "requirements-coverage"
+  },
+  {
+   "severity": "low",
+   "title": "审批人集合未物化,T4.2 审批人校验与 T4.4 待办列表依赖逐行解析钉住 DSL",
+   "claim": "approvers 只存在于钉住 DSL JSON 内,「非审批人拒绝」与「我的待办」只能对 status='WAITING_APPROVAL' 的全量节点行逐行解析 JSON,P0 私有化规模可行、验收不被 block,但查询面随审批量线性劣化。",
+   "evidence": "node_execution 无 approvers/mode 冗余列(仅 definition.dsl JSON 内 ApprovalNode.Approvers,types.go L141);可用扫描键仅 idx_node_status_deadline (status, deadline_at) 的 status 前缀;idx_audit_actor 不适用(approval.requested 行的 actor 是系统而非被指派审批人);T4.2「非审批人调用被拒」与 T4.4 待办列表均需该集合。",
+   "fix": "P0 可接受现状并记入 T4.4 实现注意事项;若要物化,在进入 EXECUTING 的 CAS 同语句把 approvers 快照写入节点行(新增 assignees JSON 列),M4 迁移一并处理。",
+   "category": "requirements-coverage"
+  },
+  {
+   "severity": "low",
+   "title": "up/down 两段混在合成稿单文件,原样作为 up 迁移会建表后立刻全删且验收假绿",
+   "claim": "若把 final_ddl.sql 整文件作为 0001_init.up.sql 交给 golang-migrate 执行,up 段建完 6 表后尾部的 DROP 段会将其全部删除,「migrate up 幂等」验收以空库假绿通过。",
+   "evidence": "final_ddl.sql L286-298 内嵌标注「独立文件」的 0001_init.down.sql 段(6 条 DROP TABLE IF EXISTS);文件头 L4-5 声明 multiStatements=true 单批顺序执行;T1.3 验收依赖 up/down 为两个独立迁移文件。",
+   "fix": "T1.3 落地时强制拆分为 migrations/0001_init.up.sql 与 0001_init.down.sql,并加「migrate up 后表数为 6」的验收断言。",
+   "category": "requirements-coverage"
+  },
+  {
+   "severity": "medium",
+   "title": "审批挂起时 attempt 收口契约缺失:若 attempt 留在 RUNNING,心跳扫描把「按设计释放 worker 的活挂起」判成持有者死亡",
+   "claim": "节点进入 WAITING_APPROVAL 后 worker 任务正常结束(ARCHITECTURE §3.3),心跳随之停止;node_attempt 状态机未规定此刻必须把 attempt 收口为 SUCCEEDED,而判死谓词只看 attempt 自身 status/heartbeat、不 join 节点状态——默认实现(挂起时不收口)下每个审批节点的 attempt 会在 grace 后被置 DEAD,触发 T6.4 的 kill 模式告警与伪造「worker 失联」审计行。",
+   "evidence": "final_ddl.sql:95-99(node 状态机有 WAITING_APPROVAL,attempt 侧无对应规则);:146(「RUNNING=已派发未收口」未定义挂起是否算收口);:162(「收口是一次终写」未挂钩起事件);:166/:284(判死谓词无节点状态 join);ARCHITECTURE.md:67(审批挂起释放 worker)。收敛性尚可(重入队 CAS 要求 EXECUTING→PENDING,对 WAITING_APPROVAL 节点失败),故非 blocking,但审计与告警语义被系统性污染,且 T8.1 才会暴露。",
+   "fix": "在 node_attempt 表注释写死契约:「节点进入 WAITING_APPROVAL 的同事务内,当前 attempt 收口为 SUCCEEDED(挂起=本次派发正常完成)」;或给判死谓词补 NOT EXISTS(fresh) 挂起节点的限定并同样写入注释。"
+  },
+  {
+   "severity": "medium",
+   "title": "uk_exec_idem 收敛语义缺陷:ai_ci 折叠大小写/重音,同键异参静默返回旧执行",
+   "claim": "客户端提供的 idempotency_key 在表默认 utf8mb4_0900_ai_ci 的唯一键下 'Key-1'='key-1'、'cafe'='café' 被判为同一触发;且表内无任何请求指纹列,同 key 换 workflow/入参重放时直接返回旧 execution,无冲突信号——对「企业级」定位这是静默错误结果通道。",
+   "evidence": "final_ddl.sql:71(key 由客户端 HTTP header 提供);:84(uk_exec_idem 未指定 ascii_bin,继承 :90 表默认 utf8mb4_0900_ai_ci,该 collation 大小写与重音均不敏感);全表无 request/payload 指纹列可做复用冲突检测;对照同文件 trace_id/dsl_hash 均显式 CHARACTER SET ascii COLLATE ascii_bin,唯独这条客户端输入列漏了。",
+   "fix": "idempotency_key 改 CHARACTER SET ascii COLLATE ascii_bin;T5.5 命中唯一键时比对 definition_id+input 摘要不一致返回 409(指纹列可留 M4/T5.5 增量迁移,但 DDL 注释应先写明该语义)。"
+  },
+  {
+   "severity": "medium",
+   "title": "idx_outbox_poll「ORDER BY id 排序在索引内完成,免 filesort」为假:available_at 范围列位于 id 之前",
+   "claim": "WHERE status='PENDING' AND available_at<=NOW(3) ORDER BY id LIMIT n 在 (status, available_at, id) 索引上必然 filesort——MySQL 8.0 官方规则:ORDER BY 前面的 key part 只有取常量等值时索引序才可满足排序,available_at 是 range,行集在索引内按 (available_at,id) 而非 id 全序;PENDING 积压越大,relay 每次轮询的排序代价越高,注释宣称的性质不成立。",
+   "evidence": "final_ddl.sql:198(注释「排序在索引内完成,免 filesort」+ 索引列序 status,available_at,id);MySQL 8.0 手册 §10.2.1.16:range on key_part1 + ORDER BY key_part2 不可用索引序(已对照官方文档核验,仅 key_part1=constant 时 key_part2 有序);EXPLAIN 必现 Using filesort。设计目标是雪花近似时序 FIFO,该目标在此索引形态下只能靠 top-N filesort 达成。",
+   "fix": "修正注释为「top-N filesort,积压有界时代价可忽略」并保留索引(过滤仍走索引);或接受按 (available_at, id) 出行序——重试行本就按退避重排,首发行 available_at≈创建序,FIFO 语义近似保持。"
+  },
+  {
+   "severity": "medium",
+   "title": "audit 批量写契约 INSERT IGNORE 无法区分「同事件重放」与「异事件同 id」,且静默吞掉截断类错误——雪花碰撞时丢审计行无告警",
+   "claim": "INSERT IGNORE 把 duplicate-key 行静默丢弃、把数据截断/转换错误静默取近值后插入(均已对照 8.0 官方文档核验):两个不同审计事件因雪花碰撞同 (exec_date,id) 时后到者无声消失,T6.1 按 attempt_id 核销只验存在性、对「事件数>行数」不可见;超长 payload 被静默截断则直接削弱 Q10 的证据完整性。",
+   "evidence": "final_ddl.sql:216(「批量写契约:INSERT IGNORE(PK 去重 ⇒ 批量重放幂等,T6.1)」);:243(PK=(exec_date,id) 唯一性「由 Snowflake 全局保证」,而 risks.md:8 自认主键碰撞不可拦截——audit 场景比 definition/execution 更糟:碰撞不报错反而静默成功);MySQL 8.0 INSERT 文档:IGNORE 下重复键行 discarded、无效值 adjusted to closest values,均只产 warning。",
+   "fix": "改 INSERT ... ON DUPLICATE KEY UPDATE id=id(仅吞 PK 冲突,截断等错误照常报错),批量后比对 affected rows 与提交条数、不一致告警;注释同步改写契约。"
+  },
+  {
+   "severity": "medium",
+   "title": "验证 risks.md 第 3 条:其缓解声明「attempt 唯一键 + 供应商幂等键保证不双跑」为假——伪死后是必然双跑+双计费",
+   "claim": "伪死重入队产生新 attempt_no,幂等键 att:<node_exec_id>:<attempt_no> 随之不同,供应商侧去重对不同键不生效;uk_attempt 只挡同行号双行、不挡两个不同 attempt 并发执行——长调用误判 DEAD 的场景下双跑与双计费是确定结果,不是风险清单所称的「可能双计费」。",
+   "evidence": "final_ddl.sql:147(幂等键含 attempt_no);:146 与 :279(DEAD→节点重入队→claim CAS attempts=attempts+1 ⇒ 新号);:164(uk_attempt 键为 (node_execution_id, attempt_no),新旧 attempt 行不冲突)。risks.md:3 原文「attempt 唯一键 + 供应商幂等键保证不双跑,但可能双计费」前半句不成立;真正的防线只有判死阈值 > 单次外部调用上限(该纪律同条已列)。",
+   "fix": "修正 risks.md:3 该句,把唯一防线明确为 T7.1 阈值配置;建议 T7.1 启动自检加一条联动校验(heartbeat grace ≥ max(single-call timeout, 心跳间隔×N)),把「注释纪律」变成可验证约束。"
+  },
+  {
+   "severity": "low",
+   "title": "已裁决风险验证:MAX(version)+1 发布并发在 RR 下的竞态确由 uk(name,version) 闭合,risks.md 第 7 条并发半句可降级",
+   "claim": "两种情形都不产生重复版本号:同名已有发布行时,后到者的 SELECT MAX FOR UPDATE 被行锁阻塞、锁定读读到最新已提交值不会算出重复号;首次发布(仅 NULL 草稿、空 range)时双方纯 gap X 锁相容、各自算出 v=1,第二个 INSERT 撞 uk_def_name_version 得 1062 显式失败——残留风险仅剩实现须把 1062 映射为 409。",
+   "evidence": "final_ddl.sql:37/50(version NULL 草稿多行共存 + uk_def_name_version);resolved.md:19(裁决原文即「uq 显式失败兜底」);InnoDB RR:FOR UPDATE 锁定读返回最新已提交版本;纯 gap 锁相互兼容但被对方 insert intention 阻塞,提交后唯一键冲突。risks.md:7 的「仅靠唯一键兜底并发」应改写为「唯一键兜底已被推演验证闭合(含空 range gap 锁相容情形),T5.4 补一条并发发布集成测试即可」。",
+   "fix": "无 DDL 变更;在 T5.4 验收补并发发布用例,risks.md:7 并发半句降级为实现注意事项(NULL 草稿查询面半句保留)。"
+  },
+  {
+   "severity": "low",
+   "title": "workflow_execution 无 version 列,与文件头「状态迁移只允许 CAS(status+version)」的统一口径不符;执行级实际依赖 status-only CAS 收敛",
+   "claim": "执行级迁移(PENDING→RUNNING、终态写入、reconciler 判死 vs worker 完成竞争)只能 WHERE id=? AND status=? 收敛,无版本位;正确性恰好成立(状态谓词互斥 + 同值终写幂等),但与 :24 头部宣称的统一 CAS helper 口径矛盾,实现者要么困惑要么给执行级误加不存在的 version。",
+   "evidence": "final_ddl.sql:24(「状态迁移:只允许 CAS helper(UPDATE ... WHERE id=? AND status=? AND version=?)」无范围限定)vs :62-91(workflow_execution 无 version 列;node_execution:109 有)。AGENTS 铁律本身只约束节点级,故非铁律违反;实际竞争对(reconciler 标 FAILED error_code=reconciler_timeout vs worker 写 SUCCEEDED+outputs)由 status 谓词互斥,后者 affected_rows=0 退出。",
+   "fix": "在 workflow_execution 表注释或文件头显式写明:「执行级迁移用 status-only CAS(status 单列即版本语义),不适用 version helper;禁止无条件裸 UPDATE」——一句话消除口径冲突,不改结构。"
+  },
+  {
+   "severity": "medium",
+   "title": "audit_log 批量写契约 INSERT IGNORE 会把超长列静默截断后入库:证据表以警告代替失败,被截断的行仍被记为已写",
+   "claim": "T6.1 批量写用 INSERT IGNORE 换取 PK 去重,但 IGNORE 同时把数据截断类错误降级为警告:超长 actor_id 等值在证据表中被截断存储且调用方无失败感知,恰在事故/攻击路径(输入最长、最需要完整证据时)最容易发生。",
+   "evidence": "final_ddl.sql 行 216「批量写契约:INSERT IGNORE(PK 去重 ⇒ 批量重放幂等,T6.1)」。实测 8.0.46:向 audit_log 以 INSERT IGNORE 写入 actor_id=200 字符 → Warning 1265「Data truncated for column 'actor_id'」,行成功落库,`CHAR_LENGTH(actor_id)=128`;同一语句不用 IGNORE 则 ERROR 1406 硬失败(写入器可感知)。去重路径本身实测正确:同 PK 重放 ROW_COUNT()=0、payload 保持原值。",
+   "fix": "写入器在 SQL 前统一按列宽钳制/校验(actor_id≤128、event_type≤64、node_id≤64、trace_id=32 等均为应用侧可控来源,OIDC P1 引入外部主体字符串后尤需),并在 T6.1 对账里抽查落库长度;保留 INSERT IGNORE 仅用于去重语义(注意勿改用 ON DUPLICATE KEY UPDATE:在仅授 INSERT/SELECT 或触发器方案下,其重复路径会被 1142/SIGNAL 拒绝)。"
+  },
+  {
+   "severity": "medium",
+   "title": "P1 哈希链行序自相矛盾:id 注释称 ORDER BY id 为链行序,event_at 注释却自称「哈希链排序键」,且 row_hash 规范化算法未定义未版本化",
+   "claim": "同一张表两列注释给出互斥的链排序键;若按 event_at 排序,毫秒精度同刻事件(同一 attempt 的 state_changed 与 llm.call.completed 常同批同 ms)导致顺序不定,prev_hash 对拼验链在 P1 无法实现;若按 id 排序,event_at 的「排序键」注释错误。row_hash「规范化哈希」未指明序列化形式(JCS/排序键 Go 序列化等)也无算法版本位,后续算法演进即断链。",
+   "evidence": "final_ddl.sql 行 219(id):「Snowflake(应用生成):执行内 ORDER BY id 为 P1 哈希链行序」;行 221(event_at):「事件发生时刻…;哈希链排序键」;行 241(row_hash):「本行规范化哈希」无算法、无版本列。Q10 仅要求 prev_hash 建表即留(满足,行 240 NOT NULL DEFAULT ''),但链可验证性还需唯一确定的行序 + 冻结的规范化定义,两者当前在文本上冲突/缺失。",
+   "fix": "删除行 221 中「哈希链排序键」字样,钉死链行序 = (execution_id 内 ORDER BY id)(与 DROP PARTITION、批量乱序落库兼容);在文档或 $comment 中定义 row_hash 规范化(如 JCS 或字段列表拼接 + SHA-256)并预留 hash_alg TINYINT 列(可 P1 前迁移补),P0 行 NULL 不受影响。"
+  },
+  {
+   "severity": "medium",
+   "title": "outbox relay 主扫的「ORDER BY id 免 filesort/排序在索引内完成」被实测证伪:EXPLAIN 出现显式 Sort 节点或整体退化为 PRIMARY 扫描",
+   "claim": "idx_outbox_poll (status, available_at, id) 在 available_at 范围谓词之后 id 已非有序,`WHERE status='PENDING' AND available_at<=NOW(3) ORDER BY id` 不可能免排序;优化器在积压量大时甚至弃用该索引改走 PRIMARY。T2.2 按此注释实现会带错预期上线。",
+   "evidence": "final_ddl.sql 行 198 注释「relay 主扫…ORDER BY id LIMIT n(排序在索引内完成,免 filesort)」。实测 8.0.46、5 万行(4 万 PENDING 匹配):EXPLAIN FORMAT=TREE 选择 PRIMARY 全序扫描( cost 10.1 vs 索引方案 5004);稳态(4 万 DISPATCHED + 尾部 2 条 PENDING)时同查询走覆盖范围扫描但树中出现显式节点 `Sort: outbox.id`,Handler_read_next=2。对照:`ORDER BY available_at, id` 同索引实测为纯 `Covering index range scan`,无 Sort 节点。",
+   "fix": "relay 扫描改 `ORDER BY available_at, id`(语义上按可投时刻 FIFO 更正确,延迟重试行天然靠后),索引无需改动;同步修正行 198 注释。"
+  },
+  {
+   "severity": "medium",
+   "title": "PII 脱敏钩子只覆盖 audit payload,而同一份原始触发入参在 workflow_execution.input 与 node_execution.input_snapshot 中明文永久留存;「原始永不落库」注释与表结构事实冲突,T6.1「对标记字段生效」无任何字段标记载体",
+   "claim": "pii_masked 是整行布尔且只声明 audit 路径「脱敏写前完成,原始永不落库」,但 DSL 触发值原文(行 73)与节点输入快照(行 111)未过任何钩子且按裁决 P0 永久保留;且 DSL schema(inputs/user_data/tool.inputs)没有任何 PII 标记概念,T6.1 验收「脱敏钩子对标记字段生效」在数据模型上无落点,行级布尔无法证明哪个字段被处理过。",
+   "evidence": "final_ddl.sql 行 231(pii_masked 注释含「原始永不落库」)vs 行 73(input=「触发入参原文…真相源」)、行 111(input_snapshot);resolved.md「execution/node/attempt P0 永久保留」;internal/engine/dsl/schema.json 全文无 sensitive/pii 类标记(inputs 声明仅 name/type/required/description,行 59-74;user_data 仅 name/ref,行 191-203);schema.json 行 178 的 user_data/prompt 分离是本 DSL 唯一的数据敏感度标注机制,表结构未承接。",
+   "fix": "三选一并写进契约:①把钩子同样作用于 execution.input/input_snapshot(写前脱敏或超限截断);②在 T7.1 配置定义标记字段(字段路径/正则)清单并在 payload 契约中记录 masked 字段名数组,pii_masked 保持行级汇总;③至少改写行 231 注释为「audit payload 范围内原始永不落库」,并给 execution.input 设保留/清理策略,避免合规口径与存储事实打架。"
+  },
+  {
+   "severity": "medium",
+   "title": "uk_exec_idem 全局单列唯一:触发幂等去重无主体/定义维度,T5.5 任一自然实现(返回既有执行或仅 409)都有跨用户信息泄露或恶意抢注键拒绝服务的暴露面",
+   "claim": "idempotency_key 的唯一性作用域是全表而非 (triggered_by) 或 (definition_id,triggered_by):若 T5.5 把幂等命中实现为「返回既有执行」,知道/猜到他人 key 的调用方读到他人执行(IDOR);若实现为 409,恶意客户端可预占他人将用的 key 使其永远无法触发。该决策随迁移固化,后补需重建唯一索引。",
+   "evidence": "final_ddl.sql 行 71(idempotency_key VARCHAR(128) NULL,注释仅定义 NULL=不去重)与行 84(UNIQUE KEY uk_exec_idem (idempotency_key),注释「触发幂等第一道收敛」);resolved.md 行 14 只裁决了「键由客户端 HTTP header 提供、去重窗口永久」,未裁决作用域;行 70 triggered_by 与键无关联约束。",
+   "fix": "在 0001 就改为 UNIQUE KEY uk_exec_idem (triggered_by, idempotency_key)(或至少在 DDL 注释钉死 T5.5 必须实现为「命中且非本人 → 409,绝不返回行」);若担心改索引,也可保留单列唯一但把 key 契约定为服务端注入的主体前缀 + 客户端随机段。"
+  },
+  {
+   "severity": "low",
+   "title": "up 与 down 同文件交付:尾部 DROP TABLE 若被整文件作为 up 执行,建表后立即全毁,golang-migrate 无任何防护,拆分纯靠自觉",
+   "claim": "final_ddl.sql 把 0001_init.up.sql 与 0001_init.down.sql 合在一文(行 286-298),若实现者误将整文件落为迁移 up 文件,最后 6 条 DROP TABLE IF EXISTS 会立即删除刚建的全部表,迁移工具不会警告。",
+   "evidence": "行 289-298:注释标注「独立文件,逆操作」并顺序列出 audit_log→workflow_definition 的 DROP;文件头行 4-5 声称「up/down 重复执行均 no-op」仅当拆分后才成立;实测 down 段单独执行 6 表全删成功。",
+   "fix": "交付时物理拆为 migrations/0001_init.up.sql 与 0001_init.down.sql 两个文件;合成稿保留合并视图无妨,但迁移目录只进拆分件。"
+  },
+  {
+   "severity": "low",
+   "title": "引导分区只建到 2026-10-04:晚于该日期执行本迁移的任何环境(含 M2-M6 开发期)在 reaper 预建机制存在前,第一条审计写入即 ERROR 1526",
+   "claim": "文件内静态分区到 2026-10-05 前界为止,而预建职责在 T2.5 reaper(M2)与 T7.3 自检(M7)—— 在这之间的所有开发/测试环境,迁移建表后审计写入没有任何可写分区,首个 audit INSERT 响亮失败,属已知裁决(不建 MAXVALUE)未覆盖的开发期窗口。",
+   "evidence": "行 250-264:p_min + p20260921..p20261004 共 16 个分区;行 266-267「文件内固定引导分区仅供首装,跨日期安装依赖 reaper 启动预建」;实测向 2026-11-01 写入 → ERROR 1526「Table has no partition for value from column_list」;ROADMAP 中 reaper=T2.5、自检=T7.3,均晚于 T1.3。",
+   "fix": "把引导分区范围延长(如 +90 天,共 ~90 个分区,远低于 8192 上限),或在 T1.3 附一个幂等的 ADD PARTITION 预建脚本/cmd 子命令供 reaper 之前的环境复用;行 266 注释同步去掉「仅供首装」的绝对化表述。"
+  },
+  {
+   "severity": "low",
+   "title": "T6.1 批量写「无丢失对账」只对 attempt 级行成立:执行级审计事件(triggered/approval.requested/branch.evaluated)没有任何源侧锚,异步批量丢失不可检测",
+   "claim": "audit_log.attempt_id 作为对账核销键仅对 attempt 级行非空(执行级事件恒 NULL),执行级事件行在写入器内存批量中丢失时无任何列或机制能发现,P0 哈希链未启,证据链存在静默缺口。",
+   "evidence": "final_ddl.sql 行 226(attempt_id:「T6.1 批量写对账核销键」)与行 224(node_execution_id/attempt_id NULL=执行级事件);rationale.md 行 215「T6.1 批量写无丢失对账按 attempt_id 核销」;outbox 不承载审计事件(行 182-202 为 relay 投递 Asynq 的事件,非审计通道),故执行级审计无同事务源记录。",
+   "fix": "T6.1 设计里为执行级事件提供源侧锚:要么触发/审批/分支事件走同步直写(量小),要么写入器先落本地 journal(或复用 outbox 增加 audit 事件类型)再批量,对账覆盖全部 event_type 而非仅 attempt 行。"
+  },
+  {
+   "severity": "low",
+   "title": "T6.3 三维度查询的分区代价被低估一角:execution 维度缺日期钉定同样逐分区探测且叠加 filesort,钉定是纯应用纪律;且探测次数随保留期配置线性增长",
+   "claim": "risks.md 已认 trace/actor 无日期谓词逐分区探测,但把 execution 维度描述为「先钉 exec_date 即裁剪单分区」的已解问题 —— 实测不加 exec_date 谓词时 execution_id 查询同样探测全部 16 个分区且 ORDER BY id 产生 filesort;schema 层无任何机制强制钉定,且保留期可配(T7.1)意味着探测次数=保留天数(两年=730 次/查询)。",
+   "evidence": "final_ddl.sql 行 244(idx_audit_exec 注释「先钉 exec_date 裁剪单分区」);实测 EXPLAIN:仅 `WHERE execution_id=42 ORDER BY id` → partitions 列出全部 16 个、Extra=Using filesort;加 `AND exec_date='2026-09-21'` → 单分区、无 filesort(key_len=11=8+3,验证 (execution_id,exec_date) 隐式复合序);分区 RANGE COLUMNS 裁剪对等值 exec_date 生效。risks.md 行 5 仅列 actor/trace 两维。",
+   "fix": "T6.3 集成测试断言查询形状必须含 exec_date 谓词(从 execution 行取);T7.1 给保留期设上限(如 ≤400 天)并在文档写明无日期谓词查询的代价模型;若需任意期免钉查询,P1 旁路表(audit_trace_map 同构 audit_actor_map)已是文中预留的演化路径,无需现在建。"
+  },
+  {
+   "severity": "medium",
+   "title": "事件时间窗审计查询(按天/时段)无索引且无法分区裁剪,EXPLAIN 实测全分区全表扫描",
+   "claim": "audit_log 分区键=执行起始日期且 event_at 无任何索引,`WHERE event_at BETWEEN ? AND ?` 只能扫全部 15 个分区(type=ALL),该查询形态在 v1 结构性缺位,事后只能在大分区表上补 ADD INDEX。",
+   "evidence": "实测 EXPLAIN 三组:①`WHERE execution_id=? AND exec_date=?` → 裁剪到单分区 p20260921、走 PRIMARY(244 行注释的「钉 exec_date 裁剪」为真);②`WHERE execution_id=?`(T6.3 无日期路径)→ 15 分区逐分区 idx_audit_exec 探测,与 risks.md #5 一致、可接受;③`WHERE event_at BETWEEN '2026-09-21' AND '2026-09-22'` → partitions 列出全部 15 分区且 type=ALL。T6.3 验收只要求 execution/trace/人三维度,故不卡里程碑;但 §0 把合规交付深度定位为护城河,「某天发生了什么」是合规调查必然形态,保留期(按 exec_date)与事件日期还相差最长执行时长,事后补索引成本随数据量增长。",
+   "fix": "趁 v1 表尚空在 0001 内补 `KEY idx_audit_event_at (event_at)`(分区本地索引,至少消除分区内的全扫),或在 T6.3/T7.4 明文约束「审计查询必须携带 execution 维度或强制日期+拒绝裸时间窗」。"
+  },
+  {
+   "severity": "medium",
+   "title": "down 语句未加注释内嵌在合成稿文件尾(293-298 行),语法修复后整文件当 up 用 = 静默清库且以成功退出",
+   "claim": "final_ddl.sql 不是可直接落盘的 up 工件:若把全文(含尾部的真实 DROP 语句)贴进 0001_init.up.sql,执行结果是命令成功、0 张表、schema_migrations 记 version 1 clean。",
+   "evidence": "293-298 行为列 0 起始的真实 `DROP TABLE IF EXISTS` ×6(非注释);实测把修复语法后的 up 段与该 down 段拼接执行:mysql 客户端正常退出,`information_schema.tables` 计数=0。当前原稿反而到不了自毁点——先撞上 finding 1 的 1064 客户端中止;两个缺陷互相掩护,修掉 blocking 后陷阱即暴露。down 本身的 FK 逆序(audit_log→outbox→node_attempt→node_execution→workflow_execution→workflow_definition)在仅含本 6 表时实测正确无外键报错。",
+   "fix": "T1.3 实现时物理拆分为 migrations/0001_init.up.sql(1-284 行)与 0001_init.down.sql(293-298 行);本合成稿文件中把 down 段整段注释掉或移出,消除误贴路径。"
+  },
+  {
+   "severity": "low",
+   "title": "chk_attempt_cost 单向:币种可以脱离金额落库,与列注释「与 cost_amount 成对(CHECK)」不符",
+   "claim": "`CHECK (cost_amount IS NULL OR cost_currency IS NOT NULL)` 只拦 amount→currency 方向,(NULL,'USD') 可入库。",
+   "evidence": "实测向 node_attempt 插入 cost_amount=NULL, cost_currency='USD' → 成功落行(156 行注释宣称成对)。audit_log 237 行 cost_currency 同一模式、且 171 行注释同措辞。",
+   "fix": "改为双向 `(cost_amount IS NULL) = (cost_currency IS NULL)`(node_attempt 与 audit_log 两处);表未投产,改 CHECK 零成本。"
+  },
+  {
+   "severity": "low",
+   "title": "「未启链」占位在相邻两列用了相反哨兵:prev_hash=''(240 行)与 row_hash=NULL(241 行)",
+   "claim": "P1 链校验器必须同时处理两种未启链编码;只认其一就会把另一半误判为断链或漏检。",
+   "evidence": "240 行 prev_hash 注释「''=未启链期(P0)」,241 行 row_hash 注释「NULL=未启链期行,链校验跳过」——同一状态两种约定并存于同一表。",
+   "fix": "统一为一种(建议均空串:'',与 NOT NULL 列风格一致);0001 尚未落地,改列定义零成本。"
+  },
+  {
+   "severity": "low",
+   "title": "fan-in 确定性排序预留实测成立(uk_node_exec 无 filesort),但「node_id 字典序」与作者声明序可分歧(node_10 < node_2),等价说明未言明此语义选择",
+   "claim": "123 行的等价实现是真的(非纸面承诺),但它等价的是「确定性字典序」而非「DSL 声明/编号直觉序」,P1 聚合若按编号直觉设计会得到反直觉顺序。",
+   "evidence": "实测 `EXPLAIN SELECT node_id,output FROM node_execution WHERE execution_id=? AND status='SUCCEEDED' ORDER BY node_id` → key=uk_node_exec、无 filesort;node_id 在钉住 DSL 内唯一不可变(T1.2 校验)⇒ 与到达顺序/重试无关的总序成立;node_id 模式 `^[a-z][a-z0-9_]{0,63}$`(schema.json:107)全小写,utf8mb4_0900_ai_ci 不影响。另两个 T1.3 关联声明的实测核验:ENUM 尾部追加(parallel/fan_in)一次 ALTER 零警告完成、中插重排则 `ALGORITHM=INSTANT is not supported`(17/7b 测试)⇒「只许末尾追加」纪律为真;同 name 多草稿 NULL version 在 uk 下共存(T10 测试)⇒ 37 行注释为真。",
+   "fix": "在 T1.3 交付说明中把「fan-in 汇聚序 = node_id 字典序」写成显式决策(一行字);P1 若需声明序,届时尾追加 ordinal 列即可,不受 ENUM/分区等演化约束牵连。"
+  },
+  {
+   "severity": "medium",
+   "title": "outbox relay 主扫注释『ORDER BY id 免 filesort』被 EXPLAIN 证伪",
+   "claim": "idx_outbox_poll (status, available_at, id) 无法同时满足 WHERE available_at<=NOW 与 ORDER BY id:按注释原句实现的轮询查询每轮对全部到期 PENDING 行做 filesort,小表时优化器则改走主键全表扫,注释宣称的『排序在索引内完成』两种情况下都不成立。",
+   "evidence": "实测(63,005 行:60k DISPATCHED + 2k DEAD + 1,005 PENDING):EXPLAIN ANALYZE 原查询 → Limit → Sort: outbox.id, limit input to 100 (actual 0.653ms, 输入 504 行) ← 对到期集排序;接近空表(5 行)时 → Index scan on outbox using PRIMARY(聚簇全扫,含 7 天 DISPATCHED 与永久保留的 DEAD 历史)。且 id 序≠可投递序:退避重试行 available_at 晚于写入,id FIFO 语义本就不对。对照:ORDER BY available_at, id → 纯 Index range scan using idx_outbox_poll,无 Sort 节点。",
+   "fix": "relay 扫描改为 WHERE status='PENDING' AND available_at<=NOW(3) ORDER BY available_at, id LIMIT n(实测免排序,且语义=按可投递时刻先进先出,重试退避天然后置);或保留原句并修正行 198 注释,明示接受 filesort。不改 DDL。"
+  },
+  {
+   "severity": "medium",
+   "title": "audit_log.attempt_id 被定为 T6.1 对账核销键,却无任何索引支撑该查询",
+   "claim": "按 DDL 注释以 attempt_id 逐条核销审计行(批量写无丢失对账)意味着每次点查要么全分区扫描(不钉 exec_date,EXPLAIN type=ALL 覆盖全部 15 个分区),要么分区内全日扫描(钉 exec_date 仅落 PRIMARY 的 exec_date 前缀,key_len=3)。",
+   "evidence": "实测 EXPLAIN:WHERE attempt_id=800 → type=ALL, key=NULL, partitions=全部;p_min+p20260921…p20261004。WHERE exec_date='2026-09-21' AND attempt_id=800 → type=ref PRIMARY key_len=3(仅 exec_date),行内按 attempt_id 过滤 = 扫当日全部分区数据。audit_log 全部索引(STATISTICS 实查):PK(exec_date,id)、idx_audit_exec(execution_id)、idx_audit_trace、idx_audit_actor——attempt_id 不在其中;而行 215-216 与行 226 注释两处宣称『T6.1 批量写无丢失对账按 attempt_id 核销』『核销键』。保留期 90 天、单分区日数据量随负载线性增长,逐 attempt 点查的核销成本不可控。",
+   "fix": "不改 DDL,改查询契约:核销按 execution_id(+exec_date)驱动走 idx_audit_exec(单执行审计行数小,幂等键集合比对),或批量写后以 PK (exec_date,id) 回读校验;同时修改行 215/226 注释,删除『按 attempt_id 核销』的点查指引,避免 T6.1 按注释实现。"
+  },
+  {
+   "severity": "low",
+   "title": "引导分区水位写死于迁移文件,2026-10-05 后任何未预建的库首写即 ERROR 1526",
+   "claim": "最后分区边界为 '2026-10-05'(行 264),此日期后新建库在 reaper 预建分区之前写入 audit_log 必然失败,而 golang-migrate 先于应用运行,预建只能依赖应用启动顺序。",
+   "evidence": "实测:INSERT exec_date='2027-03-15' → ERROR 1526 Table has no partition for value from column_list;p_min 仅覆盖 <'2026-01-01'。resolved.md #11 已裁决『reaper 启动预建 + T7.3 自检』,但自检『不足拒绝启动』若先于预建执行则新装/升级库死锁在启动阶段;另外 T1.3 的 migrate up/down 验收与 CI 在过期日期后凡含 audit 写入的用例必炸。当前 15 分区(p_min + 14 日)→ 稳态约 93 个,远低于 8192 上限,分区数本身无问题。",
+   "fix": "让 0001 迁移的分区清单由构建/安装期脚本按当前日期生成(而非手写死),或在 T7.3 自检文案中明确『reaper 预建先于自检』的强制顺序;CI 用例对 audit 写入显式 ADD PARTITION 后再跑。"
+  },
+  {
+   "severity": "low",
+   "title": "VARCHAR(128) 的 actor/triggered_by/created_by 与其自称的 Q13 OIDC 兼容目标冲突(sub 上限 255)",
+   "claim": "三列注释均以『兼容 Q13 IdentityProvider 换源』为 128 长度的依据,但 OIDC Core 规定 sub 最长 255 ASCII 字符,128 装不下部分 IdP,依据不成立。",
+   "evidence": "行 43(created_by)、70(triggered_by)、228(actor_id)均为 VARCHAR(128) NOT NULL 且注释指向 Q13 换源;行 228 还将 actor_id 列为 T6.3 查询维度 3(有索引 idx_audit_actor)。对照:OIDC Core 1.0 §11(sub 不得超 255 ASCII)。P0 内置用户不受影响;扩容 128→255 不改变长度字节数(1→1),MySQL 8.0 为 INSTANT 仅元数据变更(append-only 不阻碍 DDL),故不构成返工。注:error_message VARCHAR(2000) 有明确依据(注释行 76/115:摘要列、全文归 audit payload),实测 2000 utf8mb4 字符(6000 字节)写入成功——非缺陷。",
+   "fix": "三列直接改 VARCHAR(255)(utf8mb4 索引条目 1020 字节,远低于 3072;actor_id 仅普通索引,767 旧限亦安全),或在注释中写明 P1 扩容路径为 INSTANT 元数据变更。"
+  },
+  {
+   "severity": "low",
+   "title": "outbox DISPATCHED 清理按 dispatched_at 过滤会读全部该状态条目;existing 索引下的等价谓词是 covering scan",
+   "claim": "行 193 注释把 dispatched_at 定为清理列且『不建专索引』,该谓词不在任何索引中,清理每轮经 idx_outbox_poll 的 status 前缀读全部 DISPATCHED 条目再逐行回表过滤。",
+   "evidence": "实测(60k DISPATCHED):EXPLAIN WHERE status='DISPATCHED' AND dispatched_at < NOW(3)-INTERVAL 7 DAY → type=ref key_len=1(status 单列),rows≈31357,Using index condition + 回表过滤;对照 WHERE status='DISPATCHED' AND available_at <= … → type=range key_len=8,Using index(纯覆盖范围扫描)。DISPATCHED 行恒有 available_at <= dispatched_at(available_at 为初写/退避时刻,dispatched_at 为其后的入队时刻),7 天谓词换列语义等价性仅需加边距处理长退避重试行。",
+   "fix": "清理查询改用 available_at 谓词(或加少量边距),不改 DDL;行 193 注释补充一句『清理谓词走 idx_outbox_poll 的 (status, available_at)』。"
+  },
+  {
+   "severity": "low",
+   "title": "risks.md #6『索引预算高、写放大未基准测试』复核后降级:全部索引均有实证扫描形态,单次推进二级索引写 ≤1-3",
+   "claim": "五表每个二级索引都能对到一条实测可用的扫描路径,单次热路径更新触及的二级索引数有上界,私有化量级无需压测数据,该风险可降为可接受。",
+   "evidence": "实测 EXPLAIN:workflow_execution 5 索引——idx_exec_status_activity(range + Using index,reconciler)、uk_exec_idem(幂等闸)、idx_exec_def_created/idx_exec_name_created(T5.4/T5.5,后者实测 Backward index scan + Using index;join 替代形态反而触发 filesort,故非冗余)、idx_exec_trace(维度查询);且 last_activity_at/status 更新仅触及 idx_exec_status_activity 一个二级索引。node_execution 4 索引:uk_node_exec(fan-in ORDER BY node_id 实测走索引无 Sort)、idx_node_status_deadline(卡死+审批双扫,range)、idx_node_exec_status(入度计数 index-only,与 uk 前缀重叠属微优化)、idx_node_worker(归因);状态迁移触及 ≤3(status 变更同时动 status_deadline 与 exec_status,claim 时再加 worker)。workflow_definition 3 索引在冷表上可忽略;idx_def_name_status_version 的『一次后向扫描』实测为 Covering index lookup (reverse)。utf8mb4 唯一键最长 512 字节(uk_exec_idem/uk_attempt_idem)< 767/3072;最大行 node_attempt 9,975 字节 < 65,535,CREATE 零警告,均无新增问题。",
+   "fix": "无需变更;如仍要数据,P1 商业化前对 node_attempt 心跳(每 RUNNING attempt 周期性改写 idx_attempt_status_heartbeat)做一次基准即可,当前量级可先不做。"
+  }
+ ],
+ "counts": {
+  "raw": 51,
+  "deduped": 51,
+  "verified": 12
+ }
+}
