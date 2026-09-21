@@ -14,7 +14,7 @@
 
 - [x] T1.1 DSL JSON Schema v1 — S — 验收:≥5 合法 + ≥5 非法样例校验测试通过;覆盖 llm/tool/branch/approval 四种节点、`{{nodes.<id>.output.<field>}}` 引用、画布元数据预留;prompt 模板与用户数据**分离标注字段**(未标注 = 非法样例);HTTP 工具 host 由白名单配置提供,**DSL 不允许填 host**(非法样例覆盖)— ✅ 2026-09-21:6 合法 + 16 非法样例,非法样例按拒绝原因锁定;经 3 视角对抗审查修复 15 项发现(引用形态钉死、host 黑名单递归+大小写不敏感+URL/IPv4 值禁令、基数帽、会签枚举收窄)
 - [x] T1.2 Go DSL 解析器 + DAG 校验 — M — 依赖 T1.1 — 验收:环检测、悬空引用、引用类型不匹配、inputs/user_data/节点 id 重名、branch 出边与 cases[].next ∪ {default} 目标一致、**发布时工具白名单校验**(引用未注册/未白名单工具的 DSL 发布被拒)均有单测 — ✅ 2026-09-21:29 负例(按发现码集合精确断言,防级联误报)+ 7 正例(防过度拒绝)+ 白名单 4 例 + T1.1 合法样例全量过双层校验;另落实 schema 契约中的祖先约束(工作流级 outputs 豁免)与 tool.inputs 引用形态钉死(每个 {{ 必须是合法完整引用)
-- [ ] T1.3 MySQL 迁移 v1(全部表)— M — 依赖 T1.1 — 验收:`migrate up/down` 幂等;表含 outbox、audit_log(分区键 + prev_hash + append-only)、node 输入快照、attempt、version 乐观锁、workflow 定义版本钉住;**parallel/fan-in 预留**(汇聚行确定性排序字段或等价设计说明)
+- [x] T1.3 MySQL 迁移 v1(全部表)— M — 依赖 T1.1 — 验收:`migrate up/down` 幂等;表含 outbox、audit_log(分区键 + prev_hash + append-only)、node 输入快照、attempt、version 乐观锁、workflow 定义版本钉住;**parallel/fan-in 预留**(汇聚行确定性排序字段或等价设计说明)— ✅ 2026-09-21:3 视角独立设计 + 评审合成 + 6 视角对抗审计(51 发现,blocking/high 经双反驳验证:8 confirmed/4 disputed/0 refuted),全部修复;真 MySQL 8.0.46 容器验证 up/up/down/down/up 幂等 + 结构契约断言(15 分区、NOT NULL 修复锚、6 CHECK、对账索引);雪花 ID/DATETIME(3) UTC/ENUM 末尾追加/日分区 no-MAXVALUE;fan-in 预留 = uk_node_exec(execution_id,node_id) 汇聚按 node_id 字典序读前驱输出
 - [ ] T1.4 开发环境 compose — S — 验收:一条命令起 MySQL + Redis×2(队列实例 noeviction + AOF everysec,缓存实例 allkeys-lru)+ Asynqmon(仅内网)
 
 ## M2 引擎内核(约 2 周)
@@ -23,7 +23,7 @@
 - [ ] T2.2 outbox 同事务写入 + relay 投递 — M — 依赖 T2.1 — 验收:**判别性故障测试**——状态写入后、outbox 写入前注入失败(断连/panic),断言两写同事务回滚;relay 标记成功前 kill -9 relay,重启后同事件重投递且下游幂等
 - [ ] T2.3 Asynq 执行器(MaxRetry=1、确定性 TaskID、attempt 记录)— M — 依赖 T2.2 — 验收:重复投递被 ErrTaskIDConflict 收敛,attempt 落库
 - [ ] T2.4 DAG 调度器(入度推进、**桩谓词路由**、执行完成回写)— M — 依赖 T2.3 — 验收:入度推进单测(多前驱、跳过分支);branch 用显式布尔字段路由,完整求值在 T3.4
-- [ ] T2.5 reconciler(超时扫描、幂等重入队或标 FAILED、Redis 锁选主)— M — 依赖 T2.2 — 验收:kill -9 worker 中途 + 断 Redis 30s,**扫描间隔×3 内 execution 无人工干预达 SUCCEEDED/FAILED 终态**
+- [ ] T2.5 reconciler(超时扫描、幂等重入队或标 FAILED、Redis 锁选主)— M — 依赖 T2.2 — 验收:kill -9 worker 中途 + 断 Redis 30s,**扫描间隔×3 内 execution 无人工干预达 SUCCEEDED/FAILED 终态**;reaper 兼任 audit_log 分区水位作业(≥7 天未来分区预建 ADD PARTITION、超保留期整分区 DROP——T1.3 审计确认承载)
 - [ ] T2.6 最小同步审计写入器(直写 audit_log:触发者、attempt、事件类型;trace_id 字段占位)— S — 依赖 T2.1 — 验收:每次节点状态迁移产生对应审计行
 
 里程碑验收:桩 LLM + 桩谓词端到端跑通「LLM → branch → LLM」,全程审计行可查。
@@ -56,7 +56,7 @@
 
 ## M6 审计与观测(约 1.5 周)
 
-- [ ] T6.1 审计写入器升级:异步批量、PII 脱敏钩子、保留期配置、prev_hash 占位 — M — 依赖 T2.6 — 验收:脱敏钩子对标记字段生效;批量写无丢失(对账单测)
+- [ ] T6.1 审计写入器升级:异步批量、PII 脱敏钩子、保留期配置、prev_hash 占位 — M — 依赖 T2.6 — 验收:脱敏钩子对标记字段生效;批量写无丢失(对账单测);批量写契约 = `INSERT..ON DUPLICATE KEY UPDATE id=id` + affected-rows 与期望行数比对(禁 INSERT IGNORE——分区越界/截断会被静默降级,T1.3 审计确认)
 - [ ] T6.2 OTel 贯穿(API → worker → LLM/工具)— M — 依赖 T6.1、T3.1、T3.2 — 验收:API 触发一次执行,audit_log 行 trace_id 与本次 trace 一致且可按其查询;审批挂起 → 续跑经 **trace link** 关联
 - [ ] T6.3 审计查询 API(按 execution/trace/人过滤)— S — 依赖 T6.1 — 验收:三种过滤维度集成测试
 - [ ] T6.4 Prometheus 指标 + 告警规则(死信、审批积压、卡死节点、429 率、队列 Redis 内存水线)— M — 依赖 T4.1、T3.1 — 验收:promtool test rules 通过;注入死信/审批挂起后指标计数断言
@@ -65,8 +65,8 @@
 
 - [ ] T7.1 配置体系(连接池上限、审计保留期、各类超时全配置化)+ 部署文档配额表 — M — 依赖 M6 — 验收:改配置 → 行为变化单测(池上限生效)
 - [ ] T7.2 tiktoken 离线 loader + 词表随安装包 + 启动预构建 tokenizer — M — 依赖 T3.1 — 验收:断网环境冷启动成功,首个 LLM 节点不触发任何外网请求
-- [ ] T7.3 安装自检(Redis 策略/AOF、词表、迁移版本)— M — 依赖 T7.2 — 验收:错误配置下拒绝启动并输出修复提示
-- [ ] T7.4 交付 compose 定稿 + 升级手册(golang-migrate + N-1 兼容窗口)— S — 依赖 T7.1 — 验收:对上一版本数据卷完成一次升级演练
+- [ ] T7.3 安装自检(Redis 策略/AOF、词表、迁移版本)— M — 依赖 T7.2 — 验收:错误配置下拒绝启动并输出修复提示;含 audit_log 分区水位自检(INFORMATION_SCHEMA.PARTITIONS,不足拒绝启动)与业务账号对 audit_log 无 UPDATE/DELETE 权限断言(append-only 强制)
+- [ ] T7.4 交付 compose 定稿 + 升级手册(golang-migrate + N-1 兼容窗口)— S — 依赖 T7.1 — 验收:对上一版本数据卷完成一次升级演练;含 dirty 中断恢复 runbook(migrate force → 修复 → re-up;迁移对象全 IF NOT EXISTS,重跑安全)
 
 ## M8 验收(约 1 周)
 
