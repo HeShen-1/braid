@@ -1,0 +1,21 @@
+# T1.3 迁移验证用最小栈(仅 MySQL)。
+# T1.4 将在 dev.docker-compose.yml 扩展为完整开发栈(MySQL + Redis×2 队列/缓存 + Asynqmon),
+# 服务命名、healthcheck、回环端口绑定姿势与此处保持一致。
+# 用法:docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: braid-t13-mysql
+    ports:
+      - "127.0.0.1:13306:3306" # 仅绑回环,不暴露局域网
+    environment:
+      # 本地一次性验证容器的占位凭证,非任何真实系统凭证;T1.4 起挪到 .env 注入。
+      MYSQL_ROOT_PASSWORD: braid_dev_root
+      MYSQL_DATABASE: braid
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-pbraid_dev_root"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/mysql # 测试数据不落盘,down 即清,重复验证始终全新库
