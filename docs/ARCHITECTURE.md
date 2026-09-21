@@ -75,6 +75,7 @@
 - 凭证:per-call 短时 scoped token;平台主凭证(DB/LLM key)永不进沙箱环境、永不落审计。
 - SSRF 三层修(P0):DSL 层 host 静态白名单(LLM 只填 path/query);运行时 `net.Dialer.Control` 在拨号瞬间复核实际 IP(拒私网/环回/链路本地/CGNAT/metadata 段,防 DNS rebinding TOCTOU)+ `CheckRedirect` 每跳重校验并剥 Authorization/Cookie + 仅 https;网络层 egress 默认拒绝代理 P1。
 - 插件:P0 内部 registry;P1 工具包签名 + MCP 双向。
+- 内置工具 P0:http + file_read(路径白名单);db_query 移 P1(只读账号、参数化、凭证作用域)。
 
 ### 3.5 审计
 
@@ -90,17 +91,17 @@
 ## 4. P0 里程碑(建议顺序)
 
 1. **契约先行**:DSL JSON Schema + 全部表结构(outbox、审计分区键、prev_hash、attempt、输入快照)。
-2. **引擎内核**:状态机 + CAS 迁移 + outbox relay + reconciler + Asynq 执行器(MaxRetry=1)。
+2. **引擎内核**:状态机 + CAS 迁移 + outbox relay + reconciler + Asynq 执行器(MaxRetry=1)+ 最小同步审计写入器(触发者/attempt;M6 再升级为异步批量)。
 3. **节点**:LLM(重试/幂等/usage 台账)+ 工具(registry + HTTP SSRF 防护)+ 条件分支。
 4. **审批**:挂起/续跑(确定性 TaskID)/超时升级 + Web 审批页 + SMTP。
-5. **用户/RBAC/JWT**。
-6. **审计查询 API + OTel 贯穿 + Prometheus 告警集**(死信、审批积压、卡死节点、429 率)。
+5. **用户/RBAC/JWT + API 层**:definition CRUD(草稿/发布/版本,发布时工具白名单校验)+ execution 触发/查询。
+6. **审计异步批量/脱敏/保留期 + 查询 API + OTel 贯穿 + Prometheus 告警集**(死信、审批积压、卡死节点、429 率、队列 Redis 内存水线)。
 7. **compose 交付** + golang-migrate + 安装自检(Redis 策略、词表、tokenizer 预构建、连接池上限全配置化)。
-8. **故障注入测试**(CI 化):worker 中途 kill、Redis 断连、审批 enqueue 失败、双投递——耐久性承诺的核心证明。
+8. **故障注入测试**(CI 化):worker 中途 kill、Redis 断连、审批 enqueue 失败、双投递——耐久性承诺的核心证明。端到端验收场景:经 definition/execution API 触发,文件路径输入 → file_read → LLM 解析 → 合规审查 → 摘要 → 人工审批 → 报告。
 
 ## 5. P1
 
-画布(React Flow 候选)、并行节点、回滚/断点续跑 UI、容器沙箱 + egress 代理、MCP 双向、审计哈希链、会签、OIDC/LDAP、IM 审批卡片、工具包签名、Helm、SaaS 多租户。
+画布(React Flow 候选)、并行节点、回滚/断点续跑 UI、容器沙箱 + egress 代理、MCP 双向、审计哈希链、会签、OIDC/LDAP、IM 审批卡片、工具包签名、Helm、SaaS 多租户、完整 taint 追踪、db_query 内置工具(只读账号/参数化/凭证作用域)。
 
 ## 附:审计事实链(设计依据)
 
