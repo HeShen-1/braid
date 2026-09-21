@@ -12,7 +12,7 @@
 
 ## 约定
 
-- 目录规划:`cmd/`(api | worker | relay | reaper,同一二进制多入口)、`internal/`(engine | nodes | tools | audit | auth | api | config)、`migrations/`、`deploy/`、`docs/`。可开源核心(engine)与企业增值(enterprise)物理分层,不得交叉 import。
+- 目录规划:`cmd/`(api | worker | relay | reaper,同一二进制多入口)、`internal/`(engine | outbox | relay | snowflake | nodes | tools | audit | auth | api | config | db | redistest)、`migrations/`、`deploy/`、`docs/`。可开源核心(engine)与企业增值(enterprise)物理分层,不得交叉 import。
 - commit:conventional commits,英文主题(feat/fix/docs/test/chore/refactor);代码任务走 `feat/<task-id>` 分支,纯文档可直接进 master。
 - 测试:表驱动,`go test ./...` 全绿 + `golangci-lint run` 零告警才算任务完成。
 - 文档中文;代码与 commit 英文。
