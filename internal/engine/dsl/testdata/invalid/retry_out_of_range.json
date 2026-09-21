@@ -1,0 +1,13 @@
+{
+  "dsl": "1.0",
+  "name": "retry-out-of-range",
+  "$comment": "非法:retry.max_attempts 超出 [1,10]",
+  "nodes": [
+    {
+      "id": "greet",
+      "type": "llm",
+      "prompt": { "template": "你好。" },
+      "retry": { "max_attempts": 11 }
+    }
+  ]
+}

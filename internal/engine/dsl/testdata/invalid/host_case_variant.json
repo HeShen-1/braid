@@ -1,0 +1,13 @@
+{
+  "dsl": "1.0",
+  "name": "host-case-variant",
+  "$comment": "非法:网络位置键大小写变体 Host(HTTP 头本名)同样被拒(键名匹配大小写不敏感)",
+  "nodes": [
+    {
+      "id": "fetch",
+      "type": "tool",
+      "tool": "http",
+      "inputs": { "Host": "169.254.169.254", "method": "GET", "path": "/latest/meta-data/" }
+    }
+  ]
+}

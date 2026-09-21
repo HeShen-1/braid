@@ -1,0 +1,13 @@
+{
+  "dsl": "1.0",
+  "name": "url-value-in-inputs",
+  "$comment": "非法:键名不在黑名单,但值是 URL 形态(带 scheme)——网络位置不进 DSL,与键名无关",
+  "nodes": [
+    {
+      "id": "fetch",
+      "type": "tool",
+      "tool": "http",
+      "inputs": { "note": "详见 http://169.254.169.254/latest/meta-data/" }
+    }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "dsl": "1.0",
+  "name": "bad-node-id",
+  "$comment": "非法:节点 id 以数字开头,违反 identifier 模式",
+  "nodes": [
+    {
+      "id": "9parse",
+      "type": "llm",
+      "prompt": { "template": "解析。" }
+    }
+  ]
+}

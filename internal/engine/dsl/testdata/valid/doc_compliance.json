@@ -1,0 +1,130 @@
+{
+  "dsl": "1.0",
+  "name": "doc-compliance-review",
+  "description": "文档读取 → 解析 → 合规审查 → 摘要 → 人工审批 → 分支 → 报告",
+  "metadata": {
+    "canvas": {
+      "nodes": {
+        "read_doc": { "position": { "x": 40, "y": 120 } },
+        "parse": { "position": { "x": 260, "y": 120 } },
+        "compliance": { "position": { "x": 480, "y": 120 } },
+        "summary": { "position": { "x": 700, "y": 120 } },
+        "human_review": { "position": { "x": 920, "y": 120 } },
+        "verdict": { "position": { "x": 1140, "y": 120 } },
+        "report": { "position": { "x": 1580, "y": 40 } },
+        "report_revision": { "position": { "x": 1360, "y": 200 } }
+      },
+      "viewport": { "x": 0, "y": 0, "zoom": 0.8 }
+    }
+  },
+  "inputs": [
+    { "name": "doc_path", "type": "string", "required": true, "description": "待审查文档的路径" }
+  ],
+  "nodes": [
+    {
+      "id": "read_doc",
+      "type": "tool",
+      "title": "读取文档",
+      "tool": "file_read",
+      "inputs": { "path": "{{inputs.doc_path}}" },
+      "outputs": { "content": "string" },
+      "retry": { "max_attempts": 3 }
+    },
+    {
+      "id": "parse",
+      "type": "llm",
+      "title": "文档解析",
+      "model": "gpt-4o-mini",
+      "prompt": {
+        "system": "你是严谨的文档解析助手。",
+        "template": "解析下述文档,提取关键事实与结构。",
+        "user_data": [{ "name": "document", "ref": "{{nodes.read_doc.output.content}}" }]
+      },
+      "response_format": "json",
+      "outputs": { "facts": "array", "kind": "string" },
+      "retry": { "max_attempts": 2 }
+    },
+    {
+      "id": "compliance",
+      "type": "llm",
+      "title": "合规审查",
+      "prompt": {
+        "system": "你是合规审查员,依据公司制度给出结论。",
+        "template": "对以下事实执行合规审查,输出 verdict(pass|warn|fail)与理由。",
+        "user_data": [{ "name": "facts", "ref": "{{nodes.parse.output.facts}}" }]
+      },
+      "response_format": "json",
+      "outputs": { "verdict": "string", "reason": "string" }
+    },
+    {
+      "id": "summary",
+      "type": "llm",
+      "title": "摘要生成",
+      "max_tokens": 2048,
+      "temperature": 0.2,
+      "prompt": {
+        "template": "基于审查结论生成 200 字摘要。",
+        "user_data": [{ "name": "review", "ref": "{{nodes.compliance.output.verdict}}" }]
+      },
+      "outputs": { "text": "string" }
+    },
+    {
+      "id": "human_review",
+      "type": "approval",
+      "title": "人工审核",
+      "approvers": ["alice", "bob"],
+      "mode": "any",
+      "timeout_hours": 72,
+      "on_timeout": "escalate",
+      "instructions": "请审核摘要与合规结论;驳回请填写理由。",
+      "outputs": { "decision": "string", "comment": "string" }
+    },
+    {
+      "id": "verdict",
+      "type": "branch",
+      "title": "按审批结论分流",
+      "cases": [
+        { "when": { "left": "{{nodes.human_review.output.decision}}", "op": "eq", "right": "approved" }, "next": "report" }
+      ],
+      "default": "report_revision"
+    },
+    {
+      "id": "report_revision",
+      "type": "llm",
+      "title": "修订建议",
+      "prompt": {
+        "template": "审核被驳回,基于摘要与驳回意见生成修订建议。",
+        "user_data": [{ "name": "summary", "ref": "{{nodes.summary.output.text}}" }]
+      },
+      "outputs": { "text": "string" }
+    },
+    {
+      "id": "report",
+      "type": "llm",
+      "title": "最终报告",
+      "prompt": {
+        "system": "你是报告撰写者。",
+        "template": "汇总摘要与审核结论,生成最终报告。",
+        "user_data": [
+          { "name": "summary", "ref": "{{nodes.summary.output.text}}" },
+          { "name": "decision", "ref": "{{nodes.human_review.output.decision}}" }
+        ]
+      },
+      "outputs": { "text": "string" }
+    }
+  ],
+  "edges": [
+    { "from": "read_doc", "to": "parse" },
+    { "from": "parse", "to": "compliance" },
+    { "from": "compliance", "to": "summary" },
+    { "from": "summary", "to": "human_review" },
+    { "from": "human_review", "to": "verdict" },
+    { "from": "verdict", "to": "report" },
+    { "from": "verdict", "to": "report_revision" },
+    { "from": "report_revision", "to": "report" }
+  ],
+  "outputs": {
+    "report": "{{nodes.report.output.text}}",
+    "revision": "{{nodes.report_revision.output.text}}"
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "dsl": "1.0",
+  "name": "nested-host",
+  "$comment": "非法:网络位置键藏在嵌套对象里也被拒(黑名单递归生效)",
+  "nodes": [
+    {
+      "id": "fetch",
+      "type": "tool",
+      "tool": "http",
+      "inputs": {
+        "method": "GET",
+        "path": "/latest/meta-data/",
+        "options": { "remote_host": "10.0.0.5" }
+      }
+    }
+  ]
+}

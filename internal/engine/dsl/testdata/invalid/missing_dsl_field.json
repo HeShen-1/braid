@@ -1,0 +1,11 @@
+{
+  "name": "missing-dsl-field",
+  "$comment": "非法:缺少顶层必填字段 dsl",
+  "nodes": [
+    {
+      "id": "greet",
+      "type": "llm",
+      "prompt": { "template": "你好。" }
+    }
+  ]
+}
