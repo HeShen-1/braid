@@ -4,9 +4,9 @@ import (
 	"database/sql"
 	"testing"
 
+	_ "github.com/go-sql-driver/mysql"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
-	_ "github.com/go-sql-driver/mysql"
 )
 
 // testBaseDSN 指向 deploy/migrate-test.docker-compose.yml 起的验证容器
@@ -196,15 +196,38 @@ func TestSchemaContract(t *testing.T) {
 
 func TestCanonicalDSN(t *testing.T) {
 	base := "root:p@tcp(127.0.0.1:3306)/braid"
-	want := base + "?loc=UTC&parseTime=true&multiStatements=true"
+	want := base + "?loc=UTC&parseTime=true&multiStatements=true&time_zone=%27%2B00%3A00%27"
 	if got := CanonicalDSN(base); got != want {
 		t.Fatalf("CanonicalDSN = %q, want %q", got, want)
 	}
 	if got := CanonicalDSN(want); got != want {
 		t.Fatalf("CanonicalDSN 幂等失败: %q", got)
 	}
-	partial := "root:p@tcp(127.0.0.1:3306)/braid?loc=UTC"
-	if got := CanonicalDSN(partial); got != partial {
-		t.Fatalf("已带参数的 DSN 不应改写: %q", got)
+	// 逐参数补齐:只补缺的,不覆盖调用方显式给的
+	partial := "root:p@tcp(127.0.0.1:3306)/braid?loc=Local"
+	wantPartial := partial + "&parseTime=true&multiStatements=true&time_zone=%27%2B00%3A00%27"
+	if got := CanonicalDSN(partial); got != wantPartial {
+		t.Fatalf("部分参数 DSN: got %q, want %q", got, wantPartial)
+	}
+}
+
+// 连接契约钉死:会话时区必须 '+00:00'。DATETIME 存字面值、NOW(3) 按会话时区求值
+// (DDL 文件头);缺此断言时「非 UTC 的 mysqld 上库端时间全体漂移」仍全绿——
+// T2.1 对抗审计发现该契约此前只靠容器系统时区碰巧 UTC 成立。
+func TestConnectionContractTimeZone(t *testing.T) {
+	d := mustSQL(t)
+	var tz string
+	if err := d.QueryRow("SELECT @@session.time_zone").Scan(&tz); err != nil {
+		t.Fatalf("session time_zone: %v", err)
+	}
+	if tz != "+00:00" {
+		t.Fatalf("@@session.time_zone=%q, want '+00:00'", tz)
+	}
+	var eq int
+	if err := d.QueryRow("SELECT NOW(3) = UTC_TIMESTAMP(3)").Scan(&eq); err != nil {
+		t.Fatalf("now vs utc: %v", err)
+	}
+	if eq != 1 {
+		t.Fatalf("NOW(3) ≠ UTC_TIMESTAMP(3):会话时区违约,库端时间非 UTC")
 	}
 }
