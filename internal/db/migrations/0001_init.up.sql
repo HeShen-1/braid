@@ -12,7 +12,7 @@
 --   + 12bit 序列)。否决自增:①确定性 Asynq TaskID 与 attempt 幂等键要求在事务提交前引用行 ID;
 --   ②audit_log 分区主键 (exec_date,id) 中 id 非首列,与自增列必须为某索引首列的规则不相容;
 --   ③雪花近似时序白拿 outbox relay FIFO、审计链行序、游标分页三个查询形态。
---   worker_id P0 = compose 容器槽位静态配置(T7.1);时钟回拨 = 生成器阻塞等待 + NTP 偏移监控
+--   worker_id P0 = compose 容器槽位静态配置(T7.1);时钟回拨 = 生成器有界阻塞(≤2s)+ 超限快速失败 + NTP 偏移监控
 --   告警;lease 式自动分配进 P1 停车场。
 -- 枚举:ENUM 只允许「末尾追加」(尾部追加的 ENUM MODIFY 为 INSTANT/仅元数据);禁止重排/改名/
 --   复用已废弃值。开放词表(event_type/error_code/actor_type)用 VARCHAR —— 演进快于 DDL,

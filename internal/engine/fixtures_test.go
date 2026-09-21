@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"os"
 	"reflect"
 	"sync/atomic"
 	"testing"
@@ -13,10 +14,12 @@ import (
 	"braid/internal/db/sqltest"
 )
 
-// idGen:进程唯一假 Snowflake。基座 = 启动时刻(右移腾位)+ 单调计数,
-// 跨测试运行不撞(每次进程启动基座不同),进程内不撞(计数唯一)。
+// idGen:进程唯一假 Snowflake。基座 = 启动时刻(右移腾位)异或 PID + 单调
+// 计数:进程内不撞(计数唯一);跨测试**包**并行(go test ./... 多二进制共享
+// braid_engine_test)不撞——纯时间基座在两二进制同 ~1ms 桶启动时会同基座,
+// PID 熵消除该碰撞;跨测试运行不撞(启动时刻不同)。
 var (
-	idBase = uint64(time.Now().UnixNano()>>20) << 16
+	idBase = uint64(time.Now().UnixNano()>>20)<<16 ^ uint64(os.Getpid())<<36
 	idCtr  atomic.Uint64
 )
 

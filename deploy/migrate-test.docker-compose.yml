@@ -1,5 +1,5 @@
-# T1.3 迁移验证用最小栈(仅 MySQL)。
-# T1.4 将在 dev.docker-compose.yml 扩展为完整开发栈(MySQL + Redis×2 队列/缓存 + Asynqmon),
+# T1.3 迁移验证用最小栈(MySQL;T2.2 起加测试 Redis)。
+# T1.4 在 dev.docker-compose.yml 扩展为完整开发栈(MySQL + Redis×2 队列/缓存 + Asynqmon),
 # 服务命名、healthcheck、回环端口绑定姿势与此处保持一致。
 # 用法:docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d
 services:
@@ -9,7 +9,8 @@ services:
     ports:
       - "127.0.0.1:13306:3306" # 仅绑回环,不暴露局域网
     environment:
-      # 本地一次性验证容器的占位凭证,非任何真实系统凭证;T1.4 起挪到 .env 注入。
+      # 本地一次性验证容器的占位凭证,非任何真实系统凭证(t13 与 dev 栈刻意
+      # 分离:此栈 down 即清,凭证不进 .env)。
       MYSQL_ROOT_PASSWORD: braid_dev_root
       MYSQL_DATABASE: braid
     healthcheck:
@@ -19,3 +20,30 @@ services:
       retries: 30
     tmpfs:
       - /var/lib/mysql # 测试数据不落盘,down 即清,重复验证始终全新库
+
+  redis-queue:
+    # T2.2 relay 测试用队列实例(端口沿 13306 的 1xxxx 编码惯例)。镜像与
+    # noeviction 策略和 dev 栈队列实例同款(逐出会静默丢任务,语义保真);
+    # 持久化刻意关闭——t13 的契约是「down 即清、每次全新」,AOF 只拖慢测试,
+    # 任务状态真相源在 MySQL 不在 Redis。
+    image: redis:7.4
+    container_name: braid-t13-redis-queue
+    command:
+      - redis-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      - "127.0.0.1:16379:6379" # 仅绑回环
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /data
