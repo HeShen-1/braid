@@ -48,7 +48,7 @@ func scanStringRefs(s string) (refs []Ref, bad []string) {
 		if m != nil && m[0] == 0 { // 合法引用恰从 j 开始
 			r := Ref{Text: s[j : j+m[1]]}
 			if g := m[2]; g >= 0 {
-				r.Kind, r.Name = "input", s[j+g : j+m[3]]
+				r.Kind, r.Name = "input", s[j+g:j+m[3]]
 			} else {
 				r.Kind, r.Name, r.Field = "node", s[j+m[4]:j+m[5]], s[j+m[6]:j+m[7]]
 			}
