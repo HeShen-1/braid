@@ -1,0 +1,92 @@
+# braid 开发栈(T1.4):MySQL + Redis×2(队列/缓存物理分离,见 ARCHITECTURE.md §2)+ Asynqmon。
+# 用法:
+#   首次:cp deploy/.env.example deploy/.env   # 根 .gitignore 的 `.env` 模式匹配任意层级,不会入库
+#   起栈:docker compose -f deploy/dev.docker-compose.yml up -d
+# 姿势对齐 migrate-test.docker-compose.yml:仅绑回环、healthcheck、凭证走 env 文件。
+# 端口:开发常用标准端口且全部仅绑回环;与迁移验证栈 braid-t13(127.0.0.1:13306)不冲突,两栈可并行。
+name: braid-dev
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: braid-dev-mysql
+    ports:
+      - "127.0.0.1:3306:3306" # 仅绑回环,不暴露局域网
+    env_file: .env # deploy/.env(相对 compose 文件目录解析);缺失时起栈直接报错
+    environment:
+      MYSQL_DATABASE: braid # 库名非凭证,钉在 compose 保证连接 DSN 确定性
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -uroot -p\"$${MYSQL_ROOT_PASSWORD}\""]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - mysql-data:/var/lib/mysql # 开发数据落盘保留;重置栈:docker compose … down -v
+
+  redis-queue:
+    # 队列实例(Asynq 载体):noeviction 是硬要求——逐出会静默丢任务(Sidekiq #5712 / BullMQ #2737,
+    # 见 ARCHITECTURE.md 附录);AOF everysec(官方承认 ~1s 丢失窗;任务状态真相源在 MySQL,此处仅队列)。
+    # maxmemory 到顶后写入响亮失败,不做逐出。
+    image: redis:7.4
+    container_name: braid-dev-redis-queue
+    command:
+      - redis-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    volumes:
+      - redis-queue-data:/data # AOF 落盘
+
+  redis-cache:
+    # 热缓存实例:allkeys-lru(缓存丢失可重建),不持久化。与队列实例物理分离,防缓存压力逐出任务。
+    image: redis:7.4
+    container_name: braid-dev-redis-cache
+    command:
+      - redis-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - allkeys-lru
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+    ports:
+      - "127.0.0.1:6380:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  asynqmon:
+    # Asynq Web UI:只连队列实例(经 compose 内网服务名,不走宿主端口);无认证 UI,仅绑回环。
+    # 钉 digest(内容 = 0.7.2,revision d1b8894):国内镜像源对版本 tag 路径 403,digest 拉取可用且更确定。
+    image: hibiken/asynqmon@sha256:ac80bcffd2f9da20d15a8512fc96287e91e13558ad8718df367f0a0e0d0eda81
+    container_name: braid-dev-asynqmon
+    command:
+      - --redis-addr
+      - redis-queue:6379
+      - --port
+      - "8080"
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      redis-queue:
+        condition: service_healthy
+
+volumes:
+  mysql-data:
+  redis-queue-data:

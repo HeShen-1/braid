@@ -15,7 +15,7 @@
 - [x] T1.1 DSL JSON Schema v1 — S — 验收:≥5 合法 + ≥5 非法样例校验测试通过;覆盖 llm/tool/branch/approval 四种节点、`{{nodes.<id>.output.<field>}}` 引用、画布元数据预留;prompt 模板与用户数据**分离标注字段**(未标注 = 非法样例);HTTP 工具 host 由白名单配置提供,**DSL 不允许填 host**(非法样例覆盖)— ✅ 2026-09-21:6 合法 + 16 非法样例,非法样例按拒绝原因锁定;经 3 视角对抗审查修复 15 项发现(引用形态钉死、host 黑名单递归+大小写不敏感+URL/IPv4 值禁令、基数帽、会签枚举收窄)
 - [x] T1.2 Go DSL 解析器 + DAG 校验 — M — 依赖 T1.1 — 验收:环检测、悬空引用、引用类型不匹配、inputs/user_data/节点 id 重名、branch 出边与 cases[].next ∪ {default} 目标一致、**发布时工具白名单校验**(引用未注册/未白名单工具的 DSL 发布被拒)均有单测 — ✅ 2026-09-21:29 负例(按发现码集合精确断言,防级联误报)+ 7 正例(防过度拒绝)+ 白名单 4 例 + T1.1 合法样例全量过双层校验;另落实 schema 契约中的祖先约束(工作流级 outputs 豁免)与 tool.inputs 引用形态钉死(每个 {{ 必须是合法完整引用)
 - [x] T1.3 MySQL 迁移 v1(全部表)— M — 依赖 T1.1 — 验收:`migrate up/down` 幂等;表含 outbox、audit_log(分区键 + prev_hash + append-only)、node 输入快照、attempt、version 乐观锁、workflow 定义版本钉住;**parallel/fan-in 预留**(汇聚行确定性排序字段或等价设计说明)— ✅ 2026-09-21:3 视角独立设计 + 评审合成 + 6 视角对抗审计(51 发现,blocking/high 经双反驳验证:8 confirmed/4 disputed/0 refuted),全部修复;真 MySQL 8.0.46 容器验证 up/up/down/down/up 幂等 + 结构契约断言(15 分区、NOT NULL 修复锚、6 CHECK、对账索引);雪花 ID/DATETIME(3) UTC/ENUM 末尾追加/日分区 no-MAXVALUE;fan-in 预留 = uk_node_exec(execution_id,node_id) 汇聚按 node_id 字典序读前驱输出
-- [ ] T1.4 开发环境 compose — S — 验收:一条命令起 MySQL + Redis×2(队列实例 noeviction + AOF everysec,缓存实例 allkeys-lru)+ Asynqmon(仅内网)
+- [x] T1.4 开发环境 compose — S — 验收:一条命令起 MySQL + Redis×2(队列实例 noeviction + AOF everysec,缓存实例 allkeys-lru)+ Asynqmon(仅内网)— ✅ 2026-09-21:deploy/dev.docker-compose.yml(name: braid-dev)四容器一条命令全起且 healthy;redis-cli 实测队列 noeviction/appendonly yes/appendfsync everysec、缓存 allkeys-lru/256mb/无持久化;四端口(3306/6379/6380/8080)全部仅 127.0.0.1 绑定;Asynqmon /api/queues 实读队列实例;缺 deploy/.env 起栈响亮报错;与 braid-t13(13306)并行无冲突;asynqmon 钉 digest(内容 = 0.7.2,镜像源版本 tag 403)
 
 ## M2 引擎内核(约 2 周)
 

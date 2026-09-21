@@ -21,7 +21,7 @@
 
 - 测试:`go test ./...`
 - Lint:`golangci-lint run`
-- 本地栈:`docker compose -f deploy/dev.docker-compose.yml up -d`
+- 本地栈:首次 `cp deploy/.env.example deploy/.env`;之后 `docker compose -f deploy/dev.docker-compose.yml up -d`(MySQL 3306 / Redis 队列 6379、缓存 6380 / Asynqmon 8080,均仅绑回环;重置数据 `down -v`)
 
 ## 会话交接
 
