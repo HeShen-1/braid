@@ -19,7 +19,7 @@
 
 ## M2 引擎内核(约 2 周)
 
-- [ ] T2.1 状态机 + MySQL CAS 迁移 — M — 依赖 M1 — 验收:并发单测,两 worker 抢同一节点仅一个成功;**每次状态迁移写入输入快照,任意节点可从快照复现输入**(单测)
+- [x] T2.1 状态机 + MySQL CAS 迁移 — M — 依赖 M1 — 验收:并发单测,两 worker 抢同一节点仅一个成功;**每次状态迁移写入输入快照,任意节点可从快照复现输入**(单测)— ✅ 2026-09-21:internal/engine(states/errors/dbtx/nodecas/wfcas/attempt/snapshot);链路 = 3 视角独立设计 → 评审合成 → 6 视角对抗审计(去重 17 发现,blocking/high 双反驳:4 confirmed(其中 3 条同根因)/0 disputed/0 refuted,修复全落地);并发证据链 = 确定性双连接(A 提交/回滚双裁决)+ 阻塞证明(败方 UPDATE 在胜方持锁期不返回)+ N 路 barrier(2/4/8)恰一胜 + 同 status 同 version 双提交恰一胜(单独证明 version 列仲裁);快照 = 全状态矩阵后逐行全称断言(语义深比较 + 读回确定性);ENUM 词表含序钉死(末尾追加契约);审计修复 = 败方复查 SELECT 改 FOR UPDATE 当前读(RR read view 会污染 Observed)、CanonicalDSN 补 time_zone='+00:00' 会话半边契约 + 钉死测试(此前靠容器系统时区碰巧 UTC)、TouchExecution 同毫秒幂等 bump(changed-rows=0 ≠ 缺行)、变异验证加固清列/version 谓词断言
 - [ ] T2.2 outbox 同事务写入 + relay 投递 — M — 依赖 T2.1 — 验收:**判别性故障测试**——状态写入后、outbox 写入前注入失败(断连/panic),断言两写同事务回滚;relay 标记成功前 kill -9 relay,重启后同事件重投递且下游幂等
 - [ ] T2.3 Asynq 执行器(MaxRetry=1、确定性 TaskID、attempt 记录)— M — 依赖 T2.2 — 验收:重复投递被 ErrTaskIDConflict 收敛,attempt 落库
 - [ ] T2.4 DAG 调度器(入度推进、**桩谓词路由**、执行完成回写)— M — 依赖 T2.3 — 验收:入度推进单测(多前驱、跳过分支);branch 用显式布尔字段路由,完整求值在 T3.4

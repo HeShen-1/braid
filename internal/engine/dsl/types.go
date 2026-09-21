@@ -125,7 +125,7 @@ type BranchNode struct {
 // BranchCase 单路路由:when 命中则走 next。
 type BranchCase struct {
 	When Condition `json:"when"`
-	Next  string   `json:"next"`
+	Next string    `json:"next"`
 }
 
 // Condition 谓词:Left 为纯引用;Right 可缺省(exists),可为字面量或纯引用字符串。
