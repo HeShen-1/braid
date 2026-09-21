@@ -1,0 +1,319 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://braid.dev/dsl/v1.json",
+  "title": "braid workflow DSL v1.0",
+  "description": "braid 工作流定义 DSL。结构合法性归本 Schema;语义校验由 T1.2 解析器实现:环检测、悬空引用、引用类型、引用必须是祖先节点、inputs/user_data/节点 id 重名检测、branch 出边集合与 cases[].next ∪ {default} 目标一致、发布时工具白名单。引用位置规则:纯引用位置(workflow outputs、branch.when.left、user_data.ref)必须是单一引用;tool.inputs 的值内允许嵌入式 {{inputs.*}} 引用。tool.inputs 的键名黑名单与 URL/IPv4 值禁令只是启发式第一网,权威门禁 = 发布时按工具 input schema 校验(T5.4)+ 运行时 Dialer.Control(T3.3)。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["dsl", "name", "nodes"],
+  "properties": {
+    "$comment": { "type": "string", "maxLength": 2000 },
+    "dsl": {
+      "const": "1.0",
+      "description": "DSL 语法版本。与 workflow 定义版本(workflow_definitions 表)是两回事。"
+    },
+    "name": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,63}$"
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "metadata": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "canvas": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "画布元数据预留(P1 画布直接消费,引擎忽略)。",
+          "properties": {
+            "nodes": {
+              "type": "object",
+              "maxProperties": 512,
+              "propertyNames": { "$ref": "#/$defs/identifier" },
+              "additionalProperties": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["position"],
+                "properties": {
+                  "position": { "$ref": "#/$defs/point" }
+                }
+              }
+            },
+            "viewport": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["x", "y", "zoom"],
+              "properties": {
+                "x": { "type": "number" },
+                "y": { "type": "number" },
+                "zoom": { "type": "number", "minimum": 0.1, "maximum": 4 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "inputs": {
+      "type": "array",
+      "maxItems": 64,
+      "description": "工作流触发参数声明。触发值属不可信数据:在 prompt 中只能经 user_data 进入;可在 branch.when.left 与 tool.inputs 值中直接引用。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "type"],
+        "properties": {
+          "name": { "$ref": "#/$defs/identifier" },
+          "type": { "enum": ["string", "number", "boolean", "object", "array"] },
+          "required": { "type": "boolean", "default": false },
+          "description": { "type": "string", "maxLength": 500 }
+        }
+      }
+    },
+    "edges": {
+      "type": "array",
+      "maxItems": 512,
+      "description": "控制流边。from/to 指向的节点存在性与 branch 路由一致性由 T1.2 校验。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["from", "to"],
+        "properties": {
+          "from": { "$ref": "#/$defs/identifier" },
+          "to": { "$ref": "#/$defs/identifier" },
+          "label": { "type": "string", "maxLength": 100 }
+        }
+      }
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 512,
+      "items": { "$ref": "#/$defs/node" }
+    },
+    "outputs": {
+      "type": "object",
+      "maxProperties": 128,
+      "description": "工作流级输出:name → 纯引用。",
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "$ref": "#/$defs/reference" }
+    }
+  },
+  "$defs": {
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "reference": {
+      "oneOf": [
+        { "$ref": "#/$defs/inputRef" },
+        { "$ref": "#/$defs/nodeRef" }
+      ],
+      "description": "纯引用位置(workflow outputs、branch.when.left、user_data.ref)必须整体是一个引用,形态钉死:{{inputs.<name>}} 或 {{nodes.<id>.output.<field>}}。"
+    },
+    "inputRef": {
+      "type": "string",
+      "pattern": "^\\{\\{inputs\\.[a-z][a-z0-9_]{0,63}\\}\\}$"
+    },
+    "nodeRef": {
+      "type": "string",
+      "pattern": "^\\{\\{nodes\\.[a-z][a-z0-9_]{0,63}\\.output\\.[a-z][a-z0-9_]{0,63}\\}\\}$"
+    },
+    "point": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["x", "y"],
+      "properties": {
+        "x": { "type": "number" },
+        "y": { "type": "number" }
+      }
+    },
+    "retry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["max_attempts"],
+      "properties": {
+        "max_attempts": { "type": "integer", "minimum": 1, "maximum": 10 }
+      }
+    },
+    "nodeOutputs": {
+      "type": "object",
+      "maxProperties": 128,
+      "description": "节点输出声明:name → 类型。供 T1.2 引用类型校验与审计快照。",
+      "propertyNames": { "$ref": "#/$defs/identifier" },
+      "additionalProperties": { "enum": ["string", "number", "boolean", "object", "array"] }
+    },
+    "node": {
+      "oneOf": [
+        { "$ref": "#/$defs/llmNode" },
+        { "$ref": "#/$defs/toolNode" },
+        { "$ref": "#/$defs/branchNode" },
+        { "$ref": "#/$defs/approvalNode" }
+      ]
+    },
+    "llmNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "prompt"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "type": { "const": "llm" },
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "retry": { "$ref": "#/$defs/retry" },
+        "model": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 200000 },
+        "response_format": { "enum": ["text", "json"] },
+        "prompt": { "$ref": "#/$defs/prompt" },
+        "outputs": { "$ref": "#/$defs/nodeOutputs" }
+      }
+    },
+    "prompt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["template"],
+      "description": "指令与数据强制分离:system/template 是受信作者指令,禁止出现 {{...}}(结构层已拦);运行时将各 user_data 项以『<name>: 渲染值』标签块追加在 template 之后(追加式,无占位符语法)。{{inputs.*}} 等不可信数据只能经 user_data 进入(间接注入缓解)。",
+      "properties": {
+        "system": {
+          "type": "string",
+          "maxLength": 8000,
+          "not": { "pattern": "\\{\\{" }
+        },
+        "template": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 16000,
+          "not": { "pattern": "\\{\\{" }
+        },
+        "user_data": {
+          "type": "array",
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "ref"],
+            "properties": {
+              "name": { "$ref": "#/$defs/identifier" },
+              "ref": { "$ref": "#/$defs/reference" }
+            }
+          }
+        }
+      }
+    },
+    "toolNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "tool", "inputs"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "type": { "const": "tool" },
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "retry": { "$ref": "#/$defs/retry" },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "已注册工具名;是否在白名单内由发布时校验(T1.2/T5.4)。"
+        },
+        "inputs": {
+          "type": "object",
+          "maxProperties": 64,
+          "description": "网络位置(host 等)由服务端白名单配置提供,禁止在 DSL 声明:键名黑名单(大小写不敏感、递归生效)与 URL/IPv4 值形态禁令是启发式第一网;权威门禁 = 发布时工具 input schema 校验 + 运行时 Dialer.Control。",
+          "propertyNames": { "$ref": "#/$defs/notNetworkKey" },
+          "additionalProperties": { "$ref": "#/$defs/toolInputValue" }
+        },
+        "outputs": { "$ref": "#/$defs/nodeOutputs" }
+      }
+    },
+    "notNetworkKey": {
+      "not": {
+        "anyOf": [
+          { "enum": ["host", "hostname", "url", "uri", "endpoint", "addr", "address", "server", "domain", "ip", "port", "base_url", "baseUrl", "baseurl", "hostport", "origin", "authority", "netloc", "proxy", "socket"] },
+          { "pattern": "(?i)^(base|host|remote|server|target|upstream|callback|webhook|connect|redirect)[_-]?(url|uri|host|addr|address|endpoint|domain|port|name|location)" },
+          { "pattern": "(?i)(host|url|uri|addr|address|endpoint|domain|server)$" }
+        ]
+      }
+    },
+    "toolInputValue": {
+      "description": "tool.inputs 的值(递归):任意深度的键名都禁网络位置词;字符串值禁 URL scheme 与裸 IPv4 形态。",
+      "anyOf": [
+        { "type": ["number", "boolean", "null"] },
+        {
+          "type": "string",
+          "maxLength": 65536,
+          "not": {
+            "anyOf": [
+              { "pattern": "(?i)[a-z][a-z0-9+.\\-]*://" },
+              { "pattern": "\\d{1,3}(\\.\\d{1,3}){3}" }
+            ]
+          }
+        },
+        { "type": "array", "maxItems": 256, "items": { "$ref": "#/$defs/toolInputValue" } },
+        { "type": "object", "maxProperties": 64, "propertyNames": { "$ref": "#/$defs/notNetworkKey" }, "additionalProperties": { "$ref": "#/$defs/toolInputValue" } }
+      ]
+    },
+    "branchNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "cases", "default"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "type": { "const": "branch" },
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["when", "next"],
+            "properties": {
+              "when": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["left", "op"],
+                "properties": {
+                  "left": { "$ref": "#/$defs/reference" },
+                  "op": { "enum": ["eq", "ne", "gt", "gte", "lt", "lte", "contains", "exists"] },
+                  "right": {
+                    "description": "任意字面量或引用字符串;类型匹配由 T1.2 校验。",
+                    "maxLength": 4096
+                  }
+                }
+              },
+              "next": { "$ref": "#/$defs/identifier" }
+            }
+          }
+        },
+        "default": { "$ref": "#/$defs/identifier" }
+      }
+    },
+    "approvalNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "approvers"],
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "type": { "const": "approval" },
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "approvers": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 64,
+          "items": { "type": "string", "pattern": "^\\S+$", "minLength": 1, "maxLength": 64 }
+        },
+        "mode": { "enum": ["any"], "default": "any", "description": "或签。会签(all)为 P1,P1 放开时同步放开本枚举。" },
+        "timeout_hours": { "type": "number", "minimum": 0.1, "maximum": 2160, "default": 72, "description": "缺省 72h;平台级默认可配(Q9,T4.3)。" },
+        "on_timeout": { "enum": ["escalate", "fail"], "default": "escalate", "description": "escalate=升级通知并保持等待;fail=显式失败。永不自动通过。" },
+        "instructions": { "type": "string", "maxLength": 4000 },
+        "outputs": { "$ref": "#/$defs/nodeOutputs" }
+      }
+    }
+  }
+}

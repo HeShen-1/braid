@@ -1,0 +1,15 @@
+{
+  "dsl": "1.0",
+  "name": "approval-mode-all",
+  "$comment": "非法:会签(mode=all)是 P1 能力,P0 引擎只实现或签,放行会导致静默降级",
+  "nodes": [
+    {
+      "id": "boss",
+      "type": "approval",
+      "approvers": ["carol"],
+      "mode": "all",
+      "timeout_hours": 72,
+      "on_timeout": "escalate"
+    }
+  ]
+}

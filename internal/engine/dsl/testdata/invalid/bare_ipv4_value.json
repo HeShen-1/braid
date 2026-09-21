@@ -1,0 +1,13 @@
+{
+  "dsl": "1.0",
+  "name": "bare-ipv4-value",
+  "$comment": "非法:裸 IPv4 字符串就是网络位置,无论挂在什么键下",
+  "nodes": [
+    {
+      "id": "fetch",
+      "type": "tool",
+      "tool": "http",
+      "inputs": { "note": "10.0.0.5" }
+    }
+  ]
+}

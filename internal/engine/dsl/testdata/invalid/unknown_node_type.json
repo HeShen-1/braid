@@ -1,0 +1,12 @@
+{
+  "dsl": "1.0",
+  "name": "unknown-node-type",
+  "$comment": "非法:节点类型不在 P0 枚举内(parallel 为 P1)",
+  "nodes": [
+    {
+      "id": "fan_out",
+      "type": "parallel",
+      "branches": []
+    }
+  ]
+}

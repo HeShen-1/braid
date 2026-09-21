@@ -1,0 +1,35 @@
+{
+  "dsl": "1.0",
+  "name": "http-fetch-demo",
+  "description": "HTTP 工具:host 来自服务端白名单配置,DSL 只声明 path/query。",
+  "inputs": [
+    { "name": "doc_id", "type": "string", "required": true }
+  ],
+  "nodes": [
+    {
+      "id": "fetch_meta",
+      "type": "tool",
+      "tool": "http",
+      "inputs": {
+        "method": "GET",
+        "path": "/api/v1/documents/{{inputs.doc_id}}",
+        "query": { "verbose": "true" }
+      },
+      "outputs": { "status": "number", "body": "object" },
+      "retry": { "max_attempts": 2 }
+    },
+    {
+      "id": "check",
+      "type": "llm",
+      "prompt": {
+        "template": "检查接口返回状态是否正常。",
+        "user_data": [{ "name": "status", "ref": "{{nodes.fetch_meta.output.status}}" }]
+      },
+      "outputs": { "ok": "boolean" }
+    }
+  ],
+  "edges": [
+    { "from": "fetch_meta", "to": "check" }
+  ],
+  "outputs": { "ok": "{{nodes.check.output.ok}}" }
+}

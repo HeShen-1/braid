@@ -1,0 +1,20 @@
+{
+  "dsl": "1.0",
+  "name": "branch-missing-default",
+  "$comment": "非法:branch 缺少 default(无 case 命中时的兜底路由)",
+  "nodes": [
+    {
+      "id": "decide",
+      "type": "branch",
+      "cases": [
+        { "when": { "left": "{{inputs.score}}", "op": "gte", "right": 60 }, "next": "pass" }
+      ]
+    },
+    {
+      "id": "pass",
+      "type": "llm",
+      "prompt": { "template": "合格。" }
+    }
+  ],
+  "inputs": [{ "name": "score", "type": "number", "required": true }]
+}

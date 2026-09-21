@@ -1,0 +1,14 @@
+{
+  "dsl": "1.0",
+  "name": "template-embeds-ref",
+  "$comment": "非法:受信指令 template 内禁止出现 {{...}}(指令与数据分离,数据只能经 user_data 追加)",
+  "nodes": [
+    {
+      "id": "summarize",
+      "type": "llm",
+      "prompt": {
+        "template": "请总结以下内容:{{nodes.read.output.text}}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "dsl": "1.0",
+  "name": "typed-outputs-demo",
+  "inputs": [
+    { "name": "order", "type": "object", "required": true }
+  ],
+  "nodes": [
+    {
+      "id": "extract",
+      "type": "llm",
+      "response_format": "json",
+      "prompt": {
+        "template": "提取订单金额与币种。",
+        "user_data": [{ "name": "order", "ref": "{{inputs.order}}" }]
+      },
+      "outputs": { "amount": "number", "currency": "string" }
+    }
+  ],
+  "outputs": { "amount": "{{nodes.extract.output.amount}}" }
+}

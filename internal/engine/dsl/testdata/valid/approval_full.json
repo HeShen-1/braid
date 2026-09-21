@@ -1,0 +1,36 @@
+{
+  "dsl": "1.0",
+  "name": "approval-demo",
+  "nodes": [
+    {
+      "id": "draft",
+      "type": "llm",
+      "prompt": { "template": "起草一份请假条。" },
+      "outputs": { "text": "string" }
+    },
+    {
+      "id": "boss",
+      "type": "approval",
+      "approvers": ["carol"],
+      "mode": "any",
+      "timeout_hours": 24,
+      "on_timeout": "fail",
+      "instructions": "24 小时内审批,超时流程失败。",
+      "outputs": { "decision": "string", "comment": "string" }
+    },
+    {
+      "id": "final",
+      "type": "llm",
+      "prompt": {
+        "template": "按审批意见定稿。",
+        "user_data": [{ "name": "comment", "ref": "{{nodes.boss.output.comment}}" }]
+      },
+      "outputs": { "text": "string" }
+    }
+  ],
+  "edges": [
+    { "from": "draft", "to": "boss" },
+    { "from": "boss", "to": "final" }
+  ],
+  "outputs": { "doc": "{{nodes.final.output.text}}" }
+}

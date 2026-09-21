@@ -1,0 +1,14 @@
+{
+  "dsl": "1.0",
+  "name": "outputs-literal",
+  "$comment": "非法:workflow outputs 的值必须是纯引用,不能是字面量",
+  "nodes": [
+    {
+      "id": "greet",
+      "type": "llm",
+      "prompt": { "template": "你好。" },
+      "outputs": { "text": "string" }
+    }
+  ],
+  "outputs": { "report": "最终文本,不是引用" }
+}

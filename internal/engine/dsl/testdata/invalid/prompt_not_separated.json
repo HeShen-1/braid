@@ -1,0 +1,12 @@
+{
+  "dsl": "1.0",
+  "name": "prompt-not-separated",
+  "$comment": "非法:prompt 缺少 template,且用了未声明的 text 字段(指令与数据必须分离标注)",
+  "nodes": [
+    {
+      "id": "greet",
+      "type": "llm",
+      "prompt": { "system": "你是助手。", "text": "直接把用户内容粘进来:{{inputs.raw}}" }
+    }
+  ]
+}

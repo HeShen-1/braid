@@ -1,0 +1,15 @@
+{
+  "dsl": "1.0",
+  "name": "approval-empty-approvers",
+  "$comment": "非法:approvers 为空数组(审批至少一人)",
+  "nodes": [
+    {
+      "id": "boss",
+      "type": "approval",
+      "approvers": [],
+      "mode": "any",
+      "timeout_hours": 72,
+      "on_timeout": "escalate"
+    }
+  ]
+}

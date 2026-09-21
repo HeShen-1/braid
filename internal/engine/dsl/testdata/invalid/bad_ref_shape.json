@@ -1,0 +1,14 @@
+{
+  "dsl": "1.0",
+  "name": "bad-ref-shape",
+  "$comment": "非法:引用形态必须是 {{nodes.<id>.output.<field>}},裸节点引用 {{nodes.greet}} 不被放行",
+  "nodes": [
+    {
+      "id": "greet",
+      "type": "llm",
+      "prompt": { "template": "你好。" },
+      "outputs": { "text": "string" }
+    }
+  ],
+  "outputs": { "x": "{{nodes.greet}}" }
+}

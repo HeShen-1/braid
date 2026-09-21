@@ -1,0 +1,13 @@
+{
+  "dsl": "1.0",
+  "name": "hello-llm",
+  "nodes": [
+    {
+      "id": "greet",
+      "type": "llm",
+      "prompt": { "template": "用一句话介绍你自己。" },
+      "outputs": { "text": "string" }
+    }
+  ],
+  "outputs": { "greeting": "{{nodes.greet.output.text}}" }
+}
