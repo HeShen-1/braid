@@ -12,9 +12,9 @@ import (
 	"testing"
 )
 
-// moduleKey 独立重算模块根 wtKey(与 WorktreeKey 实现刻意不同源:若实现
-// 忘了向上找 go.mod 而直接哈希 cwd,对 internal/db 包目录两者结果不同)。
-func moduleKey(t *testing.T) string {
+// moduleDir 独立上溯 go.mod 所在目录(与 WorktreeKey 实现刻意不同源:若
+// 实现忘了向上找 go.mod 而直接哈希 cwd,对 internal/db 包目录两者结果不同)。
+func moduleDir(t *testing.T) string {
 	t.Helper()
 	dir, err := os.Getwd()
 	if err != nil {
@@ -22,7 +22,7 @@ func moduleKey(t *testing.T) string {
 	}
 	for {
 		if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
-			break
+			return dir
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -30,7 +30,11 @@ func moduleKey(t *testing.T) string {
 		}
 		dir = parent
 	}
-	sum := sha256.Sum256([]byte(dir))
+}
+
+func moduleKey(t *testing.T) string {
+	t.Helper()
+	sum := sha256.Sum256([]byte(moduleDir(t)))
 	return hex.EncodeToString(sum[:])[:8]
 }
 
@@ -40,16 +44,12 @@ func TestWorktreeKeyMatchesModuleRoot(t *testing.T) {
 	}
 }
 
-// 仓库根(向上两跳)与包目录应得同 key:同 worktree 内位置无关。
-func TestWorktreeKeyStableFromRepoRoot(t *testing.T) {
+// 模块根(经独立上溯得到)与包目录应得同 key:同 worktree 内位置无关。
+func TestWorktreeKeyStableFromModuleRoot(t *testing.T) {
 	want := WorktreeKey()
-	dir, err := os.Getwd()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Chdir(filepath.Join(dir, "..", ".."))
+	t.Chdir(moduleDir(t))
 	if got := WorktreeKey(); got != want {
-		t.Fatalf("from repo root: %q, want %q", got, want)
+		t.Fatalf("from module root: %q, want %q", got, want)
 	}
 }
 
@@ -84,6 +84,37 @@ func TestSchemaSuffixOverride(t *testing.T) {
 	}
 }
 
+// suffix 空串等价未设(回落 wtKey)。
+func TestSchemaSuffixEmptyIsUnset(t *testing.T) {
+	t.Setenv("BRAID_TEST_SCHEMA_SUFFIX", "")
+	if got := TestSchema("braid"); got != "braid_"+moduleKey(t) {
+		t.Fatalf("empty suffix: %q, want wtKey fallback", got)
+	}
+}
+
+// 非法 suffix 必须 panic:suffix 拼进 CREATE DATABASE(multiStatements=true
+// 连接),`;`/引号等是实证过的多语句注入载体;超长与空白同样拒收。
+func TestSchemaSuffixRejects(t *testing.T) {
+	for _, s := range []string{
+		"t; CREATE DATABASE braid_inj_probe", // 多语句注入 PoC
+		"ci?params",                          // DSN 参数分隔符
+		"has space",                          // 空白
+		"b`raid",                             // 反引号逃逸标识符
+		"25-chars-aaaaaaaaaaaaaaaaa",         // 超长(25)
+		"中文",
+	} {
+		t.Run(s, func(t *testing.T) {
+			t.Setenv("BRAID_TEST_SCHEMA_SUFFIX", s)
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("suffix %q 未被拒绝", s)
+				}
+			}()
+			_ = TestSchema("braid")
+		})
+	}
+}
+
 func TestServerDSNDefault(t *testing.T) {
 	if got := TestServerDSN(); got != "root:braid_dev_root@tcp(127.0.0.1:13306)/" {
 		t.Fatalf("default DSN: %q", got)
@@ -98,15 +129,23 @@ func TestServerDSNOverride(t *testing.T) {
 }
 
 // 带库名的 DSN 必须 panic 而非静默使用:拼出坏地址会表现成「栈不可达」
-// 全量 skip,掩盖配置错误。
+// 全量 skip,掩盖配置错误。含尾随斜杠绕过形态与语法垃圾。
 func TestServerDSNRejectsDBName(t *testing.T) {
-	t.Setenv("BRAID_TEST_MYSQL_DSN", "root:p@tcp(127.0.0.1:23306)/oops")
-	defer func() {
-		if recover() == nil {
-			t.Fatal("带库名的 DSN 未 panic")
-		}
-	}()
-	_ = TestServerDSN()
+	for _, dsn := range []string{
+		"root:p@tcp(127.0.0.1:23306)/oops",
+		"root:p@tcp(127.0.0.1:23306)/braid/", // 尾随斜杠伪装 server 级
+		"total garbage",                      // 语法非法,静默放行会在连接期变绿色 skip
+	} {
+		t.Run(dsn, func(t *testing.T) {
+			t.Setenv("BRAID_TEST_MYSQL_DSN", dsn)
+			defer func() {
+				if recover() == nil {
+					t.Fatalf("DSN %q 未被拒绝", dsn)
+				}
+			}()
+			_ = TestServerDSN()
+		})
+	}
 }
 
 func TestRedisDBSlotCombination(t *testing.T) {
@@ -118,6 +157,7 @@ func TestRedisDBSlotCombination(t *testing.T) {
 	}{
 		{"default slot0 relay", "", 0, 0},
 		{"default slot0 worker", "", 1, 1},
+		{"explicit slot0 relay", "0", 0, 0},
 		{"slot1 worker", "1", 1, 5},
 		{"slot2 relay", "2", 0, 8},
 		{"slot3 reaper", "3", 2, 14},

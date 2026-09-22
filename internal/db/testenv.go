@@ -20,11 +20,18 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
-	"strings"
+
+	"github.com/go-sql-driver/mysql"
 )
 
 const defaultTestServerDSN = "root:braid_dev_root@tcp(127.0.0.1:13306)/"
+
+// schemaSuffixRe 限定 BRAID_TEST_SCHEMA_SUFFIX 字符集:suffix 会拼进
+// CREATE DATABASE 与 DSN(连接带 multiStatements=true),白名单是该
+// 注入面的硬边界。
+var schemaSuffixRe = regexp.MustCompile(`^[0-9A-Za-z_]{1,24}$`)
 
 // WorktreeKey 返回当前 worktree 的 8 hex 短键:sha256(go.mod 所在目录
 // 绝对路径)[:8]。找不到 go.mod(仅 go test 之外调用,理论不可达)退化
@@ -49,25 +56,35 @@ func WorktreeKey() string {
 }
 
 // TestSchema 返回测试 schema 全名(base + "_" + 后缀)。后缀默认 = wtKey;
-// BRAID_TEST_SCHEMA_SUFFIX 非空则用其值(CI/调试要固定名时)。
+// BRAID_TEST_SCHEMA_SUFFIX 非空则用其值(CI/调试要固定名时)——值须匹配
+// [0-9A-Za-z_]{1,24},否则 panic:suffix 拼进 DDL/DSN,静默容忍即注入面。
 func TestSchema(base string) string {
 	if s := os.Getenv("BRAID_TEST_SCHEMA_SUFFIX"); s != "" {
+		if !schemaSuffixRe.MatchString(s) {
+			panic(fmt.Sprintf("BRAID_TEST_SCHEMA_SUFFIX=%q: want [0-9A-Za-z_]{1,24}", s))
+		}
 		return base + "_" + s
 	}
 	return base + "_" + WorktreeKey()
 }
 
 // TestServerDSN 返回测试 MySQL 的 server 级 DSN(env BRAID_TEST_MYSQL_DSN
-// 覆盖)。值必须尾随 "/" 且不带库名——带库名时 panic:静默容忍会拼出坏
-// 地址,表现成「栈不可达」全量 skip,掩盖配置错误。
+// 覆盖)。env 值经 mysql.ParseDSN 校验且不得带库名——带库名或语法非法时
+// panic:坏 DSN 静默放行会在连接期失败,被误判成「栈不可达」全量 skip,
+// 掩盖配置错误。
 func TestServerDSN() string {
-	if d := os.Getenv("BRAID_TEST_MYSQL_DSN"); d != "" {
-		if !strings.HasSuffix(d, "/") {
-			panic(fmt.Sprintf("BRAID_TEST_MYSQL_DSN must be server-level (trailing /, no db name), got %q", d))
+	d := defaultTestServerDSN
+	if v := os.Getenv("BRAID_TEST_MYSQL_DSN"); v != "" {
+		cfg, err := mysql.ParseDSN(v)
+		if err != nil {
+			panic(fmt.Sprintf("BRAID_TEST_MYSQL_DSN is not a valid DSN: %v", err))
 		}
-		return d
+		if cfg.DBName != "" {
+			panic(fmt.Sprintf("BRAID_TEST_MYSQL_DSN must be server-level (no db name), got %q", v))
+		}
+		d = v
 	}
-	return defaultTestServerDSN
+	return d
 }
 
 // TestRedisDB 把 BRAID_TEST_REDIS_DB(语义 = worktree 槽位)组合为绝对
