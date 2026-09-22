@@ -1,0 +1,58 @@
+# 零密钥 CI(D-2026-09-22-git-native-collab 实施顺序第②步)。
+# 三件套 = go vet + golangci-lint + go test ./...(与本地验收口径一致);
+# 不配置任何 GitHub Secrets,模型调用一律不出本机。集成测试依赖
+# MySQL/Redis 验证栈(braid-t13),栈不可达时经 sqltest/redistest 探活
+# 自动 t.Skipf,CI 只承载可无栈运行的单测面。
+# gitleaks 作业执行铁律「密钥不进 git 历史」的 PR 级增量扫描。
+name: ci
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: golangci/golangci-lint-action@v9.3.0
+        with:
+          version: v2.13.2
+
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      - run: go vet ./...
+      - run: go test ./...
+
+  gitleaks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      # PR 事件下列提交扫增量,需 pulls 读权限(其余作业不受影响)
+      contents: read
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0 # 全历史可达,增量提交逐个扫
+      - uses: gitleaks/gitleaks-action@v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
