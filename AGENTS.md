@@ -13,7 +13,7 @@
 ## 约定
 
 - 目录规划:`cmd/`(api | worker | relay | reaper,同一二进制多入口)、`internal/`(engine | outbox | relay | snowflake | nodes | tools | audit | auth | api | config | db | redistest)、`migrations/`、`deploy/`、`docs/`。可开源核心(engine)与企业增值(enterprise)物理分层,不得交叉 import。
-- commit:conventional commits,英文主题(feat/fix/docs/test/chore/refactor);合并唯一通道 = PR:`feat/<task-id>` 分支 → push → draft PR → CI → AI reviewer(本地会话读 `gh pr diff`,findings 用 `gh` 贴回 PR;模型密钥不出本机)→ CRITICAL/HIGH 清零 → 用户在 GitHub 点 merge(merge commit)→ 本地拉回 master。纯文档可直接进 master(唯一例外)。
+- commit:conventional commits,英文主题(feat/fix/docs/test/chore/refactor);合并唯一通道 = PR:`feat/<task-id>` 分支 → push → draft PR → CI → AI reviewer(本地会话读 `gh pr diff`,findings 用 `gh` 贴回 PR;模型密钥不出本机)→ CRITICAL/HIGH 清零 → merge(merge commit;D-2026-09-22-conditional-auto-merge):常规任务由会话执行 `gh pr merge --merge` 自动合并事后报告;触及铁律面(migrations、engine 包、go.mod、CI 配置、本文件)时留用户在 GitHub 人工合 → 本地拉回 master。纯文档可直接进 master(唯一例外)。
 - 测试:表驱动,`go test ./...` 全绿 + `golangci-lint run` 零告警才算任务完成。
 - 文档中文;代码与 commit 英文。
 

@@ -39,3 +39,9 @@
 - 理由:并行是 handoff 自认缺口,且 ROADMAP 今日即有 4 个就绪任务(T2.3/T2.5/T2.6/T5.1);issue 化把执行状态从单文件勾选行外化为 git/gh 可见状态;本地 AI reviewer 保住密钥纪律;b 是 c 的子集与地基,先 b 后 c 零返工;cwd 哈希推导 schema 比 env 注入更不易漏,Redis 槽位显式分配比哈希更安全。
 - 影响:docs/AGENTS.md(真源分层/PR 单通道/并行公约/fork 语义/命令节槽位表)、docs/ROADMAP.md(顶部迁移说明 + 新增测试隔离任务)、internal/db/sqltest(DSN env + wtKey helper)、internal/db/migrate_test.go、internal/relay/run_test.go、internal/redistest(仅契约注释)、deploy/migrate-test.docker-compose.yml(c 升级时)、~/.agents/skills/handoff(fork/dispatch 模式)、.github/workflows(零密钥 CI)。前置约束:T2.5 开工前必须先钉死 T2.3 落地的确定性 TaskID 契约(ROADMAP 未标注的语义耦合,写进 T2.5 issue body)。
 - 实施顺序:⓪ 全历史扫密 → ① 建私有仓推送 → ② 零密钥 CI → ③ AGENTS/ROADMAP 修订 → ④ 建 issue(M2 剩余 + T5.1)→ ⑤ handoff v2 + 三端冒烟 → ⑥ 测试隔离 env 化(TDD,排 ROADMAP 正经任务)→ ⑦ 首次并行试跑(主仓 T2.3 ∥ fork t5.1)。⓪–⑤ 可与主仓 T2.3 单线穿插;首对 fork 前第 ⑥ 步必须落地。
+
+## D-2026-09-22-conditional-auto-merge
+- 背景:D-2026-09-22-git-native-collab 第 4 条把 merge 定为用户人工点击(GATE 2);T2.7 交付后用户提出 merge 自动化诉求,三选一确认「条件自动」(2026-09-22)。
+- 决策:PR 闸门(CI 三作业全绿 + AI reviewer CRITICAL/HIGH 清零)满足后,常规任务由本地会话直接 `gh pr merge --merge`(merge commit 形态不变)并事后报告;触及铁律面(migrations 序号、engine 包、go.mod、CI 配置、AGENTS.md 自身)的 PR 仍由用户在 GitHub 人工合。纯文档直进 master 例外不变。
+- 理由:单人私有仓,CI + 对抗审查已构成主闸门,人工点击是纯摩擦;铁律面是并行公约的冲突面与不可逆迁移所在,保留人工抽查,自动化不越过风险边界。
+- 影响:AGENTS.md「约定·commit」条;merge 收尾(本地拉回 master + 删分支)随自动化一并由会话执行。
