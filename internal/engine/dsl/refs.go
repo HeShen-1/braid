@@ -22,6 +22,33 @@ type Ref struct {
 	Text  string // 原文
 }
 
+// ParsePureRef 是 parsePureRef 的导出面:调度器求值器(T2.4)对同一钉死形态
+// 的复用入口——纯引用位置的判定不允许出现第二份实现。
+func ParsePureRef(s string) (Ref, bool) { return parsePureRef(s) }
+
+// ExpandStringRefs 把 s 中每个内嵌引用替换为 resolve 返回的文本(引用按原文
+// 整体替换);未命中的引用原样保留并置 miss=true。形态钉死同 scanStringRefs:
+// 每个 "{{" 必须开启一个合法完整引用(schema 已拒,此处信任输入,不做 bad 检测)。
+// 调用方(T2.4 求值器)决定 miss 的语义(快照求值 = 错误)。
+func ExpandStringRefs(s string, resolve func(Ref) (string, bool)) (string, bool) {
+	miss := false
+	out := embeddedRefRe.ReplaceAllStringFunc(s, func(m string) string {
+		g := embeddedRefRe.FindStringSubmatch(m)
+		r := Ref{Text: m}
+		if g[1] != "" {
+			r.Kind, r.Name = "input", g[1]
+		} else {
+			r.Kind, r.Name, r.Field = "node", g[2], g[3]
+		}
+		if v, ok := resolve(r); ok {
+			return v
+		}
+		miss = true
+		return m
+	})
+	return out, miss
+}
+
 // parsePureRef 解析纯引用位置(user_data.ref、branch.when.left/right、workflow outputs)。
 // 整个字符串必须恰为一个引用;不匹配返回 false。
 func parsePureRef(s string) (Ref, bool) {

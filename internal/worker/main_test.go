@@ -24,6 +24,7 @@ import (
 	"braid/internal/db/sqltest"
 	"braid/internal/engine"
 	"braid/internal/redistest"
+	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 )
 
@@ -77,7 +78,9 @@ func mustTestIDs(t *testing.T) *snowflake.Generator {
 }
 
 // seedNodeExec 造最小业务链:definition → execution → node_execution
-// (EXECUTING,模拟 T2.4 派发方 ClaimNode 后的状态)。返回三个 id。
+// (EXECUTING,模拟调度器 ClaimNode 后的状态)。T2.4 起 Complete 消费真实 DSL
+// 拓扑与行内 worker_id 回传,种子必须与调度器产物同构:单节点合法 DSL、
+// definition 带版本号(loadDefinition 拒 NULL version)、node 行带派发方归因。
 func seedNodeExec(t *testing.T, d *sql.DB) (execID, nodeExecID uint64) {
 	t.Helper()
 	ids := mustTestIDs(t)
@@ -93,6 +96,10 @@ func seedNodeExec(t *testing.T, d *sql.DB) (execID, nodeExecID uint64) {
 	if err != nil {
 		t.Fatalf("gen node execution id: %v", err)
 	}
+	name := fmt.Sprintf("seed-wf-%d", defID)
+	seedDSL := fmt.Sprintf(`{"dsl":"1.0","name":%q,"description":"","inputs":[],"edges":[],`+
+		`"nodes":[{"id":"seed_node","type":"llm","title":"seed","description":"",`+
+		`"prompt":{"template":"seed"},"outputs":{}}],"outputs":{}}`, name)
 	ins := func(query string, args ...any) {
 		t.Helper()
 		if _, err := d.Exec(query, args...); err != nil {
@@ -100,16 +107,16 @@ func seedNodeExec(t *testing.T, d *sql.DB) (execID, nodeExecID uint64) {
 		}
 	}
 	ins(`INSERT INTO workflow_definition
-	  (id, name, dsl_version, dsl, dsl_hash, created_by, updated_by)
-	  VALUES (?, 'seed_wf', '1.0', '{}', ?, 'seed', 'seed')`,
-		defID, string(make([]byte, 64)))
+	  (id, name, version, status, dsl_version, dsl, dsl_hash, created_by, updated_by, published_by, published_at)
+	  VALUES (?, ?, 1, 'PUBLISHED', '1.0', ?, ?, 'seed', 'seed', 'seed', NOW(3))`,
+		defID, name, seedDSL, string(make([]byte, 64)))
 	ins(`INSERT INTO workflow_execution
 	  (id, definition_id, definition_name, definition_version, definition_hash, triggered_by, input)
-	  VALUES (?, ?, 'seed_wf', 1, ?, 'seed', '{}')`,
-		execID, defID, string(make([]byte, 64)))
+	  VALUES (?, ?, ?, 1, ?, 'seed', '{}')`,
+		execID, defID, name, string(make([]byte, 64)))
 	ins(`INSERT INTO node_execution
-	  (id, execution_id, node_id, type, status, attempts)
-	  VALUES (?, ?, 'seed_node', 'llm', 'EXECUTING', 1)`,
+	  (id, execution_id, node_id, type, status, attempts, worker_id, version)
+	  VALUES (?, ?, 'seed_node', 'llm', 'EXECUTING', 1, 'seed-dispatcher', 1)`,
 		nodeExecID, execID)
 	return execID, nodeExecID
 }
@@ -145,10 +152,19 @@ func nextQueue(t *testing.T) string {
 }
 
 // startWorker 以生产路径 worker.Run 起一个 worker(goroutine),返回停止函数
-// (cancel + 等 Run 返回)。
+// (cancel + 等 Run 返回)。调度器与 worker 共用队列名(事件必须投到被 serve
+// 的队列,否则永挂 pending)。
 func startWorker(t *testing.T, d *sql.DB, ex Executor, cfg Config) (queue string) {
 	t.Helper()
 	queue = nextQueue(t)
+	startWorkerOnQueue(t, d, ex, cfg, queue)
+	return queue
+}
+
+// startWorkerOnQueue 在指定队列上起 worker(e2e:Instantiate 的调度器先于
+// worker 存在,需同一队列名)。
+func startWorkerOnQueue(t *testing.T, d *sql.DB, ex Executor, cfg Config, queue string) {
+	t.Helper()
 	opt := redistest.MustOpt(t)
 	cfg.Queues = map[string]int{queue: 1}
 	if cfg.WorkerID == "" {
@@ -158,10 +174,14 @@ func startWorker(t *testing.T, d *sql.DB, ex Executor, cfg Config) (queue string
 	if err != nil {
 		t.Fatalf("worker snowflake: %v", err)
 	}
+	sched, err := scheduler.New(scheduler.Deps{DB: d, IDs: ids, Queue: queue})
+	if err != nil {
+		t.Fatalf("scheduler: %v", err)
+	}
 	wctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(wctx, Deps{DB: d, IDs: ids, Executor: ex}, cfg, opt)
+		done <- Run(wctx, Deps{DB: d, IDs: ids, Executor: ex, Sched: sched}, cfg, opt)
 	}()
 	t.Cleanup(func() {
 		cancel()
@@ -174,7 +194,6 @@ func startWorker(t *testing.T, d *sql.DB, ex Executor, cfg Config) (queue string
 			t.Error("worker.Run did not stop within 15s after cancel")
 		}
 	})
-	return queue
 }
 
 // enqueue 投一个 node.task_enqueue 任务(与 relay 同款 option 面:确定性
