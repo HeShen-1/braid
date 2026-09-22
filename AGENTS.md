@@ -17,6 +17,16 @@
 - 测试:表驱动,`go test ./...` 全绿 + `golangci-lint run` 零告警才算任务完成。
 - 文档中文;代码与 commit 英文。
 
+## ECC 编排(可选加速层)
+
+用 `/ecc:orch-*` 家族(ECC 插件,Claude Code 侧)驱动任务实现;与本文件冲突时本文件优先。
+
+- 入口选择:新能力 `orch-add-feature` / 行为变更 `orch-change-feature` / 修 bug `orch-fix-defect` / 纯重构 `orch-refine-code` / spec 起 MVP `orch-build-mvp`;只要计划用 `ecc:plan`。
+- 流程:Intake → Research(**默认跳过**:作品深度优先,核心代码自写)→ Plan → TDD 红绿重构 → Review → 提交;体积分级(trivial/small/standard/large)一句话报出,可推翻。
+- 人工闸门仅两道:GATE 1 = 批准 task_list 后才写代码;GATE 2 = 确认 diff 与 commit message 后才提交;两闸之间自动推进。
+- 硬约束:任务及 ID 仍只从 ROADMAP.md 取(一任务一条流水线);Review 只是补充视角,不能替代 6 视角对抗审计,CRITICAL/HIGH 清零才进 GATE 2;diff 触及认证/用户输入/SQL/文件路径/外部调用/加密/密钥时自动加 security-reviewer;提交走本文约定的 `feat/<task-id>` 分支。
+- 验收不变:三件套(`go test ./...` / `go vet` / `golangci-lint run`)全绿 + 零告警才算完成。
+
 ## 命令(有代码后更新此节)
 
 - 测试:`go test ./...`
