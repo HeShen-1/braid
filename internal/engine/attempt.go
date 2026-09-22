@@ -45,6 +45,30 @@ VALUES (?,?,?,?,?,'RUNNING',?,?,NOW(3))`,
 	return nil
 }
 
+// TouchAttemptHeartbeat 刷新 attempt 心跳,同事务刷 workflow_execution.last_activity_at
+// (DDL §2:attempt 心跳 UPDATE 也同刷本列,否则健康长执行会被 reconciler 误报;
+// 调用方 = T2.3 worker 心跳器,长外部调用期间按间隔续写)。
+//
+// 心跳是尽力语义,与收口的裁决语义刻意分立:attempt 已非 RUNNING(并发收口/DEAD
+// 竞态)→ 0 行静默返回——「我还在跑」信号对已终态行本就无意义,executor 随后的
+// CloseAttempt 撞同竞态会拿到结构化 ErrConflict,那才是该报错的 0 行。execution
+// 缺行经 TouchExecution 报 ErrNotFound(FK 保证下不可达,响亮为敬)。
+func TouchAttemptHeartbeat(ctx context.Context, q DBTX, attemptID, execID uint64) error {
+	res, err := q.ExecContext(ctx,
+		`UPDATE node_attempt SET heartbeat_at=NOW(3) WHERE id=? AND status='RUNNING'`, attemptID)
+	if err != nil {
+		return fmt.Errorf("engine: heartbeat attempt %d: %w", attemptID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("engine: rows affected (attempt %d heartbeat): %w", attemptID, err)
+	}
+	if n == 0 {
+		return nil // 行已终态:心跳静默让位(见上)
+	}
+	return TouchExecution(ctx, q, execID)
+}
+
 // CloseAttempt 收口 attempt:RUNNING→SUCCEEDED|FAILED(观察到的终态)。
 // DEAD 置位归 T2.5(reconciler 判死),同一条边,此处不开放。
 // WHERE status='RUNNING' 保证终态后禁改(行无 updated_at,收口是一次终写)。
