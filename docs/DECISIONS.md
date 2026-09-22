@@ -45,3 +45,15 @@
 - 决策:PR 闸门(CI 三作业全绿 + AI reviewer CRITICAL/HIGH 清零)满足后,常规任务由本地会话直接 `gh pr merge --merge`(merge commit 形态不变)并事后报告;触及铁律面(migrations 序号、engine 包、go.mod、CI 配置、AGENTS.md 自身)的 PR 仍由用户在 GitHub 人工合。纯文档直进 master 例外不变。
 - 理由:单人私有仓,CI + 对抗审查已构成主闸门,人工点击是纯摩擦;铁律面是并行公约的冲突面与不可逆迁移所在,保留人工抽查,自动化不越过风险边界。
 - 影响:AGENTS.md「约定·commit」条;merge 收尾(本地拉回 master + 删分支)随自动化一并由会话执行。
+
+## D-2026-09-22-t24-scheduler-semantics
+- 背景:T2.4 DAG 调度器(入度推进、桩谓词路由、执行完成回写)实现前,三个调度语义与一个 CAS 形状无既有锁定决策覆盖;用户三问拍板 + 对抗校验(Plan agent)发现两个 P1 竞态后定稿(2026-09-22)。
+- 决策:
+  1. 失败语义 = fail-fast:任一节点终败(attempts 耗尽 / input_eval / branch_eval)→ 同事务 FinishExecution(FAILED);在飞兄弟自然跑完但终态守卫阻断推进,节点留 EXECUTING 归 T2.5 扫描。
+  2. 跳过传播 = 任一前驱 SKIPPED ⇒ 该节点 SKIPPED(递归闭包);派发条件 = 全部前驱 SUCCEEDED。推论:P0 的 branch 臂不可汇合(汇合节点恒被剪枝);T1.2 validate 不禁该形状,后续可在 validator 收紧(独立任务)。
+  3. branch 内联求值:路由先于 claim(错误不留 deadline=NULL 的不可扫描 EXECUTING 行),ClaimNode(operands 快照)→ SucceedNode(output=NULL)同事务、无 attempt 行;取路目标进入推进,未取直接后继剪枝+传播。路由决定落 audit branch.evaluated 延后 T2.6(期间取路仅可从后继状态推断)。
+  4. 工作流级 outputs 引用被剪枝臂/未产出节点 → 物化为 null(键保留,形状跨路由稳定;validate 对 outputs 豁免祖先约束的必然推论)。
+  5. RedispatchNode(status-preserving CAS):节点级重试再派发 = EXECUTING→EXECUTING、attempts+1、worker_id 重写、deadline 刷新、version+1;不写 error_code、不重写 input_snapshot;DDL「attempts claim 时 +1」延展为「平台重试的 claim 即本语句」。
+  6. 并发形状:Complete 事务第一条语句序列 = 按 node_id 升序逐行 FOR UPDATE 锁全执行行集(当前读防幻读;锁集全量同序 ⇒ 无部分交叠死锁);残余交错由 engine.Transient(1213/1205)内部重试 ≤3 次(不重跑 executor、不烧 asynq MaxRetry=1 预算)。终态判定在提交后新事务(新鲜快照)——事务内判定在不相交臂并发下漏判;双收口由 FinishExecution 的 status-only CAS 仲裁。锁序实际不变量修正为 node 行(node_id 升序)→ attempt → workflow_execution(最后),与 T2.3 心跳一致;Start 例外先拿 wf(PENDING 执行无 claim/attempt,无并发 Complete)。
+- 理由:fail-fast 最简可审计;「数前驱 SUCCEEDED」直接对齐 DDL 索引注释设计意图;branch 内联是 schema 强制(output 恒 NULL、无路由列、无 PENDING→SUCCEEDED 边)下的唯一一致形状;逐行全锁以 N 次索引点查换「零 DBTX 契约改动 + 死锁类消灭」,P0 节点数(数十级)下成本可忽略,批量化留待 DBTX 演进注记。
+- 影响:internal/scheduler(新包,依赖 {engine,outbox,dsl,snowflake})、internal/engine/nodecas.go(RedispatchNode)、internal/worker(Outcome.Output + Sched 依赖 + execution.start mux)、internal/engine/wfcas.go(锁序备忘注释修正)、issue #4(T2.5)锁序回归验证结论回帖。

@@ -13,8 +13,12 @@ import (
 // 并发双 Finish(SUCCEEDED vs FAILED)竞态 → 先者胜,败者 ErrConflict;
 // WAITING_APPROVAL⇄RUNNING 振荡靠谓词互斥收敛。
 //
-// 锁顺序铁律(防 AB-BA):node_execution(id 升序)→ workflow_execution → node_attempt。
-// 节点迁移后需刷新 last_activity_at 时,调用方在同事务内按此序组合 TouchExecution。
+// 锁顺序铁律(防 AB-BA,T2.4 修正为实际不变量):node_execution 全行集
+// (node_id 升序,单语句序列 FOR UPDATE)→ node_attempt → workflow_execution(最后)。
+// wf 最后是 T2.3 以来的实际不变量:worker 心跳/收口均为 attempt→wf,先拿 wf 会与
+// 之成环。例外:Start(T2.4 调度器)先拿 wf 行锁——PENDING 执行不可能有任何
+// claim/attempt 存在(派发先于 Start 提交不可能发生),无并发写者,安全;该假设
+// 是 T2.5 reconciler 压测点之一。
 
 // TransitionWorkflow 执行工作流状态机的单条边 from→to(status-only CAS)。
 // 矩阵外的组合在进程内拒绝(ErrIllegalTransition,零 DB 往返)。

@@ -1,14 +1,17 @@
 // Package worker 实现 T2.3 Asynq 执行器:消费 relay 投递的任务,以 attempt
-// 唯一键为执行级幂等锚,完成节点 attempt 的记录、执行与收口。
+// 唯一键为执行级幂等锚,完成节点 attempt 的记录、执行与收口;T2.4 起尾部
+// 接 scheduler.Complete(节点收口 + 入度推进 + 执行终态回写)与
+// scheduler.Start(execution.start → 入口派发)。
 //
 // 引擎消费链上的位置:
 //
-//	派发方(T2.4 调度器)事务:ClaimNode(PENDING→EXECUTING,attempts+1)+
+//	调度器(scheduler 包)事务:ClaimNode(PENDING→EXECUTING,attempts+1)+
 //	    outbox.Append(event_type=node.task_enqueue,
 //	                  task_id=att:<node_execution_id>:<attempt_no>)
 //	→ relay 投递(MaxRetry=1、确定性 TaskID,T2.2)
 //	→ 本包:mux 按 event_type 路由 → claimAttempt(幂等锚)→ Executor
-//	    执行缝(心跳并行)→ 同事务收口 attempt + 刷 execution 活跃时刻
+//	    执行缝(心跳并行)→ scheduler.Complete(同事务收口 attempt + 节点 +
+//	    推进 + 刷 execution 活跃时刻)
 //
 // 幂等层次(执行级幂等锚 = uk_attempt,不是 asynq TaskID——T2.2 审计移交①):
 //   - asynq ErrTaskIDConflict 仅在任务记录存活期内收敛(无 Retention 下完成
@@ -32,23 +35,17 @@ import (
 	"github.com/hibiken/asynq"
 
 	"braid/internal/engine"
+	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 )
 
-// EventTypeNodeTask 是 attempt 派发事件的 event_type,亦是 asynq task type
-// (mux 路由键;relay 侧 task type = event_type 的约定承接)。exec:/resume:
-// 事件的 handler 注册点归 T2.4(mux 天然可扩展)。
-const EventTypeNodeTask = "node.task_enqueue"
+// EventTypeNodeTask 是 attempt 派发事件的 event_type 路由键,词表真源在
+// scheduler 包(其 outbox 事件即消费对象,单一定义无漂移面)。
+const EventTypeNodeTask = scheduler.EventTypeNodeTask
 
-// nodeTaskPayload 是 node.task_enqueue 事件的自描述体(outbox 契约:仅 id
-// 引用,业务大数据留在业务表由 worker 回读)。attempt_no 由派发方从
-// node_execution.attempts+1 钉进 TaskID 与本体;TaskID 字符串本身
-// (att:<node_execution_id>:<attempt_no>)不作为数据载体被解析。
-type nodeTaskPayload struct {
-	ExecutionID     uint64 `json:"execution_id"`
-	NodeExecutionID uint64 `json:"node_execution_id"`
-	AttemptNo       uint16 `json:"attempt_no"`
-}
+// nodeTaskPayload 是 worker 侧对 scheduler.NodeTaskPayload 的别名(存量代码
+// 引用面不变;类型本体单一,JSON tag 无第二份定义)。
+type nodeTaskPayload = scheduler.NodeTaskPayload
 
 // Request 是 Executor 的执行请求。TaskID 即外部调用幂等键(与
 // node_attempt.idempotency_key 同值):供应商侧同键去重(AGENTS 铁律
@@ -68,13 +65,17 @@ type Request struct {
 // = Outcome{FAILED} + handler 收口,重试权威在平台节点层(T2.4,新 attempt =
 // 新 TaskID);基础设施失败(DB 断连等)= error 返回值,attempt 不收口、行留
 // RUNNING,asynq 内部重试接管重跑(见 RetryDelayFunc 决策注释)。
+//
+// Output 是 SUCCEEDED 时的节点输出({{nodes.<id>.output.<field>}} 解析真相源),
+// 经 scheduler.Complete → engine.SucceedNode 落 node_execution.output;nil → NULL。
 type Outcome struct {
 	Status engine.AttemptState
 	Code   string
 	Msg    string
+	Output json.RawMessage
 }
 
-// Executor 是节点执行缝:T2.3 只落框架与幂等/记账契约,T2.4 接调度回写,
+// Executor 是节点执行缝:T2.3 只落框架与幂等/记账契约,T2.4 已接调度回写,
 // T3.x 接真实节点实现(llm/tool)。与 relay.Enqueuer 同款依赖倒置:生产实现
 // 唯一,fake 只存在于 _test.go。
 type Executor interface {
@@ -86,6 +87,7 @@ type Deps struct {
 	DB       *sql.DB
 	IDs      *snowflake.Generator // attempt 行 id 生成(应用侧 Snowflake)
 	Executor Executor
+	Sched    *scheduler.Scheduler // T2.4 调度器(完成回写 + execution.start);nil 拒启动
 	Logger   *slog.Logger
 }
 
@@ -96,8 +98,8 @@ func Run(ctx context.Context, d Deps, cfg Config, opt asynq.RedisClientOpt) erro
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	if d.DB == nil || d.IDs == nil || d.Executor == nil {
-		return errors.New("worker: nil DB, IDs or Executor")
+	if d.DB == nil || d.IDs == nil || d.Executor == nil || d.Sched == nil {
+		return errors.New("worker: nil DB, IDs, Executor or Sched")
 	}
 	log := d.Logger
 	if log == nil {
@@ -122,6 +124,7 @@ func Run(ctx context.Context, d Deps, cfg Config, opt asynq.RedisClientOpt) erro
 	})
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(EventTypeNodeTask, h.handleNodeTask)
+	mux.HandleFunc(scheduler.EventTypeExecutionStart, h.handleExecStart)
 
 	if err := srv.Start(mux); err != nil {
 		return fmt.Errorf("worker: start server: %w", err)
@@ -194,7 +197,7 @@ func (h *attHandler) handleNodeTask(ctx context.Context, t *asynq.Task) error {
 	if outcome.Status != engine.AttemptSucceed && outcome.Status != engine.AttemptFailed {
 		return fmt.Errorf("worker: attempt %d outcome status %q: want SUCCEEDED|FAILED", attemptID, outcome.Status)
 	}
-	return h.closeAttempt(ctx, attemptID, p.ExecutionID, outcome)
+	return h.completeNode(ctx, taskID, attemptID, p, outcome)
 }
 
 // claimAttempt 是执行级幂等锚:首达 InsertAttempt 建行;撞 uk_attempt(1062
@@ -261,24 +264,45 @@ func (h *attHandler) readAttempt(ctx context.Context, p nodeTaskPayload) (uint64
 	return id, status, nil
 }
 
-// closeAttempt 同事务收口 attempt + 刷 execution 活跃时刻(DDL:任一 attempt
-// 推进同事务刷新 last_activity_at)。CloseAttempt 撞 ErrConflict(行已被并发
-// 收口 / T2.5 置 DEAD)→ 幂等返回:终局已定,不重复裁决。
-func (h *attHandler) closeAttempt(ctx context.Context, attemptID, execID uint64, o Outcome) error {
-	err := engine.WithTx(ctx, h.deps.DB, func(q engine.DBTX) error {
-		if err := engine.CloseAttempt(ctx, q, attemptID, o.Status, o.Code, o.Msg); err != nil {
-			return err
-		}
-		return engine.TouchExecution(ctx, q, execID)
+// completeNode 把 attempt 业务结果交给调度器收口(T2.4):单事务内 CloseAttempt +
+// 节点收口 + 入度推进 + 刷 execution 活跃时刻 + 提交后终态判定。attempt 已被
+// 早前一次 Complete 收口(ErrConflict → 调度器哨兵)在此收敛为幂等成功。
+func (h *attHandler) completeNode(ctx context.Context, taskID string, attemptID uint64, p nodeTaskPayload, o Outcome) error {
+	err := h.deps.Sched.Complete(ctx, scheduler.CompletionRequest{
+		ExecID:     p.ExecutionID,
+		NodeExecID: p.NodeExecutionID,
+		AttemptID:  attemptID,
+		Status:     o.Status,
+		Code:       o.Code,
+		Msg:        o.Msg,
+		Output:     o.Output,
+		WorkerID:   h.cfg.WorkerID,
 	})
-	if errors.Is(err, engine.ErrConflict) {
-		h.log.Info("attempt.close_conflict", "attempt_id", attemptID, "status", o.Status)
-		return nil
-	}
 	if err != nil {
-		return fmt.Errorf("worker: close attempt %d: %w", attemptID, err)
+		return fmt.Errorf("worker: complete node %d (task %s): %w", p.NodeExecutionID, taskID, err)
 	}
-	h.log.Info("attempt.closed", "attempt_id", attemptID, "status", o.Status)
+	h.log.Info("attempt.closed",
+		"attempt_id", attemptID, "status", o.Status, "node_execution_id", p.NodeExecutionID)
+	return nil
+}
+
+// handleExecStart 处理 execution.start:调度器起跑执行(PENDING→RUNNING +
+// 入口派发)。双投递幂等在调度器内裁决(非 PENDING → no-op)。
+func (h *attHandler) handleExecStart(ctx context.Context, t *asynq.Task) error {
+	taskID, ok := asynq.GetTaskID(ctx)
+	if !ok {
+		return errors.New("worker: no task id in handler context")
+	}
+	var p scheduler.ExecStartPayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("worker: task %s payload: %w", taskID, err)
+	}
+	if p.ExecutionID == 0 {
+		return fmt.Errorf("worker: task %s payload: zero execution_id", taskID)
+	}
+	if err := h.deps.Sched.Start(ctx, p.ExecutionID, h.cfg.WorkerID); err != nil {
+		return fmt.Errorf("worker: start execution %d (task %s): %w", p.ExecutionID, taskID, err)
+	}
 	return nil
 }
 

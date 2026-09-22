@@ -128,6 +128,35 @@ UPDATE node_execution
 	return checkNodeCAS(ctx, q, res, id, NodeExecuting, expectVer)
 }
 
+// RedispatchInput 是 RedispatchNode 的再派发参数。
+type RedispatchInput struct {
+	WorkerID   string    // 再派发方(完成上一个 attempt 的调度进程)
+	DeadlineAt time.Time // 零值 → NULL
+}
+
+// RedispatchNode:节点级重试的再派发(status-preserving CAS,EXECUTING→EXECUTING)。
+// attempt 业务失败且 attempts<max_attempts 时,调度器(T2.4)同事务组合:本 CAS +
+// outbox att:<id>:<attempts+1>。重试权威在平台节点层(T2.3 移交),不经 PENDING
+// (RequeueNode 是 reconciler 专用语义)。
+//   - attempts+1 是 DDL「claim 时 +1」的延展:平台重试的 claim 即本语句;
+//   - 不写 error_code(终局失败专用列)、不重写 input_snapshot(前驱输出终态
+//     不可变 ⇒ 重求值恒同,快照复现语义不受影响);
+//   - deadline 必须刷新(否则 T2.5 会把重试窗内的节点当超时重入队);
+//   - 状态机矩阵无新边(status 不变,非状态迁移);version+1 ⇒ RowsAffected==matched
+//     不变量保持。
+func RedispatchNode(ctx context.Context, q DBTX, id uint64, expectVer uint32, in RedispatchInput) (uint32, error) {
+	res, err := q.ExecContext(ctx, `
+UPDATE node_execution
+   SET worker_id=?, deadline_at=?, attempts=attempts+1,
+       status_changed_at=NOW(3), version=version+1
+ WHERE id=? AND status='EXECUTING' AND version=?`,
+		in.WorkerID, nullTime(in.DeadlineAt), id, expectVer)
+	if err != nil {
+		return 0, fmt.Errorf("engine: redispatch node %d: %w", id, err)
+	}
+	return checkNodeCAS(ctx, q, res, id, NodeExecuting, expectVer)
+}
+
 // SkipNode:PENDING→SKIPPED(分支剪枝,T2.4)。自 PENDING 出,快照恒 NULL,不触碰该列。
 func SkipNode(ctx context.Context, q DBTX, id uint64, expectVer uint32) (uint32, error) {
 	res, err := q.ExecContext(ctx, `
