@@ -107,8 +107,8 @@ func seedNodeExec(t *testing.T, d *sql.DB) (execID, nodeExecID uint64) {
 		}
 	}
 	ins(`INSERT INTO workflow_definition
-	  (id, name, version, dsl_version, dsl, dsl_hash, created_by, updated_by)
-	  VALUES (?, ?, 1, '1.0', ?, ?, 'seed', 'seed')`,
+	  (id, name, version, status, dsl_version, dsl, dsl_hash, created_by, updated_by, published_by, published_at)
+	  VALUES (?, ?, 1, 'PUBLISHED', '1.0', ?, ?, 'seed', 'seed', 'seed', NOW(3))`,
 		defID, name, seedDSL, string(make([]byte, 64)))
 	ins(`INSERT INTO workflow_execution
 	  (id, definition_id, definition_name, definition_version, definition_hash, triggered_by, input)

@@ -65,8 +65,8 @@ func seedDef(t *testing.T, d *sql.DB, doc string) uint64 {
 		t.Fatalf("gen def id: %v", err)
 	}
 	if _, err := d.Exec(`INSERT INTO workflow_definition
-	  (id, name, version, dsl_version, dsl, dsl_hash, created_by, updated_by)
-	  VALUES (?, ?, 1, '1.0', ?, ?, 'test', 'test')`,
+	  (id, name, version, status, dsl_version, dsl, dsl_hash, created_by, updated_by, published_by, published_at)
+	  VALUES (?, ?, 1, 'PUBLISHED', '1.0', ?, ?, 'test', 'test', 'test', NOW(3))`,
 		defID, fmt.Sprintf("wf-%d", defID), doc, string(make([]byte, 64))); err != nil {
 		t.Fatalf("seed definition: %v", err)
 	}
@@ -744,5 +744,49 @@ func TestTerminalGuardStopsAdvancement(t *testing.T) {
 	}
 	if got := readNode(t, d, execID, "e2").status; got != engine.NodeSucceeded {
 		t.Fatalf("node e2 = %s, want SUCCEEDED(迟到收口仍执行)", got)
+	}
+}
+
+// TestInstantiateRejectsNonPublishedAndBadInput:review M1/M2 回归——ARCHIVED
+// 定义禁新触发(DDL 生命周期契约);非对象输入在触发时拒绝(不放行到
+// Start 才确定性失败)。
+func TestInstantiateRejectsNonPublishedAndBadInput(t *testing.T) {
+	s, d := newSched(t)
+	seed := func(status string, version any) uint64 {
+		t.Helper()
+		defID, err := mustTestIDs(t).Next()
+		if err != nil {
+			t.Fatalf("gen def id: %v", err)
+		}
+		if _, err := d.Exec(`INSERT INTO workflow_definition
+		  (id, name, version, status, dsl_version, dsl, dsl_hash, created_by, updated_by, published_by, published_at)
+		  VALUES (?, ?, ?, ?, '1.0', ?, ?, 'test', 'test', 'test', NOW(3))`,
+			defID, fmt.Sprintf("wf-%d", defID), version, status,
+			`{"dsl":"1.0","name":"x","nodes":[{"id":"a","type":"llm","prompt":{"template":"t"}}]}`,
+			string(make([]byte, 64))); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+		t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM workflow_definition WHERE id=?`, defID) })
+		return defID
+	}
+	tests := []struct {
+		name  string
+		defID uint64
+		input string
+	}{
+		{"archived", seed("ARCHIVED", 1), `{}`},
+		{"draft_null_version", seed("DRAFT", nil), `{}`},
+		{"array_input", seed("PUBLISHED", 1), `[1,2]`},
+		{"scalar_input", seed("PUBLISHED", 1), `"str"`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := s.Instantiate(context.Background(), InstantiateParams{
+				DefinitionID: tt.defID, Input: json.RawMessage(tt.input), TriggeredBy: "test",
+			})
+			if err == nil {
+				t.Fatal("Instantiate 应拒绝(非 PUBLISHED / 非对象输入)")
+			}
+		})
 	}
 }

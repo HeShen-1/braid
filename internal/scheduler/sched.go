@@ -153,6 +153,26 @@ func (s *Scheduler) loadDefinition(ctx context.Context, id uint64) (*definitionR
 	return &r, nil
 }
 
+// loadPublishedDefinition 是物化路径的定义读取:DDL 生命周期契约
+// DRAFT→PUBLISHED→ARCHIVED,ARCHIVED = 禁新触发(运行中实例不受影响)——
+// Instantiate 必须只接受 PUBLISHED。
+func (s *Scheduler) loadPublishedDefinition(ctx context.Context, id uint64) (*definitionRow, error) {
+	var r definitionRow
+	err := s.deps.DB.QueryRowContext(ctx,
+		`SELECT name, version, dsl, dsl_hash FROM workflow_definition WHERE id=? AND status='PUBLISHED'`, id).
+		Scan(&r.name, &r.version, &r.dsl, &r.hash)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: workflow_definition %d (missing or not PUBLISHED)", engine.ErrNotFound, id)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scheduler: read definition %d: %w", id, err)
+	}
+	if !r.version.Valid {
+		return nil, fmt.Errorf("scheduler: definition %d has NULL version (unpublished draft)", id)
+	}
+	return &r, nil
+}
+
 type executionRow struct {
 	definitionID uint64
 	input        json.RawMessage
@@ -173,12 +193,19 @@ func (s *Scheduler) loadExecution(ctx context.Context, id uint64) (*executionRow
 }
 
 // loadWorkflow 读定义并解析为拓扑视图。DSL 落库前已经 T1.1/T1.2 双层校验
-// (发布闸),此处 Parse 失败 = 数据缺陷,响亮上抛。
+// (发布闸),此处 Parse 失败 = 数据缺陷,响亮上抛。Start/Complete 用本形态
+// (状态不设限:定义钉住于 Instantiate,后续 ARCHIVED 不影响运行中实例——
+// DDL 生命周期契约)。
 func (s *Scheduler) loadWorkflow(ctx context.Context, definitionID uint64) (*dsl.Workflow, *dag, error) {
 	def, err := s.loadDefinition(ctx, definitionID)
 	if err != nil {
 		return nil, nil, err
 	}
+	return workflowFromDef(definitionID, def)
+}
+
+// workflowFromDef 从已读定义行解析拓扑(Instantiate 复用同一行,免二次读)。
+func workflowFromDef(definitionID uint64, def *definitionRow) (*dsl.Workflow, *dag, error) {
 	wf, err := dsl.Parse(def.dsl)
 	if err != nil {
 		return nil, nil, fmt.Errorf("scheduler: definition %d dsl: %w", definitionID, err)
@@ -210,11 +237,11 @@ func (s *Scheduler) Instantiate(ctx context.Context, p InstantiateParams) (uint6
 	if p.TriggeredBy == "" {
 		return 0, errors.New("scheduler: empty triggered_by")
 	}
-	def, err := s.loadDefinition(ctx, p.DefinitionID)
+	def, err := s.loadPublishedDefinition(ctx, p.DefinitionID)
 	if err != nil {
 		return 0, err
 	}
-	_, g, err := s.loadWorkflow(ctx, p.DefinitionID)
+	_, g, err := workflowFromDef(p.DefinitionID, def)
 	if err != nil {
 		return 0, err
 	}
@@ -225,6 +252,12 @@ func (s *Scheduler) Instantiate(ctx context.Context, p InstantiateParams) (uint6
 	input := p.Input
 	if len(input) == 0 {
 		input = json.RawMessage("{}")
+	}
+	// 触发时拒非对象输入({{inputs.*}} 解析面 = 顶层对象):放行会在 Start
+	// 处确定性失败,经 asynq 重试后 archived、执行永卡 PENDING(review M2)。
+	var inputShape map[string]json.RawMessage
+	if err := json.Unmarshal(input, &inputShape); err != nil {
+		return 0, fmt.Errorf("scheduler: workflow input must be a JSON object: %w", err)
 	}
 	triggerType := p.TriggerType
 	if triggerType == "" {
@@ -362,7 +395,7 @@ func (s *Scheduler) Complete(ctx context.Context, req CompletionRequest) error {
 		return err
 	}
 	for attempt := 0; ; attempt++ {
-		_, err := s.completeOnce(ctx, req, wf, g, exec.input)
+		err := s.completeOnce(ctx, req, wf, g, exec.input)
 		if err == nil {
 			return nil
 		}
@@ -382,8 +415,9 @@ func (s *Scheduler) Complete(ctx context.Context, req CompletionRequest) error {
 }
 
 func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
-	wf *dsl.Workflow, g *dag, wfInput json.RawMessage) (termGuard bool, err error) {
-	err = engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+	wf *dsl.Workflow, g *dag, wfInput json.RawMessage) error {
+	var termGuard bool
+	err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
 		// 1. 有序全行锁(当前读):本执行全部节点行,node_id 升序。
 		rows, err := lockAllRows(ctx, q, req.ExecID, g)
 		if err != nil {
@@ -479,17 +513,17 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 		return engine.TouchExecution(ctx, q, req.ExecID)
 	})
 	if err != nil {
-		return false, err
+		return err
 	}
 	if termGuard {
-		return true, nil
+		return nil
 	}
 	// 提交后新事务判终态:新鲜快照见全部已提交(含本事务);失败只记日志不
 	// 上抛(task 已完成,卡终态留 T2.5 扫描兜底——与任意崩溃同级)。
 	if ferr := s.finishIfDone(ctx, req.ExecID, wf, wfInput); ferr != nil {
 		s.log.Error("execution.finish_check_failed", "execution_id", req.ExecID, "err", ferr)
 	}
-	return false, nil
+	return nil
 }
 
 // finishIfDone 在提交后新事务判定 SUCCEEDED 收口:无 PENDING/EXECUTING/

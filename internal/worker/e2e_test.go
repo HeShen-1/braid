@@ -45,8 +45,8 @@ func TestE2EBranchPipeline(t *testing.T) {
   {"id":"d","type":"llm","prompt":{"template":"d"},"outputs":{"text":"string"}}],
  "outputs":{"taken":"{{nodes.c.output.text}}","cut":"{{nodes.d.output.text}}"}}`, defID)
 	if _, err := d.Exec(`INSERT INTO workflow_definition
-	  (id, name, version, dsl_version, dsl, dsl_hash, created_by, updated_by)
-	  VALUES (?, ?, 1, '1.0', ?, ?, 'e2e', 'e2e')`,
+	  (id, name, version, status, dsl_version, dsl, dsl_hash, created_by, updated_by, published_by, published_at)
+	  VALUES (?, ?, 1, 'PUBLISHED', '1.0', ?, ?, 'e2e', 'e2e', 'e2e', NOW(3))`,
 		defID, fmt.Sprintf("e2e-%d", defID), dslDoc, string(make([]byte, 64))); err != nil {
 		t.Fatalf("seed definition: %v", err)
 	}
@@ -179,8 +179,8 @@ func TestE2EDoubleStartConverges(t *testing.T) {
 	dslDoc := fmt.Sprintf(`{"dsl":"1.0","name":"e2e2-%d",
  "nodes":[{"id":"a","type":"llm","prompt":{"template":"x"},"outputs":{"text":"string"}}]}`, defID)
 	if _, err := d.Exec(`INSERT INTO workflow_definition
-	  (id, name, version, dsl_version, dsl, dsl_hash, created_by, updated_by)
-	  VALUES (?, ?, 1, '1.0', ?, ?, 'e2e', 'e2e')`,
+	  (id, name, version, status, dsl_version, dsl, dsl_hash, created_by, updated_by, published_by, published_at)
+	  VALUES (?, ?, 1, 'PUBLISHED', '1.0', ?, ?, 'e2e', 'e2e', 'e2e', NOW(3))`,
 		defID, fmt.Sprintf("e2e2-%d", defID), dslDoc, string(make([]byte, 64))); err != nil {
 		t.Fatalf("seed definition: %v", err)
 	}
@@ -316,7 +316,6 @@ func cleanupE2E(t *testing.T, d *sql.DB, execID, defID uint64) {
 		`DELETE FROM node_attempt WHERE execution_id=?`,
 		`DELETE FROM node_execution WHERE execution_id=?`,
 		`DELETE FROM workflow_execution WHERE id=?`,
-		`DELETE FROM workflow_definition WHERE id=?`,
 	} {
 		if _, err := d.Exec(q, execID); err != nil {
 			t.Fatalf("cleanup %q: %v", q, err)
