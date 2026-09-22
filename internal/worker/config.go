@@ -48,7 +48,7 @@ var queueNameRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 // Validate 报告配置矛盾(启动即败,不进运行期)。上界对着真实表示域:
 // Concurrency ≤ 256 防误配打爆 DB 连接池;HeartbeatInterval/RetryDelay 下限
-// 10ms 防心跳风暴与忙重试;NaN/±Inf 穿透一切比较,显式拒绝(与 relay 同规)。
+// 10ms 防心跳风暴与忙重试。
 func (c Config) Validate() error {
 	switch {
 	case c.Concurrency < 1:

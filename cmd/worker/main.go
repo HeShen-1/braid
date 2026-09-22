@@ -43,6 +43,9 @@ func run(ctx context.Context) error {
 			return fmt.Errorf("worker: hostname (set BRAID_WORKER_ID to override): %w", err)
 		}
 		cfg.WorkerID = hn
+		if err := cfg.Validate(); err != nil { // hostname 后填,补校验(DDL 64 上限)
+			return err
+		}
 	}
 	dsn := os.Getenv("BRAID_MYSQL_DSN")
 	if dsn == "" {

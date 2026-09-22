@@ -329,21 +329,26 @@ func waitTaskGone(t *testing.T, insp *asynq.Inspector, queue, taskID string) {
 	t.Fatalf("task %s record still present after 15s", taskID)
 }
 
-// waitTaskState 轮询至任务达期望态(超时 fatal 附最后观测)。
+// waitTaskState 轮询至任务达期望态(超时 fatal 附最后观测;Inspector 瞬时
+// 错误不 fatal,与 waitAttemptStatus 同款韧性)。
 func waitTaskState(t *testing.T, insp *asynq.Inspector, queue, taskID string, want asynq.TaskState) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
-	var last = asynq.TaskState(0)
+	var lastState = asynq.TaskState(0)
+	var lastErr error
 	for time.Now().Before(deadline) {
 		info, err := insp.GetTaskInfo(queue, taskID)
 		if err != nil {
-			t.Fatalf("get task info: %v", err)
+			lastErr = err
+			time.Sleep(20 * time.Millisecond)
+			continue
 		}
-		last = info.State
+		lastErr, lastState = nil, info.State
 		if info.State == want {
 			return
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("task %s did not reach state %d within 15s (last=%d)", taskID, want, last)
+	t.Fatalf("task %s did not reach state %d within 15s (last state=%d, last err=%v)",
+		taskID, want, lastState, lastErr)
 }

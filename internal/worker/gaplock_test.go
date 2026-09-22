@@ -80,8 +80,16 @@ SELECT id FROM outbox
 	done := make(chan result, 1)
 	go func() {
 		t0 := time.Now()
-		attID, _ := ids.Next() // goroutine 内错误经 result.err 回传
-		evtID, _ := ids.Next()
+		attID, err := ids.Next()
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
+		evtID, err := ids.Next()
+		if err != nil {
+			done <- result{err: err}
+			return
+		}
 		rerr := engine.WithTx(ctx, d, func(q engine.DBTX) error {
 			if err := engine.InsertAttempt(ctx, q, engine.AttemptParams{
 				ID:             attID,

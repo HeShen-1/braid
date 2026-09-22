@@ -123,14 +123,14 @@ func Run(ctx context.Context, d Deps, cfg Config, opt asynq.RedisClientOpt) erro
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(EventTypeNodeTask, h.handleNodeTask)
 
+	if err := srv.Start(mux); err != nil {
+		return fmt.Errorf("worker: start server: %w", err)
+	}
 	log.Info("worker.started",
 		"concurrency", cfg.Concurrency, "queues", cfg.Queues,
 		"worker_id", cfg.WorkerID, "heartbeat_interval", cfg.HeartbeatInterval,
 		"retry_delay", cfg.RetryDelay, "shutdown_timeout", cfg.ShutdownTimeout)
 	defer log.Info("worker.stopped")
-	if err := srv.Start(mux); err != nil {
-		return fmt.Errorf("worker: start server: %w", err)
-	}
 	<-ctx.Done()
 	srv.Shutdown()
 	return nil
@@ -170,8 +170,11 @@ func (h *attHandler) handleNodeTask(ctx context.Context, t *asynq.Task) error {
 		return nil // 已终态:晚到重投幂等收敛
 	}
 
-	// 心跳与执行同生命周期:executor 返回即停,收口在心跳停止后的事务里
-	// (heartbeat WHERE status='RUNNING' 与 CloseAttempt 无同事务竞争面)。
+	// 心跳与执行同生命周期:executor 返回即停(defer 在 return 求值后执行,
+	// 心跳事务与收口事务可能短暂并发)。安全不变量 = 两者对 attempt →
+	// workflow_execution 同序加锁(无 AB-BA 面),且心跳 UPDATE 带
+	// WHERE status='RUNNING'、CloseAttempt 撞并发收口有结构化 ErrConflict:
+	// 任意交错都收敛(后提交的心跳 0 行静默让位)。
 	hbCtx, stopHeartbeat := context.WithCancel(ctx)
 	go h.heartbeat(hbCtx, attemptID, p.ExecutionID)
 	defer stopHeartbeat()
@@ -226,6 +229,15 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 			return 0, nil
 		}
 		h.log.Info("attempt.takeover", "attempt_id", rowID, "task_id", taskID)
+		// 接管即重置存活窗口:行上 heartbeat_at 停在上一任最后心跳,最坏
+		// 陈旧度 ≈ RetryDelay + HeartbeatInterval(默认 15s),不重置则 T2.5
+		// 判死 grace 必须显式覆盖该缺口(该假设已钉进 T2.5 issue)。尽力
+		// 语义:失败记日志不阻断接管——本发执行的常规心跳随即接管窗口。
+		if err := engine.WithTx(ctx, h.deps.DB, func(q engine.DBTX) error {
+			return engine.TouchAttemptHeartbeat(ctx, q, rowID, p.ExecutionID)
+		}); err != nil {
+			h.log.Warn("takeover.heartbeat_reset_fail", "attempt_id", rowID, "err", err)
+		}
 		return rowID, nil
 	default:
 		return 0, fmt.Errorf("worker: insert attempt (task %s): %w", taskID, err)
