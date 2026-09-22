@@ -1,14 +1,14 @@
 # braid 路线图(P0)
 
-> 任务真源 = 本文件。完成即勾选 `[x]` 并 commit;新任务追加到对应里程碑末尾(标注发现日期);砍掉的任务划线注明原因,不删除。
-> 规模:S = 半天内,M = 1-2 天,L = 3+ 天(全职当量)。约 33 任务:全职当量 6-8 周,断续投入约 3-4 个月。
+> 任务定义与依赖真源 = 本文件;执行状态真源 = GitHub issues(认领/进行中/闭环,`gh issue list`)。**2026-09-22 起本文件不再维护勾选**(存量 `[x]` 保留为历史);勾选提交随任务 PR,merge 即生效,PR 描述带 `Closes #N` 自动关 issue(D-2026-09-22-git-native-collab)。新任务追加到对应里程碑末尾(标注发现日期);砍掉的任务划线注明原因,不删除。
+> 规模:S = 半天内,M = 1-2 天,L = 3+ 天(全职当量)。约 37 任务:全职当量 6-8 周,断续投入约 3-4 个月。
 > 里程碑依赖:M1 → M2 → (M3 ∥ M5)→ M4 → M6 → M7 → M8。任务级依赖单独标注,**冲突时以任务级为准**。P1 停车场见文末。
 
 ## 会话工作流
 
-1. 会话开始:按 AGENTS.md 交接规则读 `.handoff/HANDOFF.md` → 读本文件定位下一个未完成任务。
+1. 会话开始:按 AGENTS.md 交接规则读 `.handoff/HANDOFF.md` → 读本文件定位下一任务(执行状态看 `gh issue list`,未建 issue 的先建/认领)。
 2. 一次会话只做一个任务(或其子块);铁律见 CLAUDE.md(@AGENTS.md)。
-3. 完成 → 勾选 + commit;ctx > 50% 或到断点 → `/handoff` 写交接。
+3. 完成 → 勾选随任务 PR 提交(merge 即生效 + `Closes #N`);ctx > 50% 或到断点 → `/handoff` 写交接。
 
 ## M1 契约先行(3-4 晚)
 
@@ -23,8 +23,9 @@
 - [x] T2.2 outbox 同事务写入 + relay 投递 — M — 依赖 T2.1 — 验收:**判别性故障测试**——状态写入后、outbox 写入前注入失败(断连/panic),断言两写同事务回滚;relay 标记成功前 kill -9 relay,重启后同事件重投递且下游幂等 — ✅ 2026-09-21:internal/{outbox,relay,snowflake,redistest} + cmd/relay;链路 = 3 视角独立设计 → 评审合成(单事件单事务裁决)→ 6 视角对抗审计(43 发现:1 high/11 medium/31 low,0 blocking,全部修复或有记录移交)+ 4 变异验证(其一揪出 SKIP LOCKED 测试真空洞断言,已改 payload 级投递归属断言);验收① = 正例对照 + panic 变体 + KILL 断连变体(CONNECTION_ID 经事务自身连接,fn 体内串行零竞态);验收② = TestMain 子进程 READY 哨兵行(携行身份)+ stdin 阻塞构造性证明 → SIGKILL → A1-A4 → 重启冲突收敛 B1-B4 + 冲突检测门(真实双入队 errors.Is);另 SKIP LOCKED 阻塞证明反演、双 relay 恰 M 次投递、退避/DEAD、available_at 门控(带活性对照)、停机中断不动行、雪花全套(布局/单调/有界回拨/序列耗尽/-race 唯一);errTaskIDConflict 冲突含 archived(滞留无保证上界)→ DISPATCHED 安全前提 = TaskID 词表不变量(resume: 豁口记档,T4.2 承接);DECISIONS 追加 D-2026-09-21-snowflake-rollback-bounded(DDL 头注释同步修订);t13 栈加 16379 Redis(noeviction、无持久化、tmpfs)
 - [ ] T2.3 Asynq 执行器(MaxRetry=1、确定性 TaskID、attempt 记录)— M — 依赖 T2.2 — 验收:重复投递被 ErrTaskIDConflict 收敛,attempt 落库;T2.2 审计移交:①执行级幂等锚 = worker attempt 唯一键(ErrTaskIDConflict 仅任务记录存活期内收敛,无 Retention 下完成即删,重投会二次执行);②MaxRetry=1 实际语义 = asynq 自管一次内部重试(server 默认 15-45s 退避)后 archived,需显式决定 RetryDelayFunc 与平台重试的叠加;③实证 relay 锁窗(FOR UPDATE SKIP LOCKED 跨 Redis RTT)与引擎同事务 outbox.Append INSERT 的 gap 锁交互;④测试包接入 redistest 时必须选独立 BRAID_TEST_REDIS_DB(go test 跨包并行 FlushDB 互踩)
 - [ ] T2.4 DAG 调度器(入度推进、**桩谓词路由**、执行完成回写)— M — 依赖 T2.3 — 验收:入度推进单测(多前驱、跳过分支);branch 用显式布尔字段路由,完整求值在 T3.4
-- [ ] T2.5 reconciler(超时扫描、幂等重入队或标 FAILED、Redis 锁选主)— M — 依赖 T2.2 — 验收:kill -9 worker 中途 + 断 Redis 30s,**扫描间隔×3 内 execution 无人工干预达 SUCCEEDED/FAILED 终态**;reaper 兼任 audit_log 分区水位作业(≥7 天未来分区预建 ADD PARTITION、超保留期整分区 DROP——T1.3 审计确认承载)+ outbox DISPATCHED 行按 dispatched_at 7 天批量清理(T2.2 审计移交)
+- [ ] T2.5 reconciler(超时扫描、幂等重入队或标 FAILED、Redis 锁选主)— M — 依赖 T2.2 — 验收:kill -9 worker 中途 + 断 Redis 30s,**扫描间隔×3 内 execution 无人工干预达 SUCCEEDED/FAILED 终态**;reaper 兼任 audit_log 分区水位作业(≥7 天未来分区预建 ADD PARTITION、超保留期整分区 DROP——T1.3 审计确认承载)+ outbox DISPATCHED 行按 dispatched_at 7 天批量清理(T2.2 审计移交);前置约束(D-2026-09-22):T2.3 落地的确定性 TaskID 契约必须先钉死(写进 issue body)
 - [ ] T2.6 最小同步审计写入器(直写 audit_log:触发者、attempt、事件类型;trace_id 字段占位)— S — 依赖 T2.1 — 验收:每次节点状态迁移产生对应审计行
+- [ ] T2.7 测试隔离 env 化(worktree 并行地基,2026-09-22 D-2026-09-22-git-native-collab)— S — 依赖 T2.2 — 验收:schema 名 = base + "_" + sha256(worktree 根绝对路径)[:8](base ∈ {braid_engine_test, braid_relay_test, braid}),wtKey 由 os.Getwd() 向上找 go.mod 自动推导(kill_test 子进程 cwd 继承天然成立),`BRAID_TEST_SCHEMA_SUFFIX` 可选覆盖(CI/调试);新增 `BRAID_TEST_MYSQL_DSN`(sqltest 与 migrate_test 共用此口,默认值不变),db 包测试脱离 dev 库 `braid` 改用 `braid_<wtKey>` 独立 schema;`BRAID_TEST_REDIS_DB` 保留不换名、语义扩为 worktree 槽位(DB = 槽位×4 + 包基号,分配表见 AGENTS.md;redistest 零代码改动,组合发生在消费包 TestMain);**单 worktree 行为零变化(所有默认值=现状)**;约 4 文件、净增 40-60 行、零 compose 改动;TDD。c 级(每 worktree 独立栈)按需升级:b 删 t13 compose 硬编码 container_name(纯减法)+ 端口改 `${BRAID_T13_*_PORT:-默认}`(host = base + 槽位×10)+ `-p braid-t13-<slot>`,触发条件 = 活进程联调/整栈重置
 
 里程碑验收:桩 LLM + 桩谓词端到端跑通「LLM → branch → LLM」,全程审计行可查。
 
