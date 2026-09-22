@@ -45,6 +45,10 @@ jobs:
   gitleaks:
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      # PR 事件下列提交扫增量,需 pulls 读权限(其余作业不受影响)
+      contents: read
+      pull-requests: read
     steps:
       - uses: actions/checkout@v7.0.1
         with:
