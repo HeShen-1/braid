@@ -11,11 +11,34 @@ import (
 
 // testBaseDSN 指向 deploy/migrate-test.docker-compose.yml 起的验证容器
 // (docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d)。
-// 凭证是该一次性本地容器的占位值,非任何真实系统凭证。
-const testBaseDSN = "root:braid_dev_root@tcp(127.0.0.1:13306)/braid"
+// 凭证是该一次性本地容器的占位值,非任何真实系统凭证。schema 经
+// TestSchema("braid") 拼 worktree 后缀(T2.7):脱离旧固定库名,并行
+// worktree 互不互踩;server 级 DSN 与 sqltest 共用 BRAID_TEST_MYSQL_DSN 口。
+var testBaseDSN = TestServerDSN() + TestSchema("braid")
+
+// ensureTestSchema 懒建本包独立 schema:本包 DSN 直连带库名,库不存在时
+// Ping 即「Unknown database」→ 会被误判成栈不可达而全量 skip(sqltest 的
+// initSchema 在消费包,此处不 import 它防循环)。
+func ensureTestSchema(t *testing.T) {
+	t.Helper()
+	admin, err := sql.Open("mysql", CanonicalDSN(TestServerDSN()))
+	if err != nil {
+		t.Skipf("mysql driver: %v", err)
+	}
+	defer func() { _ = admin.Close() }()
+	if err := admin.Ping(); err != nil {
+		t.Skipf("braid-t13-mysql 不可达,先起验证容器: %v", err)
+	}
+	if _, err := admin.Exec(
+		`CREATE DATABASE IF NOT EXISTS ` + TestSchema("braid") +
+			` CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci`); err != nil {
+		t.Fatalf("create %s: %v", TestSchema("braid"), err)
+	}
+}
 
 func mustSQL(t *testing.T) *sql.DB {
 	t.Helper()
+	ensureTestSchema(t)
 	d, err := sql.Open("mysql", CanonicalDSN(testBaseDSN))
 	if err != nil {
 		t.Skipf("mysql driver: %v", err)
@@ -29,6 +52,7 @@ func mustSQL(t *testing.T) *sql.DB {
 
 func newMigrator(t *testing.T) *migrate.Migrate {
 	t.Helper()
+	ensureTestSchema(t)
 	src, err := iofs.New(migrationsFS, "migrations")
 	if err != nil {
 		t.Fatalf("migration source: %v", err)

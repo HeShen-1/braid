@@ -3,11 +3,13 @@
 // 容器不可达时调用方自动 skip。与 sqltest 同模式(仅回环、占位凭证、down 即清)。
 //
 // 隔离策略(两层):
-//  1. DB 号:RedisClientOpt 的 DB 取 env BRAID_TEST_REDIS_DB(默认 0)。**每个
-//     使用本包的测试包必须在 TestMain 里选定互不相同的 DB 号**——go test ./...
-//     按包并行跑独立进程,FlushDB 清的是整个所选 DB,两个包共用同一 DB 号会
-//     互清对方 mid-flight 状态(T2.3 worker 包接入前必读;DB 号分配表随 T7.1
-//     配置化收编);
+//  1. DB 号:RedisClientOpt 的 DB 取 env BRAID_TEST_REDIS_DB(默认 0)。该 env
+//     语义 = worktree 槽位(T2.7;基号与槽位分配表见 AGENTS.md「远端与并行
+//     协作」)。**每个使用本包的测试包必须在 TestMain 里调 db.TestRedisDB(<包
+//     基号>) 把槽位组合为绝对 DB 号并写回同名 env**(范例 internal/relay/
+//     kill_test.go)。本包零改动、只读绝对号——漏写组合器的包会把槽位号当
+//     绝对号解析,并行 worktree 下静默互踩(T2.3 worker / 后续 reaper 接入
+//     前必读);
 //  2. 键名:asynq 键内嵌队列名,每测试用唯一队列名即键级隔离(并行安全、
 //     -count=1 重跑安全);task_id 由 per-process 唯一 ID 派生,跨运行不撞。
 //

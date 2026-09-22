@@ -37,16 +37,35 @@ import (
 
 	"github.com/hibiken/asynq"
 
+	"braid/internal/db"
 	"braid/internal/db/sqltest"
 	"braid/internal/redistest"
 )
 
 const childEnv = "BRAID_RELAY_CHILD=1"
 
+// relayRedisBase:relay 包的 Redis 基号(AGENTS.md 槽位表:relay=0、
+// worker=1、reaper=2;绝对 DB = worktree 槽位×4 + 基号)。
+const relayRedisBase = 0
+
 func TestMain(m *testing.M) {
 	if os.Getenv("BRAID_RELAY_CHILD") == "1" {
+		// kill 子进程:env 里 BRAID_TEST_REDIS_DB 已是父进程组合好的绝对号,
+		// 直接用;不重跑组合(绝对号会被再当槽位解析而越界)。
 		killChildMain()
 		return
+	}
+	// T2.7:BRAID_TEST_REDIS_DB 语义 = worktree 槽位,TestMain 组合为绝对
+	// DB 号(槽位×4 + relay 基号)写回同名 env——redistest 零改动,读到的
+	// 即绝对号;非法槽位响亮退出(静默回退 DB 0 会并行互踩)。
+	redisDB, err := db.TestRedisDB(relayRedisBase)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	if err := os.Setenv("BRAID_TEST_REDIS_DB", strconv.Itoa(redisDB)); err != nil {
+		fmt.Fprintf(os.Stderr, "set BRAID_TEST_REDIS_DB: %v\n", err)
+		os.Exit(2)
 	}
 	// 父进程专属清扫:relay 轮询与 kill 子进程都是全 schema 扫描(无归属
 	// 过滤),上一轮被中断留下的 PENDING 行(id 更小,ORDER BY id 先被捡走)
