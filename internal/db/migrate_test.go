@@ -74,6 +74,15 @@ var engineTables = map[string]bool{
 	"audit_log":           true,
 }
 
+// authTables:0002 起按域分 map 登记(T5.1)——后续新增域只加自己的 map,
+// 不改写 engine map 的语义;assertTables 遍历全部域。
+var authTables = map[string]bool{
+	"users":     true,
+	"user_role": true,
+}
+
+var allDomainTables = []map[string]bool{engineTables, authTables}
+
 func tables(t *testing.T, d *sql.DB) map[string]bool {
 	t.Helper()
 	rows, err := d.Query("SHOW TABLES")
@@ -92,20 +101,24 @@ func tables(t *testing.T, d *sql.DB) map[string]bool {
 	return got
 }
 
-func assertTables(t *testing.T, d *sql.DB, wantEngine bool) {
+func assertTables(t *testing.T, d *sql.DB, wantAll bool) {
 	t.Helper()
 	got := tables(t, d)
 	if g := got["schema_migrations"]; !g {
 		t.Fatalf("schema_migrations 缺失: %v", got)
 	}
-	for name := range engineTables {
-		if got[name] != wantEngine {
-			t.Fatalf("表 %s 存在=%v, 期望=%v; 全部: %v", name, got[name], wantEngine, got)
+	total := 0
+	for _, domain := range allDomainTables {
+		for name := range domain {
+			if got[name] != wantAll {
+				t.Fatalf("表 %s 存在=%v, 期望=%v; 全部: %v", name, got[name], wantAll, got)
+			}
 		}
+		total += len(domain)
 	}
 	want := 1 // schema_migrations
-	if wantEngine {
-		want = len(engineTables) + 1
+	if wantAll {
+		want = total + 1
 	}
 	if len(got) != want {
 		t.Fatalf("表数量 %d ≠ 期望 %d: %v", len(got), want, got)
@@ -194,15 +207,15 @@ func TestSchemaContract(t *testing.T) {
 		}
 	}
 
-	// CHECK 约束齐备:6 个(definition 1 + node 2 + attempt 2 + audit 1)
+	// CHECK 约束齐备:8 个(definition 1 + node 2 + attempt 2 + audit 1 + users 2)
 	var checks int
 	if err := d.QueryRow(
 		`SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
 		 WHERE CONSTRAINT_SCHEMA = DATABASE()`).Scan(&checks); err != nil {
 		t.Fatalf("check constraints: %v", err)
 	}
-	if checks != 6 {
-		t.Fatalf("check constraints = %d, want 6", checks)
+	if checks != 8 {
+		t.Fatalf("check constraints = %d, want 8", checks)
 	}
 
 	// T6.1 对账索引存在
