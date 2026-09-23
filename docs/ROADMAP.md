@@ -34,7 +34,7 @@
 - [ ] T3.1 LLMClient 抽象 + OpenAI 兼容适配器(退避重试、幂等键、usage/cost 台账、预算估算:未知模型 fallback 标 `estimated=true`)— M — 依赖 M2 — 验收:固定 mock usage 下台账金额与 usage 断言一致
 - [ ] T3.2 工具 registry + ToolRunner 接口 + 本地进程实现 + per-call scoped token(签发/过期/传递)— M — 依赖 M2、T2.6 — 验收:token 过期后工具调用被拒;审计行与沙箱环境均不含平台主凭证
 - [ ] T3.3 HTTP 工具 SSRF 运行时防护(Dialer.Control 拨号复核 IP、CheckRedirect 每跳重校验剥凭证、仅 https)— M — 依赖 T3.2 — 验收:私网段/metadata 段、重定向跳内网、DNS rebinding(TOCTOU)单测;**DSL 层 host 白名单拒绝用例**(host 字段出现即 schema 拒绝)
-- [ ] T3.4 条件分支完整求值器(替换 T2.4 桩)— S — 依赖 M2 — 验收:引用比较、多条件组合、类型错误单测
+- [x] T3.4 条件分支完整求值器(替换 T2.4 桩)— S — 依赖 M2 — 验收:引用比较、多条件组合、类型错误单测 — ✅ 2026-09-23:internal/scheduler CondRouter 替换 StubRouter(Router 缝唯一替换点,sched.New 默认换装 + 接线断言);op 词表全实现(exists/eq/ne/gt/gte/lt/lte/contains,右值 = 字面量或纯引用→引用比较,镜像 T1.2 静态口径);数值口径 = int64 精确优先 float64 兜底(1==1.0,2^53 边界钉死);equalValues 递归深相等(容器内数值同样归一);exists = 引用可解析(未命中是 false——剪枝臂探测);求值错 fail-fast 收口 branch_eval(D-t24 不变);47 子测试 + 变异验证 4/4(kind 检查/first-match 短路/int64 精确路径/exists 语义,各被恰好目标子测试杀死);sched/audit/worker-e2e 既有 DSL 全形态零改动兼容;三件套 + -race 绿;ECC 评审 APPROVE(0 blocking,2 LOW advisory 已吸收:桩注释漂移、ROADMAP 勾选)
 - [ ] T3.5 内置工具:http + file_read(路径白名单)— M — 依赖 T3.2、T3.3 — 验收:白名单外路径/主机被拒;db_query 在 P1 停车场
 
 里程碑验收:真实 LLM 跑通「文件路径输入 → file_read → 摘要 → 完整条件分支」示例(测试代码触发)。

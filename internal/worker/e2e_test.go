@@ -6,7 +6,7 @@ package worker
 // 执行 SUCCEEDED + outputs 物化。审计行断言归 T2.6(里程碑验收的另一半)。
 //
 // 变异自查:调度器没接 Complete → 执行卡 RUNNING(轮询超时红);relay 未起 →
-// 同样卡(exec: 事件无人投);桩路由未按布尔 → d/c 状态断言红。
+// 同样卡(exec: 事件无人投);路由谓词失真 → d/c 状态断言红。
 
 import (
 	"context"
