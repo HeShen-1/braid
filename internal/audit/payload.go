@@ -7,14 +7,15 @@ import "time"
 // 携带约定:状态迁移行 attempt_no 为迁移时的工作 attempt(claim 语义:已 +1);
 // 观察者路径(Complete/reaper)同时携 attempt_id 列锚定具体 attempt 行。
 
-// NodeStateChangedPayload 是 node.state_changed 的事件体。
+// NodeStateChangedPayload 是 node.state_changed 的事件体。无 Msg 字段——自由
+// 文本违反 D-t26 §4「payload 只含 id/码/枚举」,失败摘要真相源在
+// node_execution.error_message(review 修;T6.1 脱敏钩子落地后再评估放开)。
 type NodeStateChangedPayload struct {
 	From      string `json:"from"` // 迁移前状态(NodeState)
 	To        string `json:"to"`   // 迁移后状态
 	NodeID    string `json:"node_id"`
 	Version   uint32 `json:"version"`              // 迁移后行版本
 	Code      string `json:"code,omitempty"`       // FAILED 路径:error_code
-	Msg       string `json:"msg,omitempty"`        // FAILED 路径:摘要
 	AttemptNo uint16 `json:"attempt_no,omitempty"` // 关联 attempt 序号(1 起,0=未触 attempt)
 	WorkerID  string `json:"worker_id,omitempty"`  // 归因快照(行内 worker_id)
 }

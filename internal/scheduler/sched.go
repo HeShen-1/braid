@@ -529,7 +529,7 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 				}
 				if err := st.auditRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
 					From: string(engine.NodeExecuting), To: string(engine.NodeFailed),
-					NodeID: n.nodeID, Version: failVer, Code: code, Msg: req.Msg,
+					NodeID: n.nodeID, Version: failVer, Code: code,
 					AttemptNo: n.attempts, WorkerID: n.workerID.String,
 				}); err != nil {
 					return err

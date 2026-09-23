@@ -314,10 +314,10 @@ SELECT COUNT(*) FROM outbox
 				}
 				return err
 			}
-			if err := r.auditRow(ctx, q, audit.EventNodeStateChanged, execID, nodeExecID, 0, nodeID,
+			if err := r.auditRow(ctx, q, audit.EventNodeStateChanged, execID, nodeExecID, attID, nodeID,
 				audit.NodeStateChangedPayload{
 					From: string(nodeStatus), To: string(engine.NodeCancelled),
-					NodeID: nodeID, Version: cancelVer, WorkerID: workerID.String,
+					NodeID: nodeID, Version: cancelVer, AttemptNo: attempts, WorkerID: workerID.String,
 				}); err != nil {
 				return err
 			}

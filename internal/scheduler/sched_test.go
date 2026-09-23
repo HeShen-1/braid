@@ -22,6 +22,7 @@ import (
 	"testing"
 	"time"
 
+	"braid/internal/audit"
 	"braid/internal/db/sqltest"
 	"braid/internal/engine"
 	"braid/internal/snowflake"
@@ -723,6 +724,12 @@ func TestCompleteIdempotentReplay(t *testing.T) {
 	if b2.attempts != 1 || b2.version != b.version {
 		t.Fatalf("node b = %+v(重放引发重复派发)", b2)
 	}
+	// 收口权已旁落 ⇒ 幂等收敛零新增审计行(review 修:负向控制)。
+	assertAuditSequence(t, d, execID, []auditEvent{
+		wantEvent(audit.EventNodeStateChanged, "a", 0),
+		wantEvent(audit.EventNodeStateChanged, "a", attemptA),
+		wantEvent(audit.EventNodeStateChanged, "b", 0),
+	})
 }
 
 func TestTerminalGuardStopsAdvancement(t *testing.T) {
@@ -747,6 +754,14 @@ func TestTerminalGuardStopsAdvancement(t *testing.T) {
 	if got := readNode(t, d, execID, "e2").status; got != engine.NodeSucceeded {
 		t.Fatalf("node e2 = %s, want SUCCEEDED(迟到收口仍执行)", got)
 	}
+	// 迟到收口在守卫下仍落迁移审计行(守卫只阻断推进,不阻断收口;review 修:
+	// 该不变量此前无断言,守卫上移过 auditRow 的变异不可见)。
+	assertAuditSequence(t, d, execID, []auditEvent{
+		wantEvent(audit.EventNodeStateChanged, "e1", 0),
+		wantEvent(audit.EventNodeStateChanged, "e2", 0),
+		wantEvent(audit.EventNodeStateChanged, "e1", attemptE1),
+		wantEvent(audit.EventNodeStateChanged, "e2", attemptE2),
+	})
 }
 
 // TestInstantiateRejectsNonPublishedAndBadInput:review M1/M2 回归——ARCHIVED

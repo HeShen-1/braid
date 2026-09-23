@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"unicode/utf8"
 
 	"braid/internal/engine"
 )
@@ -124,6 +125,12 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 	if evt.AttemptID != 0 {
 		attemptID = evt.AttemptID
 	}
+	// 空 NodeID → NULL(DDL:NULL=执行级事件,查询按 IS NULL 判别,'' 会静默
+	// 错分类——review 修,与其余三列的零值规范化同形)。
+	nodeID := any(evt.NodeID)
+	if evt.NodeID == "" {
+		nodeID = nil
+	}
 	if evt.TraceID != "" {
 		trace = evt.TraceID
 	}
@@ -133,7 +140,7 @@ INSERT INTO audit_log
    node_id, attempt_id, actor_type, actor_id, trace_id, payload)
 SELECT ?, DATE(created_at), NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?
   FROM workflow_execution WHERE id = ?`,
-		evt.ID, evt.EventType, evt.ExecutionID, nodeExecID, evt.NodeID,
+		evt.ID, evt.EventType, evt.ExecutionID, nodeExecID, nodeID,
 		attemptID, evt.ActorType, evt.ActorID, trace, evt.Payload, evt.ExecutionID)
 	if err != nil {
 		return fmt.Errorf("audit: append %d (%s): %w", evt.ID, evt.EventType, err)
@@ -170,6 +177,12 @@ func validate(evt Event) error {
 	}
 	if !json.Valid(evt.Payload) {
 		return fmt.Errorf("%w: payload not valid JSON", ErrInvalidEvent)
+	}
+	// json.Valid 只查语法不查 UTF-8,而 MySQL 会原样存入非法字节(review 修:
+	// 产出 spec-invalid JSON 行,破坏 T6.1 哈希链规范化前提)。全部现有调用方
+	// 走 json.Marshal(自动 U+FFFD 替换),此校验是未来直传字节调用方的防线。
+	if !utf8.Valid(evt.Payload) {
+		return fmt.Errorf("%w: payload not valid UTF-8", ErrInvalidEvent)
 	}
 	return nil
 }

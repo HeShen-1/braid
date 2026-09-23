@@ -109,13 +109,13 @@ func buildSnapshot(n *dsl.Node, env *refEnv) (json.RawMessage, error) {
 }
 
 type llmSnapshotData struct {
-	System         string          `json:"system"`
-	Template       string          `json:"template"`
-	UserData       []llmUserDatum  `json:"user_data"`
-	Model          string          `json:"model"`
-	Temperature    float64         `json:"temperature"`
-	MaxTokens      int             `json:"max_tokens"`
-	ResponseFormat string          `json:"response_format"`
+	System         string         `json:"system"`
+	Template       string         `json:"template"`
+	UserData       []llmUserDatum `json:"user_data"`
+	Model          string         `json:"model"`
+	Temperature    float64        `json:"temperature"`
+	MaxTokens      int            `json:"max_tokens"`
+	ResponseFormat string         `json:"response_format"`
 }
 
 type llmUserDatum struct {

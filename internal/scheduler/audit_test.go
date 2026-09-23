@@ -130,6 +130,20 @@ func TestAuditTrailBranchAndSkip(t *testing.T) {
 		wantEvent(audit.EventNodeStateChanged, "c", 0), // 取路派发
 		wantEvent(audit.EventNodeStateChanged, "c", attC),
 	})
+
+	// 路由决定 payload:next 取路目标(review 修:分支语义判别)。
+	var raw []byte
+	if err := d.QueryRow(`SELECT payload FROM audit_log WHERE execution_id=? AND event_type=?`,
+		execID, audit.EventBranchEvaluated).Scan(&raw); err != nil {
+		t.Fatalf("read branch.evaluated payload: %v", err)
+	}
+	var bp audit.BranchEvaluatedPayload
+	if err := json.Unmarshal(raw, &bp); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if bp.NodeID != "b" || bp.Next != "c" {
+		t.Fatalf("branch.evaluated payload = %+v, want b/c", bp)
+	}
 }
 
 // TestAuditTrailRetryAndExhaust:重试路径 node.redispatched(status-preserving,

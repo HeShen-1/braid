@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"testing"
 
@@ -73,6 +74,11 @@ func TestValidateRejectsInvalidEvents(t *testing.T) {
 		{"trace id not hex", func(e *Event) { e.TraceID = "XYZ" }},
 		{"trace id wrong length", func(e *Event) { e.TraceID = "0123456789abcdef0123456789abcde" }},
 		{"payload not json", func(e *Event) { e.Payload = json.RawMessage(`{`) }},
+		{"payload invalid utf-8", func(e *Event) {
+			// json.Valid 只查语法:字符串内 0xFF 字节合法过检,但 MySQL 会原样
+			// 存入 → spec-invalid JSON 行(utf8.Valid 是防线,review 修)。
+			e.Payload = json.RawMessage{'"', 0xFF, '"'}
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -106,7 +112,11 @@ func TestValidateRejectsInvalidEvents(t *testing.T) {
 	}
 }
 
-// seedExec 落最小 definition + execution 对(FK),返回 execID。
+// seedExec 落最小 definition + execution 对(FK),返回 execID。created_at 钉在
+// 固定历史日期(必须在 0001 引导分区 [2026-09-21, 2026-10-04) 内):exec_date
+// 物化断言因此有判别力——DATE(NOW(3)) 变异会立即红(review 修)。
+const seedExecCreatedAt = "2026-09-22 12:00:00"
+
 func seedExec(t *testing.T, d *sql.DB) uint64 {
 	t.Helper()
 	defID := nextID(t)
@@ -123,9 +133,9 @@ func seedExec(t *testing.T, d *sql.DB) uint64 {
 	  VALUES (?, ?, 1, 'PUBLISHED', '1.0', '{}', ?, 'test', 'test', 'test', NOW(3))`,
 		defID, name, string(make([]byte, 64)))
 	ins(`INSERT INTO workflow_execution
-	  (id, definition_id, definition_name, definition_version, definition_hash, status, triggered_by, input)
-	  VALUES (?, ?, ?, 1, ?, 'RUNNING', 'audit-test', '{}')`,
-		execID, defID, name, string(make([]byte, 64)))
+	  (id, definition_id, definition_name, definition_version, definition_hash, status, triggered_by, input, created_at)
+	  VALUES (?, ?, ?, 1, ?, 'RUNNING', 'audit-test', '{}', ?)`,
+		execID, defID, name, string(make([]byte, 64)), seedExecCreatedAt)
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM audit_log WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)
@@ -201,14 +211,16 @@ func TestAppendMaterializesRow(t *testing.T) {
 		t.Fatalf("audit rows = %d, want 1", len(rows))
 	}
 	r := rows[0]
-	// exec_date = DATE(execution.created_at)(分区键物化,应用不传)。
+	// exec_date = DATE(execution.created_at),与写入时刻不同日(seed 钉
+	// 2026-09-22)——DATE(NOW(3)) 变异在此红(review 修:判别力)。驱动把
+	// DATE 回读成 time 字符串(RFC3339 形),字面比对用前缀。
 	var wantDate string
 	if err := d.QueryRow(`SELECT DATE(created_at) FROM workflow_execution WHERE id=?`, execID).
 		Scan(&wantDate); err != nil {
 		t.Fatalf("read exec created_at: %v", err)
 	}
-	if r.execDate != wantDate {
-		t.Fatalf("exec_date = %s, want %s", r.execDate, wantDate)
+	if r.execDate != wantDate || !strings.HasPrefix(wantDate, "2026-09-22") {
+		t.Fatalf("exec_date = %s, want %s(=2026-09-22)", r.execDate, wantDate)
 	}
 	if r.id != id || r.eventType != EventNodeStateChanged || r.executionID != execID {
 		t.Fatalf("row identity = %+v", r)
@@ -231,16 +243,21 @@ func TestAppendMaterializesRow(t *testing.T) {
 		t.Fatalf("payload = %+v", got)
 	}
 
-	// 空 payload 规范化为 {}(DDL:无正文事件存 {})。
+	// 空 payload 规范化为 {}(DDL:无正文事件存 {});空 NodeID → NULL
+	// (执行级事件的判别锚,'' 会静默错分类——review 修)。
 	if err := Append(context.Background(), d, Event{
 		ID: nextID(t), EventType: EventBranchEvaluated, ExecutionID: execID,
-		NodeExecID: 43, NodeID: "br", ActorType: ActorWorker, ActorID: "w1",
+		NodeExecID: 43, ActorType: ActorWorker, ActorID: "w1",
 	}); err != nil {
 		t.Fatalf("Append(empty payload): %v", err)
 	}
 	rows = readAudit(t, d, execID)
-	if string(rows[len(rows)-1].payload) != "{}" {
-		t.Fatalf("empty payload = %s, want {}", rows[len(rows)-1].payload)
+	last := rows[len(rows)-1]
+	if string(last.payload) != "{}" {
+		t.Fatalf("empty payload = %s, want {}", last.payload)
+	}
+	if last.nodeID.Valid {
+		t.Fatalf("empty node_id = %q, want NULL", last.nodeID.String)
 	}
 }
 
