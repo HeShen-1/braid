@@ -46,7 +46,11 @@ var ErrInvalidEvent = errors.New("audit: invalid event")
 //   - llm.call.completed:LLM 调用成功收口(T3.1),usage/cost 冗余列组唯一
 //     携带者(Event.Usage;与 node_attempt 双录,T6.4 聚合免解 JSON);
 //   - tool.call.completed:工具调用成功收口(T3.2,DDL 词表注释预留同名);
-//     payload 无 token/凭证(铁律),时长观测归 T6.4。
+//     payload 无 token/凭证(铁律),时长观测归 T6.4;
+//   - approval.requested:审批节点挂起(T4.1,DDL 词表注释预留同名);与
+//     node.state_changed(EXECUTING→WAITING_APPROVAL)同事务双行——本行是
+//     审批域事件(T4.4 待办/T6.4 积压指标字源),快照全文真相源在
+//     node_execution.input_snapshot,payload 不复制自由文本(D-t26 §4)。
 const (
 	EventNodeStateChanged     = "node.state_changed"
 	EventNodeRedispatched     = "node.redispatched"
@@ -55,6 +59,7 @@ const (
 	EventBranchEvaluated      = "branch.evaluated"
 	EventLLMCallCompleted     = "llm.call.completed"
 	EventToolCallCompleted    = "tool.call.completed"
+	EventApprovalRequested    = "approval.requested"
 )
 
 // actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval);
@@ -93,6 +98,7 @@ var knownEvents = map[string]bool{
 	EventBranchEvaluated:      true,
 	EventLLMCallCompleted:     true,
 	EventToolCallCompleted:    true,
+	EventApprovalRequested:    true,
 }
 
 var knownActors = map[string]bool{

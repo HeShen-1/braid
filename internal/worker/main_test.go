@@ -121,6 +121,51 @@ func seedNodeExec(t *testing.T, d *sql.DB) (execID, nodeExecID uint64) {
 	return execID, nodeExecID
 }
 
+// seedApprovalNodeExec 造 T4.1 挂起路径种子(seedNodeExec 的 approval 变体):
+// 单 approval 节点 EXECUTING(带快照——scheduler.Suspend 的快照守卫消费)、
+// 执行行 RUNNING(SuspendExecution 的镜像起点)。快照形状 = 求值器
+// approvalSnapshotData(eval.go 单源),审批人可读面。
+func seedApprovalNodeExec(t *testing.T, d *sql.DB) (execID, nodeExecID uint64) {
+	t.Helper()
+	ids := mustTestIDs(t)
+	defID, err := ids.Next()
+	if err != nil {
+		t.Fatalf("gen definition id: %v", err)
+	}
+	execID, err = ids.Next()
+	if err != nil {
+		t.Fatalf("gen execution id: %v", err)
+	}
+	nodeExecID, err = ids.Next()
+	if err != nil {
+		t.Fatalf("gen node execution id: %v", err)
+	}
+	name := fmt.Sprintf("seed-appr-%d", defID)
+	seedDSL := fmt.Sprintf(`{"dsl":"1.0","name":%q,"description":"","inputs":[],"edges":[],`+
+		`"nodes":[{"id":"seed_node","type":"approval","approvers":["carol"],"mode":"any",`+
+		`"timeout_hours":24,"on_timeout":"fail","instructions":"请审批","outputs":{}}],"outputs":{}}`, name)
+	snapshot := `{"approvers":["carol"],"mode":"any","timeout_hours":24,"on_timeout":"fail","instructions":"请审批"}`
+	ins := func(query string, args ...any) {
+		t.Helper()
+		if _, err := d.Exec(query, args...); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	ins(`INSERT INTO workflow_definition
+	  (id, name, version, status, dsl_version, dsl, dsl_hash, created_by, updated_by, published_by, published_at)
+	  VALUES (?, ?, 1, 'PUBLISHED', '1.0', ?, ?, 'seed', 'seed', 'seed', NOW(3))`,
+		defID, name, seedDSL, string(make([]byte, 64)))
+	ins(`INSERT INTO workflow_execution
+	  (id, definition_id, definition_name, definition_version, definition_hash, status, triggered_by, input)
+	  VALUES (?, ?, ?, 1, ?, 'RUNNING', 'seed', '{}')`,
+		execID, defID, name, string(make([]byte, 64)))
+	ins(`INSERT INTO node_execution
+	  (id, execution_id, node_id, type, status, attempts, worker_id, version, input_snapshot)
+	  VALUES (?, ?, 'seed_node', 'approval', 'EXECUTING', 1, 'seed-dispatcher', 1, ?)`,
+		nodeExecID, execID, snapshot)
+	return execID, nodeExecID
+}
+
 // fakeExec 是 Executor 测试桩:记录全部调用,fn 决定每次返回(可按调用序
 // 编排失败/接管/心跳观察)。
 type fakeExec struct {

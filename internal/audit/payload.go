@@ -76,3 +76,17 @@ type ToolCallCompletedPayload struct {
 	Tool       string `json:"tool"`
 	DurationMs uint64 `json:"duration_ms"`
 }
+
+// ApprovalRequestedPayload 是 approval.requested(T4.1)的事件体:审批挂起的
+// 域事件,只携 T4.4 待办列表/T6.4 积压指标的免 join 字段。instructions 等
+// 快照全文真相源在 node_execution.input_snapshot(审批人可读面),审计行不
+// 复制自由文本(D-t26 §4);deadline_at 与 node_execution.deadline_at 单源
+// 由同一发射点填充。approvers 是 DSL 声明列表(id/枚举面,非自由文本)。
+type ApprovalRequestedPayload struct {
+	NodeID       string    `json:"node_id"`
+	Approvers    []string  `json:"approvers"`
+	Mode         string    `json:"mode"`
+	TimeoutHours float64   `json:"timeout_hours"`
+	OnTimeout    string    `json:"on_timeout"`
+	DeadlineAt   time.Time `json:"deadline_at"`
+}

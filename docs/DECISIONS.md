@@ -138,3 +138,14 @@
   3. 192.0.0.0/24、0.0.0.0/8 非全零地址、240/4 剩余部分(仅广播已拒)。
 - 现状口径:上述段当前放行,TestIPForbidden 有 want=false 锚点钉住(0.1.2.3 / 240.0.0.1 / 198.18.0.1)——若拍板扩禁,同步改锚点为 want=true 即可,测试已就位。
 - 关联:T3.3 实现 internal/tools/ssrf.go;无 HTTP 拨号合法目标落在这些段的常规环境,属低概率环境依赖面。
+
+## D-2026-09-23-t41-approval-suspend
+- 背景:T4.1(issue #27)审批节点执行路径:worker 遇 approval 节点挂起 WAITING_APPROVAL、输入快照落库、审计记挂起事件、worker 不阻塞(Q4/L67);续跑(outbox+resume TaskID)属 T4.2、超时策略属 T4.3。勘察确认 WAITING_APPROVAL 全链已备(engine 常量/边矩阵/SuspendNode/SuspendExecution CAS、DDL ENUM、快照不变量、reaper 对 wf WAITING_APPROVAL 的合法静默排除),缺的只是 nodes 执行器 + worker/scheduler 挂起通道 + 审计词表登记——零迁移、engine 零改动。
+- 决策(用户 2026-09-23 GATE 1 拍板 + 实现定稿):
+  1. 执行级镜像的静默规则(quiesce rule):节点挂起事务内(全行锁在手)数在飞兄弟——无其他 EXECUTING ⇒ 同事务 SuspendExecution(RUNNING→WAITING_APPROVAL,wfcas「全部节点挂起后的执行级镜像」注释的本意);有(合法 fan-out DSL,P0 无并行原语但多后继可并发派发)⇒ wf 留 RUNNING(TouchExecution 照刷)。不变量「wf WAITING_APPROVAL ⇒ 无 EXECUTING 节点」可证保持(reaper scan_attempt 的 T4.1 契约面);fan-out 降级表示为良性(reaper 终态补判对它恒 no-op,代价仅索引扫描噪声),不在 Complete 热路径补对称检查(P0 常态线性/分支单活动路径恒走转态分支,推测性泛化不值)。
+  2. 审计双行:node.state_changed(EXECUTING→WAITING_APPROVAL,与全部既有迁移一致,nodecas 调用方契约)+ 新登记 approval.requested(DDL 0001:238 预留名;payload=approvers/mode/timeout_hours/on_timeout/deadline_at,T4.4 待办与 T6.4 积压指标免 join 字源;快照全文真相源在 input_snapshot,payload 不复制自由文本——D-t26 §4 纪律;actor=worker,scheduler auditRow 同源)。
+  3. T4.1 零 outbox 事件:approval.notify(DDL 预留)消费方在 T4.2/T4.5,现在发=死事件;T4.2 接手时再登记。
+  4. schema default 挂起面补齐:DSL 解析不物化 schema.json default(approvalNode 缺省 mode/timeout_hours/on_timeout = Go 零值),scheduler.effectiveApprovalSpec 单点补齐(any/escalate/72h,Q9 口径)供 deadline 与审计 payload;72h 用字面常量与 nodeTimeouts["approval"](claim 执行超时词表,语义不同源)解耦。对抗审计 MEDIUM 修:补齐面扩至快照物化点(eval.go buildSnapshot 同源调用),快照(审批人可读面)/deadline/审计 payload 三处真一致——原实现快照存 DSL 零值与另两处分叉,且缺省快照形状零断言,均已收口。
+  5. 通道语义:Outcome.Suspend bool(仅配 SUCCEEDED、禁携 Output/Usage/ToolCall,worker.suspendOK 校验=零 DB 单测面)→ handler 挂起分支 → Sched.Suspend(与 Complete 平行的方法,sched.go 零改动=零并行冲突面);ApprovalExecutor 零依赖纯决策(ctx 不观测);终态守卫镜像 Complete 失败分支(迟到挂起只收口 attempt,节点留 EXECUTING 归 T2.5);快照守卫在挂起事务内(engine 不变量 WAITING_APPROVAL ⇒ NOT NULL 的第二执行点);no_executor 钉死测试改用无判别指针合成类型(approval 已接线)。
+- 理由:无脑转 wf 态会在 fan-out 下制造 reaper 违约态(EXECUTING 节点居 WAITING_APPROVAL 执行),静默检查以全行锁为界零额外往返;双审计行延续「迁移行 + 域事件行」既有先例(branch 双行、llm 双录);挂起信号走 Outcome 显式字段而非复用 Status,保持 Complete/Suspend 两收口路径语义分立不互串。
+- 影响:internal/scheduler(suspend.go 新文件:Suspend/suspendOnce/effectiveApprovalSpec + suspend_test.go)、internal/worker(Outcome.Suspend + suspendOK + suspendNode + approval 种子/三条测试)、internal/nodes(approval.go 新文件 + Mux 四参 approval 分支 + approval_test + e2e_approval_test + mux_test 改型 + 两 e2e 装配点)、internal/audit(EventApprovalRequested + ApprovalRequestedPayload + 词表测试)、cmd/worker(装配四参)、docs/ROADMAP.md(T4.1 勾选);零新依赖、零迁移、零 DDL 变更、engine/dsl 包零改动(t3.3 零冲突面)。

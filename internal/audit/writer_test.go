@@ -94,6 +94,7 @@ func TestValidateRejectsInvalidEvents(t *testing.T) {
 	for _, et := range []string{
 		EventNodeStateChanged, EventNodeRedispatched, EventAttemptReaped,
 		EventNodeDeadlineExtended, EventBranchEvaluated,
+		EventApprovalRequested,
 	} {
 		for _, at := range []string{ActorWorker, ActorSystem, ActorUser, ActorTool, ActorLLM, ActorApproval} {
 			evt := valid
