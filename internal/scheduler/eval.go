@@ -108,27 +108,30 @@ func buildSnapshot(n *dsl.Node, env *refEnv) (json.RawMessage, error) {
 	return nil, fmt.Errorf("scheduler: node %s type %s has no snapshot builder", n.ID, n.Type)
 }
 
-type llmSnapshotData struct {
-	System         string         `json:"system"`
-	Template       string         `json:"template"`
-	UserData       []llmUserDatum `json:"user_data"`
-	Model          string         `json:"model"`
-	Temperature    float64        `json:"temperature"`
-	MaxTokens      int            `json:"max_tokens"`
-	ResponseFormat string         `json:"response_format"`
+// LLMInput 是 llm 节点 input_snapshot 的形状契约(执行器消费单源:T3.6
+// nodes 包按本类型解码,形状漂移在编译期暴露而非运行期 JSON 缺字段)。
+type LLMInput struct {
+	System         string          `json:"system"`
+	Template       string          `json:"template"`
+	UserData       []LLMInputDatum `json:"user_data"`
+	Model          string          `json:"model"`
+	Temperature    float64         `json:"temperature"`
+	MaxTokens      int             `json:"max_tokens"`
+	ResponseFormat string          `json:"response_format"`
 }
 
-type llmUserDatum struct {
+// LLMInputDatum 是单条已求值 user_data(name 标签名 + 解析后值)。
+type LLMInputDatum struct {
 	Name  string `json:"name"`
 	Value any    `json:"value"`
 }
 
 func llmSnapshot(n *dsl.Node, env *refEnv) (json.RawMessage, error) {
 	p := n.LLM.Prompt
-	data := llmSnapshotData{
+	data := LLMInput{
 		System:         p.System,
 		Template:       p.Template,
-		UserData:       make([]llmUserDatum, 0, len(p.UserData)),
+		UserData:       make([]LLMInputDatum, 0, len(p.UserData)),
 		Model:          n.LLM.Model,
 		Temperature:    n.LLM.Temperature,
 		MaxTokens:      n.LLM.MaxTokens,
@@ -143,7 +146,7 @@ func llmSnapshot(n *dsl.Node, env *refEnv) (json.RawMessage, error) {
 		if !ok {
 			return nil, fmt.Errorf("node %s user_data %s: ref %s unresolved", n.ID, ud.Name, ud.Ref)
 		}
-		data.UserData = append(data.UserData, llmUserDatum{Name: ud.Name, Value: v})
+		data.UserData = append(data.UserData, LLMInputDatum{Name: ud.Name, Value: v})
 	}
 	return json.Marshal(data)
 }
@@ -191,7 +194,7 @@ func evalToolAny(v any, env *refEnv, nodeID, path string) (any, error) {
 			if !ok {
 				return "", false
 			}
-			return renderText(rv), true
+			return RenderText(rv), true
 		})
 		if miss {
 			return nil, fmt.Errorf("node %s tool.inputs %s: embedded reference unresolved", nodeID, path)
@@ -221,9 +224,10 @@ func evalToolAny(v any, env *refEnv, nodeID, path string) (any, error) {
 	return v, nil
 }
 
-// renderText 渲染内嵌引用替换文本:字符串按原文(拼接语境不加引号),
-// 其余按紧凑 JSON(json.Number 原文往返)。
-func renderText(v any) string {
+// RenderText 渲染值为替换/拼接文本:字符串按原文(拼接语境不加引号),
+// 其余按紧凑 JSON(json.Number 原文往返)。导出 = 求值器与节点执行器
+// (T3.6 prompt user_data 标签块)同一渲染口径,漂移面归零。
+func RenderText(v any) string {
 	if s, ok := v.(string); ok {
 		return s
 	}

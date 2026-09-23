@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"braid/internal/snowflake"
 )
 
 // Config 是 worker 的全部可调参数(默认值集中在此,T7.1 配置体系换装时原样搬;
@@ -29,6 +31,12 @@ type Config struct {
 	// ShutdownTimeout 是优雅停机上限:在飞 handler 收口窗口,超时强杀(留
 	// RUNNING attempt 归 T2.5 判死)。
 	ShutdownTimeout time.Duration
+	// SnowflakeNode 是本进程雪花节点号(attempt 行 id 应用侧生成)。显式
+	// 配置面当前仅 api=1、worker=2 两个常驻进程;relay 无雪花生成器,reaper
+	// 为 PID 派生(cmd/reaper,理论可与 1/2 撞号,碰撞面 = reaper 仅产 outbox
+	// 事件行 id;显式化归 T7.1 配置体系)。跨进程重号唯一症状是业务表 PK 1062;
+	// 域校验在 snowflake.New(与 api 同规)。
+	SnowflakeNode uint16
 }
 
 // DefaultConfig 返回生产默认值。
@@ -40,6 +48,7 @@ func DefaultConfig() Config {
 		HeartbeatInterval: 10 * time.Second,
 		RetryDelay:        5 * time.Second,
 		ShutdownTimeout:   30 * time.Second,
+		SnowflakeNode:     2,
 	}
 }
 
@@ -98,6 +107,13 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	if c.ShutdownTimeout, err = envDuration(getenv, "BRAID_WORKER_SHUTDOWN_TIMEOUT", c.ShutdownTimeout); err != nil {
 		return c, err
+	}
+	if raw := getenv("BRAID_WORKER_SNOWFLAKE_NODE"); raw != "" {
+		n, err := strconv.ParseUint(raw, 10, 16)
+		if err != nil || uint64(n) > uint64(snowflake.MaxNodeID) {
+			return c, fmt.Errorf("worker: BRAID_WORKER_SNOWFLAKE_NODE=%q: want 0..%d", raw, snowflake.MaxNodeID)
+		}
+		c.SnowflakeNode = uint16(n)
 	}
 	return c, c.Validate()
 }

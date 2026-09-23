@@ -1,6 +1,6 @@
 // worker 入口:读 env → 组装 → 信号 → worker.Run。薄 main,零业务逻辑;
-// 与 relay 同款骨架(Q14:交付时合并为单二进制多入口)。Executor 实现随
-// T3.x 接入,当前骨架阶段以显式报错占位——不静默跑空 worker。
+// 与 relay 同款骨架(Q14:交付时合并为单二进制多入口)。T3.6 起装配真实
+// 节点执行器(llm 经 OpenAI 兼容适配器);tool/approval 随 T3.2/T4.1 接入。
 package main
 
 import (
@@ -17,6 +17,10 @@ import (
 	"github.com/hibiken/asynq"
 
 	"braid/internal/db"
+	"braid/internal/llm"
+	"braid/internal/nodes"
+	"braid/internal/scheduler"
+	"braid/internal/snowflake"
 	"braid/internal/worker"
 )
 
@@ -75,9 +79,36 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: close inspector: %w", err)
 	}
 
-	// T2.4 后骨架仍止步于此:调度回写已可用(scheduler.Complete/Start),但
-	// Executor 实现随 T3.x(节点实现)接入后才能在此装配 snowflake +
-	// scheduler + worker.Run。在此之前拒绝空转 serve——静默跑一个不执行任何
-	// 节点的 worker 只会把任务烧成重试。
-	return errors.New("worker: no Executor wired yet (T3.x 接入点);refusing to serve")
+	// T3.6 生产装配:llm 配置缺 URL/KEY/PRICE_TABLE 即启动失败(生产 worker
+	// 必须能调 LLM;组合预算上界在 Validate 内启动即败,HIGH① 拍板)。
+	llmCfg, err := llm.ConfigFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("worker: llm config: %w", err)
+	}
+	client, err := llm.NewOpenAICompat(llmCfg)
+	if err != nil {
+		return fmt.Errorf("worker: llm client: %w", err)
+	}
+
+	ids, err := snowflake.New(cfg.SnowflakeNode)
+	if err != nil {
+		return fmt.Errorf("worker: snowflake: %w", err)
+	}
+	sched, err := scheduler.New(scheduler.Deps{DB: mysqlDB, IDs: ids, Logger: slog.Default()})
+	if err != nil {
+		return fmt.Errorf("worker: scheduler: %w", err)
+	}
+
+	executor := nodes.NewMux(sched, &nodes.LLMExecutor{
+		Client: client,
+		Prices: llmCfg.PriceTable,
+		DB:     mysqlDB,
+	})
+	return worker.Run(ctx, worker.Deps{
+		DB:       mysqlDB,
+		IDs:      ids,
+		Executor: executor,
+		Sched:    sched,
+		Logger:   slog.Default(),
+	}, cfg, asynq.RedisClientOpt{Addr: addr})
 }
