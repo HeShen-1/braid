@@ -317,3 +317,43 @@ func TestAppendDiesWithTransaction(t *testing.T) {
 		t.Fatalf("rows after commit = %d, want 1", len(rows))
 	}
 }
+
+// TestAppendHoldsNoLockOnExecution:T2.6-F1 回归锚。tx1 写审计行后保持未提交,
+// tx2 对同 execution 行 FOR UPDATE 必须立即成功——修订前 INSERT..SELECT 在 RR
+// 下持共享锁至 COMMIT(1205);修订后一致读零锁。lock_wait_timeout=1 把回归
+// 从「50s 挂死」收敛为「1s 内失败」。
+func TestAppendHoldsNoLockOnExecution(t *testing.T) {
+	d := sqltest.MustOpenAt(t, testSchema)
+	execID := seedExec(t, d)
+	ctx := context.Background()
+
+	tx1, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx1: %v", err)
+	}
+	defer func() { _ = tx1.Rollback() }()
+	if err := Append(ctx, tx1, Event{
+		ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: execID,
+		NodeExecID: 1, NodeID: "n1", ActorType: ActorWorker, ActorID: "w1",
+		Payload: json.RawMessage(`{}`),
+	}); err != nil {
+		t.Fatalf("Append in tx1: %v", err)
+	}
+
+	tx2, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("begin tx2: %v", err)
+	}
+	defer func() { _ = tx2.Rollback() }()
+	if _, err := tx2.ExecContext(ctx, `SET SESSION lock_wait_timeout=1`); err != nil {
+		t.Fatalf("set lock_wait_timeout: %v", err)
+	}
+	var st string
+	if err := tx2.QueryRowContext(ctx,
+		`SELECT status FROM workflow_execution WHERE id=? FOR UPDATE`, execID).Scan(&st); err != nil {
+		t.Fatalf("FOR UPDATE blocked by audit write (写入器持锁,回归): %v", err)
+	}
+	if st != "RUNNING" {
+		t.Fatalf("locked row status = %s, want RUNNING", st)
+	}
+}
