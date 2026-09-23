@@ -200,20 +200,61 @@ func TestReapLateStartExtended(t *testing.T) {
 	}
 }
 
-// TestReapEarlyStartKilledOnDeadline:deadline 过期 + 心跳陈旧 + started_at
-// < deadline_at(窗口内启动但挂死)→ DEAD(SLA 强制,不重挂)。
-func TestReapEarlyStartKilledOnDeadline(t *testing.T) {
-	r, d := newReaper(t, testCfg())
-	s := seedReap(t, d, time.Minute, time.Minute, 3)
-	// started_at 回拨到 deadline 之前(窗口内启动)。
-	if _, err := d.Exec(`UPDATE node_attempt SET started_at = NOW(3) - INTERVAL 2 MINUTE WHERE id=?`, s.attID); err != nil {
-		t.Fatalf("backdate started_at: %v", err)
+// TestEarlyStartKilledOnDeadline:deadline 过期 + started_at < deadline_at
+// (窗口内启动但真超窗)→ DEAD('deadline_exceeded',SLA 强制)——心跳新鲜
+// 也杀(pr review H2:挂死检测不得被活性保护阉割;迟到 Complete 走 W1 哨兵)。
+func TestEarlyStartKilledOnDeadline(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		hbStale time.Duration
+	}{
+		{"heartbeat_stale_default_path", time.Minute},
+		{"heartbeat_fresh_sla_path", 10 * time.Millisecond}, // 走 SLA 强制臂
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, d := newReaper(t, testCfg())
+			s := seedReap(t, d, tc.hbStale, time.Minute, 3)
+			// started_at 回拨到 deadline 之前(窗口内启动)。
+			if _, err := d.Exec(`UPDATE node_attempt SET started_at = NOW(3) - INTERVAL 2 MINUTE WHERE id=?`, s.attID); err != nil {
+				t.Fatalf("backdate started_at: %v", err)
+			}
+			if err := r.RunOnce(context.Background()); err != nil {
+				t.Fatalf("RunOnce: %v", err)
+			}
+			if st, code, _ := readAttemptRow(t, d, s.attID); st != engine.AttemptDead || code.String != "deadline_exceeded" {
+				t.Fatalf("attempt = %s/%v, want DEAD/deadline_exceeded", st, code.String)
+			}
+		})
 	}
-	if err := r.RunOnce(context.Background()); err != nil {
-		t.Fatalf("RunOnce: %v", err)
-	}
-	if st, code, _ := readAttemptRow(t, d, s.attID); st != engine.AttemptDead || code.String != "deadline_exceeded" {
-		t.Fatalf("attempt = %s/%v, want DEAD/deadline_exceeded", st, code.String)
+}
+
+// TestStaleAttemptOnTerminalNode:节点已终态(人工取消)+ 遗留 RUNNING
+// attempt:陈旧(扫描①入口可达)→ DEAD('stale_attempt');新鲜(无扫描
+// 入口,活 attempt 由 worker 迟到收口自然收敛)→ 不动。
+func TestStaleAttemptOnTerminalNode(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		hbStale time.Duration
+		want    engine.AttemptState
+		code    string
+	}{
+		{"stale_reaped", time.Minute, engine.AttemptDead, "stale_attempt"},
+		{"fresh_left_to_worker", 10 * time.Millisecond, engine.AttemptRunning, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, d := newReaper(t, testCfg())
+			s := seedReap(t, d, tc.hbStale, 0, 3)
+			if _, err := d.Exec(`UPDATE node_execution SET status='CANCELLED' WHERE id=?`, s.nodeExecID); err != nil {
+				t.Fatalf("cancel node: %v", err)
+			}
+			if err := r.RunOnce(context.Background()); err != nil {
+				t.Fatalf("RunOnce: %v", err)
+			}
+			st, code, _ := readAttemptRow(t, d, s.attID)
+			if st != tc.want || code.String != tc.code {
+				t.Fatalf("attempt = %s/%v, want %s/%s", st, code.String, tc.want, tc.code)
+			}
+		})
 	}
 }
 
@@ -302,10 +343,12 @@ func TestOrphanTerminalAttemptCancelled(t *testing.T) {
 	if _, err := d.Exec(`UPDATE node_attempt SET status='SUCCEEDED', finished_at=NOW(3) WHERE id=?`, s.attID); err != nil {
 		t.Fatalf("finalize attempt: %v", err)
 	}
-	// 触发扫描③路径需要 last_activity_at 静默窗;直接调处置事务等价
-	// (扫描③的候选谓词在本用例外测)。
-	if err := r.reapAttempt(context.Background(), s.nodeExecID, s.execID, entryOrphan); err != nil {
-		t.Fatalf("reapAttempt: %v", err)
+	// 静默窗回拨,走扫描③候选 SQL 全链(pr review:JOIN 谓词零断言面)。
+	if _, err := d.Exec(`UPDATE workflow_execution SET last_activity_at = NOW(3) - INTERVAL 3 MINUTE WHERE id=?`, s.execID); err != nil {
+		t.Fatalf("backdate activity: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
 	}
 	if ns, _, _ := readNodeRow(t, d, s.nodeExecID); ns != engine.NodeCancelled {
 		t.Fatalf("node = %s, want CANCELLED", ns)

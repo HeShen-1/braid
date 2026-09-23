@@ -15,6 +15,7 @@ package reaper
 import (
 	"bufio"
 	"context"
+	"io"
 	"database/sql"
 	"fmt"
 	"os"
@@ -62,7 +63,12 @@ func accChildMain() {
 	cfg.HeartbeatInterval = 200 * time.Millisecond // 压缩心跳:grace=1s 可测
 	cfg.WorkerID = "child-worker"
 	cfg.Queues = map[string]int{queue: 1}
-	if err := worker.Run(context.Background(), worker.Deps{
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() { // stdin EOF(父进程先死)→ 收摊退出,不留孤儿
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		cancel()
+	}()
+	if err := worker.Run(ctx, worker.Deps{
 		DB: d, IDs: ids, Executor: &gateExecutor{stdin: os.Stdin}, Sched: sched,
 	}, cfg, redistest.Opt()); err != nil {
 		fmt.Fprintf(os.Stderr, "child: worker: %v\n", err)
@@ -179,7 +185,7 @@ func TestAcceptanceKill9ConvergesWithoutIntervention(t *testing.T) {
 		return d.QueryRow(`SELECT COUNT(*) FROM node_attempt WHERE node_execution_id=? AND status='RUNNING'`, nodeID).
 			Scan(&n) == nil && n == 1
 	})
-	_ = stdin.Close()
+	_ = stdin // 不预先关闭:EOF 会解除 gate 阻塞让子进程正常收口,污染 kill 现场
 	if err := cmd.Process.Kill(); err != nil { // SIGKILL:真·未收口现场
 		t.Fatalf("kill: %v", err)
 	}

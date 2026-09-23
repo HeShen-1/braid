@@ -163,16 +163,33 @@ SELECT id, status, heartbeat_at, started_at, worker_id
 			return fmt.Errorf("reaper: lock attempt node %d no %d: %w", nodeExecID, attempts, err)
 		}
 
-		// [3] 分派树。
-		now := time.Now().UTC()
+		// [3] 分派树。裁决时钟 = DB 端 NOW(3)(D-t25 #2:判死谓词全 DB 端,
+		// 应用时钟漂移不入判定;扫描候选与锁内裁决同一时钟系)。
+		var now time.Time
+		if err := q.QueryRowContext(ctx, `SELECT NOW(3)`).Scan(&now); err != nil {
+			return fmt.Errorf("reaper: read db clock: %w", err)
+		}
 		switch {
+		case nodeStatus != engine.NodeExecuting:
+			// 节点已收口(人工取消/终写)的遗留 RUNNING attempt:收 DEAD
+			// ('stale_attempt',设计 C 节首分支)+ Touch;无行/已终态 skip。
+			if !attemptGone && attStatus == engine.AttemptRunning {
+				if err := engine.CloseAttemptDead(ctx, q, attID, "stale_attempt",
+					fmt.Sprintf("node terminal %s, attempt left RUNNING", nodeStatus)); err != nil {
+					return err
+				}
+				if err := engine.TouchExecution(ctx, q, execID); err != nil {
+					return err
+				}
+				r.log.Warn("attempt.dead_stale_on_terminal_node",
+					"node_execution_id", nodeExecID, "attempt_id", attID, "node_status", nodeStatus)
+				return nil
+			}
+			return errSkip
+
 		case attemptGone || attStatus != engine.AttemptRunning:
 			// 分支 B:EXECUTING 节点 + 无 RUNNING attempt(claim 双败 archived /
-			// 派发事件死)。节点已收口(人工取消/终写)则无事可做——其遗留
-			// RUNNING attempt 由心跳陈旧路径(扫描①)收 DEAD。
-			if nodeStatus != engine.NodeExecuting {
-				return errSkip
-			}
+			// 派发事件死)。
 			// 活派发事件闸(防双派发;LIKE 前缀含 ':' 定界符,'att:12:%' 不匹配
 			// 'att:123:x';DEAD 事件行不挡闸——重派事件经 relay 退避转 DEAD 后
 			// 必须允许再重派,这是收敛路径不是异常)。
@@ -194,23 +211,39 @@ SELECT COUNT(*) FROM outbox
 			// → [4](无 attempt 可收)。
 
 		case heartbeat.After(now.Add(-r.cfg.DeadGrace)):
-			// 活性保护(无条件前置,与入口扫描无关——攻击 17):活 worker 的
-			// 行绝不被抢写。deadline 入口的迟到启动特例:窗口被排队吃掉而
-			// 执行本体未超窗 → 一次性重挂,不烧预算(攻击 7)。
+			// 活性保护(无条件前置,与入口扫描无关——攻击 17):心跳新鲜。
+			// deadline 入口三分(设计 K-5):锁内仍过期(攻击 9:复核 deadline
+			// 复活)+ started_at ≥ deadline_at(迟到启动,窗口被排队吃掉)→
+			// 一次性重挂不烧预算;started_at < deadline_at(窗口内启动但真
+			// 超窗,worker 活也挂死)→ SLA 强制 DEAD——迟到 Complete 走 W1
+			// 哨兵幂等让位,双执行安全收敛。
 			if ent == entryDeadline && deadline.Valid &&
-				deadline.Time.Before(now.Add(-r.cfg.ScanInterval)) && // 锁内仍过期(攻击 9:复核 deadline 复活)
-				!startedAt.Before(deadline.Time) {
-				if _, err := engine.ExtendNodeDeadline(ctx, q, nodeExecID, nodeVer,
-					now.Add(scheduler.NodeTimeout(nodeType))); err != nil {
+				deadline.Time.Before(now.Add(-r.cfg.ScanInterval)) {
+				if !startedAt.Before(deadline.Time) {
+					if _, err := engine.ExtendNodeDeadline(ctx, q, nodeExecID, nodeVer,
+						now.Add(scheduler.NodeTimeout(nodeType))); err != nil {
+						return err
+					}
+					if err := engine.TouchExecution(ctx, q, execID); err != nil {
+						return err
+					}
+					r.log.Info("node.deadline_extended",
+						"node_execution_id", nodeExecID, "attempt_no", attempts,
+						"hint", "late start consumed window; refit once without burning budget")
+					return nil
+				}
+				w := attWorker.String
+				if w == "" {
+					w = "(unknown)"
+				}
+				if err := engine.CloseAttemptDead(ctx, q, attID, "deadline_exceeded",
+					fmt.Sprintf("first-owner worker=%s: execution window exhausted (SLA)", w)); err != nil {
 					return err
 				}
-				if err := engine.TouchExecution(ctx, q, execID); err != nil {
-					return err
-				}
-				r.log.Info("node.deadline_extended",
-					"node_execution_id", nodeExecID, "attempt_no", attempts,
-					"hint", "late start consumed window; refit once without burning budget")
-				return nil
+				r.log.Warn("attempt.reaped_sla",
+					"node_execution_id", nodeExecID, "attempt_id", attID, "worker", w)
+				// → [4]。
+				break
 			}
 			return errSkip
 
@@ -234,12 +267,6 @@ SELECT COUNT(*) FROM outbox
 			r.log.Warn("attempt.reaped",
 				"node_execution_id", nodeExecID, "attempt_id", attID,
 				"code", code, "worker", w, "stale", stale.String())
-			// 节点已收口(人工取消/终写,attempt 列与节点列的暂态错位):
-			// attempt DEAD 即闭环,不走重派/终局裁决(Redispatch 的 EXECUTING
-			// 谓词必败)。
-			if nodeStatus != engine.NodeExecuting {
-				return nil
-			}
 			// → [4]。
 		}
 
