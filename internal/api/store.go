@@ -7,10 +7,12 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -121,12 +123,19 @@ func asInvalidDSL(err error) error {
 	return &InvalidDSLError{Issues: []dsl.Issue{{Code: "invalid_document", Detail: err.Error()}}}
 }
 
-// hashDSL 计算 dsl_hash:SHA-256(字节,hex)。哈的对象是**读回的存储
-// 形态**:MySQL JSON 列会规范化原文(分隔符补空格、数值/转义重写),
-// 输入字节与存储字节不同;执行侧漂移检测重算的对象是存储字节,hash
-// 必须钉住同一形态,否则每行都是假阳性告警。
+// hashDSL 计算 dsl_hash:SHA-256(字节,hex)。哈的对象是**读回存储字节
+// 的 compact 形态**(T3.6 MED① 修复):MySQL JSON 列会规范化原文(分隔符
+// 补空格、键序重排),读回字节与任何 JSON 传输形态都不同——直接锚定读回
+// 字节则 API 消费方永远无法复算(JSON 编码必 compact)。锚定 compact 后,
+// 执行侧漂移检测(compact(读回字节))与 API 消费方(compact(响应 dsl))
+// 复算同一字节,全链一致。
 func hashDSL(doc []byte) string {
-	sum := sha256.Sum256(doc)
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, doc); err != nil {
+		buf.Reset() // 读回字节必为合法 JSON;防御回退哈原字节
+		buf.Write(doc)
+	}
+	sum := sha256.Sum256(buf.Bytes())
 	return hex.EncodeToString(sum[:])
 }
 
@@ -408,13 +417,13 @@ type rowScanner interface {
 
 func scanDefinition(r rowScanner) (Definition, error) {
 	var (
-		d            Definition
-		version      sql.NullInt64
-		dslBytes     []byte
-		publishedBy  sql.NullString
-		publishedAt  sql.NullTime
-		createdAt    sql.NullTime
-		updatedAt    sql.NullTime
+		d           Definition
+		version     sql.NullInt64
+		dslBytes    []byte
+		publishedBy sql.NullString
+		publishedAt sql.NullTime
+		createdAt   sql.NullTime
+		updatedAt   sql.NullTime
 	)
 	if err := r.Scan(&d.ID, &d.Name, &version, &d.DSLVersion, &d.Status, &d.Description,
 		&dslBytes, &d.DSLHash, &d.CreatedBy, &d.UpdatedBy, &publishedBy, &publishedAt,

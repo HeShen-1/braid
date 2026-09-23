@@ -36,10 +36,10 @@ func TestConfigFromEnv(t *testing.T) {
 		{
 			name: "full env",
 			env: map[string]string{
-				"BRAID_AUTH_JWT_SECRET":       testSecret,
-				"BRAID_API_ADDR":              "10.0.0.1:9000",
-				"BRAID_API_SNOWFLAKE_NODE":    "7",
-				"BRAID_TOOL_ALLOWLIST":        "http , file_read",
+				"BRAID_AUTH_JWT_SECRET":    testSecret,
+				"BRAID_API_ADDR":           "10.0.0.1:9000",
+				"BRAID_API_SNOWFLAKE_NODE": "7",
+				"BRAID_TOOL_ALLOWLIST":     "http , file_read",
 			},
 			want: Config{
 				Addr:          "10.0.0.1:9000",

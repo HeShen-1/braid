@@ -22,8 +22,9 @@ const (
 	// DefaultAddr 监听地址默认值:仅绑回环——公开面由部署层显式打开,
 	// 与 dev 栈 MySQL/Redis/Asynqmon 同一默认姿态。8081 避开 Asynqmon 8080。
 	DefaultAddr = "127.0.0.1:8081"
-	// DefaultSnowflakeNode 是 api 进程的雪花节点号默认值(compose 静态
-	// 槽位表 api=1/worker=2/relay=3/reaper=4;值表 T7.1 配置化)。
+	// DefaultSnowflakeNode 是 api 进程的雪花节点号默认值。显式配置面当前仅
+	// api=1、worker=2;relay 无雪花生成器,reaper 为 PID 派生(显式化归
+	// T7.1 配置体系)。
 	DefaultSnowflakeNode = 1
 )
 

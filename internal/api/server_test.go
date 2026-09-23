@@ -2,7 +2,9 @@ package api
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -126,6 +128,41 @@ func TestHTTPCreateInvalidDSL(t *testing.T) {
 	}
 	if _, ok := body["issues"].([]any); !ok {
 		t.Fatalf("issues missing: %v", body)
+	}
+}
+
+// TestHTTPDetailDSLHashRoundTrip:MED①(T3.6)可复算子集闭环——对不含
+// `<`/`>`/`&` 的文档,detail 响应的 dsl 值字节可被消费方复算出 dsl_hash
+// (decode→RawMessage→SHA-256)。HTML 敏感字符的文档因 HTTP JSON 编码器
+// 转义(`<`→`<`)字节形态不可移植,核对走语义等价
+// (TestHTTPDetailDSLSemanticFidelity);dsl_hash 锚定契约见 hashDSL 注释。
+func TestHTTPDetailDSLHashRoundTrip(t *testing.T) {
+	r, _, sign := newTestServer(t)
+	author := sign(auth.RoleAuthor)
+	name := uniqName("hashrt")
+	created := createViaAPI(t, r, author, dslDoc(name))
+	id := created["id"].(string)
+	if code, _ := doJSON(t, r, http.MethodPost, "/api/v1/drafts/"+id+"/publish", author, nil); code != 200 {
+		t.Fatalf("publish = %d, want 200", code)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/definitions/"+name, nil)
+	req.Header.Set("Authorization", "Bearer "+author)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != 200 {
+		t.Fatalf("detail = %d: %s", w.Code, w.Body.String())
+	}
+	var resp struct {
+		DSL     json.RawMessage `json:"dsl"`
+		DSLHash string          `json:"dsl_hash"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("decode detail: %v", err)
+	}
+	sum := sha256.Sum256(resp.DSL)
+	if got := hex.EncodeToString(sum[:]); got != resp.DSLHash {
+		t.Fatalf("sha256(response dsl) = %s, want dsl_hash %s(消费方复算假阳性,MED①)", got, resp.DSLHash)
 	}
 }
 
