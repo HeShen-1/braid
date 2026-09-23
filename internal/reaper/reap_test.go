@@ -14,10 +14,12 @@ package reaper
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"testing"
 	"time"
 
+	"braid/internal/audit"
 	"braid/internal/engine"
 )
 
@@ -58,6 +60,62 @@ func countEvents(t *testing.T, d *sql.DB, execID uint64) int {
 	return n
 }
 
+// reapAuditRow 是断言用审计行投影(reaper 埋点的验收面)。
+type reapAuditRow struct {
+	eventType string
+	attemptID sql.NullInt64
+	actorType string
+	actorID   string
+}
+
+// assertReapAudit 断言该执行的审计行序(ORDER BY id = 同事务落行序)。
+// actor 恒 system/reaper:test-reaper;attempt 级行锚定 attempt_id 列。
+func assertReapAudit(t *testing.T, d *sql.DB, execID uint64, want []reapAuditRow) {
+	t.Helper()
+	rows, err := d.Query(`
+SELECT event_type, attempt_id, actor_type, actor_id
+  FROM audit_log WHERE execution_id=? ORDER BY id`, execID)
+	if err != nil {
+		t.Fatalf("query audit: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var got []reapAuditRow
+	for rows.Next() {
+		var e reapAuditRow
+		if err := rows.Scan(&e.eventType, &e.attemptID, &e.actorType, &e.actorID); err != nil {
+			t.Fatalf("scan audit: %v", err)
+		}
+		got = append(got, e)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("audit rows: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("audit rows = %d, want %d\ngot:  %+v\nwant: %+v", len(got), len(want), got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("audit[%d] = %+v, want %+v\ngot:  %+v\nwant: %+v", i, got[i], want[i], got, want)
+		}
+	}
+}
+
+func reapAuditAt(attID uint64) sql.NullInt64 {
+	return sql.NullInt64{Int64: int64(attID), Valid: true}
+}
+
+// reapAuditPayload 读该执行某事件类型的首条 payload(review 修:分码/trigger
+// 判别不能只靠 event_type——复制粘贴回归会静默腐蚀词表语义)。
+func reapAuditPayload(t *testing.T, d *sql.DB, execID uint64, eventType string) []byte {
+	t.Helper()
+	var raw []byte
+	if err := d.QueryRow(`SELECT payload FROM audit_log WHERE execution_id=? AND event_type=?`,
+		execID, eventType).Scan(&raw); err != nil {
+		t.Fatalf("read %s payload: %v", eventType, err)
+	}
+	return raw
+}
+
 // TestReapHeartbeatStaleRedispatch:心跳陈旧 + 预算内 → DEAD(heartbeat_lost)
 // + Redispatch(attempts+1、worker_id=reaper:*)+ outbox att:N+1(新 TaskID)。
 func TestReapHeartbeatStaleRedispatch(t *testing.T) {
@@ -85,6 +143,26 @@ func TestReapHeartbeatStaleRedispatch(t *testing.T) {
 	if want := fmt.Sprintf("att:%d:2", s.nodeExecID); taskID != want {
 		t.Fatalf("event task_id=%s, want %s(新 attempt_no ⇒ 新 TaskID)", taskID, want)
 	}
+	assertReapAudit(t, d, s.execID, []reapAuditRow{
+		{eventType: audit.EventAttemptReaped, attemptID: reapAuditAt(s.attID),
+			actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+		{eventType: audit.EventNodeRedispatched,
+			actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+	})
+	var rp audit.NodeRedispatchedPayload
+	if err := json.Unmarshal(reapAuditPayload(t, d, s.execID, audit.EventNodeRedispatched), &rp); err != nil {
+		t.Fatalf("unmarshal redispatch payload: %v", err)
+	}
+	if rp.NodeID != "n1" || rp.AttemptNo != 2 || rp.Trigger != audit.TriggerReaped || rp.MaxAttempts != 3 {
+		t.Fatalf("redispatch payload = %+v, want n1/2/reaped/3", rp)
+	}
+	var ap audit.AttemptReapedPayload
+	if err := json.Unmarshal(reapAuditPayload(t, d, s.execID, audit.EventAttemptReaped), &ap); err != nil {
+		t.Fatalf("unmarshal reaped payload: %v", err)
+	}
+	if ap.NodeExecutionID != s.nodeExecID || ap.Code != "heartbeat_lost" || ap.WorkerID != "w-first" {
+		t.Fatalf("reaped payload = %+v", ap)
+	}
 }
 
 // TestReapExhaustedFailsExecution:attempts=max → FailNode + wf FAILED
@@ -111,6 +189,12 @@ func TestReapExhaustedFailsExecution(t *testing.T) {
 	if code.String != "node_failed" {
 		t.Fatalf("exec error_code=%q, want node_failed", code.String)
 	}
+	assertReapAudit(t, d, s.execID, []reapAuditRow{
+		{eventType: audit.EventAttemptReaped, attemptID: reapAuditAt(s.attID),
+			actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+		{eventType: audit.EventNodeStateChanged, attemptID: reapAuditAt(s.attID),
+			actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+	})
 }
 
 // TestReapTerminalExecutionCancelsNode:wf 已终态(靶 a 形状2)→ DEAD +
@@ -133,6 +217,12 @@ func TestReapTerminalExecutionCancelsNode(t *testing.T) {
 	if n := countEvents(t, d, s.execID); n != 0 {
 		t.Fatalf("outbox events = %d, want 0(终态执行不重派)", n)
 	}
+	assertReapAudit(t, d, s.execID, []reapAuditRow{
+		{eventType: audit.EventAttemptReaped, attemptID: reapAuditAt(s.attID),
+			actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+		{eventType: audit.EventNodeStateChanged, attemptID: reapAuditAt(s.attID),
+			actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+	})
 }
 
 // TestReapHeartbeatFreshSkipped:心跳新鲜(无条件活性保护,任何入口)→
@@ -152,6 +242,8 @@ func TestReapHeartbeatFreshSkipped(t *testing.T) {
 	if n := countEvents(t, d, s.execID); n != 0 {
 		t.Fatalf("outbox events = %d, want 0", n)
 	}
+	// 活性保护 skip:零裁决 ⇒ 零审计行。
+	assertReapAudit(t, d, s.execID, nil)
 }
 
 // TestReapDeadlineExceeded:心跳陈旧且 deadline 亦过期 → 收口码
@@ -169,6 +261,12 @@ func TestReapDeadlineExceeded(t *testing.T) {
 	if _, na, _ := readNodeRow(t, d, s.nodeExecID); na != 2 {
 		t.Fatalf("attempts = %d, want 2(预算内重派)", na)
 	}
+	assertReapAudit(t, d, s.execID, []reapAuditRow{
+		{eventType: audit.EventAttemptReaped, attemptID: reapAuditAt(s.attID),
+			actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+		{eventType: audit.EventNodeRedispatched,
+			actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+	})
 }
 
 // TestReapLateStartExtended:deadline 过期但心跳新鲜且 started_at ≥
@@ -198,6 +296,11 @@ func TestReapLateStartExtended(t *testing.T) {
 	if !dl2.Time.After(time.Now()) {
 		t.Fatalf("deadline=%v 未被重挂(仍在过去)", dl2.Time)
 	}
+	// 一次性重挂是裁决事件但不烧预算:恰一行 deadline_extended,无 reaped。
+	assertReapAudit(t, d, s.execID, []reapAuditRow{
+		{eventType: audit.EventNodeDeadlineExtended,
+			actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+	})
 }
 
 // TestEarlyStartKilledOnDeadline:deadline 过期 + started_at < deadline_at
@@ -224,6 +327,14 @@ func TestEarlyStartKilledOnDeadline(t *testing.T) {
 			if st, code, _ := readAttemptRow(t, d, s.attID); st != engine.AttemptDead || code.String != "deadline_exceeded" {
 				t.Fatalf("attempt = %s/%v, want DEAD/deadline_exceeded", st, code.String)
 			}
+			// SLA/过期 kill 落 [4] 预算内重派:reaped + redispatched 两行
+			// (review 修:SLA 臂此前零审计断言)。
+			assertReapAudit(t, d, s.execID, []reapAuditRow{
+				{eventType: audit.EventAttemptReaped, attemptID: reapAuditAt(s.attID),
+					actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+				{eventType: audit.EventNodeRedispatched,
+					actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+			})
 		})
 	}
 }
@@ -254,6 +365,23 @@ func TestStaleAttemptOnTerminalNode(t *testing.T) {
 			if st != tc.want || code.String != tc.code {
 				t.Fatalf("attempt = %s/%v, want %s/%s", st, code.String, tc.want, tc.code)
 			}
+			// 裁决必有审计行:DEAD 收口恰一行 attempt.reaped;新鲜零行。
+			if tc.want == engine.AttemptDead {
+				assertReapAudit(t, d, s.execID, []reapAuditRow{
+					{eventType: audit.EventAttemptReaped, attemptID: reapAuditAt(s.attID),
+						actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+				})
+				var ap audit.AttemptReapedPayload
+				if err := json.Unmarshal(reapAuditPayload(t, d, s.execID, audit.EventAttemptReaped), &ap); err != nil {
+					t.Fatalf("unmarshal reaped payload: %v", err)
+				}
+				// payload 分码与 attempt 行一致 + 携触发终态(词表判别)。
+				if ap.Code != tc.code || ap.NodeStatus != "CANCELLED" {
+					t.Fatalf("reaped payload = %+v, want code=%s node_status=CANCELLED", ap, tc.code)
+				}
+			} else {
+				assertReapAudit(t, d, s.execID, nil)
+			}
 		})
 	}
 }
@@ -282,6 +410,11 @@ VALUES (?, ?, 'node.task_enqueue', ?, 'reap-test', '{}', 'DEAD', NOW(3), 6)`,
 	if _, na, _ := readNodeRow(t, d, s.nodeExecID); na != 2 {
 		t.Fatalf("attempts = %d, want 2(分支 B 重派)", na)
 	}
+	// 分支 B 无 attempt 可收(已 DEAD)⇒ 无 reaped 行,恰一行 redispatched。
+	assertReapAudit(t, d, s.execID, []reapAuditRow{
+		{eventType: audit.EventNodeRedispatched,
+			actorType: audit.ActorSystem, actorID: "reaper:test-reaper"},
+	})
 	var taskID string
 	if err := d.QueryRow(`SELECT task_id FROM outbox WHERE execution_id=? AND status='PENDING'`, s.execID).
 		Scan(&taskID); err != nil {
@@ -357,4 +490,3 @@ func TestOrphanTerminalAttemptCancelled(t *testing.T) {
 		t.Fatalf("attempt = %s, want SUCCEEDED 原样(不二次改写)", st)
 	}
 }
-

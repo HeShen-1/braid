@@ -54,6 +54,7 @@ func TestMain(m *testing.M) {
 	// 父进程清扫:残留行会以更小 id 抢占游标分页扫描的「第一批」,污染
 	// 用例前提;栈不可达则留给各测试自行 skip。
 	if d, err := sqltest.OpenAt(reaperSchema); err == nil {
+		_, _ = d.Exec(`DELETE FROM audit_log`)
 		_, _ = d.Exec(`DELETE FROM outbox`)
 		_, _ = d.Exec(`DELETE FROM node_attempt`)
 		_, _ = d.Exec(`DELETE FROM node_execution`)
@@ -146,6 +147,7 @@ func seedReap(t *testing.T, d *sql.DB, heartbeatStale, deadlinePast time.Duratio
 		heartbeatStale.Microseconds()),
 		attID, nodeID, execID, 1, "w-first", taskID, taskID)
 	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM audit_log WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM outbox WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM node_attempt WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM node_execution WHERE execution_id=?`, execID)

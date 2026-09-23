@@ -73,3 +73,15 @@
   10. janitor:独立 goroutine + 专用 Conn + lock_wait_timeout=5;ADD 升序,{1517,1493} 容忍+复读确认;DROP 前活执行守卫,保留期语义 ≥ retention;p_min 永不 DROP;outbox DISPATCHED 清理双列谓词批删、无 ORDER BY。asynq 积压 > DISPATCH_STALE 的双执行残余窗 P0 接受有界(P1 以 asynq Inspector 硬化)。
 - 理由:正确性与 Redis/时钟解耦是对账器的结构要求;分支 B 补齐「EXECUTING+无活 attempt+事件死」收敛路径(对抗攻击 CRITICAL);ExtendNodeDeadline 把「队列吃掉窗口」与「执行超过窗口」分开,deadline SLA 对排队公平且保留挂死检测。
 - 影响:internal/reaper(新包)、internal/engine(attempt.go +CloseAttemptDead、nodecas.go +ExtendNodeDeadline)、internal/scheduler(+NodeTimeout/+FinishIfDone 两导出、F 日志)、internal/worker(claimAttempt 接管复核 ~12 行)、cmd/reaper(新入口)、deploy(compose reaper 服务 + ALTER 授权注记)、docs/designs/t2.5-reaper.md、docs/ROADMAP.md T2.5 勾选随 PR。零新迁移。
+
+## D-2026-09-23-t26-audit-events
+- 背景:T2.6 最小同步审计写入器实现前,事件词表(D-t25 未决 3 的 reaper 裁决事件收口 + D-t24 #3 延后的 branch.evaluated)、写入器形态、埋点位置三个决策点无既有锁定决策覆盖;S 规模轻量设计,用户确认(2026-09-23)。
+- 决策:
+  1. 写入器 = 新包 internal/audit,逐字镜像 outbox 范式:`Append(ctx, q engine.DBTX, Event) error`,校验前置不触 DB、永不自管事务;调用方在状态迁移同一事务内调用。同步直写 ⇒ event_at = DB 端 NOW(3)(与 status_changed_at 同钟系;「事件时刻≠落库时刻」的分离归 T6.1 异步化)。
+  2. exec_date 应用侧物化 = 单语句 `INSERT..SELECT DATE(created_at) FROM workflow_execution WHERE id=?` + RowsAffected==1 断言(0 行 = execution 缺行,响亮 ErrNotFound,不静默无写);audit_log.id 复用调用方已有 snowflake 生成器。
+  3. P0 事件词表五类:`node.state_changed`(全部节点状态迁移,单一类型 + payload from/to,非每边一类型)、`node.redispatched`(status-preserving 重派,scheduler 重试 trigger=attempt_failed 与 reaper 重派 trigger=reaped 同型)、`attempt.reaped`(reaper 三种 DEAD 裁决,attempt_id 列锚定)、`node.deadline_extended`(reaper 迟到启动一次性重挂)、`branch.evaluated`(路由决定,payload 携 next)。
+  4. actor 模型:worker 路径 actor_type=worker、actor_id=workerID(调度逻辑运行在 worker 进程内,归因到进程);reaper actor_type=system、actor_id=`reaper:<id>`;user/approval/tool/llm 词表预留(T5/T3.x 接入时落)。
+  5. 埋点在调用方(9 处现有调用面:scheduler 4 + reaper 5),engine CAS helper 保持纯粹不内嵌审计——非迁移事件(Redispatch/Extend)与迁移事件走同一调用方路径,埋点在调用方天然同构;新调用点(T4.1 Suspend/Resume、T5 API Cancel)接入时必须同事务落行,nodecas.go 头注释钉契约。
+  6. P0 范围外(显式钉死):wf 级状态迁移事件(execution.*)、execution.triggered、attempt 创建/观察收口(node_attempt 状态表已自证)、payload 哈希链(prev_hash 恒 '',T6.1)、trace_id 恒 NULL 占位(T6.2)、pii_masked 恒 0(T6.1);payload 只含 id/码/枚举,密钥永不入内(铁律)。
+- 理由:同事务直写使「状态迁移与审计行同存亡」由事务原子性承载(P0 最简可审计);INSERT..SELECT 让分区键物化零额外往返且天然钉住「审计行必有执行锚」;单一 node.state_changed + payload 对齐 DDL 词表示例,查询侧按 payload.from/to 过滤即得每边分布;reaper 裁决单列 attempt.reaped/node.deadline_extended 收口 D-t25 未决 3,使 DEAD 裁决在审计链有 actor 归因(node_attempt 行无 actor 列)。
+- 影响:internal/audit(新包)、internal/scheduler(4 埋点)、internal/reaper(5 埋点)、internal/engine/nodecas.go(头注释一行)、docs/designs/t2.6-audit-writer.md、docs/ROADMAP.md T2.6 勾选随 PR。零新迁移、零 DDL 变更。
