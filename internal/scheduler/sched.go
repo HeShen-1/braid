@@ -45,6 +45,7 @@ import (
 	"sort"
 	"time"
 
+	"braid/internal/audit"
 	"braid/internal/engine"
 	"braid/internal/engine/dsl"
 	"braid/internal/outbox"
@@ -471,6 +472,12 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 			if err != nil {
 				return err
 			}
+			if err := st.auditRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
+				From: string(engine.NodeExecuting), To: string(engine.NodeSucceeded),
+				NodeID: n.nodeID, Version: newVer, AttemptNo: n.attempts, WorkerID: n.workerID.String,
+			}); err != nil {
+				return err
+			}
 			n.status = engine.NodeSucceeded
 			n.version = newVer
 			n.output = sql.NullString{String: string(req.Output), Valid: len(req.Output) > 0}
@@ -500,6 +507,11 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 				n.version = newVer
 				n.attempts++
 				n.workerID = sql.NullString{String: req.WorkerID, Valid: true}
+				if err := st.auditRow(audit.EventNodeRedispatched, n, 0, audit.NodeRedispatchedPayload{
+					NodeID: n.nodeID, AttemptNo: n.attempts, Trigger: audit.TriggerAttemptFailed,
+				}); err != nil {
+					return err
+				}
 				if err := st.appendNodeTask(n); err != nil {
 					return err
 				}
@@ -511,7 +523,15 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 				if code == "" {
 					code = "attempts_exhausted"
 				}
-				if _, err := engine.FailNode(ctx, q, n.id, n.version, n.workerID.String, code, req.Msg); err != nil {
+				failVer, err := engine.FailNode(ctx, q, n.id, n.version, n.workerID.String, code, req.Msg)
+				if err != nil {
+					return err
+				}
+				if err := st.auditRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
+					From: string(engine.NodeExecuting), To: string(engine.NodeFailed),
+					NodeID: n.nodeID, Version: failVer, Code: code, Msg: req.Msg,
+					AttemptNo: n.attempts, WorkerID: n.workerID.String,
+				}); err != nil {
 					return err
 				}
 				n.status = engine.NodeFailed
@@ -772,6 +792,12 @@ func (st *execState) skipOne(row *nodeRow) error {
 	if err != nil {
 		return err
 	}
+	if err := st.auditRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
+		From: string(engine.NodePending), To: string(engine.NodeSkipped),
+		NodeID: row.nodeID, Version: newVer,
+	}); err != nil {
+		return err
+	}
 	row.status = engine.NodeSkipped
 	row.version = newVer
 	st.s.log.Info("node.skipped", "execution_id", st.execID, "node_id", row.nodeID)
@@ -802,6 +828,12 @@ func (st *execState) dispatchOne(row *nodeRow) error {
 	row.status = engine.NodeExecuting
 	row.attempts++
 	row.workerID = sql.NullString{String: st.workerID, Valid: true}
+	if err := st.auditRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
+		From: string(engine.NodePending), To: string(engine.NodeExecuting),
+		NodeID: row.nodeID, Version: newVer, AttemptNo: row.attempts, WorkerID: st.workerID,
+	}); err != nil {
+		return err
+	}
 	if err := st.appendNodeTask(row); err != nil {
 		return err
 	}
@@ -830,8 +862,25 @@ func (st *execState) dispatchBranch(row *nodeRow, b *dsl.BranchNode) error {
 	if err != nil {
 		return err
 	}
+	if err := st.auditRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
+		From: string(engine.NodePending), To: string(engine.NodeExecuting),
+		NodeID: row.nodeID, Version: ver1, AttemptNo: row.attempts + 1, WorkerID: st.workerID,
+	}); err != nil {
+		return err
+	}
 	ver2, err := engine.SucceedNode(st.ctx, st.q, row.id, ver1, st.workerID, nil)
 	if err != nil {
+		return err
+	}
+	if err := st.auditRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
+		From: string(engine.NodeExecuting), To: string(engine.NodeSucceeded),
+		NodeID: row.nodeID, Version: ver2, AttemptNo: row.attempts + 1, WorkerID: st.workerID,
+	}); err != nil {
+		return err
+	}
+	if err := st.auditRow(audit.EventBranchEvaluated, row, 0, audit.BranchEvaluatedPayload{
+		NodeID: row.nodeID, Next: next,
+	}); err != nil {
 		return err
 	}
 	row.status = engine.NodeSucceeded
@@ -874,6 +923,27 @@ func (st *execState) appendNodeTask(row *nodeRow) error {
 	return st.s.appendEvent(st.ctx, st.q, st.execID, EventTypeNodeTask,
 		fmt.Sprintf("att:%d:%d", row.id, row.attempts),
 		NodeTaskPayload{ExecutionID: st.execID, NodeExecutionID: row.id, AttemptNo: row.attempts})
+}
+
+// auditRow 落一条审计行(T2.6 契约:每次状态迁移/调度裁决同事务必有审计行,
+// D-2026-09-23-t26-audit-events)。ID 复用调度器雪花生成器;actor = 本事务
+// 所在 worker 进程(调度逻辑运行于 worker,归因到进程,非 DSL 语义角色)。
+// attemptID 仅观察者路径(Complete)携带——attempt 行此时已存在可锚定;
+// 派发路径 attempt 行尚未由 worker 创建,只携 payload.attempt_no。
+func (st *execState) auditRow(eventType string, row *nodeRow, attemptID uint64, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("scheduler: marshal audit %s payload: %w", eventType, err)
+	}
+	id, err := st.s.deps.IDs.Next()
+	if err != nil {
+		return fmt.Errorf("scheduler: gen audit id: %w", err)
+	}
+	return audit.Append(st.ctx, st.q, audit.Event{
+		ID: id, EventType: eventType, ExecutionID: st.execID,
+		NodeExecID: row.id, NodeID: row.nodeID, AttemptID: attemptID,
+		ActorType: audit.ActorWorker, ActorID: st.workerID, Payload: raw,
+	})
 }
 
 func (s *Scheduler) appendEvent(ctx context.Context, q engine.DBTX, execID uint64,

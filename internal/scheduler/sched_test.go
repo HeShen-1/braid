@@ -94,6 +94,7 @@ func inst(t *testing.T, s *Scheduler, d *sql.DB, doc string, input string) (defI
 func cleanupExec(t *testing.T, d *sql.DB, execID uint64) {
 	t.Helper()
 	for _, q := range []string{
+		`DELETE FROM audit_log WHERE execution_id=?`,
 		`DELETE FROM outbox WHERE execution_id=?`,
 		`DELETE FROM node_attempt WHERE execution_id=?`,
 		`DELETE FROM node_execution WHERE execution_id=?`,

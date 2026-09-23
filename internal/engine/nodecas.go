@@ -12,6 +12,10 @@ import (
 // 本文件是仓库内唯一允许对 node_execution 发 UPDATE 的地方(AGENTS 铁律:
 // 节点状态迁移只经 CAS helper,WHERE 必含 id=? AND status=? AND version=?)。
 //
+// 调用方契约(T2.6,D-2026-09-23-t26-audit-events):每次经本文件 helper 的
+// 状态迁移,调用方必须在同一事务落对应 audit 行(internal/audit);非迁移
+// 裁决(Redispatch/Extend)同规。新调用点不落审计行 = 破坏 T2.6 验收。
+//
 // 裁决不变量:每条 CAS 必含 version=version+1 ⇒ 谓词命中行必被改值 ⇒
 // RowsAffected==matched(CanonicalDSN 未开 clientFoundRows,0 = changed 语义);
 // 「0 行 = CAS 失败」判定因此可信。新增 CAS 语句评审 checklist 第一条。

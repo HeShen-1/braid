@@ -9,6 +9,7 @@ import (
 	"math/rand/v2"
 	"time"
 
+	"braid/internal/audit"
 	"braid/internal/engine"
 	"braid/internal/outbox"
 	"braid/internal/scheduler"
@@ -126,6 +127,7 @@ func (r *Reaper) reapOnce(ctx context.Context, nodeExecID, execID uint64, ent en
 	return engine.WithTx(ctx, r.deps.DB, func(q engine.DBTX) error {
 		// [1] 锁 node 行。
 		var (
+			nodeID     string
 			nodeType   string
 			nodeStatus engine.NodeState
 			nodeVer    uint32
@@ -135,9 +137,9 @@ func (r *Reaper) reapOnce(ctx context.Context, nodeExecID, execID uint64, ent en
 			deadline   sql.NullTime
 		)
 		err := q.QueryRowContext(ctx, `
-SELECT type, status, version, attempts, max_attempts, worker_id, deadline_at
+SELECT node_id, type, status, version, attempts, max_attempts, worker_id, deadline_at
   FROM node_execution WHERE id=? FOR UPDATE`, nodeExecID).
-			Scan(&nodeType, &nodeStatus, &nodeVer, &attempts, &maxA, &workerID, &deadline)
+			Scan(&nodeID, &nodeType, &nodeStatus, &nodeVer, &attempts, &maxA, &workerID, &deadline)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("reaper: node_execution %d vanished (data defect)", nodeExecID)
 		}
@@ -176,6 +178,12 @@ SELECT id, status, heartbeat_at, started_at, worker_id
 			if !attemptGone && attStatus == engine.AttemptRunning {
 				if err := engine.CloseAttemptDead(ctx, q, attID, "stale_attempt",
 					fmt.Sprintf("node terminal %s, attempt left RUNNING", nodeStatus)); err != nil {
+					return err
+				}
+				if err := r.auditRow(ctx, q, audit.EventAttemptReaped, execID, nodeExecID, attID, nodeID,
+					audit.AttemptReapedPayload{
+						NodeExecutionID: nodeExecID, Code: "stale_attempt", NodeStatus: string(nodeStatus),
+					}); err != nil {
 					return err
 				}
 				if err := engine.TouchExecution(ctx, q, execID); err != nil {
@@ -220,8 +228,14 @@ SELECT COUNT(*) FROM outbox
 			if ent == entryDeadline && deadline.Valid &&
 				deadline.Time.Before(now.Add(-r.cfg.ScanInterval)) {
 				if !startedAt.Before(deadline.Time) {
-					if _, err := engine.ExtendNodeDeadline(ctx, q, nodeExecID, nodeVer,
-						now.Add(scheduler.NodeTimeout(nodeType))); err != nil {
+					newDeadline := now.Add(scheduler.NodeTimeout(nodeType))
+					if _, err := engine.ExtendNodeDeadline(ctx, q, nodeExecID, nodeVer, newDeadline); err != nil {
+						return err
+					}
+					if err := r.auditRow(ctx, q, audit.EventNodeDeadlineExtended, execID, nodeExecID, 0, nodeID,
+						audit.NodeDeadlineExtendedPayload{
+							NodeID: nodeID, AttemptNo: attempts, DeadlineAt: newDeadline,
+						}); err != nil {
 						return err
 					}
 					if err := engine.TouchExecution(ctx, q, execID); err != nil {
@@ -238,6 +252,12 @@ SELECT COUNT(*) FROM outbox
 				}
 				if err := engine.CloseAttemptDead(ctx, q, attID, "deadline_exceeded",
 					fmt.Sprintf("first-owner worker=%s: execution window exhausted (SLA)", w)); err != nil {
+					return err
+				}
+				if err := r.auditRow(ctx, q, audit.EventAttemptReaped, execID, nodeExecID, attID, nodeID,
+					audit.AttemptReapedPayload{
+						NodeExecutionID: nodeExecID, Code: "deadline_exceeded", WorkerID: w,
+					}); err != nil {
 					return err
 				}
 				r.log.Warn("attempt.reaped_sla",
@@ -264,6 +284,12 @@ SELECT COUNT(*) FROM outbox
 				fmt.Sprintf("first-owner worker=%s stale=%s", w, stale)); err != nil {
 				return err
 			}
+			if err := r.auditRow(ctx, q, audit.EventAttemptReaped, execID, nodeExecID, attID, nodeID,
+				audit.AttemptReapedPayload{
+					NodeExecutionID: nodeExecID, Code: code, WorkerID: w, Stale: stale.String(),
+				}); err != nil {
+				return err
+			}
 			r.log.Warn("attempt.reaped",
 				"node_execution_id", nodeExecID, "attempt_id", attID,
 				"code", code, "worker", w, "stale", stale.String())
@@ -281,10 +307,18 @@ SELECT COUNT(*) FROM outbox
 		case wfStatus.Terminal():
 			// 靶 a:fail-fast 遗留 EXECUTING → CANCELLED(平台裁决,不伪造
 			// 业务失败;version 已变/已终态的 Conflict 是良性收敛)。
-			if _, err := engine.CancelNode(ctx, q, nodeExecID, nodeVer); err != nil {
+			cancelVer, err := engine.CancelNode(ctx, q, nodeExecID, nodeVer)
+			if err != nil {
 				if errors.Is(err, engine.ErrConflict) {
 					return errSkip
 				}
+				return err
+			}
+			if err := r.auditRow(ctx, q, audit.EventNodeStateChanged, execID, nodeExecID, 0, nodeID,
+				audit.NodeStateChangedPayload{
+					From: string(nodeStatus), To: string(engine.NodeCancelled),
+					NodeID: nodeID, Version: cancelVer, WorkerID: workerID.String,
+				}); err != nil {
 				return err
 			}
 			r.log.Info("node.cancelled_orphan",
@@ -306,6 +340,13 @@ SELECT COUNT(*) FROM outbox
 			}); err != nil {
 				return err
 			}
+			if err := r.auditRow(ctx, q, audit.EventNodeRedispatched, execID, nodeExecID, 0, nodeID,
+				audit.NodeRedispatchedPayload{
+					NodeID: nodeID, AttemptNo: attempts + 1,
+					Trigger: audit.TriggerReaped, MaxAttempts: maxA,
+				}); err != nil {
+				return err
+			}
 			if err := r.appendRedispatchEvent(ctx, q, execID, nodeExecID, attempts+1); err != nil {
 				return err
 			}
@@ -319,9 +360,18 @@ SELECT COUNT(*) FROM outbox
 		default:
 			// 耗尽:fail-fast 同事务镜像(FailNode + FinishExecution(FAILED)),
 			// 与 completeOnce 的 default 分支逐字同式。
-			if _, err := engine.FailNode(ctx, q, nodeExecID, nodeVer, workerID.String,
+			failVer, err := engine.FailNode(ctx, q, nodeExecID, nodeVer, workerID.String,
 				"attempts_exhausted",
-				fmt.Sprintf("reaped after %d attempts", maxA)); err != nil {
+				fmt.Sprintf("reaped after %d attempts", maxA))
+			if err != nil {
+				return err
+			}
+			if err := r.auditRow(ctx, q, audit.EventNodeStateChanged, execID, nodeExecID, attID, nodeID,
+				audit.NodeStateChangedPayload{
+					From: string(nodeStatus), To: string(engine.NodeFailed),
+					NodeID: nodeID, Version: failVer, Code: "attempts_exhausted",
+					AttemptNo: attempts, WorkerID: workerID.String,
+				}); err != nil {
 				return err
 			}
 			if err := engine.FinishExecution(ctx, q, execID, engine.WorkflowFailed, nil,
@@ -361,5 +411,25 @@ func (r *Reaper) appendRedispatchEvent(ctx context.Context, q engine.DBTX,
 		TaskID:      fmt.Sprintf("att:%d:%d", nodeExecID, attemptNo),
 		Queue:       r.cfg.Queue,
 		Payload:     raw,
+	})
+}
+
+// auditRow 落一条审计行(T2.6 契约:reaper 裁决同事务必有审计行,
+// D-2026-09-23-t26-audit-events)。reaper 的裁决 actor = system,归因到实例
+// (actor_id=reaper:<id>,与 RedispatchNode 的 worker_id 同形)。
+func (r *Reaper) auditRow(ctx context.Context, q engine.DBTX, eventType string,
+	execID, nodeExecID, attemptID uint64, nodeID string, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("reaper: marshal audit %s payload: %w", eventType, err)
+	}
+	id, err := r.deps.IDs.Next()
+	if err != nil {
+		return fmt.Errorf("reaper: gen audit id: %w", err)
+	}
+	return audit.Append(ctx, q, audit.Event{
+		ID: id, EventType: eventType, ExecutionID: execID,
+		NodeExecID: nodeExecID, NodeID: nodeID, AttemptID: attemptID,
+		ActorType: audit.ActorSystem, ActorID: "reaper:" + r.cfg.ID, Payload: raw,
 	})
 }
