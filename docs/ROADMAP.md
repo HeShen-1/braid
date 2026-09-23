@@ -31,11 +31,12 @@
 
 ## M3 节点实现(约 2 周)
 
-- [ ] T3.1 LLMClient 抽象 + OpenAI 兼容适配器(退避重试、幂等键、usage/cost 台账、预算估算:未知模型 fallback 标 `estimated=true`)— M — 依赖 M2 — 验收:固定 mock usage 下台账金额与 usage 断言一致
+- [x] T3.1 LLMClient 抽象 + OpenAI 兼容适配器(退避重试、幂等键、usage/cost 台账、预算估算:未知模型 fallback 标 `estimated=true`)— M — 依赖 M2 — 验收:固定 mock usage 下台账金额与 usage 断言一致 — ✅ 2026-09-23:internal/llm 新包(Client 缝模板对齐 relay.Enqueuer、Request.ExtraBody 顶层合并=国产模型参数出口、StatusError 结构化非 2xx)+ OpenAICompat 手写适配器(net/http 零 SDK、Idempotency-Key 头携 att 键、单 attempt 内 429/5xx/网络错指数退避±20% 抖动、外层取消即止、2xx 缺 usage 响亮拒绝);单价表 JSON-in-env(BRAID_LLM_PRICE_TABLE,"fallback" 保留键)× API usage 整数定点计费(big.Int 承载、唯一舍入点 half-up、DECIMAL(14,6) 溢出拒绝、NULL=不计费与免费 0 区分);台账双录缝 = worker.Outcome.Usage → scheduler.CompletionRequest.Usage → engine.CloseAttempt 同一终写落列 + llm.call.completed 审计行同事务(词表/ActorLLM/冗余列组登记,audit 半边与 node_attempt 半边 engine.AttemptUsage 单源);拍板见 D-2026-09-23-t31-llm-client(Executor 接线后置 T3.6 / tiktoken 等 T7.2 / JSON-in-env);验收 = 真 asynq 链 fakeExec 携固定 mock usage,断言两表 model/tokens 原值/金额逐字一致(0.003200 CNY=(1000×2+150×8)/1e6 手算核对)+ 未知模型 fallback estimated=1 + 非 LLM 收口列恒 NULL + FAILED 携 Usage 入口拒;零新依赖零迁移;另修 reaper TestJanitorFullHorizonNoDDL 日期敏感前提(引导分区跨测试保留期 24h,fresh schema 首跑合法 DROP 致红;改为收敛一轮后断言第二轮零 DDL)
 - [ ] T3.2 工具 registry + ToolRunner 接口 + 本地进程实现 + per-call scoped token(签发/过期/传递)— M — 依赖 M2、T2.6 — 验收:token 过期后工具调用被拒;审计行与沙箱环境均不含平台主凭证
 - [ ] T3.3 HTTP 工具 SSRF 运行时防护(Dialer.Control 拨号复核 IP、CheckRedirect 每跳重校验剥凭证、仅 https)— M — 依赖 T3.2 — 验收:私网段/metadata 段、重定向跳内网、DNS rebinding(TOCTOU)单测;**DSL 层 host 白名单拒绝用例**(host 字段出现即 schema 拒绝)
 - [ ] T3.4 条件分支完整求值器(替换 T2.4 桩)— S — 依赖 M2 — 验收:引用比较、多条件组合、类型错误单测
 - [ ] T3.5 内置工具:http + file_read(路径白名单)— M — 依赖 T3.2、T3.3 — 验收:白名单外路径/主机被拒;db_query 在 P1 停车场
+- [ ] T3.6 LLM 节点执行器接线(worker node-type mux、input_snapshot 读取 + prompt 标签块渲染、DSL outputs 映射抽取、llm.Config/OpenAICompat 生产装配)— M — 依赖 T3.1 — 验收:e2e 经 OpenAI 兼容端点(httptest 桩)跑通 llm 节点全链,attempt 台账列与 llm.call.completed 由真实调用路径写入(2026-09-23 发现:T3.1 GATE 1 拍板接线后置,见 D-2026-09-23-t31-llm-client #1;input_snapshot 已含求值后 prompt 数据,outputs 映射需回 DSL 取)
 
 里程碑验收:真实 LLM 跑通「文件路径输入 → file_read → 摘要 → 完整条件分支」示例(测试代码触发)。
 
