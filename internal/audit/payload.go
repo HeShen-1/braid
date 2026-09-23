@@ -66,3 +66,13 @@ type LLMCallCompletedPayload struct {
 	CostCurrency     string `json:"cost_currency,omitempty"`
 	CostEstimated    bool   `json:"cost_estimated"`
 }
+
+// ToolCallCompletedPayload 是 tool.call.completed(T3.2)的事件体。无工具
+// 入参/产出/token 自由文本(D-t26 §4:入参真相源在 input_snapshot,产出在
+// node_execution.output,token 是短时凭证本就不该留痕);时长是工具调用的
+// 观测维度(T6.4 指标字源)。
+type ToolCallCompletedPayload struct {
+	NodeID     string `json:"node_id"`
+	Tool       string `json:"tool"`
+	DurationMs uint64 `json:"duration_ms"`
+}

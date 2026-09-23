@@ -169,12 +169,13 @@ func (s *Server) publishDraft(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// 发布点收紧白名单(dsl.WithToolAllowlist 语义:名单来自 Config,
-	// T3.2 registry 落地后换源;空名单 = 禁用一切工具)。
+	// 发布点收紧白名单(dsl.WithToolAllowlist 语义:名单来自 tools.Registry
+	// 注册名——T3.2 换源完成,BRAID_TOOL_ALLOWLIST 静态 env 已退役;空
+	// registry = 禁用一切工具)。
 	var def Definition
 	err := WithTx(c.Request.Context(), s.dbh, func(tx DBTX) error {
 		var err error
-		def, err = s.st.Publish(c.Request.Context(), tx, id, actorFrom(c), s.cfg.ToolAllowlist...)
+		def, err = s.st.Publish(c.Request.Context(), tx, id, actorFrom(c), s.toolReg.Names()...)
 		return err
 	})
 	if err != nil {

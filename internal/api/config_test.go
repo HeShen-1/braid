@@ -39,30 +39,12 @@ func TestConfigFromEnv(t *testing.T) {
 				"BRAID_AUTH_JWT_SECRET":    testSecret,
 				"BRAID_API_ADDR":           "10.0.0.1:9000",
 				"BRAID_API_SNOWFLAKE_NODE": "7",
-				"BRAID_TOOL_ALLOWLIST":     "http , file_read",
 			},
 			want: Config{
 				Addr:          "10.0.0.1:9000",
 				JWTSecret:     testSecret,
-				ToolAllowlist: []string{"http", "file_read"},
 				SnowflakeNode: 7,
 			},
-		},
-		{
-			name: "allowlist empty entry rejected",
-			env: map[string]string{
-				"BRAID_AUTH_JWT_SECRET": testSecret,
-				"BRAID_TOOL_ALLOWLIST":  "http,,file_read",
-			},
-			wantErr: "empty entry",
-		},
-		{
-			name: "allowlist duplicate rejected",
-			env: map[string]string{
-				"BRAID_AUTH_JWT_SECRET": testSecret,
-				"BRAID_TOOL_ALLOWLIST":  "http,http",
-			},
-			wantErr: `duplicate "http"`,
 		},
 		{
 			name: "snowflake node overflow rejected",
@@ -114,14 +96,6 @@ func TestConfigFromEnv(t *testing.T) {
 			if got.Addr != tt.want.Addr || got.JWTSecret != tt.want.JWTSecret ||
 				got.SnowflakeNode != tt.want.SnowflakeNode {
 				t.Fatalf("ConfigFromEnv() = %+v, want %+v", got, tt.want)
-			}
-			if len(got.ToolAllowlist) != len(tt.want.ToolAllowlist) {
-				t.Fatalf("ToolAllowlist = %v, want %v", got.ToolAllowlist, tt.want.ToolAllowlist)
-			}
-			for i := range got.ToolAllowlist {
-				if got.ToolAllowlist[i] != tt.want.ToolAllowlist[i] {
-					t.Fatalf("ToolAllowlist = %v, want %v", got.ToolAllowlist, tt.want.ToolAllowlist)
-				}
 			}
 		})
 	}

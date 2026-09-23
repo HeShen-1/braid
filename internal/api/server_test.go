@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
@@ -19,6 +20,7 @@ import (
 	"braid/internal/auth"
 	"braid/internal/db/sqltest"
 	"braid/internal/snowflake"
+	"braid/internal/tools"
 )
 
 // newTestServer 返回挂真实 store(t13,缺栈自动 skip)的路由与 token
@@ -33,9 +35,18 @@ func newTestServer(t *testing.T, allowlist ...string) (*gin.Engine, *sql.DB, fun
 	if err != nil {
 		t.Fatalf("snowflake: %v", err)
 	}
-	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, ToolAllowlist: allowlist, SnowflakeNode: 1}
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1}
+	// 白名单真源换 Registry(T3.2):allowlist 参数语义不变 = 注册同名工具。
+	stubs := make([]tools.Tool, 0, len(allowlist))
+	for _, name := range allowlist {
+		stubs = append(stubs, nameOnlyTool{name})
+	}
+	reg, err := tools.NewRegistry(stubs...)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
 	gin.SetMode(gin.TestMode)
-	r := NewServer(cfg, dbh, ids).Router()
+	r := NewServer(cfg, dbh, ids, reg).Router()
 	sign := func(roles ...auth.Role) string {
 		t.Helper()
 		s, err := auth.SignToken(testSecret, time.Hour, "alice", roles)
@@ -355,7 +366,11 @@ func newNoDBServer(t *testing.T) (*gin.Engine, string) {
 	if err != nil {
 		t.Fatalf("sign token: %v", err)
 	}
-	return NewServer(cfg, dead, ids).Router(), token
+	reg, err := tools.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	return NewServer(cfg, dead, ids, reg).Router(), token
 }
 
 // TestHTTPInternalErrorMapping 钉死 500 契约:存储故障 → 500 {"error":
@@ -407,4 +422,12 @@ func TestHTTPGetDraftRoute(t *testing.T) {
 	if code != 200 || body["status"] != "PUBLISHED" {
 		t.Fatalf("published row by id = %d %v, want 200 PUBLISHED", code, body)
 	}
+}
+
+// nameOnlyTool:白名单装配桩(api 只消费注册名,发布校验不执行工具)。
+type nameOnlyTool struct{ name string }
+
+func (n nameOnlyTool) Name() string { return n.name }
+func (n nameOnlyTool) Run(context.Context, tools.Call) (tools.Result, error) {
+	return tools.Result{}, fmt.Errorf("api stub tool %q never executes", n.name)
 }

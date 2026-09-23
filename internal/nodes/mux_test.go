@@ -44,7 +44,7 @@ func TestMuxRoutesLLM(t *testing.T) {
 	spec := &dsl.LLMNode{Model: "glm-5.3"}
 	defs := &fakeDefs{node: &dsl.Node{ID: "n", Type: "llm", LLM: spec}}
 	r := &fakeRunner{out: worker.Outcome{Status: engine.AttemptSucceed}}
-	m := NewMux(defs, r)
+	m := NewMux(defs, r, &fakeToolExec{})
 
 	out, err := m.Execute(context.Background(), worker.Request{NodeExecutionID: 7, AttemptNo: 2})
 	if err != nil {
@@ -64,9 +64,9 @@ func TestMuxRoutesLLM(t *testing.T) {
 // no_executor 是终态业务失败(GATE 1 语义 b):部署配置错要可见收口,
 // 不留 RUNNING 行给 reaper 判死循环重派。
 func TestMuxNoExecutorIsFailedOutcome(t *testing.T) {
-	defs := &fakeDefs{node: &dsl.Node{ID: "t", Type: "tool", Tool: &dsl.ToolNode{Tool: "http"}}}
+	defs := &fakeDefs{node: &dsl.Node{ID: "a", Type: "approval", Approval: &dsl.ApprovalNode{}}}
 	r := &fakeRunner{}
-	m := NewMux(defs, r)
+	m := NewMux(defs, r, &fakeToolExec{})
 
 	out, err := m.Execute(context.Background(), worker.Request{NodeExecutionID: 1})
 	if err != nil {
@@ -82,7 +82,7 @@ func TestMuxNoExecutorIsFailedOutcome(t *testing.T) {
 
 // 定义行缺失是数据缺陷(业务失败收口可见),DB 读失败才是基础设施错误。
 func TestMuxDefNotFoundVsInfra(t *testing.T) {
-	m := NewMux(&fakeDefs{err: fmt.Errorf("%w: node_execution 9", engine.ErrNotFound)}, &fakeRunner{})
+	m := NewMux(&fakeDefs{err: fmt.Errorf("%w: node_execution 9", engine.ErrNotFound)}, &fakeRunner{}, &fakeToolExec{})
 	out, err := m.Execute(context.Background(), worker.Request{NodeExecutionID: 9})
 	if err != nil {
 		t.Fatalf("not-found should be business failure, got infra error %v", err)
@@ -92,8 +92,15 @@ func TestMuxDefNotFoundVsInfra(t *testing.T) {
 	}
 
 	boom := errors.New("db down")
-	m2 := NewMux(&fakeDefs{err: boom}, &fakeRunner{})
+	m2 := NewMux(&fakeDefs{err: boom}, &fakeRunner{}, &fakeToolExec{})
 	if _, err := m2.Execute(context.Background(), worker.Request{NodeExecutionID: 9}); err == nil {
 		t.Fatal("infra read error must surface as error (asynq retry), not outcome")
 	}
+}
+
+// fakeToolExec:ToolRunner 路由缝桩(mux 层测试不触内层运行时)。
+type fakeToolExec struct{}
+
+func (f *fakeToolExec) Run(context.Context, worker.Request, *dsl.ToolNode) (worker.Outcome, error) {
+	return worker.Outcome{Status: engine.AttemptFailed, Code: "tool_not_routed"}, nil
 }

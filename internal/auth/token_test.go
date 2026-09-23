@@ -2,6 +2,7 @@ package auth
 
 import (
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -75,10 +76,14 @@ func TestParseExpired(t *testing.T) {
 // ErrTokenInvalid。变异锚名副其实:若解析器被变异成「跳过签名校验」,
 // 本测试红(此前版本篡改的是 header 段,拒绝发生在 alg 解析步,
 // 锚点与名义不符——review 实测纠正)。
+// 篡改位取签名段首字符(承载完整 6 bit):早期版本翻 token 末字符,
+// 而 base64url 末字符低位是无解码语义的 padding 位,恰翻转无效位时
+// 签名字节不变、校验照过(≈4/64 概率 flaky)——T3.2 全量跑实测纠正。
 func TestParseTamperedSignature(t *testing.T) {
 	tok, _ := SignToken(testSecret, time.Hour, "alice", []Role{RoleAdmin})
+	dot := strings.LastIndex(tok, ".")
 	b := []byte(tok)
-	b[len(b)-1] = flip(b[len(b)-1])
+	b[dot+1] = flip(b[dot+1])
 	_, err := ParseToken(testSecret, string(b))
 	if !errors.Is(err, ErrTokenInvalid) {
 		t.Fatalf("err = %v, want ErrTokenInvalid", err)

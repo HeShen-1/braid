@@ -1,11 +1,13 @@
 // worker 入口:读 env → 组装 → 信号 → worker.Run。薄 main,零业务逻辑;
 // 与 relay 同款骨架(Q14:交付时合并为单二进制多入口)。T3.6 起装配真实
-// 节点执行器(llm 经 OpenAI 兼容适配器);tool/approval 随 T3.2/T4.1 接入。
+// 节点执行器(llm 经 OpenAI 兼容适配器);T3.2 接入 tool 执行器(registry +
+// LocalRunner + scoped token);approval 随 T4.1 接入。
 package main
 
 import (
 	"context"
 	"database/sql"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -21,8 +23,23 @@ import (
 	"braid/internal/nodes"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
+	"braid/internal/tools"
 	"braid/internal/worker"
 )
+
+// toolTokenKey 读 BRAID_TOOL_TOKEN_SECRET(hex,可缺省):显式供给 = 跨
+// 进程校验预留(P1 工具回调平台);缺省 nil = 进程内随机(tools 包内生成)。
+func toolTokenKey(getenv func(string) string) ([]byte, error) {
+	raw := getenv("BRAID_TOOL_TOKEN_SECRET")
+	if raw == "" {
+		return nil, nil
+	}
+	key, err := hex.DecodeString(raw)
+	if err != nil {
+		return nil, fmt.Errorf("worker: BRAID_TOOL_TOKEN_SECRET: want hex: %w", err)
+	}
+	return key, nil
+}
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -99,11 +116,28 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: scheduler: %w", err)
 	}
 
+	// T3.2 工具运行时装配:registry(P0 无内置工具,T3.5 注册 http/
+	// file_read;空 = 一切 tool 节点 tool_not_found 收口)+ scoped token
+	// 签发器(BRAID_TOOL_TOKEN_SECRET 缺省 = 进程内随机,重启即轮换——
+	// P0 校验点在同进程调用门,自洽;P1 工具回调平台时经部署配置显式供给)。
+	toolReg, err := tools.NewRegistry()
+	if err != nil {
+		return fmt.Errorf("worker: tool registry: %w", err)
+	}
+	toolKey, err := toolTokenKey(os.Getenv)
+	if err != nil {
+		return err
+	}
+	toolExec := &nodes.ToolExecutor{
+		Runner: tools.NewLocalRunner(toolReg, tools.NewTokenIssuer(toolKey, 0, nil)),
+		DB:     mysqlDB,
+	}
+
 	executor := nodes.NewMux(sched, &nodes.LLMExecutor{
 		Client: client,
 		Prices: llmCfg.PriceTable,
 		DB:     mysqlDB,
-	})
+	}, toolExec)
 	return worker.Run(ctx, worker.Deps{
 		DB:       mysqlDB,
 		IDs:      ids,

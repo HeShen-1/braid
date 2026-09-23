@@ -6,6 +6,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"braid/internal/auth"
+	"braid/internal/tools"
 )
 
 // Server 组装 definition CRUD 的 REST 面。生产模式由部署层经 GIN_MODE
@@ -14,11 +15,20 @@ type Server struct {
 	cfg Config
 	st  *Store
 	dbh *sql.DB // 写路径两步事务(CreateDraft/UpdateDraft/Publish)的包裹边界
+	// toolReg 发布白名单真源(T3.2 换源:T5.4 的 BRAID_TOOL_ALLOWLIST 静态
+	// env 退役,白名单 = registry 实际注册名;空 registry = 禁用一切工具,
+	// 语义与空名单一致)。api 与 worker 各自装配同一注册集(T3.5 起内置工具)。
+	toolReg *tools.Registry
 }
 
-// NewServer 构造 definition CRUD 服务(dbh 为连接池;ids 生成草稿行 id)。
-func NewServer(cfg Config, dbh *sql.DB, ids IDGen) *Server {
-	return &Server{cfg: cfg, st: NewStore(ids), dbh: dbh}
+// NewServer 构造 definition CRUD 服务(dbh 为连接池;ids 生成草稿行 id;
+// toolReg 发布白名单来源,发布点经 dsl.WithToolAllowlist(registry 名单)。
+// nil registry 响亮拒绝:静默空名单会把「配置缺漏」伪装成「禁用工具」。
+func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry) *Server {
+	if toolReg == nil {
+		panic("api: nil tools.Registry (publish allowlist source)")
+	}
+	return &Server{cfg: cfg, st: NewStore(ids), dbh: dbh, toolReg: toolReg}
 }
 
 // Router 注册全部路由。角色面:写(author|admin)与读(任意有效 token)
