@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"net"
 	"strconv"
-	"strings"
 
 	"braid/internal/auth"
 	"braid/internal/snowflake"
@@ -36,10 +35,6 @@ type Config struct {
 	// BRAID_AUTH_JWT_SECRET env 注入,无默认值(缺省启动即败),不进
 	// 代码/日志/审计(铁律)。
 	JWTSecret string
-	// ToolAllowlist 发布时工具白名单(T5.4 静态配置;T3.2 registry 落地
-	// 后换源,消费点只有 publish 一处)。nil/空 = 名单为空集 = 禁用一切
-	// 工具(dsl.WithToolAllowlist 语义),发布引用任何工具都 400。
-	ToolAllowlist []string
 	// SnowflakeNode 雪花节点号,definition.id 应用侧生成(发布前可知,
 	// 供钉版引用)。跨进程重号唯一症状是业务表 PK 1062。
 	SnowflakeNode uint16
@@ -64,16 +59,6 @@ func (c Config) Validate() error {
 	if c.SnowflakeNode > snowflake.MaxNodeID {
 		return fmt.Errorf("api: snowflake node %d > %d", c.SnowflakeNode, snowflake.MaxNodeID)
 	}
-	seen := make(map[string]bool, len(c.ToolAllowlist))
-	for _, t := range c.ToolAllowlist {
-		if t == "" {
-			return fmt.Errorf("api: tool allowlist contains empty entry")
-		}
-		if seen[t] {
-			return fmt.Errorf("api: tool allowlist duplicate %q", t)
-		}
-		seen[t] = true
-	}
 	return nil
 }
 
@@ -96,12 +81,7 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		}
 		c.SnowflakeNode = uint16(n)
 	}
-	if raw := getenv("BRAID_TOOL_ALLOWLIST"); raw != "" {
-		parts := strings.Split(raw, ",")
-		c.ToolAllowlist = make([]string, 0, len(parts))
-		for _, p := range parts {
-			c.ToolAllowlist = append(c.ToolAllowlist, strings.TrimSpace(p))
-		}
-	}
+	// BRAID_TOOL_ALLOWLIST 已随 T3.2 退役:发布白名单真源 = tools.Registry
+	// 注册名(NewServer 注入;空 registry = 禁用一切工具,语义不变)。
 	return c, c.Validate()
 }

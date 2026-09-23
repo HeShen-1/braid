@@ -72,12 +72,17 @@ type Request struct {
 // Usage 是 LLM attempt 的台账参数(T3.1,仅 SUCCEEDED 携带——失败路径 P0
 // 不计费):由 llm.Cost.AttemptUsage 产出,经 scheduler.Complete 随收口终写
 // 落 node_attempt usage/cost 列并同事务发 llm.call.completed 审计行(双录)。
+//
+// ToolCall 是 tool attempt 的调用观测参数(T3.2,仅 SUCCEEDED 携带):由
+// nodes.ToolExecutor 产出,经 scheduler.Complete 同事务发 tool.call.completed
+// 审计行(actor=tool/工具名)。
 type Outcome struct {
-	Status engine.AttemptState
-	Code   string
-	Msg    string
-	Output json.RawMessage
-	Usage  *engine.AttemptUsage
+	Status   engine.AttemptState
+	Code     string
+	Msg      string
+	Output   json.RawMessage
+	Usage    *engine.AttemptUsage
+	ToolCall *scheduler.ToolCallInfo
 }
 
 // Executor 是节点执行缝:T2.3 只落框架与幂等/记账契约,T2.4 已接调度回写,
@@ -122,10 +127,10 @@ func Run(ctx context.Context, d Deps, cfg Config, opt asynq.RedisClientOpt) erro
 	// 叠加:asynq 内部重试永不产生新 attempt(同 TaskID = 同 attempt_no),
 	// 节点级重试权威在调度层。
 	srv := asynq.NewServer(opt, asynq.Config{
-		Concurrency:      cfg.Concurrency,
-		Queues:           cfg.Queues,
-		ShutdownTimeout:  cfg.ShutdownTimeout,
-		RetryDelayFunc:   func(n int, e error, t *asynq.Task) time.Duration { return cfg.RetryDelay },
+		Concurrency:     cfg.Concurrency,
+		Queues:          cfg.Queues,
+		ShutdownTimeout: cfg.ShutdownTimeout,
+		RetryDelayFunc:  func(n int, e error, t *asynq.Task) time.Duration { return cfg.RetryDelay },
 	})
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(EventTypeNodeTask, h.handleNodeTask)
@@ -301,6 +306,7 @@ func (h *attHandler) completeNode(ctx context.Context, taskID string, attemptID 
 		Output:     o.Output,
 		WorkerID:   h.cfg.WorkerID,
 		Usage:      o.Usage,
+		ToolCall:   o.ToolCall,
 	})
 	if err != nil {
 		return fmt.Errorf("worker: complete node %d (task %s): %w", p.NodeExecutionID, taskID, err)

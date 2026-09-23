@@ -19,6 +19,7 @@ import (
 	"braid/internal/api"
 	"braid/internal/db"
 	"braid/internal/snowflake"
+	"braid/internal/tools"
 )
 
 // readHeaderTimeout 封慢速头部攻击(slowloris)的硬上限;值配置化归 T7.1。
@@ -69,10 +70,17 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("api: snowflake: %w", err)
 	}
+	// 发布白名单真源(T3.2 换源):tools.Registry 注册名。P0 无内置工具
+	// (T3.5 注册 http/file_read),空 registry = 禁用一切工具(与原
+	// BRAID_TOOL_ALLOWLIST 空名单语义一致);api 与 worker 装配同一注册集。
+	toolReg, err := tools.NewRegistry()
+	if err != nil {
+		return fmt.Errorf("api: tool registry: %w", err)
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewServer(cfg, dbh, ids).Router(),
+		Handler:           api.NewServer(cfg, dbh, ids, toolReg).Router(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,

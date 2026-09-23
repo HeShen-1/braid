@@ -36,15 +36,17 @@ import (
 // engine.ErrInvalidSnapshot / outbox.ErrInvalidEvent)。
 var ErrInvalidEvent = errors.New("audit: invalid event")
 
-// 事件词表(P0 五类 + T3.1 一类,DDL 开放词表的任务收口面;T4/T5 接入时在此
-// 登记新常量——Append 按此闭集校验,typo 在首个集成测试即暴露):
+// 事件词表(P0 五类 + T3.1/T3.2 各一类,DDL 开放词表的任务收口面;T4/T5
+// 接入时在此登记新常量——Append 按此闭集校验,typo 在首个集成测试即暴露):
 //   - node.state_changed:全部节点状态迁移(单一类型,payload 携 from/to);
 //   - node.redispatched:status-preserving 重派(scheduler 重试 / reaper 重派);
 //   - attempt.reaped:reaper DEAD 裁决(三种收口码),attempt_id 列锚定;
 //   - node.deadline_extended:reaper 迟到启动一次性重挂;
 //   - branch.evaluated:branch 路由决定(D-t24 #3);
 //   - llm.call.completed:LLM 调用成功收口(T3.1),usage/cost 冗余列组唯一
-//     携带者(Event.Usage;与 node_attempt 双录,T6.4 聚合免解 JSON)。
+//     携带者(Event.Usage;与 node_attempt 双录,T6.4 聚合免解 JSON);
+//   - tool.call.completed:工具调用成功收口(T3.2,DDL 词表注释预留同名);
+//     payload 无 token/凭证(铁律),时长观测归 T6.4。
 const (
 	EventNodeStateChanged     = "node.state_changed"
 	EventNodeRedispatched     = "node.redispatched"
@@ -52,6 +54,7 @@ const (
 	EventNodeDeadlineExtended = "node.deadline_extended"
 	EventBranchEvaluated      = "branch.evaluated"
 	EventLLMCallCompleted     = "llm.call.completed"
+	EventToolCallCompleted    = "tool.call.completed"
 )
 
 // actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval);
@@ -89,6 +92,7 @@ var knownEvents = map[string]bool{
 	EventNodeDeadlineExtended: true,
 	EventBranchEvaluated:      true,
 	EventLLMCallCompleted:     true,
+	EventToolCallCompleted:    true,
 }
 
 var knownActors = map[string]bool{

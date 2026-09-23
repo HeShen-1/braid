@@ -32,19 +32,20 @@ type LLMRunner interface {
 	Run(ctx context.Context, req worker.Request, spec *dsl.LLMNode) (worker.Outcome, error)
 }
 
-// Mux 实现 worker.Executor:按钉住 DSL 节点类型分派。tool/approval 执行器
-// 随 T3.2/T4.1 落地;在此之前落到 no_executor 终态。
+// Mux 实现 worker.Executor:按钉住 DSL 节点类型分派。tool 执行器已随 T3.2
+// 落地;approval 随 T4.1 接入,在此之前落到 no_executor 终态。
 type Mux struct {
 	defs DefReader
 	llm  LLMRunner
+	tool ToolRunner
 }
 
 // NewMux 构造执行器路由;nil 依赖响亮拒绝(装配缺陷启动即现)。
-func NewMux(defs DefReader, llm LLMRunner) *Mux {
-	if defs == nil || llm == nil {
-		panic("nodes: nil DefReader or LLMRunner")
+func NewMux(defs DefReader, llm LLMRunner, tool ToolRunner) *Mux {
+	if defs == nil || llm == nil || tool == nil {
+		panic("nodes: nil DefReader, LLMRunner or ToolRunner")
 	}
-	return &Mux{defs: defs, llm: llm}
+	return &Mux{defs: defs, llm: llm, tool: tool}
 }
 
 // Execute 满足 worker.Executor(结构化匹配;handler 收口路径不感知节点类型)。
@@ -59,8 +60,10 @@ func (m *Mux) Execute(ctx context.Context, req worker.Request) (worker.Outcome, 
 	switch {
 	case node.LLM != nil:
 		return m.llm.Run(ctx, req, node.LLM)
+	case node.Tool != nil:
+		return m.tool.Run(ctx, req, node.Tool)
 	default:
 		return failedOutcome("no_executor",
-			fmt.Sprintf("node %q type %q has no executor wired (T3.2/T4.1 pending)", node.ID, node.Type)), nil
+			fmt.Sprintf("node %q type %q has no executor wired (T4.1 pending)", node.ID, node.Type)), nil
 	}
 }

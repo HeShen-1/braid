@@ -407,6 +407,16 @@ type CompletionRequest struct {
 	// 终写落 node_attempt 列,并同事务发 llm.call.completed 审计行(双录)。
 	// 仅 SUCCEEDED 可携(失败路径 P0 不计费,Complete 入口拒绝)。
 	Usage *engine.AttemptUsage
+	// ToolCall 是 tool attempt 的调用观测参数(T3.2):随收口同事务发
+	// tool.call.completed 审计行(actor=tool/工具名)。仅 tool 节点 SUCCEEDED
+	// 可携(失败的观测由 node.state_changed 承载,P0 不重复)。
+	ToolCall *ToolCallInfo
+}
+
+// ToolCallInfo 是工具调用的审计观测参数(nodes.ToolExecutor 产出)。
+type ToolCallInfo struct {
+	Name       string // 工具名(registry 注册名,审计 actor_id 同源)
+	DurationMs uint64 // 调用耗时(毫秒;T6.4 指标字源)
 }
 
 // maxTransientRetries 是 Complete 对 1213/1205 的内部重试上限(engine 错误分类
@@ -435,6 +445,8 @@ func (s *Scheduler) Complete(ctx context.Context, req CompletionRequest) error {
 		return errors.New("scheduler: empty worker id in completion request")
 	case req.Usage != nil && req.Status != engine.AttemptSucceed:
 		return errors.New("scheduler: usage requires SUCCEEDED (failed LLM calls are unbilled in P0)")
+	case req.ToolCall != nil && req.Status != engine.AttemptSucceed:
+		return errors.New("scheduler: tool call info requires SUCCEEDED (failed calls ride node.state_changed)")
 	}
 	exec, err := s.loadExecution(ctx, req.ExecID)
 	if err != nil {
@@ -513,6 +525,19 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 		// 携同组冗余列(合规证据链独立于状态表,列 = T6.4 聚合免解 JSON)。
 		if req.Usage != nil {
 			if err := st.auditLLMCall(n, req); err != nil {
+				return err
+			}
+		}
+
+		// 3b. 工具调用审计行(T3.2):tool.call.completed,actor=tool/工具名。
+		// 类型校验在此(节点行此时已持有):非 tool 节点携带 ToolCall = 调用方
+		// 装配缺陷,响亮拒绝防 llm/branch 冒发工具事件。
+		if req.ToolCall != nil {
+			if n.nodeType != "tool" {
+				return fmt.Errorf("scheduler: tool call info on non-tool node %q (type %q)",
+					n.nodeID, n.nodeType)
+			}
+			if err := st.auditToolCall(n, req); err != nil {
 				return err
 			}
 		}
@@ -1026,6 +1051,31 @@ func (st *execState) auditLLMCall(row *nodeRow, req CompletionRequest) error {
 		NodeExecID: row.id, NodeID: row.nodeID, AttemptID: req.AttemptID,
 		ActorType: audit.ActorLLM, ActorID: req.Usage.Model,
 		Payload: raw, Usage: req.Usage,
+	})
+}
+
+// auditToolCall 发 tool.call.completed(T3.2):与 llm.call.completed 对称的
+// 成功收口证据行。actor = tool/工具名(归因主体 = 实际执行的工具;调度进程
+// 归因由并行的 node.state_changed 行承载,不重复)。payload 无 token/凭证
+// (铁律:审计行不含平台主凭证,也不含短时凭证本体)。
+func (st *execState) auditToolCall(row *nodeRow, req CompletionRequest) error {
+	raw, err := json.Marshal(audit.ToolCallCompletedPayload{
+		NodeID:     row.nodeID,
+		Tool:       req.ToolCall.Name,
+		DurationMs: req.ToolCall.DurationMs,
+	})
+	if err != nil {
+		return fmt.Errorf("scheduler: marshal tool.call.completed payload: %w", err)
+	}
+	id, err := st.s.deps.IDs.Next()
+	if err != nil {
+		return fmt.Errorf("scheduler: gen audit id: %w", err)
+	}
+	return audit.Append(st.ctx, st.q, audit.Event{
+		ID: id, EventType: audit.EventToolCallCompleted, ExecutionID: st.execID,
+		NodeExecID: row.id, NodeID: row.nodeID, AttemptID: req.AttemptID,
+		ActorType: audit.ActorTool, ActorID: req.ToolCall.Name,
+		Payload: raw,
 	})
 }
 

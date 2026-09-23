@@ -19,7 +19,9 @@ func TestConfigValidate(t *testing.T) {
 		{"no queues", func(c *Config) { c.Queues = nil }, true},
 		{"queue weight zero", func(c *Config) { c.Queues = map[string]int{"default": 0} }, true},
 		{"queue name charset", func(c *Config) { c.Queues = map[string]int{"Bad!": 1} }, true},
-		{"queue name length", func(c *Config) { c.Queues = map[string]int{"a12345678901234567890123456789012345678901234567890123456789012345": 1} }, true},
+		{"queue name length", func(c *Config) {
+			c.Queues = map[string]int{"a12345678901234567890123456789012345678901234567890123456789012345": 1}
+		}, true},
 		{"worker id length", func(c *Config) { c.WorkerID = string(make([]byte, 65)) }, true},
 		{"heartbeat too fast", func(c *Config) { c.HeartbeatInterval = time.Millisecond }, true},
 		{"retry delay too fast", func(c *Config) { c.RetryDelay = time.Millisecond }, true},

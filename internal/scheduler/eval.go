@@ -151,13 +151,15 @@ func llmSnapshot(n *dsl.Node, env *refEnv) (json.RawMessage, error) {
 	return json.Marshal(data)
 }
 
-type toolSnapshotData struct {
+// ToolInput 是 tool 节点 input_snapshot 的形状契约(执行器消费单源:T3.2
+// nodes 包按本类型解码,与 LLMInput 同款编译期形状锚)。
+type ToolInput struct {
 	Tool   string         `json:"tool"`
 	Inputs map[string]any `json:"inputs"`
 }
 
 func toolSnapshot(n *dsl.Node, env *refEnv) (json.RawMessage, error) {
-	data := toolSnapshotData{Tool: n.Tool.Tool, Inputs: make(map[string]any, len(n.Tool.Inputs))}
+	data := ToolInput{Tool: n.Tool.Tool, Inputs: make(map[string]any, len(n.Tool.Inputs))}
 	for k, raw := range n.Tool.Inputs {
 		v, err := evalToolValue(raw, env, n.ID, k)
 		if err != nil {

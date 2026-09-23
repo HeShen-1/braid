@@ -47,7 +47,7 @@
 - **版本分配**:发布事务内 `MAX(version)+1`;同名并发发布由 `uk_def_name_version` 兜底 → 一方 409(显式失败是并发闸,败方草稿保留可重试)。
 - **发布校验的原子性**:Publish 起手 `SELECT ... FOR UPDATE` 锁定草稿行——白名单校验的对象必须是即将翻转的那份内容;纯快照读 + 只钉状态的 guarded UPDATE 会让并发草稿更新绕过白名单直接落 PUBLISHED(TOCTOU)。
 - **dsl_hash**:SHA-256(**存储形态字节**,MySQL JSON 列规范化后)——写入两步(INSERT/UPDATE + 读回定稿 hash,事务包裹);执行侧(T5.5)对存储字节重算比对即漂移检测。
-- **工具白名单**:发布点收紧(`dsl.WithToolAllowlist`);名单来自 `BRAID_TOOL_ALLOWLIST` env(静态配置,T3.2 registry 落地后换源);空名单 = 禁用一切工具;草稿创建/更新不校验白名单。
+- **工具白名单**:发布点收紧(`dsl.WithToolAllowlist`);名单来自 tools.Registry 注册名(api 装配注入,`BRAID_TOOL_ALLOWLIST` env 已随 T3.2 退役——见 D-2026-09-23-t32-tool-runtime #3);空 registry = 禁用一切工具;草稿创建/更新不校验白名单。
 - **归档回退**:归档最新版后 `{name}` 解析回退到上一个 PUBLISHED;全归档 → 404。
 - **分页**:`limit` 1..100(默认 20)、`offset` 0..10000(深翻页防护);响应 `page: {limit, offset, total}`。
 - **草稿定位**:按 id(同名多草稿共存下唯一无歧义);DSL `$.name` 不可变。
