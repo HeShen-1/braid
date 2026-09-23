@@ -118,3 +118,91 @@ func TestRedispatchPredicate(t *testing.T) {
 		})
 	}
 }
+
+// ExtendNodeDeadline(T2.5 迟到启动重挂):status-preserving CAS,仅刷 deadline——
+// attempts(不烧预算)/worker_id/快照/status_changed_at(非状态迁移)全不动。
+//
+// 变异自查(实现错 → 哪条红):
+//   - 触了 attempts 或 status_changed_at → refit 行效应红;
+//   - 谓词丢了 status → predicate 非 EXECUTING 子测试红;
+//   - 谓词丢了 version → predicate 过期 version 子测试红。
+func TestExtendNodeDeadline(t *testing.T) {
+	t.Run("refit", func(t *testing.T) {
+		f := newFixture(t)
+		id := f.node()
+		snap := json.RawMessage(`{"prompt":"late"}`)
+		if _, err := ClaimNode(f.ctx(), f.db, id, 1, ClaimInput{WorkerID: "w1", InputSnapshot: snap, DeadlineAt: time.Now().Add(time.Minute)}); err != nil {
+			t.Fatalf("claim: %v", err)
+		}
+		var sca0 time.Time
+		if err := f.db.QueryRowContext(f.ctx(),
+			`SELECT status_changed_at FROM node_execution WHERE id=?`, id).Scan(&sca0); err != nil {
+			t.Fatalf("scan status_changed_at: %v", err)
+		}
+		deadline := time.Now().UTC().Truncate(time.Millisecond).Add(5 * time.Minute)
+		v, err := ExtendNodeDeadline(f.ctx(), f.db, id, 2, deadline)
+		if err != nil {
+			t.Fatalf("extend: %v", err)
+		}
+		if v != 3 {
+			t.Fatalf("newVer=%d, want 3", v)
+		}
+		r := scanNode(t, f.db, id)
+		if r.Status != NodeExecuting || r.Version != 3 || r.Attempts != 1 {
+			t.Fatalf("行=%+v, want EXECUTING/v3/attempts=1(重挂不烧预算)", r)
+		}
+		if r.WorkerID.String != "w1" {
+			t.Fatalf("worker_id=%q 被改写(重挂不改租约归属)", r.WorkerID.String)
+		}
+		if !r.Deadline.Valid || !r.Deadline.Time.Equal(deadline) {
+			t.Fatalf("deadline=%v, want %v(一次性重挂)", r.Deadline, deadline)
+		}
+		jsonEq(t, r.Snapshot, snap)
+		var sca1 time.Time
+		if err := f.db.QueryRowContext(f.ctx(),
+			`SELECT status_changed_at FROM node_execution WHERE id=?`, id).Scan(&sca1); err != nil {
+			t.Fatalf("scan status_changed_at: %v", err)
+		}
+		if !sca0.Equal(sca1) {
+			t.Fatalf("status_changed_at %v → %v 被改写(非状态迁移不触该列)", sca0, sca1)
+		}
+	})
+	t.Run("predicate", func(t *testing.T) {
+		tests := []struct {
+			name      string
+			status    NodeState
+			expectVer uint32
+			wantOK    bool
+		}{
+			{"executing_current_version", NodeExecuting, 2, true},
+			{"executing_stale_version", NodeExecuting, 1, false},
+			{"pending", NodePending, 1, false},
+			{"succeeded", NodeSucceeded, 3, false},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				f, id, curVer := redispatchRow(t, tt.status)
+				if tt.expectVer > curVer && tt.wantOK {
+					t.Fatalf("用例自相矛盾:expectVer %d > 当前 %d", tt.expectVer, curVer)
+				}
+				v, err := ExtendNodeDeadline(f.ctx(), f.db, id, tt.expectVer, time.Now().Add(time.Hour))
+				if tt.wantOK {
+					if err != nil {
+						t.Fatalf("extend: %v", err)
+					}
+					if v != tt.expectVer+1 {
+						t.Fatalf("newVer=%d, want %d", v, tt.expectVer+1)
+					}
+					return
+				}
+				if !errors.Is(err, ErrConflict) {
+					t.Fatalf("err=%v, want ErrConflict", err)
+				}
+				var ce *ConflictError
+				if !errors.As(err, &ce) || ce.Observed != tt.status {
+					t.Fatalf("conflict 归因=%+v, want Observed=%s", ce, tt.status)
+				}
+			})
+		}
+	})
+}

@@ -70,7 +70,7 @@ func TouchAttemptHeartbeat(ctx context.Context, q DBTX, attemptID, execID uint64
 }
 
 // CloseAttempt 收口 attempt:RUNNING→SUCCEEDED|FAILED(观察到的终态)。
-// DEAD 置位归 T2.5(reconciler 判死),同一条边,此处不开放。
+// DEAD 边已归 reaper(CloseAttemptDead,同一收口形状的裁决分立)。
 // WHERE status='RUNNING' 保证终态后禁改(行无 updated_at,收口是一次终写)。
 func CloseAttempt(ctx context.Context, q DBTX, attemptID uint64, to AttemptState, code, msg string) error {
 	if to != AttemptSucceed && to != AttemptFailed {
@@ -109,5 +109,45 @@ UPDATE node_attempt
 	}
 	// ConflictError 以 NodeState 承载状态字符串(三张表词表同底 string,显式转换;
 	// workflow 侧同款)。字段语义 = 期望 vs 实际,与表无关。
+	return &ConflictError{ID: attemptID, Expect: NodeState(AttemptRunning), Observed: NodeState(got)}
+}
+
+// CloseAttemptDead 收口 attempt:RUNNING→DEAD(reaper 判持有者已死,T2.5)。
+// 与 CloseAttempt 的裁决分立:观察终态(SUCCEEDED/FAILED)归执行方,DEAD 归
+// reaper(唯一调用方)。finished_at 恒不写(DDL:DEAD 未观察到终态);worker_id
+// 不改写(跨接管归因指首任,D-2026-09-22-t25-reaper-semantics #8)。
+// 新鲜度不入谓词:行锁下心跳/收口不可并发改行,新鲜度由调用方事务内 FOR UPDATE
+// 复核承载,谓词再含只会把 0 行语义二元膨胀为三元,零安全性增益。
+func CloseAttemptDead(ctx context.Context, q DBTX, attemptID uint64, code, msg string) error {
+	var codeArg, msgArg any
+	if code != "" {
+		codeArg = code
+	}
+	if msg != "" {
+		msgArg = msg
+	}
+	res, err := q.ExecContext(ctx, `
+UPDATE node_attempt
+   SET status='DEAD', error_code=?, error_message=?
+ WHERE id=? AND status='RUNNING'`,
+		codeArg, msgArg, attemptID)
+	if err != nil {
+		return fmt.Errorf("engine: close attempt dead %d: %w", attemptID, err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("engine: rows affected (attempt %d dead): %w", attemptID, err)
+	}
+	if n == 1 {
+		return nil
+	}
+	var got AttemptState
+	err = q.QueryRowContext(ctx, `SELECT status FROM node_attempt WHERE id=? FOR UPDATE`, attemptID).Scan(&got)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: node_attempt %d", ErrNotFound, attemptID)
+	}
+	if err != nil {
+		return fmt.Errorf("engine: recheck node_attempt %d: %w", attemptID, err)
+	}
 	return &ConflictError{ID: attemptID, Expect: NodeState(AttemptRunning), Observed: NodeState(got)}
 }
