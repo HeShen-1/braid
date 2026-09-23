@@ -16,6 +16,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"sync"
 	"testing"
@@ -788,5 +789,84 @@ func TestInstantiateRejectsNonPublishedAndBadInput(t *testing.T) {
 				t.Fatal("Instantiate 应拒绝(非 PUBLISHED / 非对象输入)")
 			}
 		})
+	}
+}
+
+// warnSink 是最小 slog Handler:并发安全地收集 Warn 级消息(W1 断言用)。
+type warnSink struct {
+	mu     sync.Mutex
+	events []string
+}
+
+func (w *warnSink) Enabled(_ context.Context, l slog.Level) bool { return l == slog.LevelWarn }
+func (w *warnSink) Handle(_ context.Context, r slog.Record) error {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.events = append(w.events, r.Message)
+	return nil
+}
+func (w *warnSink) WithAttrs([]slog.Attr) slog.Handler { return w }
+func (w *warnSink) WithGroup(string) slog.Handler      { return w }
+
+// TestCompleteDiscardedByReaper:W1 哨兵 pin(D-2026-09-22-t25-reaper-semantics
+// #7「接受等价」)——reaper 判 DEAD + Redispatch 后,老 worker 的迟到 Complete
+// 撞 DEAD attempt:幂等返回 nil、节点/推进不被二次改写、落 discarded_by_reaper
+// 结构化 warn(判死双执行的观测信号)。
+//
+// 变异自查(实现错 → 哪条红):
+//   - 哨兵区分来源后不再 return nil → 迟到 Complete 返回 err;
+//   - Observed==DEAD 不 warn → 日志断言红;
+//   - 哨兵放行推进 → 节点 a 被 SucceedNode 收口/执行误判终态(行断言红)。
+func TestCompleteDiscardedByReaper(t *testing.T) {
+	s, d := newSched(t)
+	sink := &warnSink{}
+	s.log = slog.New(sink)
+	_, execID := inst(t, s, d, chainDSL, `{"q":"hi"}`)
+	if err := s.Start(context.Background(), execID, "sched-test"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	a := waitNodeStatus(t, d, execID, "a", engine.NodeExecuting)
+	attemptA := seedAttempt(t, d, execID, a.id, 1)
+
+	// 模拟 reaper 裁决事务:DEAD 收口 + RedispatchNode(新 attempt 号 2 待新 claim)。
+	if err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		if err := engine.CloseAttemptDead(context.Background(), q, attemptA, "heartbeat_lost", "stale"); err != nil {
+			return err
+		}
+		_, err := engine.RedispatchNode(context.Background(), q, a.id, a.version, engine.RedispatchInput{
+			WorkerID:   "reaper:test",
+			DeadlineAt: time.Now().Add(NodeTimeout("llm")),
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("reaper adjudication: %v", err)
+	}
+
+	// 迟到 Complete:哨兵幂等 nil。
+	if err := complete(t, s, execID, a.id, attemptA, engine.AttemptSucceed, json.RawMessage(`{"text":"late"}`)); err != nil {
+		t.Fatalf("迟到 Complete 应幂等 nil,got %v", err)
+	}
+	// 节点不被迟到结果收口:仍 EXECUTING、attempts=2(重派链路权威)。
+	a2 := readNode(t, d, execID, "a")
+	if a2.status != engine.NodeExecuting || a2.attempts != 2 {
+		t.Fatalf("node a = %s/attempts=%d, want EXECUTING/2(迟到推进被哨兵阻断)", a2.status, a2.attempts)
+	}
+	// b 不被派发(推进让位),执行仍 RUNNING。
+	if got := readNode(t, d, execID, "b").status; got != engine.NodePending {
+		t.Fatalf("node b = %s, want PENDING", got)
+	}
+	if got := readExec(t, d, execID).status; got != engine.WorkflowRunning {
+		t.Fatalf("execution = %s, want RUNNING", got)
+	}
+	sink.mu.Lock()
+	found := false
+	for _, e := range sink.events {
+		if e == "complete.discarded_by_reaper" {
+			found = true
+		}
+	}
+	sink.mu.Unlock()
+	if !found {
+		t.Fatalf("缺 discarded_by_reaper warn(判死双执行观测信号),got %v", sink.events)
 	}
 }

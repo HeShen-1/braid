@@ -233,13 +233,31 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 		}
 		h.log.Info("attempt.takeover", "attempt_id", rowID, "task_id", taskID)
 		// 接管即重置存活窗口:行上 heartbeat_at 停在上一任最后心跳,最坏
-		// 陈旧度 ≈ RetryDelay + HeartbeatInterval(默认 15s),不重置则 T2.5
-		// 判死 grace 必须显式覆盖该缺口(该假设已钉进 T2.5 issue)。尽力
-		// 语义:失败记日志不阻断接管——本发执行的常规心跳随即接管窗口。
+		// 陈旧度 ≈ RetryDelay + HeartbeatInterval(默认 15s)。重置在行锁上
+		// 复核 RUNNING(D-2026-09-22-t25-reaper-semantics #8 接管原子性):
+		// 接管的活性证明与 reaper 的死亡裁决在 attempt 行锁上确定性串行——
+		// 重置先落 ⇒ reaper 锁内复核见新鲜心跳 skip;裁决先落 ⇒ 此处见非
+		// RUNNING 放弃接管直接 ack,消灭「接管与判死同拍」的重叠执行窗口。
+		// reset 事务自身失败仍是尽力语义(warn 不阻断):本发执行的常规心跳
+		// 随即接管窗口。
+		var observed engine.AttemptState
+		aborted := false
 		if err := engine.WithTx(ctx, h.deps.DB, func(q engine.DBTX) error {
+			if err := q.QueryRowContext(ctx,
+				`SELECT status FROM node_attempt WHERE id=? FOR UPDATE`, rowID).Scan(&observed); err != nil {
+				return err
+			}
+			if observed != engine.AttemptRunning {
+				aborted = true
+				return nil // 空提交释放锁:终局已由收口方裁决,接管让位
+			}
 			return engine.TouchAttemptHeartbeat(ctx, q, rowID, p.ExecutionID)
 		}); err != nil {
 			h.log.Warn("takeover.heartbeat_reset_fail", "attempt_id", rowID, "err", err)
+		} else if aborted {
+			h.log.Info("attempt.already_final",
+				"attempt_id", rowID, "task_id", taskID, "status", observed)
+			return 0, nil
 		}
 		return rowID, nil
 	default:

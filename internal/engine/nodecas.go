@@ -135,9 +135,9 @@ type RedispatchInput struct {
 }
 
 // RedispatchNode:节点级重试的再派发(status-preserving CAS,EXECUTING→EXECUTING)。
-// attempt 业务失败且 attempts<max_attempts 时,调度器(T2.4)同事务组合:本 CAS +
+// attempt 业务失败且 attempts<max_attempts 时,调度器/reaper 同事务组合:本 CAS +
 // outbox att:<id>:<attempts+1>。重试权威在平台节点层(T2.3 移交),不经 PENDING
-// (RequeueNode 是 reconciler 专用语义)。
+// (RequeueNode 保留为 runbook 手工原语,D-2026-09-22-t25-reaper-semantics #5)。
 //   - attempts+1 是 DDL「claim 时 +1」的延展:平台重试的 claim 即本语句;
 //   - 不写 error_code(终局失败专用列)、不重写 input_snapshot(前驱输出终态
 //     不可变 ⇒ 重求值恒同,快照复现语义不受影响);
@@ -153,6 +153,24 @@ UPDATE node_execution
 		in.WorkerID, nullTime(in.DeadlineAt), id, expectVer)
 	if err != nil {
 		return 0, fmt.Errorf("engine: redispatch node %d: %w", id, err)
+	}
+	return checkNodeCAS(ctx, q, res, id, NodeExecuting, expectVer)
+}
+
+// ExtendNodeDeadline:EXECUTING 节点的 deadline 一次性重挂(status-preserving
+// CAS,reaper 迟到启动路径:deadline 窗被队列排队吃掉而执行本体未超窗,
+// started_at ≥ deadline_at 判据,D-2026-09-22-t25-reaper-semantics #3)。
+// 与 RedispatchNode 互补:attempts/worker_id/快照全不动(不烧预算、不改租约),
+// status_changed_at 不触(非状态迁移);deadline_at 必变值 ⇒ version+1 ⇒
+// RowsAffected==matched 不变量保持。
+func ExtendNodeDeadline(ctx context.Context, q DBTX, id uint64, expectVer uint32, deadline time.Time) (uint32, error) {
+	res, err := q.ExecContext(ctx, `
+UPDATE node_execution
+   SET deadline_at=?, version=version+1
+ WHERE id=? AND status='EXECUTING' AND version=?`,
+		nullTime(deadline), id, expectVer)
+	if err != nil {
+		return 0, fmt.Errorf("engine: extend node deadline %d: %w", id, err)
 	}
 	return checkNodeCAS(ctx, q, res, id, NodeExecuting, expectVer)
 }

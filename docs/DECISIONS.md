@@ -57,3 +57,19 @@
   6. 并发形状:Complete 事务第一条语句序列 = 按 node_id 升序逐行 FOR UPDATE 锁全执行行集(当前读防幻读;锁集全量同序 ⇒ 无部分交叠死锁);残余交错由 engine.Transient(1213/1205)内部重试 ≤3 次(不重跑 executor、不烧 asynq MaxRetry=1 预算)。终态判定在提交后新事务(新鲜快照)——事务内判定在不相交臂并发下漏判;双收口由 FinishExecution 的 status-only CAS 仲裁。锁序实际不变量修正为 node 行(node_id 升序)→ attempt → workflow_execution(最后),与 T2.3 心跳一致;Start 例外先拿 wf(PENDING 执行无 claim/attempt,无并发 Complete)。
 - 理由:fail-fast 最简可审计;「数前驱 SUCCEEDED」直接对齐 DDL 索引注释设计意图;branch 内联是 schema 强制(output 恒 NULL、无路由列、无 PENDING→SUCCEEDED 边)下的唯一一致形状;逐行全锁以 N 次索引点查换「零 DBTX 契约改动 + 死锁类消灭」,P0 节点数(数十级)下成本可忽略,批量化留待 DBTX 演进注记。
 - 影响:internal/scheduler(新包,依赖 {engine,outbox,dsl,snowflake})、internal/engine/nodecas.go(RedispatchNode)、internal/worker(Outcome.Output + Sched 依赖 + execution.start mux)、internal/engine/wfcas.go(锁序备忘注释修正)、issue #4(T2.5)锁序回归验证结论回帖。
+
+## D-2026-09-22-t25-reaper-semantics
+- 背景:T2.5 reconciler(超时扫描、幂等重入队或标 FAILED、Redis 锁选主)实现前,判死阈值、收口事务形状、W1 哨兵等价、扫描靶收口目标态等 12 个决策点无既有锁定决策覆盖;3 视角独立设计 → judge 合成 → 17 条对抗攻击(1C/4H/8M/4L,全部吸收)后定稿(2026-09-22),用户确认(2026-09-23:DECISIONS 10 条 + 验收口径结构等价 + SCAN_INTERVAL 30s)。设计全文 = docs/designs/t2.5-reaper.md(实现蓝本)。
+- 决策:
+  1. 形态 = MySQL 真相源上的纯周期对账器:候选扫描全部无锁普通 SELECT,处置在短事务内「锁后复核 + CAS 收置」;Redis 锁仅 leader 去重且 fail-open,正确性结构性不依赖 Redis/时钟(ARCHITECTURE「Redis 锁仅留给 reconciler 选主」落地;断 Redis 验收的结构前提)。
+  2. 判死 grace = 45s = 3×(RetryDelay+HeartbeatInterval),谓词全 DB 端 NOW(3);env 可读时 grace ≤ RetryDelay+HeartbeatInterval 启动即败(公式有执行点强制)。验收相位钉死:「断 Redis 30s」停机窗 = [t0, t0+30](t0=kill),重派写(≥t0+grace−HB)结构性错开,relay 退避链不触发,3×scan=90s 成立;验收可测化口径 = 结构等价(reaper 锁客户端断不可达端口自动测 + relay 侧人工停容器演练记录)。
+  3. 收口事务 reapAttempt 四入口统一分派:attempt 锁后复核五项(收口态/心跳新鲜〔无条件、入口无关〕/deadline 复活/wf 当前读/attempt 存在性三分);DEAD 边 = CloseAttemptDead(RUNNING→DEAD,finished_at 恒 NULL);deadline 路径:started_at ≥ deadline_at(迟到启动)→ ExtendNodeDeadline 一次性重挂(新 CAS,不烧 attempt 预算),否则 DEAD('deadline_exceeded')。
+  4. 「EXECUTING + 无 RUNNING attempt」分支:outbox 活事件闸(PENDING 恒活,DISPATCHED 界于 DISPATCH_STALE=30m)→ 有则 skip;无则 attempts<max → RedispatchNode+outbox.Append(新 attempt_no ⇒ 新 TaskID,零冲突),耗尽 → FailNode+FinishExecution(FAILED,'node_failed')(fail-fast 同事务镜像)。
+  5. Redispatch-over-Requeue:重派一律 RedispatchNode;RequeueNode 不启用(PENDING 节点无扫描者,会成永久孤儿),保留为 T7.4 runbook 手工原语。预算源 = node_execution.max_attempts,业务失败与 infra 判死同池。
+  6. 扫描靶 a(fail-fast 遗留 EXECUTING)收口目标态 = CANCELLED(平台裁决,不伪造业务失败);终态 wf 下 PENDING 后继/WAITING_APPROVAL 遗留 P0 不扫(从窄)。
+  7. W1 哨兵:接受等价——attempt 已非 RUNNING ⇒ 收口权旁落,迟到 Complete 走 errAttemptAlreadyClosed 幂等成功;可观测 = ConflictError.Observed==DEAD 的结构化 warn(discarded_by_reaper)+ error_code 数据层区分。前置:DEAD ⇒ 节点必已被重派或取消(同事务约束),破坏需重审。
+  8. worker_id 跨接管不刷新(首任归因);接管原子性由 worker 接管分支锁内复核保证(非 RUNNING 即放弃 ack),消灭「接管与判死同拍」重叠执行。
+  9. PENDING 执行判死:wf 锁先行(Start 同例外)+ PENDING_TTL=30m + exec: 事件活性闸;RUNNING 终态补判委托 scheduler.FinishIfDone。
+  10. janitor:独立 goroutine + 专用 Conn + lock_wait_timeout=5;ADD 升序,{1517,1493} 容忍+复读确认;DROP 前活执行守卫,保留期语义 ≥ retention;p_min 永不 DROP;outbox DISPATCHED 清理双列谓词批删、无 ORDER BY。asynq 积压 > DISPATCH_STALE 的双执行残余窗 P0 接受有界(P1 以 asynq Inspector 硬化)。
+- 理由:正确性与 Redis/时钟解耦是对账器的结构要求;分支 B 补齐「EXECUTING+无活 attempt+事件死」收敛路径(对抗攻击 CRITICAL);ExtendNodeDeadline 把「队列吃掉窗口」与「执行超过窗口」分开,deadline SLA 对排队公平且保留挂死检测。
+- 影响:internal/reaper(新包)、internal/engine(attempt.go +CloseAttemptDead、nodecas.go +ExtendNodeDeadline)、internal/scheduler(+NodeTimeout/+FinishIfDone 两导出、F 日志)、internal/worker(claimAttempt 接管复核 ~12 行)、cmd/reaper(新入口)、deploy(compose reaper 服务 + ALTER 授权注记)、docs/designs/t2.5-reaper.md、docs/ROADMAP.md T2.5 勾选随 PR。零新迁移。

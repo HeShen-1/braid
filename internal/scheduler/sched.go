@@ -111,8 +111,9 @@ func New(d Deps) (*Scheduler, error) {
 	return &Scheduler{deps: d, router: router, queue: queue, log: log}, nil
 }
 
-// nodeTimeouts 是 claim 时的 deadline 偏移(DDL:进入 EXECUTING 时 = now+按类型
+// NodeTimeout 返回 claim 时的 deadline 偏移(DDL:进入 EXECUTING 时 = now+按类型
 // 执行超时;T7.1 配置化的换装点)。branch 内联无驻留 → 零值(NULL deadline)。
+// 导出供 reaper 重挂/重派计算同一词表(单源,D-2026-09-22-t25-reaper-semantics)。
 var nodeTimeouts = map[string]time.Duration{
 	"llm":      30 * time.Minute,
 	"tool":     10 * time.Minute,
@@ -120,7 +121,7 @@ var nodeTimeouts = map[string]time.Duration{
 	"branch":   0,
 }
 
-func nodeTimeout(nodeType string) time.Duration {
+func NodeTimeout(nodeType string) time.Duration {
 	if d, ok := nodeTimeouts[nodeType]; ok {
 		return d
 	}
@@ -369,8 +370,12 @@ type CompletionRequest struct {
 // 契约:唯一允许抖动重试的一类)。只重试回写事务,不重跑 executor。
 const maxTransientRetries = 3
 
-// errAttemptAlreadyClosed 是事务内的哨兵:CloseAttempt 撞已收口行 ⇒ 早前一次
-// Complete 已原子提交(收口+推进同事务)⇒ 幂等成功。经 errors.Is 在事务外识别。
+// errAttemptAlreadyClosed 是事务内的哨兵:CloseAttempt 撞已收口行 ⇒ 收口权已
+// 旁落,幂等成功。两种先行收口来源(D-2026-09-22-t25-reaper-semantics #7,
+// W1 拍板「接受等价」):a) 早前一次 Complete 已原子提交(收口+推进同事务);
+// b) reaper DEAD 收口——前提是 DEAD ⇒ 节点必已被重派或取消(reaper 同事务
+// 约束),放行迟到推进会与重派链路双推进;若该前提被破坏需重审本哨兵。
+// 经 errors.Is 在事务外识别。
 var errAttemptAlreadyClosed = errors.New("scheduler: attempt already closed (converged)")
 
 // Complete 是执行完成回写:单事务 = 锁全行集 → CloseAttempt → 节点收口
@@ -439,9 +444,17 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 		}
 		termGuard = wfStatus.Terminal()
 
-		// 3. attempt 收口(attempt 行锁)。Conflict = 早前 Complete 已提交 ⇒ 幂等。
+		// 3. attempt 收口(attempt 行锁)。Conflict = 收口权已旁落(早前 Complete
+		// 或 reaper DEAD)⇒ 幂等;Observed==DEAD 时记结构化 warn——成功结果被
+		// 丢弃 = 发生过判死双执行的观测信号(W1 哨兵,零行为变更)。
 		if err := engine.CloseAttempt(ctx, q, req.AttemptID, req.Status, req.Code, req.Msg); err != nil {
 			if errors.Is(err, engine.ErrConflict) {
+				var ce *engine.ConflictError
+				if errors.As(err, &ce) && ce.Observed == engine.NodeState(engine.AttemptDead) {
+					s.log.Warn("complete.discarded_by_reaper",
+						"execution_id", req.ExecID, "node_execution_id", req.NodeExecID,
+						"attempt_id", req.AttemptID, "outcome", string(req.Status))
+				}
 				return errAttemptAlreadyClosed
 			}
 			return err
@@ -479,7 +492,7 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 				// 节点级重试:平台重试权威(新 attempt = 新 TaskID),节点留 EXECUTING。
 				newVer, err := engine.RedispatchNode(ctx, q, n.id, n.version, engine.RedispatchInput{
 					WorkerID:   req.WorkerID,
-					DeadlineAt: time.Now().Add(nodeTimeout(n.nodeType)),
+					DeadlineAt: time.Now().Add(NodeTimeout(n.nodeType)),
 				})
 				if err != nil {
 					return err
@@ -524,6 +537,22 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 		s.log.Error("execution.finish_check_failed", "execution_id", req.ExecID, "err", ferr)
 	}
 	return nil
+}
+
+// FinishIfDone 导出终态补判入口(reaper 扫描④b 委托,D-2026-09-22-t25-reaper-
+// semantics #9):RUNNING 执行全节点终态但提交后判定未落时收敛——Complete 的
+// 提交后 finishIfDone 失败只记日志(sched.go「卡终态留 T2.5 扫描兜底」预留点)。
+// 零锁路径,与 Complete 提交后判定完全同款;双收口由 status-only CAS 仲裁。
+func (s *Scheduler) FinishIfDone(ctx context.Context, execID uint64) error {
+	exec, err := s.loadExecution(ctx, execID)
+	if err != nil {
+		return err
+	}
+	wf, _, err := s.loadWorkflow(ctx, exec.definitionID)
+	if err != nil {
+		return err
+	}
+	return s.finishIfDone(ctx, execID, wf, exec.input)
 }
 
 // finishIfDone 在提交后新事务判定 SUCCEEDED 收口:无 PENDING/EXECUTING/
@@ -764,7 +793,7 @@ func (st *execState) dispatchOne(row *nodeRow) error {
 	newVer, err := engine.ClaimNode(st.ctx, st.q, row.id, row.version, engine.ClaimInput{
 		WorkerID:      st.workerID,
 		InputSnapshot: snap,
-		DeadlineAt:    time.Now().Add(nodeTimeout(row.nodeType)),
+		DeadlineAt:    time.Now().Add(NodeTimeout(row.nodeType)),
 	})
 	if err != nil {
 		return err

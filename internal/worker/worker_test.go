@@ -352,3 +352,61 @@ func waitTaskState(t *testing.T, insp *asynq.Inspector, queue, taskID string, wa
 	t.Fatalf("task %s did not reach state %d within 15s (last state=%d, last err=%v)",
 		taskID, want, lastState, lastErr)
 }
+
+// TestTakeoverYieldsToDeadAttempt:接管让位(D-2026-09-22-t25-reaper-semantics
+// #8 接管原子性)——reaper 判 DEAD 后同 TaskID 迟到重投,claimAttempt 见非
+// RUNNING 行即放弃接管直接 ack,executor 绝不在 DEAD 行上执行。readAttempt
+// 快照读到 RUNNING、reset 锁内复核才见 DEAD 的精确交错由 reaper 包并发对照
+// 覆盖;本测钉终态收敛(裁决先落 ⇒ 放弃)。
+func TestTakeoverYieldsToDeadAttempt(t *testing.T) {
+	d := sqltest.MustOpenAt(t, workerSchema)
+	execID, nodeExecID := seedNodeExec(t, d)
+
+	// 上一任 RUNNING attempt(心跳陈旧 60s = worker 已死现场)。
+	attID, err := mustTestIDs(t).Next()
+	if err != nil {
+		t.Fatalf("gen attempt id: %v", err)
+	}
+	taskID := fmt.Sprintf("att:%d:1", nodeExecID)
+	if _, err := d.Exec(`INSERT INTO node_attempt
+	  (id, node_execution_id, execution_id, attempt_no, worker_id, status,
+	   idempotency_key, asynq_task_id, started_at, heartbeat_at)
+	  VALUES (?,?,?,?,?,'RUNNING',?,?,NOW(3),NOW(3) - INTERVAL 60 SECOND)`,
+		attID, nodeExecID, execID, 1, "dead-worker", taskID, taskID); err != nil {
+		t.Fatalf("seed stale attempt: %v", err)
+	}
+	// reaper 裁决形状:DEAD 收口 + Redispatch(新 attempt 号待新 claim)。
+	if err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		if err := engine.CloseAttemptDead(context.Background(), q, attID, "heartbeat_lost", "stale 60s"); err != nil {
+			return err
+		}
+		_, err := engine.RedispatchNode(context.Background(), q, nodeExecID, 1, engine.RedispatchInput{
+			WorkerID:   "reaper:test",
+			DeadlineAt: time.Now().Add(30 * time.Minute),
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("reaper adjudication: %v", err)
+	}
+
+	ex := &fakeExec{fn: func(req Request, callNo int) (Outcome, error) {
+		return Outcome{Status: engine.AttemptSucceed}, nil
+	}}
+	queue := startWorker(t, d, ex, DefaultConfig())
+	client := asynq.NewClient(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := enqueue(t, client, queue, taskID,
+		nodeTaskPayload{ExecutionID: execID, NodeExecutionID: nodeExecID, AttemptNo: 1}); err != nil {
+		t.Fatalf("enqueue late redelivery: %v", err)
+	}
+
+	insp := asynq.NewInspector(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = insp.Close() })
+	waitTaskGone(t, insp, queue, taskID) // ack 且记录即删 = 处理完毕
+	if got := ex.count(); got != 0 {
+		t.Fatalf("executor calls = %d, want 0(接管必须在 DEAD 行前让位)", got)
+	}
+	if got := readAttempt(t, d, nodeExecID, 1).Status; got != engine.AttemptDead {
+		t.Fatalf("attempt 1 = %s, want DEAD(裁决不被接管回写)", got)
+	}
+}
