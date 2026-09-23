@@ -1,4 +1,4 @@
-// Package scheduler 实现 T2.4 DAG 调度器:入度推进、桩谓词路由、执行完成回写,
+// Package scheduler 实现 T2.4 DAG 调度器:入度推进、条件求值路由(T3.4 CondRouter)、执行完成回写,
 // 以及执行起点(exec: 事件 → 入口派发)与 DSL 物化(Instantiate)。
 //
 // 引擎消费链上的位置(worker 包注释的「派发方」):
@@ -73,7 +73,7 @@ type ExecStartPayload struct {
 	ExecutionID uint64 `json:"execution_id"`
 }
 
-// Deps 是运行依赖。Router 为 nil 用 StubRouter;Queue 为空用 "default"(必须在
+// Deps 是运行依赖。Router 为 nil 用 CondRouter;Queue 为空用 "default"(必须在
 // worker ServeQueues 内,否则事件永挂 pending——outbox 包注释的已知边界);
 // Logger 为 nil 用 slog.Default()。
 type Deps struct {
@@ -99,7 +99,7 @@ func New(d Deps) (*Scheduler, error) {
 	}
 	router := d.Router
 	if router == nil {
-		router = StubRouter
+		router = CondRouter
 	}
 	queue := d.Queue
 	if queue == "" {

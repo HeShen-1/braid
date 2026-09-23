@@ -297,7 +297,7 @@ const evalFailDSL = `{"dsl":"1.0","name":"evalfail-t",
   {"id":"a","type":"llm","prompt":{"template":"gen"},"outputs":{"text":"string"}},
   {"id":"b","type":"llm","prompt":{"template":"b","user_data":[{"name":"v","ref":"{{nodes.a.output.text}}"}]},"outputs":{"text":"string"}}]}`
 
-// branchErrDSL:a 声明 flag:boolean 但运行期产出字符串(桩路由类型错误)。
+// branchErrDSL:a 声明 flag:boolean 但运行期产出字符串(CondRouter 类型漂移错误)。
 const branchErrDSL = `{"dsl":"1.0","name":"brancherr-t",
  "edges":[{"from":"a","to":"b"},{"from":"b","to":"c"},{"from":"b","to":"d"}],
  "nodes":[
@@ -690,7 +690,7 @@ func TestBranchRouterTypeError(t *testing.T) {
 	}
 	a := waitNodeStatus(t, d, execID, "a", engine.NodeExecuting)
 	attemptA := seedAttempt(t, d, execID, a.id, 1)
-	// flag 声明 boolean 但产出字符串 → 桩路由类型错误。
+	// flag 声明 boolean 但产出字符串 → CondRouter 类型漂移错误。
 	mustComplete(t, s, execID, a.id, attemptA, engine.AttemptSucceed, json.RawMessage(`{"flag":"yes"}`))
 
 	e := readExec(t, d, execID)
