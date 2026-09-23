@@ -54,7 +54,7 @@
 - [ ] T5.2 执行时 RBAC × 运行时双重校验 + Gin 中间件 — M — 依赖 T5.1、T3.2 — 验收:越权工具调用被拒并落审计
 - [ ] T5.3 IdentityProvider 接口桩 — S — 依赖 T5.1 — 验收:桩实现可替换内置认证(编译 + 替换单测)
 - [x] T5.4 definition CRUD API(草稿/发布/版本;发布时工具白名单校验)— M — 依赖 T5.1、T1.2 — 验收:运行实例钉住创建时版本;引用非法工具的发布返回 4xx — ✅ 2026-09-23:internal/api(config/middleware/server/handlers/store/dbtx)+ cmd/api 骨架;dsl_hash = SHA-256(存储形态字节——MySQL JSON 列规范化后读回定稿,两步写事务包裹);发布白名单 = dsl.WithToolAllowlist(BRAID_TOOL_ALLOWLIST 静态名单,T3.2 registry 换源);同名并发发布 uk 兜底恰一胜一 409;归档后触发解析回退;契约文档 docs/designs/t54-definition-api.md
-- [ ] T5.5 execution 触发/查询/列表 API — M — 依赖 T5.4 — 验收:触发后 execution 创建并推进;查询返回节点状态与审计指针
+- [x] T5.5 execution 触发/查询/列表 API — M — 依赖 T5.4 — 验收:触发后 execution 创建并推进;查询返回节点状态与审计指针 — ✅ 2026-09-23:ExecutionTrigger 单方法缝(零 Redis,fake/真链双轨)+ execution.triggered 词表登记(D-t26 §6 留位兑现)+ 审计二段事务(triggered_by 列保底);code review 1 MEDIUM(input null 归一)+ security review 3 LOW 全收口;零迁移零新依赖,决策 D-2026-09-23-t55-execution-api
 
 ## M6 审计与观测(约 1.5 周)
 
