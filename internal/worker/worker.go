@@ -68,11 +68,16 @@ type Request struct {
 //
 // Output 是 SUCCEEDED 时的节点输出({{nodes.<id>.output.<field>}} 解析真相源),
 // 经 scheduler.Complete → engine.SucceedNode 落 node_execution.output;nil → NULL。
+//
+// Usage 是 LLM attempt 的台账参数(T3.1,仅 SUCCEEDED 携带——失败路径 P0
+// 不计费):由 llm.Cost.AttemptUsage 产出,经 scheduler.Complete 随收口终写
+// 落 node_attempt usage/cost 列并同事务发 llm.call.completed 审计行(双录)。
 type Outcome struct {
 	Status engine.AttemptState
 	Code   string
 	Msg    string
 	Output json.RawMessage
+	Usage  *engine.AttemptUsage
 }
 
 // Executor 是节点执行缝:T2.3 只落框架与幂等/记账契约,T2.4 已接调度回写,
@@ -295,6 +300,7 @@ func (h *attHandler) completeNode(ctx context.Context, taskID string, attemptID 
 		Msg:        o.Msg,
 		Output:     o.Output,
 		WorkerID:   h.cfg.WorkerID,
+		Usage:      o.Usage,
 	})
 	if err != nil {
 		return fmt.Errorf("worker: complete node %d (task %s): %w", p.NodeExecutionID, taskID, err)

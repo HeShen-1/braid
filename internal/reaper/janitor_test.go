@@ -43,16 +43,22 @@ func dbToday(t *testing.T, d *sql.DB) time.Time {
 	return today
 }
 
-// TestJanitorFullHorizonNoDDL:水位已覆盖 today+7 → 一轮零 DDL(分区集不变)。
+// TestJanitorFullHorizonNoDDL:steady state 一轮零 DDL(分区集不变)。
+// 先收敛一轮:满水位只约束 ADD 侧零 DDL,回收侧在引导分区跨过测试保留期
+// (24h)时合法 DROP——fresh schema 首跑日(边界日 = today−1d)恰好触发;
+// 判据收紧为「收敛后第二轮零 DDL」,前提自建,不再依赖全局测试时序。
 func TestJanitorFullHorizonNoDDL(t *testing.T) {
 	r, d := newReaper(t, testCfg())
+	if err := r.janitorOnce(context.Background()); err != nil {
+		t.Fatalf("janitorOnce (converge): %v", err)
+	}
 	before := readPartitions(t, d)
 	if err := r.janitorOnce(context.Background()); err != nil {
 		t.Fatalf("janitorOnce: %v", err)
 	}
 	after := readPartitions(t, d)
 	if len(before) != len(after) {
-		t.Fatalf("partitions %d → %d(满水位不应有 DDL)", len(before), len(after))
+		t.Fatalf("partitions %d → %d(收敛后满水位一轮应零 DDL)", len(before), len(after))
 	}
 }
 
@@ -157,4 +163,3 @@ VALUES (?, 0, 'node.task_enqueue', ?, 'reap-test', '{}', ?, %s, %s)`, extra, ava
 		}
 	}
 }
-

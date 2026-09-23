@@ -91,3 +91,15 @@
 - 决策:修订 D-2026-09-23-t26-audit-events 第 2 条的「单语句 INSERT..SELECT 零额外往返」为两语句:普通一致读 `DATE_FORMAT(created_at,'%Y-%m-%d')` 直出字符串(review 修:不经 driver 的 time.Location 解析——go-sql-driver 把 DATE 解析为 DSN loc 午夜,loc≠UTC 时 .UTC() 换算静默移日;字符串往返 loc 无关)→ `INSERT VALUES`。零锁,created_at 行 INSERT 后不可变,一致读快照与当前读恒同值。NotFound 判定移至 SELECT ErrNoRows。否决修法 (a)(reapOnce 提前 wf FOR UPDATE):只护单调用点、skip 路径徒增锁足迹、且触 D-t25 #3 分派树形状;两语句使审计写入器对 workflow_execution 的锁面归零,死锁类在所有现在与未来调用点结构性消灭。代价 = 每审计行一次 PK 点查(P0 量级噪声;批量去重归 T6.1)。
 - 理由:锁的消灭优于锁的搬移;audit 是热路径旁路写入器,不应进入任何锁序推理;S→X 升级死锁是 RR + INSERT..SELECT 的固有语义,调用点各自规避不可扩展(T4.1/T5 新调用点还会再犯)。
 - 影响:internal/audit/writer.go(Append 两语句化 + 头注释)、writer_test.go(+TestAppendHoldsNoLockOnExecution 锁回归锚,innodb_lock_wait_timeout=1——行锁等待归 innodb 变量,lock_wait_timeout 只管 MDL)、docs/designs/t2.6-audit-writer.md §1。零行为变化:exec_date/event_at/NotFound 语义逐字保持。
+
+## D-2026-09-23-t31-llm-client
+- 背景:T3.1(issue #16)三个计划阶段拍板项(Executor 接线范围 / tiktoken 依赖策略 / 单价表配置形态)不预锁待 GATE 1;另有幂等键线上形态、estimated 列语义、审计 payload 内容三个实现面需随拍板钉死。
+- 决策(用户 2026-09-23 GATE 1 拍板 + 实现定稿):
+  1. Executor 接线后置:本任务交付 Client/适配器/计费/台账缝(生产就绪组件),worker node-type mux + prompt 标签块渲染 + DSL outputs 映射抽取 + llm 生产装配归新任务 T3.6(ROADMAP M3 末尾追加);台账验收以 fakeExec 走真 asynq 链达成。
+  2. tiktoken 不引入,等 T7.2 离线 loader:零 go.mod 变更(PR 非铁律面);estimated=true 语义 = 「cost 非精确」——未知模型走单价表保留键 "fallback" 估算(未配置 fallback 则 cost 两列 NULL=不计费),两态恒 estimated=1;DDL 注释「未知模型 tiktoken 估算 fallback」的 tiktoken 字样是 T7.2 落地后的完整语义,T3.1 先落承载列;pre-call token 预算估算整体归 T7.2。
+  3. 单价表 = BRAID_LLM_PRICE_TABLE JSON-in-env(config 四件套范式内,T7.1 配置体系迁居):{"<model>":{"input_per_mtok":"2","output_per_mtok":"8","currency":"CNY"},"fallback":{…}};金额整数定点(big.Int 承载 token×单价乘积防溢出),唯一舍入点 = 最终除 1e6 四舍五入 half-up,DECIMAL(14,6) 域溢出响亮拒绝;免费模型 0.000000 与 NULL(不计费)严格区分。
+  4. 幂等键线上形态 = Idempotency-Key 头(att:<node_exec_id>:<attempt_no> 直传,Stripe 惯例,OpenAI 兼容端点普遍容忍未知头);DB 侧 uk_attempt_idem 仍是永久锚,供应商侧同键去重是尽力增强。
+  5. llm.call.completed payload 不含 prompt/模型返回自由文本(D-t26 §4 纪律维持):prompt 求值真相源 = node_execution.input_snapshot,响应摘要 = node_execution.output,审计副本只携 usage/cost/model/枚举;Q10 全文范围的其余部分(T6.1 脱敏钩子后评估放开)。
+  6. Usage 仅随 SUCCEEDED 收口(失败 LLM 调用 P0 不计费,scheduler.Complete 入口拒绝 FAILED+Usage);适配器 2xx 缺 usage 对象 = 响亮拒绝(ErrMissingUsage),不静默零计费;双录两半边经 engine.AttemptUsage 单源(列域校验单点 Validate,audit 复用)。
+- 理由:零依赖策略同时满足验收(mock usage × 单价表)与架构防线(tiktoken 在线下载词表违背内网私有化首跑目标,且 go.mod 是铁律面);接线后置依据 = mux/Request 形态/outputs 映射取数链是独立设计面(快照已含求值后 prompt 但 Outputs 只在 DSL),并入会把 M 撑成 L 且混淆两份验收;JSON-in-env 在「零文件解析先例」与「价格非密钥可 env 承载」之间取最小新范式,单价表大了的形态升级归 T7.1。
+- 影响:internal/llm(新包:client/cost/config/errors/openai)、internal/engine(attempt.go:AttemptUsage + CloseAttempt 扩展)、internal/audit(Event.Usage + llm.call.completed 词表 + LLMCallCompletedPayload)、internal/worker(Outcome.Usage 透传)、internal/scheduler(CompletionRequest.Usage + auditLLMCall 同事务发射);零新依赖、零迁移、零 DDL 变更;T7.2 依赖面不变;T3.6 为新增任务。

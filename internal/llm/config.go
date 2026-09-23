@@ -1,0 +1,147 @@
+package llm
+
+import (
+	"fmt"
+	"math"
+	"net/url"
+	"strconv"
+	"time"
+)
+
+// llm 配置面(relay/config.go 同款四件套:Config + DefaultConfig + Validate +
+// ConfigFromEnv;字段名即未来配置键,T7.1 配置体系换装时原样搬)。密钥先例
+// 对齐 auth:BRAID_LLM_API_KEY 仅经 env 注入,无默认,缺省即 Validate 失败;
+// 不进代码/日志/审计(铁律)。
+type Config struct {
+	// BaseURL 是 OpenAI 兼容端点根(含版本路径,如 https://api.openai.com/v1);
+	// 适配器在其后拼 /chat/completions。P0 单供应商单端点,多供应商注册表非
+	// 本任务面。http:// 被有意放行(P0 私有化内网端点是合法形态:本地
+	// vLLM/Ollama、TLS 由反代终结;此值由部署管理员配置,属可信边界内——
+	// 与 T3.3 对不可信用户配置 host 的「仅 https + SSRF 三层修」规则刻意
+	// 分立,review advisory #4 的回应)。Bearer 凭证经明文 http 传输的风险
+	// 由部署侧网络分段承担,T7.3 安装自检可再收紧。
+	BaseURL string
+	// APIKey Bearer 凭证,仅经 BRAID_LLM_API_KEY 注入。
+	APIKey string
+	// Timeout 单次 HTTP 调用预算(每次重试各得一整个新预算,非全程共享)。
+	Timeout time.Duration
+	// MaxAttempts 单 attempt 内总尝试上限(含首次;节点级重试权威在平台
+	// 调度层,与此零叠加)。
+	MaxAttempts int
+	// BackoffBase/BackoffFactor/BackoffMax 指数退避三参(relay 同式:
+	// base*factor^(n-1) 封顶 max);Jitter 固定 ±0.2 不暴露 env(非运维旋钮)。
+	BackoffBase   time.Duration
+	BackoffFactor float64
+	BackoffMax    time.Duration
+	// PriceTable 供应商单价表(JSON-in-env,拍板 ③);至少一个模型,可选
+	// "fallback" 保留键做未知模型估算。
+	PriceTable PriceTable
+}
+
+// DefaultConfig 返回生产默认值(BaseURL/APIKey/单价表故意留空:必须显式供给)。
+func DefaultConfig() Config {
+	return Config{
+		Timeout:       120 * time.Second,
+		MaxAttempts:   3,
+		BackoffBase:   time.Second,
+		BackoffFactor: 2,
+		BackoffMax:    30 * time.Second,
+	}
+}
+
+// Validate 报告配置矛盾(启动即败,不进运行期)。上界对着真实约束:Timeout
+// ≤10m(LLM 长响应上限量级,超过属配置错);MaxAttempts ≤10(每次尝试占住
+// worker 槽位,退避序列 1s×2^n 已到分钟级);NaN/±Inf 显式拒绝(relay 同规)。
+func (c Config) Validate() error {
+	if c.BaseURL == "" {
+		return fmt.Errorf("llm: base url empty")
+	}
+	if u, err := url.Parse(c.BaseURL); err != nil || u.Host == "" ||
+		(u.Scheme != "http" && u.Scheme != "https") {
+		return fmt.Errorf("llm: base url %q not absolute http(s)", c.BaseURL)
+	}
+	switch {
+	case c.APIKey == "":
+		return fmt.Errorf("llm: api key empty")
+	case c.Timeout <= 0 || c.Timeout > 10*time.Minute:
+		return fmt.Errorf("llm: timeout %s out of (0,10m]", c.Timeout)
+	case c.MaxAttempts < 1 || c.MaxAttempts > 10:
+		return fmt.Errorf("llm: max attempts %d out of [1,10]", c.MaxAttempts)
+	case c.BackoffBase <= 0:
+		return fmt.Errorf("llm: backoff base %s <= 0", c.BackoffBase)
+	case math.IsNaN(c.BackoffFactor) || math.IsInf(c.BackoffFactor, 0) || c.BackoffFactor < 1:
+		return fmt.Errorf("llm: backoff factor %v not finite >= 1", c.BackoffFactor)
+	case c.BackoffMax < c.BackoffBase:
+		return fmt.Errorf("llm: backoff max %s < base %s", c.BackoffMax, c.BackoffBase)
+	case c.PriceTable.Len() == 0:
+		return fmt.Errorf("llm: price table empty (>=1 model required; \"fallback\" key optional)")
+	}
+	return nil
+}
+
+// ConfigFromEnv 从环境变量构造配置(BRAID_LLM_ 前缀;未设键取默认,
+// BaseURL/API_KEY/PRICE_TABLE 无默认)。getenv 注入 os.Getenv,测试换桩;
+// 构造末尾过 Validate。
+func ConfigFromEnv(getenv func(string) string) (Config, error) {
+	c := DefaultConfig()
+	c.BaseURL = getenv("BRAID_LLM_BASE_URL")
+	c.APIKey = getenv("BRAID_LLM_API_KEY")
+	var err error
+	if c.Timeout, err = envDuration(getenv, "BRAID_LLM_TIMEOUT", c.Timeout); err != nil {
+		return c, err
+	}
+	if c.MaxAttempts, err = envInt(getenv, "BRAID_LLM_MAX_ATTEMPTS", c.MaxAttempts); err != nil {
+		return c, err
+	}
+	if c.BackoffBase, err = envDuration(getenv, "BRAID_LLM_BACKOFF_BASE", c.BackoffBase); err != nil {
+		return c, err
+	}
+	if c.BackoffFactor, err = envFloat(getenv, "BRAID_LLM_BACKOFF_FACTOR", c.BackoffFactor); err != nil {
+		return c, err
+	}
+	if c.BackoffMax, err = envDuration(getenv, "BRAID_LLM_BACKOFF_MAX", c.BackoffMax); err != nil {
+		return c, err
+	}
+	if raw := getenv("BRAID_LLM_PRICE_TABLE"); raw != "" {
+		if c.PriceTable, err = ParsePriceTable(raw); err != nil {
+			return c, err
+		}
+	}
+	return c, c.Validate()
+}
+
+func envDuration(getenv func(string) string, key string, def time.Duration) (time.Duration, error) {
+	raw := getenv(key)
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return def, fmt.Errorf("llm: %s=%q: %w", key, raw, err)
+	}
+	return d, nil
+}
+
+func envInt(getenv func(string) string, key string, def int) (int, error) {
+	raw := getenv(key)
+	if raw == "" {
+		return def, nil
+	}
+	n, err := strconv.Atoi(raw)
+	if err != nil {
+		return def, fmt.Errorf("llm: %s=%q: %w", key, raw, err)
+	}
+	return n, nil
+}
+
+func envFloat(getenv func(string) string, key string, def float64) (float64, error) {
+	raw := getenv(key)
+	if raw == "" {
+		return def, nil
+	}
+	f, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return def, fmt.Errorf("llm: %s=%q: %w", key, raw, err)
+	}
+	return f, nil
+}

@@ -358,3 +358,132 @@ func TestAppendHoldsNoLockOnExecution(t *testing.T) {
 		t.Fatalf("locked row status = %s, want RUNNING", st)
 	}
 }
+
+// TestValidateLLMUsage(T3.1):usage/cost 冗余列组仅 llm.call.completed 可携;
+// 域约束镜像(engine.AttemptUsage.Validate 单点)。零 DB。
+func TestValidateLLMUsage(t *testing.T) {
+	base := Event{
+		ID: 1, EventType: EventLLMCallCompleted, ExecutionID: 2,
+		NodeExecID: 3, NodeID: "n1", AttemptID: 4,
+		ActorType: ActorLLM, ActorID: "glm-5.3", Payload: json.RawMessage(`{}`),
+		Usage: &engine.AttemptUsage{
+			Model: "glm-5.3", PromptTokens: 1000, CompletionTokens: 150, TotalTokens: 1150,
+			CostAmount: "0.003200", CostCurrency: "CNY", Billed: true,
+		},
+	}
+	if err := validate(base); err != nil {
+		t.Fatalf("validate(billed llm event) = %v, want nil", err)
+	}
+	cases := []struct {
+		name string
+		mut  func(*Event)
+	}{
+		{"usage on non-llm event", func(e *Event) { e.EventType = EventNodeStateChanged }},
+		{"unbilled carrying cost strings", func(e *Event) {
+			e.Usage.Billed = false
+		}},
+		{"bad currency", func(e *Event) { e.Usage.CostCurrency = "cny" }},
+		{"bad amount shape", func(e *Event) { e.Usage.CostAmount = "1.0000000" }},
+		{"empty model", func(e *Event) { e.Usage.Model = "" }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			evt := base
+			tc.mut(&evt)
+			if err := validate(evt); !errors.Is(err, ErrInvalidEvent) {
+				t.Fatalf("validate() = %v, want ErrInvalidEvent", err)
+			}
+		})
+	}
+	// 不计费合法形:cost 两列将写 NULL,payload 缺省金额。
+	unbilled := base
+	unbilled.Usage = &engine.AttemptUsage{Model: "unknown", Estimated: true}
+	if err := validate(unbilled); err != nil {
+		t.Fatalf("validate(unbilled) = %v, want nil", err)
+	}
+	// 其余事件类型不携 usage(词表纪律):nil Usage 合法。
+	plain := base
+	plain.EventType = EventNodeStateChanged
+	plain.ActorType = ActorWorker
+	plain.ActorID = "w1"
+	plain.Usage = nil
+	if err := validate(plain); err != nil {
+		t.Fatalf("validate(plain) = %v, want nil", err)
+	}
+}
+
+// TestAppendLLMCallMaterializesRow(T3.1 双录 audit 半边):llm.call.completed
+// 落 usage/cost 冗余列组(billed 与 unbilled 两形),金额/币种/estimated 与
+// Event.Usage 逐字一致;payload 同步落结构体。
+//
+// 变异自查(实现错 → 哪条红):
+//   - INSERT 丢 usage 列 → billed/unbilled 断言红;
+//   - Billed=false 仍写金额 → unbilled 断言红;
+//   - payload 与列单源被破坏 → payload 断言红。
+func TestAppendLLMCallMaterializesRow(t *testing.T) {
+	d := sqltest.MustOpenAt(t, testSchema)
+	execID := seedExec(t, d)
+	ctx := context.Background()
+
+	billed := &engine.AttemptUsage{
+		Model: "glm-5.3", PromptTokens: 1000, CompletionTokens: 150, TotalTokens: 1150,
+		CostAmount: "0.003200", CostCurrency: "CNY", Billed: true,
+	}
+	unbilled := &engine.AttemptUsage{
+		Model: "mystery", PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15, Estimated: true,
+	}
+	for i, u := range []*engine.AttemptUsage{billed, unbilled} {
+		raw, err := json.Marshal(LLMCallCompletedPayload{
+			NodeID: "n1", Model: u.Model,
+			PromptTokens: u.PromptTokens, CompletionTokens: u.CompletionTokens,
+			TotalTokens: u.TotalTokens,
+			CostAmount:  u.CostAmount, CostCurrency: u.CostCurrency,
+			CostEstimated: u.Estimated,
+		})
+		if err != nil {
+			t.Fatalf("marshal payload: %v", err)
+		}
+		if err := Append(ctx, d, Event{
+			ID: nextID(t), EventType: EventLLMCallCompleted, ExecutionID: execID,
+			NodeExecID: uint64(100 + i), NodeID: "n1", AttemptID: uint64(200 + i),
+			ActorType: ActorLLM, ActorID: u.Model, Payload: raw, Usage: u,
+		}); err != nil {
+			t.Fatalf("append llm event: %v", err)
+		}
+	}
+
+	rows, err := d.Query(`
+SELECT model, prompt_tokens, completion_tokens, total_tokens,
+       cost_amount, cost_currency, cost_estimated
+  FROM audit_log WHERE execution_id=? AND event_type=? ORDER BY id`,
+		execID, EventLLMCallCompleted)
+	if err != nil {
+		t.Fatalf("query llm rows: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var got []engine.AttemptUsage
+	for rows.Next() {
+		var u engine.AttemptUsage
+		var amount, currency sql.NullString
+		var pt, ct, tt sql.NullInt64
+		if err := rows.Scan(&u.Model, &pt, &ct, &tt, &amount, &currency, &u.Estimated); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		u.PromptTokens, u.CompletionTokens, u.TotalTokens = uint32(pt.Int64), uint32(ct.Int64), uint32(tt.Int64)
+		u.CostAmount, u.CostCurrency = amount.String, currency.String
+		u.Billed = amount.Valid
+		got = append(got, u)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("llm rows = %d, want 2", len(got))
+	}
+	if got[0] != *billed {
+		t.Errorf("billed row = %+v, want %+v", got[0], *billed)
+	}
+	if got[1] != *unbilled {
+		t.Errorf("unbilled row = %+v, want %+v(cost NULL 语义)", got[1], *unbilled)
+	}
+}

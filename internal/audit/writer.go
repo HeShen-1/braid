@@ -16,7 +16,8 @@
 //
 // P0 未启用(走 DDL 默认,见 D-2026-09-23-t26-audit-events):trace_id(NULL
 // 占位,T6.2 前不伪造)、pii_masked(0,T6.1 脱敏钩子)、prev_hash/row_hash
-// (”/NULL,未启链期)、usage/cost 冗余列(T3.1 起)。
+// (”/NULL,未启链期)。usage/cost 冗余列已随 T3.1 llm.call.completed 启用
+// (Event.Usage,与 node_attempt 双录;其余事件类型仍不携带)。
 package audit
 
 import (
@@ -35,19 +36,22 @@ import (
 // engine.ErrInvalidSnapshot / outbox.ErrInvalidEvent)。
 var ErrInvalidEvent = errors.New("audit: invalid event")
 
-// 事件词表(P0 五类,DDL 开放词表的本任务收口面;T3.x/T4/T5 接入时在此登记
-// 新常量——Append 按此闭集校验,typo 在首个集成测试即暴露):
+// 事件词表(P0 五类 + T3.1 一类,DDL 开放词表的任务收口面;T4/T5 接入时在此
+// 登记新常量——Append 按此闭集校验,typo 在首个集成测试即暴露):
 //   - node.state_changed:全部节点状态迁移(单一类型,payload 携 from/to);
 //   - node.redispatched:status-preserving 重派(scheduler 重试 / reaper 重派);
 //   - attempt.reaped:reaper DEAD 裁决(三种收口码),attempt_id 列锚定;
 //   - node.deadline_extended:reaper 迟到启动一次性重挂;
-//   - branch.evaluated:branch 路由决定(D-t24 #3)。
+//   - branch.evaluated:branch 路由决定(D-t24 #3);
+//   - llm.call.completed:LLM 调用成功收口(T3.1),usage/cost 冗余列组唯一
+//     携带者(Event.Usage;与 node_attempt 双录,T6.4 聚合免解 JSON)。
 const (
 	EventNodeStateChanged     = "node.state_changed"
 	EventNodeRedispatched     = "node.redispatched"
 	EventAttemptReaped        = "attempt.reaped"
 	EventNodeDeadlineExtended = "node.deadline_extended"
 	EventBranchEvaluated      = "branch.evaluated"
+	EventLLMCallCompleted     = "llm.call.completed"
 )
 
 // actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval);
@@ -84,6 +88,7 @@ var knownEvents = map[string]bool{
 	EventAttemptReaped:        true,
 	EventNodeDeadlineExtended: true,
 	EventBranchEvaluated:      true,
+	EventLLMCallCompleted:     true,
 }
 
 var knownActors = map[string]bool{
@@ -95,7 +100,8 @@ var traceIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 // Event 是 audit_log 行的写入参数。ID 应用生成(snowflake,复用调用方生成器),
 // 零值被拒。NodeExecID/AttemptID/NodeID/TraceID 零值/空串 → NULL(P0 各事件的
-// 携带约定见 payload 结构注释)。
+// 携带约定见 payload 结构注释)。Usage 非 nil 时落 usage/cost 冗余列组
+// (llm.call.completed 专属;engine.AttemptUsage 与 node_attempt 半边同源)。
 type Event struct {
 	ID          uint64
 	EventType   string
@@ -107,6 +113,7 @@ type Event struct {
 	ActorID     string
 	TraceID     string
 	Payload     json.RawMessage
+	Usage       *engine.AttemptUsage
 }
 
 // Append 在调用方事务内直写一条审计行(典型形状见 engine/dbtx.go 注释:
@@ -160,14 +167,35 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 	if err != nil {
 		return fmt.Errorf("audit: read exec_date (exec %d): %w", evt.ExecutionID, err)
 	}
-	// [2] 落行:event_at = DB 端 NOW(3)。
-	_, err = q.ExecContext(ctx, `
+	// [2] 落行:event_at = DB 端 NOW(3)。Usage 非 nil 时同语句落 usage/cost
+	// 冗余列组(llm.call.completed 专属形状;Billed=false ⇒ cost 两列 NULL,
+	// 与 node_attempt 半边成对 CHECK 同语义)。
+	if evt.Usage != nil {
+		var costArg, currencyArg any
+		if evt.Usage.Billed {
+			costArg, currencyArg = evt.Usage.CostAmount, evt.Usage.CostCurrency
+		}
+		_, err = q.ExecContext(ctx, `
+INSERT INTO audit_log
+  (id, exec_date, event_at, event_type, execution_id, node_execution_id,
+   node_id, attempt_id, actor_type, actor_id, trace_id, payload,
+   model, prompt_tokens, completion_tokens, total_tokens,
+   cost_amount, cost_currency, cost_estimated)
+VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?)`,
+			evt.ID, execDate, evt.EventType, evt.ExecutionID,
+			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, evt.Payload,
+			evt.Usage.Model, evt.Usage.PromptTokens, evt.Usage.CompletionTokens,
+			evt.Usage.TotalTokens, costArg, currencyArg, evt.Usage.Estimated)
+	} else {
+		_, err = q.ExecContext(ctx, `
 INSERT INTO audit_log
   (id, exec_date, event_at, event_type, execution_id, node_execution_id,
    node_id, attempt_id, actor_type, actor_id, trace_id, payload)
 VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		evt.ID, execDate, evt.EventType, evt.ExecutionID,
-		nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, evt.Payload)
+			evt.ID, execDate, evt.EventType, evt.ExecutionID,
+			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, evt.Payload)
+	}
 	if err != nil {
 		return fmt.Errorf("audit: append %d (%s): %w", evt.ID, evt.EventType, err)
 	}
@@ -190,6 +218,13 @@ func validate(evt Event) error {
 		return fmt.Errorf("%w: node_id %q too long", ErrInvalidEvent, evt.NodeID)
 	case evt.TraceID != "" && !traceIDRe.MatchString(evt.TraceID):
 		return fmt.Errorf("%w: trace_id %q", ErrInvalidEvent, evt.TraceID)
+	case evt.Usage != nil && evt.EventType != EventLLMCallCompleted:
+		return fmt.Errorf("%w: usage columns on %q (llm.call.completed only)",
+			ErrInvalidEvent, evt.EventType)
+	}
+	// usage 组域约束镜像(engine 单点定义,双录两半边同规)。
+	if err := evt.Usage.Validate(); err != nil {
+		return fmt.Errorf("%w: %s", ErrInvalidEvent, err)
 	}
 	if !json.Valid(evt.Payload) {
 		return fmt.Errorf("%w: payload not valid JSON", ErrInvalidEvent)
