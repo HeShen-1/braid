@@ -45,15 +45,13 @@ func toolDSL(name string) []byte {
 }
 
 // newTestStore 返回干净的 store + 连接:每用例清空定义表(List 的 total
-// 断言依赖全局可见行,共享 schema 下必须从零开始)。DELETE 而非 TRUNCATE:
-// workflow_execution 的 FK 引用本表,TRUNCATE 被 1701 拒;api 测试不建
-// execution 行,DELETE 无孤儿阻拦。
+// 断言依赖全局可见行,共享 schema 下必须从零开始)。T5.5 起真实链测试会
+// 落 execution/outbox/audit 行,清理统一走六表链 cleanExecutionChain
+// (单表 DELETE 会被 FK RESTRICT 阻拦)。
 func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
-	if _, err := dbh.ExecContext(context.Background(), "DELETE FROM workflow_definition"); err != nil {
-		t.Fatalf("clean workflow_definition: %v", err)
-	}
+	cleanExecutionChain(t, dbh)
 	ids, err := snowflake.New(1)
 	if err != nil {
 		t.Fatalf("snowflake: %v", err)
@@ -306,9 +304,13 @@ func TestStorePublishToolAllowlist(t *testing.T) {
 	}
 }
 
-// TestStorePublishConcurrent 钉死并发闸:同名两草稿并发发布,恰一胜
-// (PUBLISHED v1)一败(ErrConflict,草稿保留可重试)。uk 兜底是设计行为
-// (0001_init DDL 注释),不断言时序。
+// TestStorePublishConcurrent 钉死并发闸的**契约**而非交错:同名两草稿
+// 并发发布,结果二选一——①真并发(两事务重叠,MAX 读同见 0):恰一胜
+// (PUBLISHED v1)一败(ErrConflict,草稿保留可重试),uk 兜底是设计行为
+// (0001_init DDL 注释);②完全串行交错(B 的 MAX 读在 A 提交后):双胜
+// 合法,B 发的是 v2,uk 不咬。原断言「恰一胜」把交错钉成契约,串行路径
+// ≈2% 偶发红(T4.1 会话 100× 压测实证,归因 t5.5 修复);真不变量 =
+// ≥1 胜、败方必 ErrConflict、胜方版本集无重号且从 v1 起。
 func TestStorePublishConcurrent(t *testing.T) {
 	st, dbh := newTestStore(t)
 	ctx := context.Background()
@@ -334,34 +336,41 @@ func TestStorePublishConcurrent(t *testing.T) {
 		}(i)
 	}
 	wg.Wait()
-	oneNil := (errs[0] == nil) != (errs[1] == nil)
-	if !oneNil {
-		t.Fatalf("errs = [%v, %v], want exactly one success", errs[0], errs[1])
+	wins := 0
+	for _, err := range errs {
+		if err == nil {
+			wins++
+		}
 	}
-	other := errs[1]
-	if errs[1] == nil {
-		other = errs[0]
+	if wins == 0 {
+		t.Fatalf("errs = [%v, %v], want at least one success", errs[0], errs[1])
 	}
-	if !errors.Is(other, ErrConflict) {
-		t.Fatalf("loser err = %v, want ErrConflict", other)
+	versions := make(map[uint32]bool, wins)
+	for i, err := range errs {
+		switch {
+		case err == nil:
+			d, gerr := st.GetByID(ctx, dbh, ids[i])
+			if gerr != nil || d.Status != "PUBLISHED" || d.Version == nil {
+				t.Fatalf("winner#%d = %+v (err %v), want PUBLISHED", i, d, gerr)
+			}
+			if versions[*d.Version] {
+				t.Fatalf("duplicate version %d — uk 契约被击穿", *d.Version)
+			}
+			versions[*d.Version] = true
+		case errors.Is(err, ErrConflict):
+			d, gerr := st.GetByID(ctx, dbh, ids[i])
+			if gerr != nil || d.Status != "DRAFT" {
+				t.Fatalf("loser#%d = %+v (err %v), want still DRAFT (retryable)", i, d, gerr)
+			}
+		default:
+			t.Fatalf("errs[%d] = %v, want nil or ErrConflict", i, err)
+		}
 	}
-	winnerID, loserID := ids[0], ids[1]
-	if errs[0] != nil {
-		winnerID, loserID = ids[1], ids[0]
-	}
-	winner, err := st.GetByID(ctx, dbh, winnerID)
-	if err != nil {
-		t.Fatalf("GetByID winner: %v", err)
-	}
-	if winner.Status != "PUBLISHED" || winner.Version == nil || *winner.Version != 1 {
-		t.Fatalf("winner = %+v, want PUBLISHED v1", winner)
-	}
-	loser, err := st.GetByID(ctx, dbh, loserID)
-	if err != nil {
-		t.Fatalf("GetByID loser: %v", err)
-	}
-	if loser.Status != "DRAFT" {
-		t.Fatalf("loser = %+v, want still DRAFT (retryable)", loser)
+	// 版本集从 v1 起连续:双胜必 {1,2},单胜必 {1}。
+	for v := uint32(1); v <= uint32(len(versions)); v++ {
+		if !versions[v] {
+			t.Fatalf("version set = %v, want contiguous from v1", versions)
+		}
 	}
 }
 

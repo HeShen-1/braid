@@ -24,13 +24,20 @@ import (
 )
 
 // newTestServer 返回挂真实 store(t13,缺栈自动 skip)的路由与 token
-// 签发器。每用例清空定义表(共享 schema)。
+// 签发器。每用例清空定义表(共享 schema)。触发缝用固定 fake(定义面
+// 测试不触 /executions);需要控制缝行为的测试走 newTestServerWithTrigger。
 func newTestServer(t *testing.T, allowlist ...string) (*gin.Engine, *sql.DB, func(roles ...auth.Role) string) {
 	t.Helper()
+	return newTestServerWithTrigger(t, fakeTrigger{id: 1}, allowlist...)
+}
+
+// newTestServerWithTrigger:newTestServer 的触发缝可控变体(T5.5)。真链
+// 变体传 *scheduler.Scheduler;清理走六表链(真实链测试落 execution 行后,
+// 单表 DELETE 被 FK RESTRICT 阻拦,见 cleanExecutionChain)。
+func newTestServerWithTrigger(t *testing.T, trig ExecutionTrigger, allowlist ...string) (*gin.Engine, *sql.DB, func(roles ...auth.Role) string) {
+	t.Helper()
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
-	if _, err := dbh.Exec("DELETE FROM workflow_definition"); err != nil {
-		t.Fatalf("clean workflow_definition: %v", err)
-	}
+	cleanExecutionChain(t, dbh)
 	ids, err := snowflake.New(1)
 	if err != nil {
 		t.Fatalf("snowflake: %v", err)
@@ -46,7 +53,7 @@ func newTestServer(t *testing.T, allowlist ...string) (*gin.Engine, *sql.DB, fun
 		t.Fatalf("registry: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
-	r := NewServer(cfg, dbh, ids, reg).Router()
+	r := NewServer(cfg, dbh, ids, reg, trig).Router()
 	sign := func(roles ...auth.Role) string {
 		t.Helper()
 		s, err := auth.SignToken(testSecret, time.Hour, "alice", roles)
@@ -370,7 +377,7 @@ func newNoDBServer(t *testing.T) (*gin.Engine, string) {
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	return NewServer(cfg, dead, ids, reg).Router(), token
+	return NewServer(cfg, dead, ids, reg, fakeTrigger{id: 1}).Router(), token
 }
 
 // TestHTTPInternalErrorMapping 钉死 500 契约:存储故障 → 500 {"error":

@@ -94,16 +94,19 @@ func mapStoreError(c *gin.Context, err error) {
 	case errors.Is(err, ErrConflict):
 		c.JSON(http.StatusConflict, gin.H{"error": "conflict"})
 	default:
-		slog.Error("api: definition store failure", "err", err)
+		// 中性文案:错误面现在同时承载 definition 与 execution 读写,
+		// 「definition store failure」会把 execution 故障误标进运维日志。
+		slog.Error("api: store failure", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal"})
 	}
 }
 
-// readDSLBody 读原样 DSL 字节(不经 gin binding:store 需要字节本体;
-// hash 与 JSON 列语义都锚在字节/存储形态上)。仅真超限(*http.
-// MaxBytesError)413;其余读体失败(断连/坏 chunked)是传输层错误,
-// 谎报 413 会误导客户端重试逻辑与超限告警——统一 400 bad_request。
-func readDSLBody(c *gin.Context) ([]byte, bool) {
+// readBodyLimited 读带上限的原样请求体字节(maxDSLBody:DSL 文档与触发
+// input 是同量级内嵌数据面,先行上界共用)。仅真超限(*http.MaxBytesError)
+// 413;其余读体失败(断连/坏 chunked)是传输层错误,谎报 413 会误导
+// 客户端重试逻辑与超限告警——统一 400 bad_request。DSL 面与触发面共用,
+// 分界单源(评审:两处逐字节重复收敛)。
+func readBodyLimited(c *gin.Context) ([]byte, bool) {
 	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, maxDSLBody)
 	b, err := io.ReadAll(c.Request.Body)
 	if err != nil {
@@ -116,6 +119,12 @@ func readDSLBody(c *gin.Context) ([]byte, bool) {
 		return nil, false
 	}
 	return b, true
+}
+
+// readDSLBody 读原样 DSL 字节(不经 gin binding:store 需要字节本体;
+// hash 与 JSON 列语义都锚在字节/存储形态上)。
+func readDSLBody(c *gin.Context) ([]byte, bool) {
+	return readBodyLimited(c)
 }
 
 // actorFrom 取认证主体(sub 直通 created_by/updated_by/published_by 值域)。
@@ -246,6 +255,31 @@ func (s *Server) getDraft(c *gin.Context) {
 	c.JSON(http.StatusOK, toDetail(def))
 }
 
+// parsePageParams 解析列表分页参数(definitions / executions 同语义:
+// 缺省 limit=20,上界 100,offset 深翻页防护 10000;值域外 400 面在此
+// 单点钉死,两列表端点不各写一份漂移)。
+func parsePageParams(c *gin.Context) (limit, offset int, ok bool) {
+	limit = defaultPageLimit
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > maxPageLimit {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad_limit"})
+			return 0, 0, false
+		}
+		limit = n
+	}
+	offset = 0
+	if raw := c.Query("offset"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 0 || n > maxPageOffset {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad_offset"})
+			return 0, 0, false
+		}
+		offset = n
+	}
+	return limit, offset, true
+}
+
 func (s *Server) listDefinitions(c *gin.Context) {
 	status := c.Query("status")
 	switch status {
@@ -254,23 +288,9 @@ func (s *Server) listDefinitions(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_status"})
 		return
 	}
-	limit := defaultPageLimit
-	if raw := c.Query("limit"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 1 || n > maxPageLimit {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "bad_limit"})
-			return
-		}
-		limit = n
-	}
-	offset := 0
-	if raw := c.Query("offset"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		if err != nil || n < 0 || n > maxPageOffset {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "bad_offset"})
-			return
-		}
-		offset = n
+	limit, offset, ok := parsePageParams(c)
+	if !ok {
+		return
 	}
 	items, total, err := s.st.List(c.Request.Context(), s.dbh, status, limit, offset)
 	if err != nil {

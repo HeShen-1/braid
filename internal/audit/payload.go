@@ -90,3 +90,12 @@ type ApprovalRequestedPayload struct {
 	OnTimeout    string    `json:"on_timeout"`
 	DeadlineAt   time.Time `json:"deadline_at"`
 }
+
+// ExecutionTriggeredPayload 是 execution.triggered(T5.5 API 触发面)的
+// 事件体。只锚定触发事实:触发者身份在行级列(actor_type/actor_id + 执行行
+// triggered_by 事实源),input 正文不影子存储(D-t26 §4:自由数据面真相源
+// 在 workflow_execution.input)。
+type ExecutionTriggeredPayload struct {
+	DefinitionID uint64 `json:"definition_id"` // 钉版定义行 id
+	TriggerType  string `json:"trigger_type"`  // DDL ENUM(API|SCHEDULE,词表单源 DDL)
+}

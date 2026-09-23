@@ -50,7 +50,10 @@ var ErrInvalidEvent = errors.New("audit: invalid event")
 //   - approval.requested:审批节点挂起(T4.1,DDL 词表注释预留同名);与
 //     node.state_changed(EXECUTING→WAITING_APPROVAL)同事务双行——本行是
 //     审批域事件(T4.4 待办/T6.4 积压指标字源),快照全文真相源在
-//     node_execution.input_snapshot,payload 不复制自由文本(D-t26 §4)。
+//     node_execution.input_snapshot,payload 不复制自由文本(D-t26 §4);
+//   - execution.triggered:API 触发落执行(T5.5;DDL 开放词表注释预留同名,
+//     D-t26 §6 显式留给 T5 接入登记)。执行级事件(node_id NULL),与
+//     scheduler 侧行不同事务(Instantiate 不写审计,api 二段事务补)。
 const (
 	EventNodeStateChanged     = "node.state_changed"
 	EventNodeRedispatched     = "node.redispatched"
@@ -60,6 +63,7 @@ const (
 	EventLLMCallCompleted     = "llm.call.completed"
 	EventToolCallCompleted    = "tool.call.completed"
 	EventApprovalRequested    = "approval.requested"
+	EventExecutionTriggered   = "execution.triggered"
 )
 
 // actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval);
@@ -99,6 +103,7 @@ var knownEvents = map[string]bool{
 	EventLLMCallCompleted:     true,
 	EventToolCallCompleted:    true,
 	EventApprovalRequested:    true,
+	EventExecutionTriggered:   true,
 }
 
 var knownActors = map[string]bool{
