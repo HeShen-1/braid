@@ -61,6 +61,7 @@ func TestConfigFromEnv(t *testing.T) {
 				"BRAID_WORKER_HEARTBEAT_INTERVAL": "2s",
 				"BRAID_WORKER_RETRY_DELAY":        "500ms",
 				"BRAID_WORKER_SHUTDOWN_TIMEOUT":   "10s",
+				"BRAID_WORKER_SNOWFLAKE_NODE":     "3",
 			},
 			want: Config{
 				Concurrency:       4,
@@ -69,7 +70,13 @@ func TestConfigFromEnv(t *testing.T) {
 				HeartbeatInterval: 2 * time.Second,
 				RetryDelay:        500 * time.Millisecond,
 				ShutdownTimeout:   10 * time.Second,
+				SnowflakeNode:     3,
 			},
+		},
+		{
+			name:    "snowflake node over max",
+			env:     map[string]string{"BRAID_WORKER_SNOWFLAKE_NODE": "1024"},
+			wantErr: true,
 		},
 		{
 			name:    "bad duration",

@@ -86,6 +86,22 @@ type responseFormat struct {
 	Type string `json:"type"`
 }
 
+// wireResponseFormat 把平台词表值翻译为 OpenAI 兼容方言(HIGH② 拍板:翻译
+// 点在适配器层)。平台词表 = DSL schema enum ["text","json"],与
+// Request.ResponseFormat 同源;主流 OpenAI 兼容端点的合法 type 是
+// "text"/"json_object"——DSL 值直传必 4xx。未知值(含直写方言值)响亮拒绝:
+// 词表漂移在入口暴露,不上线。
+func wireResponseFormat(v string) (string, error) {
+	switch v {
+	case "", "text":
+		return v, nil
+	case "json":
+		return "json_object", nil
+	default:
+		return "", fmt.Errorf("llm: response_format %q not in platform vocabulary {text,json}", v)
+	}
+}
+
 // buildBody 构造请求体:标准字段 + ExtraBody 顶层合并(map 键序由
 // encoding/json 确定性排序)。调用方参数缺陷在此响亮拒绝,不发网络。
 func buildBody(req Request) ([]byte, error) {
@@ -104,7 +120,11 @@ func buildBody(req Request) ([]byte, error) {
 		base["max_tokens"] = req.MaxTokens
 	}
 	if req.ResponseFormat != "" {
-		base["response_format"] = responseFormat{Type: req.ResponseFormat}
+		wire, err := wireResponseFormat(req.ResponseFormat)
+		if err != nil {
+			return nil, err
+		}
+		base["response_format"] = responseFormat{Type: wire}
 	}
 	for k, v := range req.ExtraBody {
 		if reservedBodyKeys[k] {

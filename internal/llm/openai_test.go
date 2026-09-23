@@ -92,7 +92,7 @@ func TestChatCompletionRequestShape(t *testing.T) {
 	req := baseReq()
 	req.Temperature = 0.7
 	req.MaxTokens = 512
-	req.ResponseFormat = "json_object"
+	req.ResponseFormat = "json"
 	req.ExtraBody = map[string]json.RawMessage{"thinking": json.RawMessage(`{"type":"enabled"}`)}
 	resp, err := c.ChatCompletion(context.Background(), req)
 	if err != nil {
@@ -124,6 +124,54 @@ func TestChatCompletionRequestShape(t *testing.T) {
 	}
 	if resp.Usage != (Usage{1000, 150, 1150}) {
 		t.Errorf("Usage = %+v, want 1000/150/1150", resp.Usage)
+	}
+}
+
+// TestResponseFormatTranslation 钉死平台词表协议:Request.ResponseFormat 只收
+// DSL 平台值("text"/"json"),OpenAI 方言(json_object)由适配器翻译产生,
+// 直写方言值 = 响亮拒绝(HIGH② 拍板:翻译点在适配器层)。
+func TestResponseFormatTranslation(t *testing.T) {
+	cases := []struct {
+		name    string
+		in      string
+		want    string // 期望线上 type;空 = 不发送
+		wantErr bool
+	}{
+		{"json translates to json_object", "json", "json_object", false},
+		{"text passes through", "text", "text", false},
+		{"empty omits field", "", "", false},
+		{"wire dialect rejected", "json_object", "", true},
+		{"unknown rejected", "yaml", "", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := baseReq()
+			req.ResponseFormat = tc.in
+			body, err := buildBody(req)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("buildBody(%q) = nil error, want rejection", tc.in)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("buildBody(%q): %v", tc.in, err)
+			}
+			var got map[string]any
+			if err := json.Unmarshal(body, &got); err != nil {
+				t.Fatalf("unmarshal body: %v", err)
+			}
+			rf, ok := got["response_format"].(map[string]any)
+			if tc.want == "" {
+				if ok {
+					t.Fatalf("response_format sent despite empty request value: %v", rf)
+				}
+				return
+			}
+			if !ok || rf["type"] != tc.want {
+				t.Fatalf("response_format = %v, want type=%q", got["response_format"], tc.want)
+			}
+		})
 	}
 }
 

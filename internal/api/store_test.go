@@ -1,6 +1,7 @@
 package api
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"database/sql"
@@ -60,8 +61,14 @@ func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	return NewStore(ids), dbh
 }
 
+// hashOf 镜像 hashDSL 契约(T3.6 MED① 后):SHA-256(compact(字节))。
+// 锚定 compact 形态 = API 响应 dsl 与执行侧复算同字节,消费方可核对。
 func hashOf(b []byte) string {
-	sum := sha256.Sum256(b)
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, b); err != nil {
+		buf.Write(b) // 不可达(断言对象是 DB 读回的合法 JSON);与产线同款防御
+	}
+	sum := sha256.Sum256(buf.Bytes())
 	return hex.EncodeToString(sum[:])
 }
 
@@ -146,7 +153,7 @@ func TestStoreCreateDraftRejectsInvalidDSL(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := createDraft(t, st, dbh,[]byte(tt.doc), "alice")
+			_, err := createDraft(t, st, dbh, []byte(tt.doc), "alice")
 			if err == nil {
 				t.Fatal("invalid DSL accepted")
 			}
@@ -165,12 +172,12 @@ func TestStoreUpdateDraft(t *testing.T) {
 	st, dbh := newTestStore(t)
 	ctx := context.Background()
 	name := uniqName("upd")
-	d1, err := createDraft(t, st, dbh,dslDoc(name), "alice")
+	d1, err := createDraft(t, st, dbh, dslDoc(name), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
 	d2 := append(dslDoc(name), '\n') // 字节不同、语义相同:hash 变、行为同
-	got, err := updateDraft(t, st, dbh,d1.ID, d2, "bob")
+	got, err := updateDraft(t, st, dbh, d1.ID, d2, "bob")
 	if err != nil {
 		t.Fatalf("UpdateDraft: %v", err)
 	}
@@ -178,17 +185,17 @@ func TestStoreUpdateDraft(t *testing.T) {
 		t.Fatalf("updated row = %+v", got)
 	}
 	assertSameJSON(t, got.DSL, d2)
-	if _, err := updateDraft(t, st, dbh,d1.ID, dslDoc(uniqName("other")), "bob"); !errors.Is(err, ErrNameMismatch) {
+	if _, err := updateDraft(t, st, dbh, d1.ID, dslDoc(uniqName("other")), "bob"); !errors.Is(err, ErrNameMismatch) {
 		t.Fatalf("rename via update err = %v, want ErrNameMismatch", err)
 	}
-	if _, err := updateDraft(t, st, dbh,999999, d2, "bob"); !errors.Is(err, ErrNotFound) {
+	if _, err := updateDraft(t, st, dbh, 999999, d2, "bob"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown id err = %v, want ErrNotFound", err)
 	}
 	published, err := st.Publish(ctx, dbh, d1.ID, "bob")
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	if _, err := updateDraft(t, st, dbh,published.ID, dslDoc(name), "bob"); !errors.Is(err, ErrConflict) {
+	if _, err := updateDraft(t, st, dbh, published.ID, dslDoc(name), "bob"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("update published err = %v, want ErrConflict", err)
 	}
 }
@@ -217,7 +224,7 @@ func TestStorePublishVersioning(t *testing.T) {
 	st, dbh := newTestStore(t)
 	ctx := context.Background()
 	name := uniqName("pub")
-	d1, err := createDraft(t, st, dbh,dslDoc(name), "alice")
+	d1, err := createDraft(t, st, dbh, dslDoc(name), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft#1: %v", err)
 	}
@@ -231,7 +238,7 @@ func TestStorePublishVersioning(t *testing.T) {
 	if p1.PublishedBy == nil || *p1.PublishedBy != "alice" || p1.PublishedAt == nil || p1.PublishedAt.IsZero() {
 		t.Fatalf("publish audit fields missing: %+v", p1)
 	}
-	d2, err := createDraft(t, st, dbh,dslDoc(name), "bob")
+	d2, err := createDraft(t, st, dbh, dslDoc(name), "bob")
 	if err != nil {
 		t.Fatalf("CreateDraft#2: %v", err)
 	}
@@ -273,14 +280,14 @@ func TestStorePublishVersioning(t *testing.T) {
 func TestStorePublishToolAllowlist(t *testing.T) {
 	st, dbh := newTestStore(t)
 	ctx := context.Background()
-	allowed, err := createDraft(t, st, dbh,toolDSL(uniqName("tool-ok")), "alice")
+	allowed, err := createDraft(t, st, dbh, toolDSL(uniqName("tool-ok")), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
 	if _, err := st.Publish(ctx, dbh, allowed.ID, "alice", "http"); err != nil {
 		t.Fatalf("publish with allowlist [http]: %v", err)
 	}
-	blocked, err := createDraft(t, st, dbh,toolDSL(uniqName("tool-no")), "alice")
+	blocked, err := createDraft(t, st, dbh, toolDSL(uniqName("tool-no")), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
@@ -290,7 +297,7 @@ func TestStorePublishToolAllowlist(t *testing.T) {
 	if _, err := st.Publish(ctx, dbh, blocked.ID, "alice"); err == nil {
 		t.Fatal("publish with empty allowlist accepted tool")
 	}
-	plain, err := createDraft(t, st, dbh,dslDoc(uniqName("tool-na")), "alice")
+	plain, err := createDraft(t, st, dbh, dslDoc(uniqName("tool-na")), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
@@ -308,7 +315,7 @@ func TestStorePublishConcurrent(t *testing.T) {
 	name := uniqName("conc")
 	ids := make([]uint64, 2)
 	for i := range ids {
-		d, err := createDraft(t, st, dbh,dslDoc(name), "alice")
+		d, err := createDraft(t, st, dbh, dslDoc(name), "alice")
 		if err != nil {
 			t.Fatalf("CreateDraft#%d: %v", i, err)
 		}
@@ -362,11 +369,11 @@ func TestStoreArchive(t *testing.T) {
 	st, dbh := newTestStore(t)
 	ctx := context.Background()
 	name := uniqName("arch")
-	d1, err := createDraft(t, st, dbh,dslDoc(name), "alice")
+	d1, err := createDraft(t, st, dbh, dslDoc(name), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft#1: %v", err)
 	}
-	d2, err := createDraft(t, st, dbh,dslDoc(name), "alice")
+	d2, err := createDraft(t, st, dbh, dslDoc(name), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft#2: %v", err)
 	}
@@ -415,13 +422,13 @@ func TestStoreList(t *testing.T) {
 	name := uniqName("list")
 	var lastID uint64
 	for i := 0; i < 3; i++ {
-		d, err := createDraft(t, st, dbh,dslDoc(fmt.Sprintf("%s-%d", name, i)), "alice")
+		d, err := createDraft(t, st, dbh, dslDoc(fmt.Sprintf("%s-%d", name, i)), "alice")
 		if err != nil {
 			t.Fatalf("CreateDraft#%d: %v", i, err)
 		}
 		lastID = d.ID
 	}
-	publishable, err := createDraft(t, st, dbh,dslDoc(name+"-pub"), "alice")
+	publishable, err := createDraft(t, st, dbh, dslDoc(name+"-pub"), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft pub: %v", err)
 	}

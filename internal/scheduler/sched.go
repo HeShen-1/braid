@@ -194,6 +194,44 @@ func (s *Scheduler) loadExecution(ctx context.Context, id uint64) (*executionRow
 	return &r, nil
 }
 
+// NodeDefinition 是执行器的定义读取缝(T3.6 nodes 包消费):node_execution →
+// 钉住定义 → 解析后的 DSL 节点。outputs 声明等执行期语义不在 input_snapshot
+// 里(快照只含求值后的数据面),执行器经本缝回 DSL 取,定义单源。
+// 定义不可变(钉版契约)⇒ 事务外只读无 TOCTOU;每 attempt 调用一次、不设
+// 缓存(定义 KB 级、Parse 微秒级、attempt 级频次,缓存一致性复杂度不值)。
+func (s *Scheduler) NodeDefinition(ctx context.Context, nodeExecID uint64) (*dsl.Node, error) {
+	var nodeID string
+	var execID uint64
+	err := s.deps.DB.QueryRowContext(ctx,
+		`SELECT node_id, execution_id FROM node_execution WHERE id=?`, nodeExecID).
+		Scan(&nodeID, &execID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, fmt.Errorf("%w: node_execution %d", engine.ErrNotFound, nodeExecID)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("scheduler: read node_execution %d: %w", nodeExecID, err)
+	}
+	exec, err := s.loadExecution(ctx, execID)
+	if err != nil {
+		return nil, err
+	}
+	def, err := s.loadDefinition(ctx, exec.definitionID)
+	if err != nil {
+		return nil, err
+	}
+	wf, _, err := workflowFromDef(exec.definitionID, def)
+	if err != nil {
+		return nil, err
+	}
+	for i := range wf.Nodes {
+		if wf.Nodes[i].ID == nodeID {
+			return &wf.Nodes[i], nil
+		}
+	}
+	// 行由钉住 DSL 物化而来,节点必然在文档内;到达即数据缺陷。
+	return nil, fmt.Errorf("scheduler: node %q not in pinned definition %d", nodeID, exec.definitionID)
+}
+
 // loadWorkflow 读定义并解析为拓扑视图。DSL 落库前已经 T1.1/T1.2 双层校验
 // (发布闸),此处 Parse 失败 = 数据缺陷,响亮上抛。Start/Complete 用本形态
 // (状态不设限:定义钉住于 Instantiate,后续 ARCHIVED 不影响运行中实例——

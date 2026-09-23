@@ -46,6 +46,9 @@ type definitionDTO struct {
 }
 
 // definitionDetailDTO 是详情视图:dsl 为存储形态原文(合法 JSON 直嵌)。
+// 完整性核对契约(MED①):dsl_hash 锚定服务端 compact(存储字节)形态;
+// HTTP JSON 编码器对嵌入文档做 HTML 转义(`<`/`>`/`&` → `<` 等),
+// 字节复算仅对不含该三字符的文档成立,其余走语义等价(decode 后深比较)。
 type definitionDetailDTO struct {
 	definitionDTO
 	DSL json.RawMessage `json:"dsl"`
