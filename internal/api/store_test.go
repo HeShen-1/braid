@@ -1,0 +1,460 @@
+package api
+
+import (
+	"context"
+	"crypto/sha256"
+	"database/sql"
+	"encoding/hex"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"reflect"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"braid/internal/db/sqltest"
+	"braid/internal/engine/dsl"
+	"braid/internal/snowflake"
+)
+
+// uniqName 生成跨运行唯一的 DSL name(pattern ^[a-z][a-z0-9-]{1,63}$):
+// 时间前缀隔离历史运行残留,计数后缀隔离本运行内的多份草稿。
+var nameSeq atomic.Int64
+
+func uniqName(prefix string) string {
+	n := nameSeq.Add(1)
+	return fmt.Sprintf("%s-%09d-%03d", prefix, time.Now().UnixNano()%1_000_000_000, n%1000)
+}
+
+// dslDoc 最小合法 DSL(单 LLM 节点)。
+func dslDoc(name string) []byte {
+	return fmt.Appendf(nil, `{"dsl":"1.0","name":%q,"description":"t54 fixture",
+"nodes":[{"id":"greet","type":"llm","prompt":{"template":"用一句话介绍你自己。"},"outputs":{"text":"string"}}],
+"outputs":{"greeting":"{{nodes.greet.output.text}}"}}`, name)
+}
+
+// toolDSL 引用 http 工具的合法 DSL(白名单校验对象)。
+func toolDSL(name string) []byte {
+	return fmt.Appendf(nil, `{"dsl":"1.0","name":%q,
+"nodes":[{"id":"fetch","type":"tool","tool":"http","inputs":{"method":"GET","path":"/api/v1/x"},"outputs":{"status":"number"}}],
+"edges":[],
+"outputs":{"s":"{{nodes.fetch.output.status}}"}}`, name)
+}
+
+// newTestStore 返回干净的 store + 连接:每用例清空定义表(List 的 total
+// 断言依赖全局可见行,共享 schema 下必须从零开始)。DELETE 而非 TRUNCATE:
+// workflow_execution 的 FK 引用本表,TRUNCATE 被 1701 拒;api 测试不建
+// execution 行,DELETE 无孤儿阻拦。
+func newTestStore(t *testing.T) (*Store, *sql.DB) {
+	t.Helper()
+	dbh := sqltest.MustOpenAt(t, "braid_api_test")
+	if _, err := dbh.ExecContext(context.Background(), "DELETE FROM workflow_definition"); err != nil {
+		t.Fatalf("clean workflow_definition: %v", err)
+	}
+	ids, err := snowflake.New(1)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	return NewStore(ids), dbh
+}
+
+func hashOf(b []byte) string {
+	sum := sha256.Sum256(b)
+	return hex.EncodeToString(sum[:])
+}
+
+// createDraft / updateDraft 是 WithTx 包装:CreateDraft/UpdateDraft 是
+// 两步写(行 + 读回定稿 hash),必须事务包裹(生产调用方同款)。
+func createDraft(t *testing.T, st *Store, dbh *sql.DB, doc []byte, actor string) (Definition, error) {
+	t.Helper()
+	var d Definition
+	err := WithTx(context.Background(), dbh, func(tx DBTX) error {
+		var err error
+		d, err = st.CreateDraft(context.Background(), tx, doc, actor)
+		return err
+	})
+	return d, err
+}
+
+func updateDraft(t *testing.T, st *Store, dbh *sql.DB, id uint64, doc []byte, actor string) (Definition, error) {
+	t.Helper()
+	var d Definition
+	err := WithTx(context.Background(), dbh, func(tx DBTX) error {
+		var err error
+		d, err = st.UpdateDraft(context.Background(), tx, id, doc, actor)
+		return err
+	})
+	return d, err
+}
+
+// assertSameJSON 断言两份 DSL 文档语义等价(字节可能因 JSON 列规范化
+// 而不同:分隔符空格、转义形态)。
+func assertSameJSON(t *testing.T, a, b []byte) {
+	t.Helper()
+	var ja, jb any
+	if err := json.Unmarshal(a, &ja); err != nil {
+		t.Fatalf("unmarshal a: %v", err)
+	}
+	if err := json.Unmarshal(b, &jb); err != nil {
+		t.Fatalf("unmarshal b: %v", err)
+	}
+	if !reflect.DeepEqual(ja, jb) {
+		t.Fatalf("documents differ semantically:\na=%s\nb=%s", a, b)
+	}
+}
+
+func TestStoreCreateDraftRoundtrip(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	doc := dslDoc(uniqName("rt"))
+	got, err := createDraft(t, st, dbh, doc, "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if got.Status != "DRAFT" || got.Version != nil || got.CreatedBy != "alice" || got.UpdatedBy != "alice" {
+		t.Fatalf("draft row = %+v", got)
+	}
+	if got.ID == 0 {
+		t.Fatal("id not assigned")
+	}
+	// hash 钉住存储形态(MySQL JSON 规范化后的字节),文档语义等价输入。
+	if got.DSLHash != hashOf(got.DSL) {
+		t.Fatalf("dsl_hash = %s, want sha256(stored bytes) %s", got.DSLHash, hashOf(got.DSL))
+	}
+	assertSameJSON(t, got.DSL, doc)
+	back, err := st.GetByID(ctx, dbh, got.ID)
+	if err != nil {
+		t.Fatalf("GetByID: %v", err)
+	}
+	if back.DSLHash != got.DSLHash || back.Name != got.Name || back.Status != "DRAFT" {
+		t.Fatalf("re-read mismatch: %+v vs %+v", back, got)
+	}
+}
+
+func TestStoreCreateDraftRejectsInvalidDSL(t *testing.T) {
+	st, dbh := newTestStore(t)
+	tests := []struct {
+		name     string
+		doc      string
+		wantCode string // 语义码;空 = 结构层失败
+	}{
+		{"schema missing nodes", `{"dsl":"1.0","name":"x"}`, ""},
+		{"schema bad name", `{"dsl":"1.0","name":"Bad_Name","nodes":[],"outputs":{}}`, ""},
+		{"semantic dangling ref", `{"dsl":"1.0","name":"aa","nodes":[{"id":"a","type":"llm","prompt":{"template":"检查","user_data":[{"name":"g","ref":"{{nodes.ghost.output.x}}"}]},"outputs":{"t":"string"}}],"edges":[],"outputs":{"o":"{{nodes.a.output.t}}"}}`, "dangling_ref"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := createDraft(t, st, dbh,[]byte(tt.doc), "alice")
+			if err == nil {
+				t.Fatal("invalid DSL accepted")
+			}
+			var ide *InvalidDSLError
+			if !errors.As(err, &ide) {
+				t.Fatalf("err = %v, want *InvalidDSLError", err)
+			}
+			if tt.wantCode != "" && !HasIssueCode(err, tt.wantCode) {
+				t.Fatalf("issues %v, want code %q", ide.Issues, tt.wantCode)
+			}
+		})
+	}
+}
+
+func TestStoreUpdateDraft(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	name := uniqName("upd")
+	d1, err := createDraft(t, st, dbh,dslDoc(name), "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	d2 := append(dslDoc(name), '\n') // 字节不同、语义相同:hash 变、行为同
+	got, err := updateDraft(t, st, dbh,d1.ID, d2, "bob")
+	if err != nil {
+		t.Fatalf("UpdateDraft: %v", err)
+	}
+	if got.UpdatedBy != "bob" || got.DSLHash != hashOf(got.DSL) {
+		t.Fatalf("updated row = %+v", got)
+	}
+	assertSameJSON(t, got.DSL, d2)
+	if _, err := updateDraft(t, st, dbh,d1.ID, dslDoc(uniqName("other")), "bob"); !errors.Is(err, ErrNameMismatch) {
+		t.Fatalf("rename via update err = %v, want ErrNameMismatch", err)
+	}
+	if _, err := updateDraft(t, st, dbh,999999, d2, "bob"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id err = %v, want ErrNotFound", err)
+	}
+	published, err := st.Publish(ctx, dbh, d1.ID, "bob")
+	if err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if _, err := updateDraft(t, st, dbh,published.ID, dslDoc(name), "bob"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("update published err = %v, want ErrConflict", err)
+	}
+}
+
+// TestStoreUpdateDraftIdempotent 钉死 changed-rows 语义:存储形态字节
+// 原样回放(赋值与现值全同 ⇒ affected=0)是幂等成功,不得误报 409
+// (审查发现 #5 的回归锚;真实触发面 = 序列化器恰与 MySQL JSON 规范
+// 形态重合的客户端)。
+func TestStoreUpdateDraftIdempotent(t *testing.T) {
+	st, dbh := newTestStore(t)
+	name := uniqName("idem")
+	d, err := createDraft(t, st, dbh, dslDoc(name), "alice")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	again, err := updateDraft(t, st, dbh, d.ID, d.DSL, "alice")
+	if err != nil {
+		t.Fatalf("idempotent update: %v", err)
+	}
+	if again.Status != "DRAFT" || again.DSLHash != d.DSLHash || again.Version != nil {
+		t.Fatalf("row drifted on no-op update: %+v vs %+v", again, d)
+	}
+}
+
+func TestStorePublishVersioning(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	name := uniqName("pub")
+	d1, err := createDraft(t, st, dbh,dslDoc(name), "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft#1: %v", err)
+	}
+	p1, err := st.Publish(ctx, dbh, d1.ID, "alice")
+	if err != nil {
+		t.Fatalf("Publish#1: %v", err)
+	}
+	if p1.Version == nil || *p1.Version != 1 || p1.Status != "PUBLISHED" {
+		t.Fatalf("p1 = %+v, want v1 PUBLISHED", p1)
+	}
+	if p1.PublishedBy == nil || *p1.PublishedBy != "alice" || p1.PublishedAt == nil || p1.PublishedAt.IsZero() {
+		t.Fatalf("publish audit fields missing: %+v", p1)
+	}
+	d2, err := createDraft(t, st, dbh,dslDoc(name), "bob")
+	if err != nil {
+		t.Fatalf("CreateDraft#2: %v", err)
+	}
+	p2, err := st.Publish(ctx, dbh, d2.ID, "bob")
+	if err != nil {
+		t.Fatalf("Publish#2: %v", err)
+	}
+	if p2.Version == nil || *p2.Version != 2 {
+		t.Fatalf("p2 version = %v, want 2", p2.Version)
+	}
+	latest, err := st.LatestPublished(ctx, dbh, name)
+	if err != nil {
+		t.Fatalf("LatestPublished: %v", err)
+	}
+	if latest.ID != p2.ID {
+		t.Fatalf("latest = %d, want %d", latest.ID, p2.ID)
+	}
+	if _, err := st.Publish(ctx, dbh, p1.ID, "alice"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("republish err = %v, want ErrConflict", err)
+	}
+	if _, err := st.Publish(ctx, dbh, 999999, "alice"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown id err = %v, want ErrNotFound", err)
+	}
+	versions, err := st.ListVersions(ctx, dbh, name)
+	if err != nil {
+		t.Fatalf("ListVersions: %v", err)
+	}
+	if len(versions) != 2 || *versions[0].Version != 1 || *versions[1].Version != 2 {
+		t.Fatalf("versions = %+v, want [1 2]", versions)
+	}
+	if v, err := st.GetVersion(ctx, dbh, name, 1); err != nil || v.ID != p1.ID {
+		t.Fatalf("GetVersion(name,1) = %d, %v", v.ID, err)
+	}
+	if _, err := st.GetVersion(ctx, dbh, name, 9); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("GetVersion(name,9) err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStorePublishToolAllowlist(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	allowed, err := createDraft(t, st, dbh,toolDSL(uniqName("tool-ok")), "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if _, err := st.Publish(ctx, dbh, allowed.ID, "alice", "http"); err != nil {
+		t.Fatalf("publish with allowlist [http]: %v", err)
+	}
+	blocked, err := createDraft(t, st, dbh,toolDSL(uniqName("tool-no")), "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if _, err := st.Publish(ctx, dbh, blocked.ID, "alice", "file_read"); err == nil || !HasIssueCode(err, dsl.IssueToolNotAllowed) {
+		t.Fatalf("publish with allowlist [file_read] err = %v, want tool_not_allowed", err)
+	}
+	if _, err := st.Publish(ctx, dbh, blocked.ID, "alice"); err == nil {
+		t.Fatal("publish with empty allowlist accepted tool")
+	}
+	plain, err := createDraft(t, st, dbh,dslDoc(uniqName("tool-na")), "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if _, err := st.Publish(ctx, dbh, plain.ID, "alice", "http"); err != nil {
+		t.Fatalf("publish tool-free DSL with [http] allowlist: %v", err)
+	}
+}
+
+// TestStorePublishConcurrent 钉死并发闸:同名两草稿并发发布,恰一胜
+// (PUBLISHED v1)一败(ErrConflict,草稿保留可重试)。uk 兜底是设计行为
+// (0001_init DDL 注释),不断言时序。
+func TestStorePublishConcurrent(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	name := uniqName("conc")
+	ids := make([]uint64, 2)
+	for i := range ids {
+		d, err := createDraft(t, st, dbh,dslDoc(name), "alice")
+		if err != nil {
+			t.Fatalf("CreateDraft#%d: %v", i, err)
+		}
+		ids[i] = d.ID
+	}
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i := range ids {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			errs[i] = WithTx(ctx, dbh, func(tx DBTX) error {
+				_, err := st.Publish(ctx, tx, ids[i], "alice")
+				return err
+			})
+		}(i)
+	}
+	wg.Wait()
+	oneNil := (errs[0] == nil) != (errs[1] == nil)
+	if !oneNil {
+		t.Fatalf("errs = [%v, %v], want exactly one success", errs[0], errs[1])
+	}
+	other := errs[1]
+	if errs[1] == nil {
+		other = errs[0]
+	}
+	if !errors.Is(other, ErrConflict) {
+		t.Fatalf("loser err = %v, want ErrConflict", other)
+	}
+	winnerID, loserID := ids[0], ids[1]
+	if errs[0] != nil {
+		winnerID, loserID = ids[1], ids[0]
+	}
+	winner, err := st.GetByID(ctx, dbh, winnerID)
+	if err != nil {
+		t.Fatalf("GetByID winner: %v", err)
+	}
+	if winner.Status != "PUBLISHED" || winner.Version == nil || *winner.Version != 1 {
+		t.Fatalf("winner = %+v, want PUBLISHED v1", winner)
+	}
+	loser, err := st.GetByID(ctx, dbh, loserID)
+	if err != nil {
+		t.Fatalf("GetByID loser: %v", err)
+	}
+	if loser.Status != "DRAFT" {
+		t.Fatalf("loser = %+v, want still DRAFT (retryable)", loser)
+	}
+}
+
+func TestStoreArchive(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	name := uniqName("arch")
+	d1, err := createDraft(t, st, dbh,dslDoc(name), "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft#1: %v", err)
+	}
+	d2, err := createDraft(t, st, dbh,dslDoc(name), "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft#2: %v", err)
+	}
+	p1, err := st.Publish(ctx, dbh, d1.ID, "alice")
+	if err != nil {
+		t.Fatalf("Publish#1: %v", err)
+	}
+	if _, err := st.Publish(ctx, dbh, d2.ID, "alice"); err != nil {
+		t.Fatalf("Publish#2: %v", err)
+	}
+	arch, err := st.Archive(ctx, dbh, name, 2, "admin")
+	if err != nil {
+		t.Fatalf("Archive(name,2): %v", err)
+	}
+	if arch.Status != "ARCHIVED" || arch.UpdatedBy != "admin" {
+		t.Fatalf("archived = %+v", arch)
+	}
+	// 归档最新版后,默认触发解析回退到上一个 PUBLISHED(一次后向扫描)。
+	fallback, err := st.LatestPublished(ctx, dbh, name)
+	if err != nil {
+		t.Fatalf("LatestPublished after archive: %v", err)
+	}
+	if fallback.ID != p1.ID {
+		t.Fatalf("fallback = %d, want %d", fallback.ID, p1.ID)
+	}
+	if _, err := st.Archive(ctx, dbh, name, 1, "admin"); err != nil {
+		t.Fatalf("Archive(name,1): %v", err)
+	}
+	if _, err := st.LatestPublished(ctx, dbh, name); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("all-archived LatestPublished err = %v, want ErrNotFound", err)
+	}
+	if _, err := st.Archive(ctx, dbh, name, 1, "admin"); !errors.Is(err, ErrConflict) {
+		t.Fatalf("re-archive err = %v, want ErrConflict", err)
+	}
+	if _, err := st.Archive(ctx, dbh, name, 3, "admin"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("archive unpublished version err = %v, want ErrNotFound", err)
+	}
+	if _, err := st.Archive(ctx, dbh, "ghost-"+name, 1, "admin"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("unknown name err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestStoreList(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	name := uniqName("list")
+	var lastID uint64
+	for i := 0; i < 3; i++ {
+		d, err := createDraft(t, st, dbh,dslDoc(fmt.Sprintf("%s-%d", name, i)), "alice")
+		if err != nil {
+			t.Fatalf("CreateDraft#%d: %v", i, err)
+		}
+		lastID = d.ID
+	}
+	publishable, err := createDraft(t, st, dbh,dslDoc(name+"-pub"), "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft pub: %v", err)
+	}
+	if _, err := st.Publish(ctx, dbh, publishable.ID, "alice"); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	items, total, err := st.List(ctx, dbh, "DRAFT", 2, 0)
+	if err != nil {
+		t.Fatalf("List DRAFT: %v", err)
+	}
+	if total != 3 || len(items) != 2 {
+		t.Fatalf("List DRAFT first page = %d items, total %d; want 2, 3", len(items), total)
+	}
+	if items[0].ID != lastID {
+		t.Fatalf("newest first violated: head = %d, want %d", items[0].ID, lastID)
+	}
+	page2, total, err := st.List(ctx, dbh, "DRAFT", 2, 2)
+	if err != nil {
+		t.Fatalf("List DRAFT page2: %v", err)
+	}
+	if total != 3 || len(page2) != 1 {
+		t.Fatalf("page2 = %d items, total %d; want 1, 3", len(page2), total)
+	}
+	all, total, err := st.List(ctx, dbh, "", 100, 0)
+	if err != nil {
+		t.Fatalf("List all: %v", err)
+	}
+	if total != 4 || len(all) != 4 {
+		t.Fatalf("List all = %d items, total %d; want 4, 4", len(all), total)
+	}
+	for _, it := range all {
+		if it.Status == "DRAFT" && it.Version != nil {
+			t.Fatalf("draft with version: %+v", it)
+		}
+	}
+}
