@@ -26,7 +26,6 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
-	"time"
 	"unicode/utf8"
 
 	"braid/internal/engine"
@@ -113,10 +112,11 @@ type Event struct {
 // Append 在调用方事务内直写一条审计行(典型形状见 engine/dbtx.go 注释:
 // CAS 迁移 → audit.Append → outbox.Append,同事务同存亡)。
 //
-// 两语句形状(零锁物化):[1] 普通一致读取 DATE(created_at)——不取任何锁,
-// 审计写入器因此在全局锁序之外;created_at 行 INSERT 后不可变,一致读快照与
-// 当前读恒同值。[2] INSERT VALUES 落行(恒 1 行或报错,无 RowsAffected 裁决
-// 面)。代价 = 每审计行一次 PK 点查,P0 量级噪声;批量去重归 T6.1。
+// 两语句形状(零锁物化):[1] 普通一致读 DATE_FORMAT(created_at,'%Y-%m-%d')
+// 直出字符串——不取任何锁,审计写入器因此在全局锁序之外;created_at 行
+// INSERT 后不可变,一致读快照与当前读恒同值。[2] INSERT VALUES 落行(恒 1 行
+// 或报错,无 RowsAffected 裁决面)。代价 = 每审计行一次 PK 点查,P0 量级噪声;
+// 批量去重归 T6.1。
 //
 // 错误分类:ErrInvalidEvent(调用方 bug,不触 DB);ErrNotFound(execution
 // 缺行 = 数据缺陷,[1] ErrNoRows);其余 %w 包装上抛,Transient 判定归调用方
@@ -144,12 +144,14 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 	if evt.TraceID != "" {
 		trace = evt.TraceID
 	}
-	// [1] 一致读物化分区键(零锁,见方法注释)。会话 TZ = UTC(连接契约),
-	// DATE 即 UTC 日;驱动回读 time.Time,格式化回 DATE 字面值交 [2]。
-	var execDate time.Time
+	// [1] 一致读物化分区键(零锁,见方法注释)。DATE_FORMAT 直出字符串:
+	// 不经 driver 的 time.Location 解析——go-sql-driver 把 DATE 解析为 DSN loc
+	// 的午夜,loc≠UTC 时 .UTC() 换算会静默移日(review 修;字符串往返 loc 无关,
+	// 日期语义完全留在 DB 端)。
+	var execDate string
 	err := q.QueryRowContext(ctx,
-		`SELECT DATE(created_at) FROM workflow_execution WHERE id=?`, evt.ExecutionID).
-		Scan(&execDate)
+		`SELECT DATE_FORMAT(created_at, '%Y-%m-%d') FROM workflow_execution WHERE id=?`,
+		evt.ExecutionID).Scan(&execDate)
 	if errors.Is(err, sql.ErrNoRows) {
 		// 审计行必须挂在真实执行上,静默无写会破坏「每次迁移必有审计行」验收。
 		return fmt.Errorf("%w: audit event %d: execution %d vanished",
@@ -164,7 +166,7 @@ INSERT INTO audit_log
   (id, exec_date, event_at, event_type, execution_id, node_execution_id,
    node_id, attempt_id, actor_type, actor_id, trace_id, payload)
 VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		evt.ID, execDate.UTC().Format("2006-01-02"), evt.EventType, evt.ExecutionID,
+		evt.ID, execDate, evt.EventType, evt.ExecutionID,
 		nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, evt.Payload)
 	if err != nil {
 		return fmt.Errorf("audit: append %d (%s): %w", evt.ID, evt.EventType, err)

@@ -320,8 +320,9 @@ func TestAppendDiesWithTransaction(t *testing.T) {
 
 // TestAppendHoldsNoLockOnExecution:T2.6-F1 回归锚。tx1 写审计行后保持未提交,
 // tx2 对同 execution 行 FOR UPDATE 必须立即成功——修订前 INSERT..SELECT 在 RR
-// 下持共享锁至 COMMIT(1205);修订后一致读零锁。lock_wait_timeout=1 把回归
-// 从「50s 挂死」收敛为「1s 内失败」。
+// 下持共享锁至 COMMIT(1205);修订后一致读零锁。innodb_lock_wait_timeout=1
+// 把回归从「50s 挂死」收敛为「1s 内失败」(行锁等待归 innodb 变量;
+// lock_wait_timeout 只管 MDL,review 修;先例 engine/concurrency_test.go)。
 func TestAppendHoldsNoLockOnExecution(t *testing.T) {
 	d := sqltest.MustOpenAt(t, testSchema)
 	execID := seedExec(t, d)
@@ -345,8 +346,8 @@ func TestAppendHoldsNoLockOnExecution(t *testing.T) {
 		t.Fatalf("begin tx2: %v", err)
 	}
 	defer func() { _ = tx2.Rollback() }()
-	if _, err := tx2.ExecContext(ctx, `SET SESSION lock_wait_timeout=1`); err != nil {
-		t.Fatalf("set lock_wait_timeout: %v", err)
+	if _, err := tx2.ExecContext(ctx, `SET SESSION innodb_lock_wait_timeout=1`); err != nil {
+		t.Fatalf("set innodb_lock_wait_timeout: %v", err)
 	}
 	var st string
 	if err := tx2.QueryRowContext(ctx,
