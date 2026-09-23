@@ -53,7 +53,7 @@
 - [x] T5.1 用户/角色模型 + JWT + bcrypt — M — 依赖 M1 — 验收:登录、过期 token、角色越权单测 — ✅ 2026-09-22:internal/auth(存储 JSON_ARRAYAGG 角度聚合 + bcrypt + JWT HS256 golang-jwt/v5 + Authenticate/RequireRole)+ 迁移 0002(users/user_role);链路 = 3 视角设计判定面板(最小正确/安全硬化/仓库同构,双评委独立收敛 minimal + 6 项嫁接)→ TDD → 6 视角×security 对抗审计(17 发现逐条双反驳,10 修复:防枚举三件套统一 sentinel+dummy 时序均衡+密码先验后查状态、SignToken TTL 上界自洽、CredentialsError %q 防日志伪造、保留字 system 双闸、注释准确性);变异锚 6 处实证(alg 白名单/exp 必存/词表 fail-closed/DISABLED 判定序/WithTx 连接归还/时序均衡存在性,全 部「改防线即红」);migrate_test 断言域分化(表 9/CHECK 8,后续域只加自身 map);角色三态 admin/author/approver 与 Go 常量含序对拍钉死
 - [ ] T5.2 执行时 RBAC × 运行时双重校验 + Gin 中间件 — M — 依赖 T5.1、T3.2 — 验收:越权工具调用被拒并落审计
 - [ ] T5.3 IdentityProvider 接口桩 — S — 依赖 T5.1 — 验收:桩实现可替换内置认证(编译 + 替换单测)
-- [ ] T5.4 definition CRUD API(草稿/发布/版本;发布时工具白名单校验)— M — 依赖 T5.1、T1.2 — 验收:运行实例钉住创建时版本;引用非法工具的发布返回 4xx
+- [x] T5.4 definition CRUD API(草稿/发布/版本;发布时工具白名单校验)— M — 依赖 T5.1、T1.2 — 验收:运行实例钉住创建时版本;引用非法工具的发布返回 4xx — ✅ 2026-09-23:internal/api(config/middleware/server/handlers/store/dbtx)+ cmd/api 骨架;dsl_hash = SHA-256(存储形态字节——MySQL JSON 列规范化后读回定稿,两步写事务包裹);发布白名单 = dsl.WithToolAllowlist(BRAID_TOOL_ALLOWLIST 静态名单,T3.2 registry 换源);同名并发发布 uk 兜底恰一胜一 409;归档后触发解析回退;契约文档 docs/designs/t54-definition-api.md
 - [ ] T5.5 execution 触发/查询/列表 API — M — 依赖 T5.4 — 验收:触发后 execution 创建并推进;查询返回节点状态与审计指针
 
 ## M6 审计与观测(约 1.5 周)
