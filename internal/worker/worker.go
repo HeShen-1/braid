@@ -76,6 +76,12 @@ type Request struct {
 // ToolCall 是 tool attempt 的调用观测参数(T3.2,仅 SUCCEEDED 携带):由
 // nodes.ToolExecutor 产出,经 scheduler.Complete 同事务发 tool.call.completed
 // 审计行(actor=tool/工具名)。
+//
+// Suspend 是审批节点的挂起信号(T4.1,Q4/L67:worker 不阻塞):仅可配
+// Status==SUCCEEDED 且不得携 Output/Usage/ToolCall(审批挂起无产出、无外部
+// 调用)。handler 据此走 Sched.Suspend 收口(attempt SUCCEEDED + 节点
+// WAITING_APPROVAL + 执行级镜像),而非 Complete 的 SucceedNode 分支(那会把
+// 节点收成 SUCCEEDED 并推进下游)。合法形由 suspendOK 校验。
 type Outcome struct {
 	Status   engine.AttemptState
 	Code     string
@@ -83,6 +89,23 @@ type Outcome struct {
 	Output   json.RawMessage
 	Usage    *engine.AttemptUsage
 	ToolCall *scheduler.ToolCallInfo
+	Suspend  bool
+}
+
+// suspendOK 校验挂起信号的合法形(非挂起 Outcome 恒过)。独立函数 = 零 DB
+// 单测面;畸形 = 执行器装配缺陷(非 approval 执行器误发/字段误挂),响亮
+// 拒绝优于静默走错收口路径。
+func suspendOK(o Outcome) error {
+	if !o.Suspend {
+		return nil
+	}
+	if o.Status != engine.AttemptSucceed {
+		return fmt.Errorf("worker: suspend outcome status %q: want SUCCEEDED", o.Status)
+	}
+	if len(o.Output) > 0 || o.Usage != nil || o.ToolCall != nil {
+		return errors.New("worker: suspend outcome carries output/usage/toolcall (approval suspend has none)")
+	}
+	return nil
 }
 
 // Executor 是节点执行缝:T2.3 只落框架与幂等/记账契约,T2.4 已接调度回写,
@@ -207,6 +230,12 @@ func (h *attHandler) handleNodeTask(ctx context.Context, t *asynq.Task) error {
 	if outcome.Status != engine.AttemptSucceed && outcome.Status != engine.AttemptFailed {
 		return fmt.Errorf("worker: attempt %d outcome status %q: want SUCCEEDED|FAILED", attemptID, outcome.Status)
 	}
+	if err := suspendOK(outcome); err != nil {
+		return fmt.Errorf("worker: attempt %d (task %s): %w", attemptID, taskID, err)
+	}
+	if outcome.Suspend {
+		return h.suspendNode(ctx, taskID, attemptID, p)
+	}
 	return h.completeNode(ctx, taskID, attemptID, p, outcome)
 }
 
@@ -290,6 +319,25 @@ func (h *attHandler) readAttempt(ctx context.Context, p nodeTaskPayload) (uint64
 		return 0, "", fmt.Errorf("worker: read attempt node_exec=%d no=%d: %w", p.NodeExecutionID, p.AttemptNo, err)
 	}
 	return id, status, nil
+}
+
+// suspendNode 把审批挂起交给调度器收口(T4.1):与 completeNode 平行的另一条
+// 收口通道(单事务 attempt SUCCEEDED + 节点 WAITING_APPROVAL + 执行级镜像/活跃
+// 刷新,事务体在 scheduler.Suspend)。返回 nil = 任务正常 ack,worker 槽释放,
+// 无阻塞残留(Q4 验收)。
+func (h *attHandler) suspendNode(ctx context.Context, taskID string, attemptID uint64, p nodeTaskPayload) error {
+	err := h.deps.Sched.Suspend(ctx, scheduler.SuspendRequest{
+		ExecID:     p.ExecutionID,
+		NodeExecID: p.NodeExecutionID,
+		AttemptID:  attemptID,
+		WorkerID:   h.cfg.WorkerID,
+	})
+	if err != nil {
+		return fmt.Errorf("worker: suspend node %d (task %s): %w", p.NodeExecutionID, taskID, err)
+	}
+	h.log.Info("attempt.suspended",
+		"attempt_id", attemptID, "node_execution_id", p.NodeExecutionID)
+	return nil
 }
 
 // completeNode 把 attempt 业务结果交给调度器收口(T2.4):单事务内 CloseAttempt +

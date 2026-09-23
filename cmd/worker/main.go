@@ -1,7 +1,8 @@
 // worker 入口:读 env → 组装 → 信号 → worker.Run。薄 main,零业务逻辑;
 // 与 relay 同款骨架(Q14:交付时合并为单二进制多入口)。T3.6 起装配真实
 // 节点执行器(llm 经 OpenAI 兼容适配器);T3.2 接入 tool 执行器(registry +
-// LocalRunner + scoped token);approval 随 T4.1 接入。
+// LocalRunner + scoped token);T4.1 接入 approval 执行器(纯挂起决策,
+// 挂起事务在 scheduler.Suspend)。
 package main
 
 import (
@@ -137,7 +138,7 @@ func run(ctx context.Context) error {
 		Client: client,
 		Prices: llmCfg.PriceTable,
 		DB:     mysqlDB,
-	}, toolExec)
+	}, toolExec, nodes.ApprovalExecutor{})
 	return worker.Run(ctx, worker.Deps{
 		DB:       mysqlDB,
 		IDs:      ids,

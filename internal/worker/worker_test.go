@@ -18,6 +18,7 @@ package worker
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -28,6 +29,7 @@ import (
 	"braid/internal/db/sqltest"
 	"braid/internal/engine"
 	"braid/internal/redistest"
+	"braid/internal/scheduler"
 )
 
 // TestAttemptRecordedAndDeliverConverged 是验收主链:
@@ -298,6 +300,134 @@ func TestBadPayloadArchived(t *testing.T) {
 	}
 	if rows != 0 {
 		t.Errorf("attempt rows = %d, want 0", rows)
+	}
+}
+
+// TestSuspendOutcomeSuspendNode(T4.1):executor 发 Outcome{Suspend} → handler
+// 走 Sched.Suspend 收口路径:attempt SUCCEEDED、节点/执行 WAITING_APPROVAL、
+// asynq 任务正常 ack(记录即删 = 无阻塞中的 worker 任务,验收主断言)。
+func TestSuspendOutcomeSuspendNode(t *testing.T) {
+	d := sqltest.MustOpenAt(t, workerSchema)
+	execID, nodeExecID := seedApprovalNodeExec(t, d)
+
+	ex := &fakeExec{fn: func(req Request, callNo int) (Outcome, error) {
+		return Outcome{Status: engine.AttemptSucceed, Suspend: true}, nil
+	}}
+	queue := startWorker(t, d, ex, DefaultConfig())
+
+	client := asynq.NewClient(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = client.Close() })
+	taskID := fmt.Sprintf("att:%d:1", nodeExecID)
+	if _, err := enqueue(t, client, queue, taskID,
+		nodeTaskPayload{ExecutionID: execID, NodeExecutionID: nodeExecID, AttemptNo: 1}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	waitAttemptStatus(t, d, nodeExecID, 1, engine.AttemptSucceed)
+	var nodeStatus engine.NodeState
+	if err := d.QueryRow(`SELECT status FROM node_execution WHERE id=?`, nodeExecID).
+		Scan(&nodeStatus); err != nil {
+		t.Fatalf("read node: %v", err)
+	}
+	if nodeStatus != engine.NodeWaitingApproval {
+		t.Fatalf("node = %s, want WAITING_APPROVAL", nodeStatus)
+	}
+	var wfStatus engine.WorkflowState
+	if err := d.QueryRow(`SELECT status FROM workflow_execution WHERE id=?`, execID).
+		Scan(&wfStatus); err != nil {
+		t.Fatalf("read execution: %v", err)
+	}
+	if wfStatus != engine.WorkflowWaitingApproval {
+		t.Fatalf("execution = %s, want WAITING_APPROVAL(静默镜像)", wfStatus)
+	}
+
+	// 验收主断言:任务 ack 且记录即删 = worker 槽已释放,无阻塞任务残留。
+	// Suspend 提交(DB 已见 SUCCEEDED)与 asynq 删记录间有毫秒级竞速,
+	// 轮询收敛(单发检查会抖红——对抗审计 review 修;e2e 同款窗口)。
+	insp := asynq.NewInspector(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = insp.Close() })
+	goneAt := time.Now().Add(15 * time.Second)
+	for time.Now().Before(goneAt) {
+		_, err := insp.GetTaskInfo(queue, taskID)
+		if errors.Is(err, asynq.ErrTaskNotFound) {
+			break
+		}
+		if err != nil {
+			t.Fatalf("get task info: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if _, err := insp.GetTaskInfo(queue, taskID); !errors.Is(err, asynq.ErrTaskNotFound) {
+		t.Errorf("task record after suspend: error = %v, want ErrTaskNotFound (worker released)", err)
+	}
+	if got := ex.count(); got != 1 {
+		t.Errorf("executor calls = %d, want 1", got)
+	}
+}
+
+// TestSuspendOutcomeMalformedRejected:Suspend 信号畸形(非 SUCCEEDED/携带
+// 产出)= 执行器装配缺陷,handler 响亮拒绝(不收口)→ asynq 重试穷尽 archived,
+// attempt 留 RUNNING 归 T2.5。
+func TestSuspendOutcomeMalformedRejected(t *testing.T) {
+	d := sqltest.MustOpenAt(t, workerSchema)
+	execID, nodeExecID := seedApprovalNodeExec(t, d)
+
+	ex := &fakeExec{fn: func(req Request, callNo int) (Outcome, error) {
+		return Outcome{Status: engine.AttemptFailed, Code: "boom", Suspend: true}, nil
+	}}
+	cfg := DefaultConfig()
+	cfg.RetryDelay = 50 * time.Millisecond
+	queue := startWorker(t, d, ex, cfg)
+
+	client := asynq.NewClient(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = client.Close() })
+	taskID := fmt.Sprintf("att:%d:1", nodeExecID)
+	if _, err := enqueue(t, client, queue, taskID,
+		nodeTaskPayload{ExecutionID: execID, NodeExecutionID: nodeExecID, AttemptNo: 1}); err != nil {
+		t.Fatalf("enqueue: %v", err)
+	}
+
+	insp := asynq.NewInspector(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = insp.Close() })
+	waitTaskState(t, insp, queue, taskID, asynq.TaskStateArchived)
+	if got := readAttempt(t, d, nodeExecID, 1).Status; got != engine.AttemptRunning {
+		t.Fatalf("attempt = %s, want RUNNING(畸形挂起不收口)", got)
+	}
+	var nodeStatus engine.NodeState
+	if err := d.QueryRow(`SELECT status FROM node_execution WHERE id=?`, nodeExecID).
+		Scan(&nodeStatus); err != nil {
+		t.Fatalf("read node: %v", err)
+	}
+	if nodeStatus != engine.NodeExecuting {
+		t.Fatalf("node = %s, want EXECUTING(挂起未发生)", nodeStatus)
+	}
+}
+
+// TestSuspendOKValidation:Suspend 信号合法形校验(零 DB 表驱动)。
+func TestSuspendOKValidation(t *testing.T) {
+	cases := []struct {
+		name string
+		o    Outcome
+		want bool // true = 应通过(nil)
+	}{
+		{"plain succeed", Outcome{Status: engine.AttemptSucceed}, true},
+		{"plain failed", Outcome{Status: engine.AttemptFailed, Code: "x"}, true},
+		{"valid suspend", Outcome{Status: engine.AttemptSucceed, Suspend: true}, true},
+		{"suspend with failed status", Outcome{Status: engine.AttemptFailed, Suspend: true}, false},
+		{"suspend with output", Outcome{Status: engine.AttemptSucceed, Suspend: true, Output: json.RawMessage(`{}`)}, false},
+		{"suspend with usage", Outcome{Status: engine.AttemptSucceed, Suspend: true, Usage: &engine.AttemptUsage{Model: "m"}}, false},
+		{"suspend with toolcall", Outcome{Status: engine.AttemptSucceed, Suspend: true, ToolCall: &scheduler.ToolCallInfo{Name: "t"}}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := suspendOK(tc.o)
+			if tc.want && err != nil {
+				t.Fatalf("suspendOK(%+v) = %v, want nil", tc.o, err)
+			}
+			if !tc.want && err == nil {
+				t.Fatalf("suspendOK(%+v) = nil, want error", tc.o)
+			}
+		})
 	}
 }
 

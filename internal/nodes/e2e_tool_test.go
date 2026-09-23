@@ -65,7 +65,7 @@ func TestE2EToolNodeFullChain(t *testing.T) {
 	runner := tools.NewLocalRunner(reg, tools.NewTokenIssuer(nil, 0, nil))
 	executor := NewMux(mustE2ESched(t, d, queue), &fakeRunner{}, &ToolExecutor{
 		Runner: runner, DB: d,
-	})
+	}, ApprovalExecutor{}) // tool e2e 不触 approval 路由,装配完整即可
 
 	sched := mustE2ESched(t, d, queue)
 	defID, execID := seedToolExec(t, d, sched)
@@ -177,7 +177,7 @@ func TestE2EToolNodeFailurePath(t *testing.T) {
 	runner := tools.NewLocalRunner(reg, tools.NewTokenIssuer(nil, 0, nil))
 	executor := NewMux(mustE2ESched(t, d, queue), &fakeRunner{}, &ToolExecutor{
 		Runner: runner, DB: d,
-	})
+	}, ApprovalExecutor{}) // tool e2e 不触 approval 路由,装配完整即可
 
 	sched := mustE2ESched(t, d, queue)
 	defID, execID := seedToolExec(t, d, sched)

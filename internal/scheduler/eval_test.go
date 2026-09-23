@@ -192,6 +192,11 @@ func TestApprovalSnapshot(t *testing.T) {
 	if got["mode"] != "any" || got["instructions"] != "请审" {
 		t.Fatalf("approval 快照 = %v", got)
 	}
+	// schema default 生效值物化(T4.1:缺省 timeout_hours/on_timeout 不落零值,
+	// 与 deadline/审计 payload 三处同源 effectiveApprovalSpec——对抗审计修)。
+	if got["timeout_hours"] != float64(72) || got["on_timeout"] != "escalate" {
+		t.Fatalf("approval 快照缺省字段 = %v, want 72/escalate(生效值)", got)
+	}
 }
 
 func TestBranchOperands(t *testing.T) {

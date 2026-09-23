@@ -88,7 +88,9 @@ func unmarshalUseNumber(raw []byte, v any) error {
 // buildSnapshot 产出节点 input_snapshot(形状按类型文档化,T3.x executor 消费):
 //   - llm:      {system, template, user_data:[{name,value}], model, temperature, max_tokens, response_format}
 //   - tool:     {tool, inputs:{k:已解析}} —— 纯引用串 → 引用值(保类型);内嵌引用 → 文本替换
-//   - approval: {approvers, mode, timeout_hours, on_timeout, instructions}(静态;T4.1 前按普通节点派发)
+//   - approval: {approvers, mode, timeout_hours, on_timeout, instructions}(静态声明面,
+//     schema default 生效值在物化点补齐——与 deadline/审计 payload 同源
+//     effectiveApprovalSpec 三处一致;T4.1 起执行=纯挂起决策,见 suspend.go)
 //   - branch:   不经此处——branch 快照 = branchOperands(operands 形状,路由前构建)
 func buildSnapshot(n *dsl.Node, env *refEnv) (json.RawMessage, error) {
 	switch {
@@ -97,11 +99,12 @@ func buildSnapshot(n *dsl.Node, env *refEnv) (json.RawMessage, error) {
 	case n.Tool != nil:
 		return toolSnapshot(n, env)
 	case n.Approval != nil:
+		mode, onTimeout, timeout := effectiveApprovalSpec(n.Approval)
 		return json.Marshal(approvalSnapshotData{
 			Approvers:    n.Approval.Approvers,
-			Mode:         n.Approval.Mode,
-			TimeoutHours: n.Approval.TimeoutHours,
-			OnTimeout:    n.Approval.OnTimeout,
+			Mode:         mode,
+			TimeoutHours: timeout.Hours(),
+			OnTimeout:    onTimeout,
 			Instructions: n.Approval.Instructions,
 		})
 	}

@@ -83,7 +83,7 @@ func TestE2ELLMNodeFullChain(t *testing.T) {
 	}
 	executor := NewMux(mustE2ESched(t, d, queue), &LLMExecutor{
 		Client: client, Prices: table, DB: d,
-	}, &fakeToolExec{}) // llm e2e 不触 tool 路由,mux 三参装配完整即可
+	}, &fakeToolExec{}, ApprovalExecutor{}) // llm e2e 不触 tool/approval 路由,装配完整即可
 
 	// 3) 定义 + 物化(调度器与 worker 同队列)。
 	sched := mustE2ESched(t, d, queue)
@@ -225,7 +225,7 @@ func TestE2ELLMNodeFailurePath(t *testing.T) {
 	}
 	executor := NewMux(mustE2ESched(t, d, queue), &LLMExecutor{
 		Client: client, Prices: table, DB: d,
-	}, &fakeToolExec{}) // llm e2e 不触 tool 路由,mux 三参装配完整即可
+	}, &fakeToolExec{}, ApprovalExecutor{}) // llm e2e 不触 tool/approval 路由,装配完整即可
 
 	sched := mustE2ESched(t, d, queue)
 	ids, err := snowflake.New(1)

@@ -42,7 +42,7 @@
 
 ## M4 审批(约 1.5 周)
 
-- [ ] T4.1 审批节点执行路径(挂起 WAITING_APPROVAL、输入快照)— S — 依赖 M2 — 验收:挂起后无阻塞中的 worker 任务;审计行记录挂起事件
+- [x] T4.1 审批节点执行路径(挂起 WAITING_APPROVAL、输入快照)— S — 依赖 M2 — 验收:挂起后无阻塞中的 worker 任务;审计行记录挂起事件 — ✅ 2026-09-23:scheduler.Suspend(单事务=CloseAttempt SUCCEEDED+SuspendNode(deadline=now+DSL timeout_hours,schema default 补齐 72h 兜底)+双审计行+静默检查→SuspendExecution/TouchExecution,quiesce rule:fan-out 兄弟在飞则 wf 留 RUNNING 防 reaper 违约态;终态守卫只收口 attempt)+ worker Outcome.Suspend 挂起通道(suspendOK 合法形校验)+ nodes ApprovalExecutor 纯挂起决策/Mux 四参接线 + audit 词表登记 approval.requested(DDL 预留名);engine/dsl/DDL 零改动;e2e=真 relay+asynq 全链验收(任务 ack 即删=worker 释放、快照审批人可读、双审计行);决策全文 D-2026-09-23-t41-approval-suspend
 - [ ] T4.2 审批 API(或签、超时配置、经 outbox 续跑,`resume:<exec>:<node>` 确定性 TaskID)— M — 依赖 T4.1、T5.1 — 验收:enqueue 失败注入下经对账恢复,扫描间隔×3 内达终态;未认证或非审批人调用被拒
 - [ ] T4.3 超时扫描器(策略可配:升级等待(默认)/ fail、升级通知钩子、永不自动通过)— S — 依赖 T4.2 — 验收:fail 策略下超时节点显式标 FAILED
 - [ ] T4.4 Web 审批页(登录、待办列表、详情、批准/驳回)— M — 依赖 T4.2 — 验收:页面动作真实驱动流程续跑
