@@ -12,7 +12,9 @@ package sqltest
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 
@@ -93,7 +95,58 @@ func initSchema(schema string) error {
 		return fmt.Errorf("create %s: %w", schema, err)
 	}
 	// golang-migrate 的 schema_migrations 落在该 schema 内;幂等,残留即复用。
-	return db.Migrate(db.TestServerDSN() + schema)
+	if err := db.Migrate(db.TestServerDSN() + schema); err != nil {
+		return err
+	}
+	// audit_log 分区前滚:DDL 固定分区只到 2026-10-04,生产由 reaper
+	// janitor 持续预建,测试路径不过 reaper——不前滚则 2026-10-05 起一切
+	// 写审计行的包(api/scheduler/…)INSERT 落不进任何分区而失败(T2.5
+	// 时间弹同类;对抗审计发现,一次修复覆盖全部消费包)。
+	return ensureAuditPartitions(admin, schema)
+}
+
+// ensureAuditPartitions 按 reaper janitor 同式(reaper/janitor.go 预建
+// 循环)把 audit_log 的 RANGE 分区前滚到 DB 今日 +7 天。仅前滚不回收
+// (测试 schema 生命周期短);duplicate/边界交错的良性失败按存在性复读
+// 收敛容忍。
+func ensureAuditPartitions(admin *sql.DB, schema string) error {
+	var maxBound sql.NullString
+	if err := admin.QueryRow(`
+SELECT MAX(PARTITION_DESCRIPTION) FROM INFORMATION_SCHEMA.PARTITIONS
+ WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'audit_log'`, schema).Scan(&maxBound); err != nil {
+		return fmt.Errorf("read partitions of %s: %w", schema, err)
+	}
+	if !maxBound.Valid {
+		return nil // 无分区表(未来形态):不处理
+	}
+	bound, err := time.ParseInLocation("2006-01-02",
+		strings.Trim(maxBound.String, `'`), time.UTC)
+	if err != nil {
+		return fmt.Errorf("parse partition bound %q: %w", maxBound.String, err)
+	}
+	var today time.Time
+	if err := admin.QueryRow(`SELECT CAST(NOW(3) AS DATE)`).Scan(&today); err != nil {
+		return fmt.Errorf("read db date: %w", err)
+	}
+	horizon := today.AddDate(0, 0, 7)
+	for d := bound; !d.After(horizon); d = d.AddDate(0, 0, 1) {
+		next := d.AddDate(0, 0, 1)
+		if _, err := admin.Exec(fmt.Sprintf(
+			"ALTER TABLE %s.audit_log ADD PARTITION (PARTITION p%s VALUES LESS THAN ('%s'))",
+			schema, d.Format("20060102"), next.Format("2006-01-02"))); err == nil {
+			continue
+		}
+		// 失败复读:目标边界已存在(并发/残留)⇒ 良性收敛,否则真错。
+		var cnt int
+		if qerr := admin.QueryRow(`
+SELECT COUNT(*) FROM INFORMATION_SCHEMA.PARTITIONS
+ WHERE TABLE_SCHEMA = ? AND TABLE_NAME = 'audit_log'
+   AND PARTITION_DESCRIPTION = ?`, schema, "'"+next.Format("2006-01-02")+"'").Scan(&cnt); qerr == nil && cnt > 0 {
+			continue
+		}
+		return fmt.Errorf("add partition (bound %s): %w", next.Format("2006-01-02"), err)
+	}
+	return nil
 }
 
 // TB 收窄 testing.TB 到测试所需面(避免测试文件外泄 testing 依赖)。

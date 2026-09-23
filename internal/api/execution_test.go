@@ -116,6 +116,7 @@ func TestHTTPTriggerExecution(t *testing.T) {
 		{"scalar input", fmt.Sprintf(`{"definition_name":%q,"input":"x"}`, name), http.StatusBadRequest, "bad_input"},
 		{"malformed json", `{"definition_name":`, http.StatusBadRequest, "bad_request"},
 		{"unknown name", `{"definition_name":"ghost-no-such"}`, http.StatusNotFound, "not_found"},
+		{"unknown version", fmt.Sprintf(`{"definition_name":%q,"version":99}`, name), http.StatusNotFound, "not_found"},
 	} {
 		got, body := doJSON(t, r, http.MethodPost, "/api/v1/executions", author, []byte(tc.body))
 		if got != tc.want || body["error"] != tc.code {
@@ -326,6 +327,12 @@ WHERE e.id = ?`, execID).Scan(
 		pl.DefinitionID != defID || pl.TriggerType != "API" {
 		t.Fatalf("audit payload = %q, want def %d/API", aPayload, defID)
 	}
+	// 键集恰两键:payload 只锚定触发事实,无 input 影子存储(D-t26 §4
+	// 契约从注释升级为回归锚——将来塞正文进来此断言即红)。
+	var keySet map[string]any
+	if err := json.Unmarshal([]byte(aPayload), &keySet); err != nil || len(keySet) != 2 {
+		t.Fatalf("payload keys = %v, want exactly {definition_id, trigger_type}", keySet)
+	}
 	var sameDay bool
 	if err := dbh.QueryRow(`
 SELECT a.exec_date = DATE(e.created_at) FROM audit_log a
@@ -336,8 +343,8 @@ JOIN workflow_execution e ON e.id = a.execution_id WHERE a.execution_id = ?`, ex
 }
 
 // realChainServer:真链装配(t13):真 scheduler 触发缝 + 发布一个可触发
-// 定义,返回 (路由, 已触发执行 id 字符串)。S4/S5 查询面测试共用。
-func realChainServer(t *testing.T) (*gin.Engine, string) {
+// 定义,返回 (路由, 已触发执行 id, dbh)。S4/S5 查询面测试共用。
+func realChainServer(t *testing.T) (*gin.Engine, string, *sql.DB) {
 	t.Helper()
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
 	cleanExecutionChain(t, dbh)
@@ -358,7 +365,7 @@ func realChainServer(t *testing.T) (*gin.Engine, string) {
 	if code != http.StatusCreated {
 		t.Fatalf("trigger: code %d, body %v", code, body)
 	}
-	return r, body["id"].(string)
+	return r, body["id"].(string), dbh
 }
 
 // TestHTTPGetExecution:detail 查询契约(T5.5 验收「查询返回节点状态与
@@ -366,7 +373,7 @@ func realChainServer(t *testing.T) (*gin.Engine, string) {
 // T6.2 前恒 null 不伪造);错误面 bad_id 400 / 未知 id 404;读面任意
 // 有效角色。
 func TestHTTPGetExecution(t *testing.T) {
-	r, execID := realChainServer(t)
+	r, execID, dbh := realChainServer(t)
 
 	// 读面:approver(非写面角色)可查。
 	approver, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleApprover})
@@ -390,11 +397,28 @@ func TestHTTPGetExecution(t *testing.T) {
 	if !ok {
 		t.Fatalf("audit pointer missing: %v", detail)
 	}
-	if _, err := time.Parse("2006-01-02", auditPtr["exec_date"].(string)); err != nil {
-		t.Fatalf("exec_date = %v, want YYYY-MM-DD", auditPtr["exec_date"])
+	// 值断言而非仅形状:DTO 的 exec_date 必须与 audit_log 实际分区键逐字
+	// 相等(定位键脱钩 = 查询失效而形状校验仍绿——对抗审计 MEDIUM)。
+	var auditExecDate string
+	if err := dbh.QueryRow(
+		`SELECT DATE_FORMAT(exec_date, '%Y-%m-%d') FROM audit_log
+		 WHERE execution_id = ? AND event_type = 'execution.triggered'`,
+		execID).Scan(&auditExecDate); err != nil {
+		t.Fatalf("read audit exec_date: %v", err)
+	}
+	if auditPtr["exec_date"] != auditExecDate {
+		t.Fatalf("exec_date = %v, want audit_log 值 %q", auditPtr["exec_date"], auditExecDate)
 	}
 	if auditPtr["trace_id"] != nil {
 		t.Fatalf("trace_id = %v, want null(T6.2 前不伪造)", auditPtr["trace_id"])
+	}
+	// 钉版四件套第四件:detail 的 definition_hash 与执行行/定义行一致
+	//(T8.1 漂移对账的 api 半边)。
+	var defHash string
+	if err := dbh.QueryRow(
+		`SELECT e.definition_hash FROM workflow_execution e WHERE e.id = ?`, execID).
+		Scan(&defHash); err != nil || detail["definition_hash"] != defHash {
+		t.Fatalf("definition_hash = %v (row %q, err %v), want 行值回显", detail["definition_hash"], defHash, err)
 	}
 	nodes, ok := detail["nodes"].([]any)
 	if !ok || len(nodes) != 1 {

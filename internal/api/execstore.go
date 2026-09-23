@@ -17,6 +17,7 @@ type Execution struct {
 	DefinitionID      uint64
 	DefinitionName    string
 	DefinitionVersion uint32
+	DefinitionHash    string // 钉版四件套第四件:与 definition.dsl_hash 比对即知漂移(DDL :71,T8.1 对账证据)
 	Status            string
 	TriggerType       string
 	TriggeredBy       string
@@ -48,9 +49,18 @@ type NodeExecution struct {
 	FinishedAt   *time.Time
 }
 
-// execCols:exec_date 由 DATE_FORMAT 直出字符串(单源,见 Execution.ExecDate)。
-const execCols = `id, definition_id, definition_name, definition_version, status,
- trigger_type, triggered_by, trace_id, input, outputs, error_code, error_message,
+// execCols 是 detail 路径全量列;exec_date 由 DATE_FORMAT 直出字符串(单源,
+// 见 Execution.ExecDate)。
+const execCols = `id, definition_id, definition_name, definition_version, definition_hash,
+ status, trigger_type, triggered_by, trace_id, input, outputs, error_code, error_message,
+ created_at, started_at, finished_at,
+ DATE_FORMAT(created_at, '%Y-%m-%d')`
+
+// execListCols 是列表路径的瘦列集:剔除 input/outputs 大列——响应侧 DTO
+// 已不带(1MiB×limit 100 放大面),DB 读侧同排,否则投影修复只挡住 HTTP
+// 面挡不住进程内存(对抗审计 MEDIUM)。definition_hash 仅 detail 携带。
+const execListCols = `id, definition_id, definition_name, definition_version, status,
+ trigger_type, triggered_by, trace_id, error_code, error_message,
  created_at, started_at, finished_at,
  DATE_FORMAT(created_at, '%Y-%m-%d')`
 
@@ -68,6 +78,10 @@ func (s *Store) GetExecution(ctx context.Context, q DBTX, id uint64) (Execution,
 // ListExecutions 分页列出执行(name 空 = 全部工作流,给定时走
 // idx_exec_name_created——DDL 钦定的「按工作流列执行」;status 空 = 全部
 // 状态)。顺序 created_at DESC, id DESC(最新在前,snowflake id 时序一致)。
+// 已知取舍:name 缺省(全量/status-only)路径 created_at 无前导索引 ⇒
+// 全表扫 + filesort——本表是全系统无上界增长表,limit≤100/offset≤10000
+// 硬上界下 P0 量级可接受,劣化阈值归 T6.4 告警,补 (status,created_at)
+// 索引归后续迁移任务(对抗审计 LOW,钉住防静默)。
 // 返回 (当前页, 满足条件的总行数),与 List(definitions)同形。
 func (s *Store) ListExecutions(ctx context.Context, q DBTX, name, status string, limit, offset int) ([]Execution, int, error) {
 	where := ""
@@ -90,7 +104,7 @@ func (s *Store) ListExecutions(ctx context.Context, q DBTX, name, status string,
 		return nil, 0, fmt.Errorf("api: count executions: %w", err)
 	}
 	rows, err := q.QueryContext(ctx,
-		"SELECT "+execCols+" FROM workflow_execution"+where+
+		"SELECT "+execListCols+" FROM workflow_execution"+where+
 			" ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
 		append(args, limit, offset)...)
 	if err != nil {
@@ -99,7 +113,7 @@ func (s *Store) ListExecutions(ctx context.Context, q DBTX, name, status string,
 	defer rows.Close() //nolint:errcheck // 只读路径,关闭错误无处置义
 	var out []Execution
 	for rows.Next() {
-		e, err := scanExecution(rows)
+		e, err := scanExecutionList(rows)
 		if err != nil {
 			return nil, 0, fmt.Errorf("api: scan execution: %w", err)
 		}
@@ -150,8 +164,9 @@ func scanExecution(r rowScanner) (Execution, error) {
 		finishedAt sql.NullTime
 	)
 	if err := r.Scan(&e.ID, &e.DefinitionID, &e.DefinitionName, &e.DefinitionVersion,
-		&e.Status, &e.TriggerType, &e.TriggeredBy, &traceID, &input, &outputs,
-		&errorCode, &errorMsg, &createdAt, &startedAt, &finishedAt, &e.ExecDate); err != nil {
+		&e.DefinitionHash, &e.Status, &e.TriggerType, &e.TriggeredBy, &traceID,
+		&input, &outputs, &errorCode, &errorMsg, &createdAt, &startedAt, &finishedAt,
+		&e.ExecDate); err != nil {
 		return Execution{}, err
 	}
 	if traceID.Valid {
@@ -160,6 +175,47 @@ func scanExecution(r rowScanner) (Execution, error) {
 	}
 	e.Input = input
 	e.Outputs = outputs
+	if errorCode.Valid {
+		c := errorCode.String
+		e.ErrorCode = &c
+	}
+	if errorMsg.Valid {
+		m := errorMsg.String
+		e.ErrorMessage = &m
+	}
+	e.CreatedAt = createdAt.Time
+	if startedAt.Valid {
+		st := startedAt.Time
+		e.StartedAt = &st
+	}
+	if finishedAt.Valid {
+		ft := finishedAt.Time
+		e.FinishedAt = &ft
+	}
+	return e, nil
+}
+
+// scanExecutionList 扫描 execListCols(无 input/outputs/definition_hash;
+// 列序与常量逐字对应)。NULL 规范化与 scanExecution 同规。
+func scanExecutionList(r rowScanner) (Execution, error) {
+	var (
+		e          Execution
+		traceID    sql.NullString
+		errorCode  sql.NullString
+		errorMsg   sql.NullString
+		createdAt  sql.NullTime
+		startedAt  sql.NullTime
+		finishedAt sql.NullTime
+	)
+	if err := r.Scan(&e.ID, &e.DefinitionID, &e.DefinitionName, &e.DefinitionVersion,
+		&e.Status, &e.TriggerType, &e.TriggeredBy, &traceID,
+		&errorCode, &errorMsg, &createdAt, &startedAt, &finishedAt, &e.ExecDate); err != nil {
+		return Execution{}, err
+	}
+	if traceID.Valid {
+		t := traceID.String
+		e.TraceID = &t
+	}
 	if errorCode.Valid {
 		c := errorCode.String
 		e.ErrorCode = &c

@@ -254,10 +254,11 @@ type executionAuditPointer struct {
 // 时再拆子端点。
 type executionDetailDTO struct {
 	executionDTO
-	Input   json.RawMessage       `json:"input"`
-	Outputs json.RawMessage       `json:"outputs"` // nil = null(未终态)
-	Nodes   []nodeExecutionDTO    `json:"nodes"`
-	Audit   executionAuditPointer `json:"audit"`
+	DefinitionHash string                `json:"definition_hash"` // 钉版四件套第四件,与 definition.dsl_hash 比对即知漂移(DDL :71)
+	Input          json.RawMessage       `json:"input"`
+	Outputs        json.RawMessage       `json:"outputs"` // nil = null(未终态)
+	Nodes          []nodeExecutionDTO    `json:"nodes"`
+	Audit          executionAuditPointer `json:"audit"`
 }
 
 func toExecutionDTO(e Execution) executionDTO {
@@ -276,11 +277,12 @@ func toExecutionDetail(e Execution, nodes []NodeExecution) executionDetailDTO {
 		out = append(out, toNodeExecutionDTO(n))
 	}
 	return executionDetailDTO{
-		executionDTO: toExecutionDTO(e),
-		Input:        json.RawMessage(e.Input),
-		Outputs:      json.RawMessage(e.Outputs),
-		Nodes:        out,
-		Audit:        executionAuditPointer{ExecDate: e.ExecDate, TraceID: e.TraceID},
+		executionDTO:   toExecutionDTO(e),
+		DefinitionHash: e.DefinitionHash,
+		Input:          json.RawMessage(e.Input),
+		Outputs:        json.RawMessage(e.Outputs),
+		Nodes:          out,
+		Audit:          executionAuditPointer{ExecDate: e.ExecDate, TraceID: e.TraceID},
 	}
 }
 
