@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 
 	"github.com/go-sql-driver/mysql"
 )
@@ -69,12 +70,63 @@ func TouchAttemptHeartbeat(ctx context.Context, q DBTX, attemptID, execID uint64
 	return TouchExecution(ctx, q, execID)
 }
 
+// AttemptUsage 是 attempt 收口时随终写落列的 usage/cost 台账参数(DDL §4,
+// T3.1 双录的 node_attempt 半边)。计费真相源 = API 返回 usage(§2 技术选型),
+// 三值原样存不求和;金额由 llm.Cost 整数定点产出为十进制字符串,engine 不做
+// 算术只落列。Billed=false ⇒ cost 两列写 NULL(NULL=不计费,与 0 免费模型
+// 严格区分;CHECK 成对钉死)。audit.Event.Usage 复用本结构(双录同源防漂移)。
+type AttemptUsage struct {
+	Model            string // 实际解析后的模型名(计费归因;与 audit 行冗余)
+	PromptTokens     uint32 // API 返回原值
+	CompletionTokens uint32
+	TotalTokens      uint32
+	CostAmount       string // 十进制字符串("2.500000");Billed=false 时必须为空
+	CostCurrency     string // ISO-4217;Billed=false 时必须为空
+	Estimated        bool   // true=未知模型估算 fallback,非精确计费
+	Billed           bool   // false=本 attempt 不计费(cost 列 NULL)
+}
+
+// Validate 镜像 DDL 域约束(调用方 bug 启动即现,不等 DB CHECK 报错):
+// model ≤ VARCHAR(100);Billed ⇒ 金额形状 ^\d{1,8}(\.\d{1,6})?$(DECIMAL(14,6)
+// 域:8 位整数 + 6 位小数)且币种恰 3 大写字母;非 Billed ⇒ 两字段必须为空
+// (写 NULL 语义不被字符串悄悄破坏)。
+func (u *AttemptUsage) Validate() error {
+	switch {
+	case u == nil:
+		return nil
+	case len(u.Model) == 0 || len(u.Model) > 100:
+		return fmt.Errorf("engine: attempt usage model %q empty or >100", u.Model)
+	}
+	if !u.Billed {
+		if u.CostAmount != "" || u.CostCurrency != "" {
+			return fmt.Errorf("engine: attempt usage unbilled carries cost %q %q (want empty → NULL)", u.CostAmount, u.CostCurrency)
+		}
+		return nil
+	}
+	if !amountRe.MatchString(u.CostAmount) {
+		return fmt.Errorf("engine: attempt usage cost %q violates DECIMAL(14,6)", u.CostAmount)
+	}
+	if !currencyRe.MatchString(u.CostCurrency) {
+		return fmt.Errorf("engine: attempt usage currency %q not ISO-4217 (3 uppercase)", u.CostCurrency)
+	}
+	return nil
+}
+
+var (
+	amountRe   = regexp.MustCompile(`^\d{1,8}(\.\d{1,6})?$`)
+	currencyRe = regexp.MustCompile(`^[A-Z]{3}$`)
+)
+
 // CloseAttempt 收口 attempt:RUNNING→SUCCEEDED|FAILED(观察到的终态)。
-// DEAD 边已归 reaper(CloseAttemptDead,同一收口形状的裁决分立)。
+// usage 非 nil 时同一条终写落 usage/cost 台账列(单次 UPDATE,收口与台账
+// 原子;T3.1)。DEAD 边已归 reaper(CloseAttemptDead,同一收口形状的裁决分立)。
 // WHERE status='RUNNING' 保证终态后禁改(行无 updated_at,收口是一次终写)。
-func CloseAttempt(ctx context.Context, q DBTX, attemptID uint64, to AttemptState, code, msg string) error {
+func CloseAttempt(ctx context.Context, q DBTX, attemptID uint64, to AttemptState, code, msg string, usage *AttemptUsage) error {
 	if to != AttemptSucceed && to != AttemptFailed {
 		return fmt.Errorf("%w: attempt →%s(收口仅 SUCCEEDED/FAILED;DEAD 归 T2.5)", ErrIllegalTransition, to)
+	}
+	if err := usage.Validate(); err != nil {
+		return err
 	}
 	var codeArg, msgArg any
 	if code != "" {
@@ -83,11 +135,29 @@ func CloseAttempt(ctx context.Context, q DBTX, attemptID uint64, to AttemptState
 	if msg != "" {
 		msgArg = msg
 	}
-	res, err := q.ExecContext(ctx, `
+	var res sql.Result
+	var err error
+	if usage == nil {
+		res, err = q.ExecContext(ctx, `
 UPDATE node_attempt
    SET status=?, error_code=?, error_message=?, finished_at=NOW(3)
  WHERE id=? AND status='RUNNING'`,
-		to, codeArg, msgArg, attemptID)
+			to, codeArg, msgArg, attemptID)
+	} else {
+		var costArg, currencyArg any
+		if usage.Billed {
+			costArg, currencyArg = usage.CostAmount, usage.CostCurrency
+		}
+		res, err = q.ExecContext(ctx, `
+UPDATE node_attempt
+   SET status=?, error_code=?, error_message=?, finished_at=NOW(3),
+       model=?, prompt_tokens=?, completion_tokens=?, total_tokens=?,
+       cost_amount=?, cost_currency=?, estimated=?
+ WHERE id=? AND status='RUNNING'`,
+			to, codeArg, msgArg, usage.Model,
+			usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens,
+			costArg, currencyArg, usage.Estimated, attemptID)
+	}
 	if err != nil {
 		return fmt.Errorf("engine: close attempt %d: %w", attemptID, err)
 	}

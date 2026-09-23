@@ -49,3 +49,20 @@ type BranchEvaluatedPayload struct {
 	NodeID string `json:"node_id"`
 	Next   string `json:"next"` // 取路目标(operands 全文在 input_snapshot 真相源)
 }
+
+// LLMCallCompletedPayload 是 llm.call.completed(T3.1)的事件体。与冗余列组
+// 部分同字段的理由:列是 T6.4 聚合的免解 JSON 快路径,payload 是证据行自描述
+// 全量——两者由同一发射点单源填充,不同消费者各取所需。
+// 无 prompt/模型返回自由文本(D-t26 §4 纪律):prompt 求值真相源在
+// node_execution.input_snapshot,响应摘要在 node_execution.output,审计副本
+// 不复制大文本;T6.1 脱敏钩子落地后再评估放开。
+type LLMCallCompletedPayload struct {
+	NodeID           string `json:"node_id"`
+	Model            string `json:"model"`
+	PromptTokens     uint32 `json:"prompt_tokens"`
+	CompletionTokens uint32 `json:"completion_tokens"`
+	TotalTokens      uint32 `json:"total_tokens"`
+	CostAmount       string `json:"cost_amount,omitempty"` // 不计费时缺省(与列 NULL 同语义)
+	CostCurrency     string `json:"cost_currency,omitempty"`
+	CostEstimated    bool   `json:"cost_estimated"`
+}

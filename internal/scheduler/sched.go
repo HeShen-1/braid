@@ -365,6 +365,10 @@ type CompletionRequest struct {
 	Msg        string
 	Output     json.RawMessage // SUCCEEDED 时落 node_execution.output(nil → NULL)
 	WorkerID   string          // 完成方(重试再派发时的派发者归因)
+	// Usage 是 LLM attempt 的 usage/cost 台账参数(T3.1):随 CloseAttempt
+	// 终写落 node_attempt 列,并同事务发 llm.call.completed 审计行(双录)。
+	// 仅 SUCCEEDED 可携(失败路径 P0 不计费,Complete 入口拒绝)。
+	Usage *engine.AttemptUsage
 }
 
 // maxTransientRetries 是 Complete 对 1213/1205 的内部重试上限(engine 错误分类
@@ -391,6 +395,8 @@ func (s *Scheduler) Complete(ctx context.Context, req CompletionRequest) error {
 			engine.ErrIllegalTransition, req.Status)
 	case req.WorkerID == "":
 		return errors.New("scheduler: empty worker id in completion request")
+	case req.Usage != nil && req.Status != engine.AttemptSucceed:
+		return errors.New("scheduler: usage requires SUCCEEDED (failed LLM calls are unbilled in P0)")
 	}
 	exec, err := s.loadExecution(ctx, req.ExecID)
 	if err != nil {
@@ -445,10 +451,11 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 		}
 		termGuard = wfStatus.Terminal()
 
-		// 3. attempt 收口(attempt 行锁)。Conflict = 收口权已旁落(早前 Complete
-		// 或 reaper DEAD)⇒ 幂等;Observed==DEAD 时记结构化 warn——成功结果被
+		// 3. attempt 收口(attempt 行锁;usage 非 nil 时同一条终写落台账列,
+		// T3.1)。Conflict = 收口权已旁落(早前 Complete 或 reaper DEAD)
+		// ⇒ 幂等;Observed==DEAD 时记结构化 warn——成功结果被
 		// 丢弃 = 发生过判死双执行的观测信号(W1 哨兵,零行为变更)。
-		if err := engine.CloseAttempt(ctx, q, req.AttemptID, req.Status, req.Code, req.Msg); err != nil {
+		if err := engine.CloseAttempt(ctx, q, req.AttemptID, req.Status, req.Code, req.Msg, req.Usage); err != nil {
 			if errors.Is(err, engine.ErrConflict) {
 				var ce *engine.ConflictError
 				if errors.As(err, &ce) && ce.Observed == engine.NodeState(engine.AttemptDead) {
@@ -462,6 +469,15 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 		}
 
 		st := newExecState(s, ctx, q, req.ExecID, wf, g, rows, req.WorkerID)
+
+		// 3a. LLM 台账审计行(T3.1 双录 audit 半边):usage/cost 列已随
+		// CloseAttempt 终写落 node_attempt,这里同事务发 llm.call.completed
+		// 携同组冗余列(合规证据链独立于状态表,列 = T6.4 聚合免解 JSON)。
+		if req.Usage != nil {
+			if err := st.auditLLMCall(n, req); err != nil {
+				return err
+			}
+		}
 
 		// 4. 节点收口三分支。worker_id 回传行内值(派发方 ≠ 执行方,version 是
 		// 真正裁决——见 nodecas.go SucceedNode 注释;行已 FOR UPDATE 持有,回传
@@ -943,6 +959,35 @@ func (st *execState) auditRow(eventType string, row *nodeRow, attemptID uint64, 
 		ID: id, EventType: eventType, ExecutionID: st.execID,
 		NodeExecID: row.id, NodeID: row.nodeID, AttemptID: attemptID,
 		ActorType: audit.ActorWorker, ActorID: st.workerID, Payload: raw,
+	})
+}
+
+// auditLLMCall 发 llm.call.completed(T3.1):usage/cost 冗余列组的唯一携带者,
+// 与 node_attempt 半边同事务双录。actor = llm/模型名(归因主体 = 实际执行
+// 调用的模型;调度进程归因由并行的 node.state_changed 行承载,不重复)。
+func (st *execState) auditLLMCall(row *nodeRow, req CompletionRequest) error {
+	raw, err := json.Marshal(audit.LLMCallCompletedPayload{
+		NodeID:           row.nodeID,
+		Model:            req.Usage.Model,
+		PromptTokens:     req.Usage.PromptTokens,
+		CompletionTokens: req.Usage.CompletionTokens,
+		TotalTokens:      req.Usage.TotalTokens,
+		CostAmount:       req.Usage.CostAmount,
+		CostCurrency:     req.Usage.CostCurrency,
+		CostEstimated:    req.Usage.Estimated,
+	})
+	if err != nil {
+		return fmt.Errorf("scheduler: marshal llm.call.completed payload: %w", err)
+	}
+	id, err := st.s.deps.IDs.Next()
+	if err != nil {
+		return fmt.Errorf("scheduler: gen audit id: %w", err)
+	}
+	return audit.Append(st.ctx, st.q, audit.Event{
+		ID: id, EventType: audit.EventLLMCallCompleted, ExecutionID: st.execID,
+		NodeExecID: row.id, NodeID: row.nodeID, AttemptID: req.AttemptID,
+		ActorType: audit.ActorLLM, ActorID: req.Usage.Model,
+		Payload: raw, Usage: req.Usage,
 	})
 }
 
