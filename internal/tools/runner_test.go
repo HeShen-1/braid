@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -34,6 +35,46 @@ func (s *spyTool) Name() string { return "spy" }
 func (s *spyTool) Run(_ context.Context, call Call) (Result, error) {
 	s.got = call
 	return Result{Output: json.RawMessage(`{"ok":true}`)}, nil
+}
+
+// ssrfTool 模拟 T3.5 http 工具的拒连返回:裸错误携带 ErrSSRFBlocked 哨兵
+// (映射契约:工具不自包 CallError,分类单点在 runner)。外层模拟
+// *url.Error 的包装形态,验证哨兵穿透。
+type ssrfTool struct{}
+
+func (ssrfTool) Name() string { return "http" }
+func (ssrfTool) Run(_ context.Context, _ Call) (Result, error) {
+	return Result{}, fmt.Errorf(`Get "https://internal.test/x": dial tcp 10.0.0.5:443: %w`, ErrSSRFBlocked)
+}
+
+// TestRunMapsSSRFBlocked 钉住哨兵→失败码映射:裸哨兵错误(含 url.Error
+// 外层包装、ctx 同期到期两种现场)一律映射 CodeSSRFBlocked,不落
+// tool_failed、不落基础设施失败。
+func TestRunMapsSSRFBlocked(t *testing.T) {
+	t.Run("bare sentinel via url error wrap", func(t *testing.T) {
+		r := NewLocalRunner(registryOf(t, ssrfTool{}), NewTokenIssuer(nil, 0, nil))
+		_, err := r.Run(context.Background(), RunRequest{
+			Tool: "http", NodeExecID: 1, AttemptNo: 1, IdempotencyKey: "k1",
+		})
+		if got := callCodeOf(t, err); got != CodeSSRFBlocked {
+			t.Errorf("code = %q, want %q (err=%v)", got, CodeSSRFBlocked, err)
+		}
+	})
+
+	t.Run("sentinel wins over concurrent ctx expiry", func(t *testing.T) {
+		// 「ctx 已到期 + 工具仍返回哨兵」的竞态现场:哨兵是拒连的
+		// 确定性证据,必须优先于 ctx 门,否则业务分类被吞。
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		r := NewLocalRunner(registryOf(t, ssrfTool{}), NewTokenIssuer(nil, 0, nil))
+		_, err := r.Run(ctx, RunRequest{
+			Tool: "http", NodeExecID: 1, AttemptNo: 1, IdempotencyKey: "k1",
+		})
+		if got := callCodeOf(t, err); got != CodeSSRFBlocked {
+			t.Errorf("code = %q, want %q — ctx gate must not swallow sentinel (err=%v)",
+				got, CodeSSRFBlocked, err)
+		}
+	})
 }
 
 func registryOf(t *testing.T, tools ...Tool) *Registry {

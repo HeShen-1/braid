@@ -129,3 +129,12 @@
   7. 审计修复(27-agent 6 维度对抗审计 + 3 怀疑者投票,1 HIGH + 1 MED + 4 LOW 确认,1 条 3/3 refuted;HIGH 由审计者独立程序实证后修):①HIGH 孙进程管道吊死——SIGKILL 只杀直接子进程,shell 后台孙进程继承 stdout/stderr 管道写端致 copy goroutine 永无 EOF、cmd.Run 无限阻塞(10min deadline 失效、goroutine/asynq 槽泄漏);修 = cmd.WaitDelay(默认 10s,CommandSpec 可配)kill 后强制断管,ctx 归因优先于 ErrWaitDelay/ExitError,补 `sh -c "echo hi; sleep 30 &"` 回归;②MED 无上限 Collect OOM——stdout/stderr 换 limitBuffer(8MiB/64KiB 封顶,超限丢弃记 overflow = 工具业务失败),写端不背压靠 ctx kill 收口;③LOW 相对路径拒(filepath.IsAbs:exec 初始解析走父进程 PATH,沙箱 PATH 只约束孙进程,同名顶替二进制会完整收到沙箱 env);④LOW t54 契约文档白名单行同步退役说明;⑤LOW 同义反复测试锚改名 TestToolExecToolCallBridge;⑥LOW e2e payload 负向断言(键集恰三键,防自由文本字段混入审计行)。
 - 理由:无状态 token 免存储且 P0 校验面自洽,机制完备为 P1 回调预留而不提前建 API;白名单换源让「注册」成为唯一事实(定义引用的工具必然可执行,消灭 env 与 registry 双真相源漂移);env 白名单构造式(非黑名单过滤)使主凭证泄漏成为结构性不可能而非配置责任。
 - 影响:internal/tools 新包(token/registry/command/runner,零 Redis 消费=不扩 DB 基号分配表)、internal/nodes(tool.go 执行器 + Mux 三参 + 双 e2e)、internal/scheduler(ToolInput 导出 + CompletionRequest.ToolCall + auditToolCall)、internal/worker(Outcome.ToolCall)、internal/audit(词表 + ToolCallCompletedPayload)、internal/api(白名单换源 + Config 删字段)、cmd/{api,worker}(registry/LocalRunner/TokenIssuer 装配)、deploy/.env.example;顺手修 internal/auth TestParseTamperedSignature flaky(篡改位取签名段首字符——base64url 末字符低位是无解码语义的 padding 位,≈4/64 概率翻转无效位致校验照过)。零新依赖、零迁移、零 DDL 变更。
+
+## D-2026-09-23-ssrf-extra-ranges(待议,未拍板)
+- 背景:T3.3(issue #26)SSRF 运行时防护落地后的 6 维度对抗审计提出:ipForbidden 锁定口径(ARCHITECTURE §3.4 L76:私网/环回/链路本地/CGNAT/metadata)之外仍存在环境依赖的可拨保留段。**本条仅登记,不改实现**——扩禁段属锁定口径变更,按铁律须用户确认。
+- 候选段(按审计优先级):
+  1. NAT64 转换前缀 64:ff9b::/96(内嵌 IPv4,To4()==nil 逃过 v4 分支;有 NAT64 出口的环境可借它触达内网 IPv4)——优先级最高;
+  2. 198.18.0.0/15(RFC 2544 基准段,部分云 LB 内部使用);
+  3. 192.0.0.0/24、0.0.0.0/8 非全零地址、240/4 剩余部分(仅广播已拒)。
+- 现状口径:上述段当前放行,TestIPForbidden 有 want=false 锚点钉住(0.1.2.3 / 240.0.0.1 / 198.18.0.1)——若拍板扩禁,同步改锚点为 want=true 即可,测试已就位。
+- 关联:T3.3 实现 internal/tools/ssrf.go;无 HTTP 拨号合法目标落在这些段的常规环境,属低概率环境依赖面。

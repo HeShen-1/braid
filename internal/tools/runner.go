@@ -7,7 +7,8 @@ import (
 	"fmt"
 )
 
-// 失败码词表(error_code 列,DDL §4 开放词表;tool_* 前缀与 DDL 注释中
+// 失败码词表(node_execution.error_code 列开放词表,DDL 前置说明;词表
+// 锚点 = internal/db/migrations/0001_init.up.sql 的 error_code 列注释,
 // tool_ssrf_blocked 等同族)。业务失败(nodes 侧 Outcome{FAILED} 收口)与
 // 基础设施失败(裸 error,attempt 留 RUNNING)的分类单点在本包。
 const (
@@ -16,6 +17,12 @@ const (
 	CodeTokenInvalid  = "tool_token_invalid"
 	CodeToolFailed    = "tool_failed"     // 工具自身报错(含子进程非零退出)
 	CodeBadToolOutput = "bad_tool_output" // 产出非 JSON 对象/声明抽取不履约
+	// CodeSSRFBlocked:受防客户端拒连(禁段 IP / 非 https / 越限重定向),
+	// 与 DDL node_execution.error_code 注释预留的 tool_ssrf_blocked 对齐。
+	// 映射契约:工具(T3.5 http)返回携带 ErrSSRFBlocked 哨兵的裸错误,
+	// Run 以 errors.Is 映射到此码——分类单点在 runner,工具不自行包
+	// CallError(避免双重包装遮蔽内层码,nodes 消费侧 errors.As 取最外层)。
+	CodeSSRFBlocked = "tool_ssrf_blocked"
 )
 
 // CallError 是工具调用的业务失败(收口为节点 FAILED,新 attempt 可重试)。
@@ -94,6 +101,11 @@ func (r *LocalRunner) Run(ctx context.Context, req RunRequest) (Result, error) {
 		IdempotencyKey: req.IdempotencyKey,
 	})
 	if err != nil {
+		// SSRF 拒连哨兵先于 ctx 门:哨兵存在是拒连的确定性证据,ctx.Err()
+		// 是环境态(deadline 与拒连同时发生时不得吞掉业务分类)。
+		if errors.Is(err, ErrSSRFBlocked) {
+			return Result{}, &CallError{Code: CodeSSRFBlocked, Err: err}
+		}
 		if ctx.Err() != nil {
 			// 基础设施失败:载体已把 ctx 错误链回,原样上抛不收口。
 			return Result{}, fmt.Errorf("tools: %s (node_exec %d): %w", req.Tool, req.NodeExecID, err)
