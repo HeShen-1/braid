@@ -45,15 +45,13 @@ func toolDSL(name string) []byte {
 }
 
 // newTestStore 返回干净的 store + 连接:每用例清空定义表(List 的 total
-// 断言依赖全局可见行,共享 schema 下必须从零开始)。DELETE 而非 TRUNCATE:
-// workflow_execution 的 FK 引用本表,TRUNCATE 被 1701 拒;api 测试不建
-// execution 行,DELETE 无孤儿阻拦。
+// 断言依赖全局可见行,共享 schema 下必须从零开始)。T5.5 起真实链测试会
+// 落 execution/outbox/audit 行,清理统一走六表链 cleanExecutionChain
+// (单表 DELETE 会被 FK RESTRICT 阻拦)。
 func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
-	if _, err := dbh.ExecContext(context.Background(), "DELETE FROM workflow_definition"); err != nil {
-		t.Fatalf("clean workflow_definition: %v", err)
-	}
+	cleanExecutionChain(t, dbh)
 	ids, err := snowflake.New(1)
 	if err != nil {
 		t.Fatalf("snowflake: %v", err)

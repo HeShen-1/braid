@@ -18,6 +18,7 @@ import (
 
 	"braid/internal/api"
 	"braid/internal/db"
+	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 	"braid/internal/tools"
 )
@@ -77,10 +78,17 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("api: tool registry: %w", err)
 	}
+	// 触发缝真源(T5.5):scheduler.Instantiate 物化(钉版四件套 + 全节点行
+	// + outbox execution.start),Deps 仅 MySQL+snowflake——api 进程零 Redis,
+	// 推进链(outbox→relay→asynq→worker)在 worker/relay 进程侧。
+	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: ids})
+	if err != nil {
+		return fmt.Errorf("api: scheduler: %w", err)
+	}
 
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewServer(cfg, dbh, ids, toolReg).Router(),
+		Handler:           api.NewServer(cfg, dbh, ids, toolReg, sched).Router(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,

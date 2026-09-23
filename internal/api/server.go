@@ -14,21 +14,31 @@ import (
 type Server struct {
 	cfg Config
 	st  *Store
+	ids IDGen   // 审计行 id 生成(audit.Event.ID 复用调用方雪花;与 st 同源)
 	dbh *sql.DB // 写路径两步事务(CreateDraft/UpdateDraft/Publish)的包裹边界
 	// toolReg 发布白名单真源(T3.2 换源:T5.4 的 BRAID_TOOL_ALLOWLIST 静态
 	// env 退役,白名单 = registry 实际注册名;空 registry = 禁用一切工具,
 	// 语义与空名单一致)。api 与 worker 各自装配同一注册集(T3.5 起内置工具)。
 	toolReg *tools.Registry
+	// trig 是 execution 触发缝(T5.5):*scheduler.Scheduler 结构性满足;
+	// 单方法面让测试以 fake 替身注入(Instantiate 仅触 MySQL,api 保持
+	// 零 Redis 消费包)。nil 响亮拒绝,理由同 toolReg。
+	trig ExecutionTrigger
 }
 
-// NewServer 构造 definition CRUD 服务(dbh 为连接池;ids 生成草稿行 id;
-// toolReg 发布白名单来源,发布点经 dsl.WithToolAllowlist(registry 名单)。
-// nil registry 响亮拒绝:静默空名单会把「配置缺漏」伪装成「禁用工具」。
-func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry) *Server {
+// NewServer 构造 definition CRUD + execution 触发服务(dbh 为连接池;
+// ids 生成草稿行 id;toolReg 发布白名单来源,发布点经 dsl.WithToolAllowlist
+// (registry 名单);trig 触发缝,生产装配传 *scheduler.Scheduler)。
+// nil registry / nil trig 响亮拒绝:静默空缺会把「配置缺漏」伪装成
+// 「禁用工具」/「触发面 500」。
+func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry, trig ExecutionTrigger) *Server {
 	if toolReg == nil {
 		panic("api: nil tools.Registry (publish allowlist source)")
 	}
-	return &Server{cfg: cfg, st: NewStore(ids), dbh: dbh, toolReg: toolReg}
+	if trig == nil {
+		panic("api: nil ExecutionTrigger (execution trigger seam)")
+	}
+	return &Server{cfg: cfg, st: NewStore(ids), ids: ids, dbh: dbh, toolReg: toolReg, trig: trig}
 }
 
 // Router 注册全部路由。角色面:写(author|admin)与读(任意有效 token)
@@ -58,5 +68,11 @@ func (s *Server) Router() *gin.Engine {
 	v1.GET("/drafts/:id", s.getDraft)
 	v1.PUT("/drafts/:id", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.updateDraft)
 	v1.POST("/drafts/:id/publish", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.publishDraft)
+
+	// execution 面(T5.5):触发是写操作(消耗 LLM 预算),闸同 definition
+	// 写面;查询/列表读面任意有效 token。
+	v1.POST("/executions", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.triggerExecution)
+	v1.GET("/executions", s.listExecutions)
+	v1.GET("/executions/:id", s.getExecution)
 	return r
 }
