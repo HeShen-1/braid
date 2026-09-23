@@ -4,9 +4,12 @@
 //
 // 同步语义(P0):event_at = DB 端 NOW(3),与 node_execution.status_changed_at
 // 同钟系——事件时刻=迁移时刻(异步批量写的分立归 T6.1)。exec_date 分区键由
-// INSERT..SELECT 从 workflow_execution.created_at 物化,应用不传(单语句零额外
-// 往返,且天然钉住「审计行必有执行锚」:SELECT 0 行 = execution 缺行,响亮
-// ErrNotFound,不静默无写)。
+// 普通一致读从 workflow_execution.created_at 物化后 INSERT VALUES 落行
+// (D-2026-09-23-t26-audit-writer-lockfree-read,修订 D-t26 #2 的单语句
+// INSERT..SELECT:RR 下其源表读取取共享 next-key 锁并持有至 COMMIT,reaper
+// leaderless 双扫描各持 S 后在 wf FOR UPDATE 升级 X 处 1213——PR #13 review
+// #9;一致读零锁,写入器对 workflow_execution 的锁面归零)。SELECT 0 行 =
+// execution 缺行,响亮 ErrNotFound,不静默无写。
 //
 // 铁律:本包对 audit_log 只发 INSERT;业务账号仅 INSERT/SELECT 授权由部署层
 // 承担(T7.3 安装自检断言)。payload 只含 id/码/枚举,密钥永不入内。
@@ -18,6 +21,7 @@ package audit
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -108,9 +112,15 @@ type Event struct {
 // Append 在调用方事务内直写一条审计行(典型形状见 engine/dbtx.go 注释:
 // CAS 迁移 → audit.Append → outbox.Append,同事务同存亡)。
 //
+// 两语句形状(零锁物化):[1] 普通一致读 DATE_FORMAT(created_at,'%Y-%m-%d')
+// 直出字符串——不取任何锁,审计写入器因此在全局锁序之外;created_at 行
+// INSERT 后不可变,一致读快照与当前读恒同值。[2] INSERT VALUES 落行(恒 1 行
+// 或报错,无 RowsAffected 裁决面)。代价 = 每审计行一次 PK 点查,P0 量级噪声;
+// 批量去重归 T6.1。
+//
 // 错误分类:ErrInvalidEvent(调用方 bug,不触 DB);ErrNotFound(execution
-// 缺行 = 数据缺陷,INSERT..SELECT 0 行);其余 %w 包装上抛,Transient 判定
-// 归调用方(与 outbox 同规)。
+// 缺行 = 数据缺陷,[1] ErrNoRows);其余 %w 包装上抛,Transient 判定归调用方
+// (与 outbox 同规)。
 func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 	if len(evt.Payload) == 0 {
 		evt.Payload = json.RawMessage(`{}`) // DDL:无正文事件存 {}
@@ -134,26 +144,32 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 	if evt.TraceID != "" {
 		trace = evt.TraceID
 	}
-	res, err := q.ExecContext(ctx, `
+	// [1] 一致读物化分区键(零锁,见方法注释)。DATE_FORMAT 直出字符串:
+	// 不经 driver 的 time.Location 解析——go-sql-driver 把 DATE 解析为 DSN loc
+	// 的午夜,loc≠UTC 时 .UTC() 换算会静默移日(review 修;字符串往返 loc 无关,
+	// 日期语义完全留在 DB 端)。
+	var execDate string
+	err := q.QueryRowContext(ctx,
+		`SELECT DATE_FORMAT(created_at, '%Y-%m-%d') FROM workflow_execution WHERE id=?`,
+		evt.ExecutionID).Scan(&execDate)
+	if errors.Is(err, sql.ErrNoRows) {
+		// 审计行必须挂在真实执行上,静默无写会破坏「每次迁移必有审计行」验收。
+		return fmt.Errorf("%w: audit event %d: execution %d vanished",
+			engine.ErrNotFound, evt.ID, evt.ExecutionID)
+	}
+	if err != nil {
+		return fmt.Errorf("audit: read exec_date (exec %d): %w", evt.ExecutionID, err)
+	}
+	// [2] 落行:event_at = DB 端 NOW(3)。
+	_, err = q.ExecContext(ctx, `
 INSERT INTO audit_log
   (id, exec_date, event_at, event_type, execution_id, node_execution_id,
    node_id, attempt_id, actor_type, actor_id, trace_id, payload)
-SELECT ?, DATE(created_at), NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?
-  FROM workflow_execution WHERE id = ?`,
-		evt.ID, evt.EventType, evt.ExecutionID, nodeExecID, nodeID,
-		attemptID, evt.ActorType, evt.ActorID, trace, evt.Payload, evt.ExecutionID)
+VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		evt.ID, execDate, evt.EventType, evt.ExecutionID,
+		nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, evt.Payload)
 	if err != nil {
 		return fmt.Errorf("audit: append %d (%s): %w", evt.ID, evt.EventType, err)
-	}
-	n, err := res.RowsAffected()
-	if err != nil {
-		return fmt.Errorf("audit: rows affected (%d): %w", evt.ID, err)
-	}
-	if n != 1 {
-		// SELECT 命中 0 行(>1 不可能:WHERE id=? 走 PK)。审计行必须挂在
-		// 真实执行上,静默无写会破坏「每次迁移必有审计行」验收。
-		return fmt.Errorf("%w: audit event %d: execution %d vanished",
-			engine.ErrNotFound, evt.ID, evt.ExecutionID)
 	}
 	return nil
 }
