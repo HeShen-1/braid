@@ -32,7 +32,9 @@ type Request struct {
 	Messages    []Message
 	Temperature float64
 	MaxTokens   int // 0 = 供应商默认(不发送该字段)
-	// ResponseFormat 响应格式约束("" 不发送 | "json_object" 等 DSL 词表值)。
+	// ResponseFormat 响应格式约束,平台词表 ""|"text"|"json"(与 DSL schema
+	// enum 同源);OpenAI 方言翻译(json→json_object)由适配器承担,直写
+	// 方言值在适配器入口被拒。
 	ResponseFormat string
 	// ExtraBody 顶层合并进请求体的供应商扩展参数(extra_body 语义:
 	// thinking/厂商必需字段);键不得与协议字段碰撞(入口拒绝)。

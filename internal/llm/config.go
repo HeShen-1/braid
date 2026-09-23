@@ -6,6 +6,8 @@ import (
 	"net/url"
 	"strconv"
 	"time"
+
+	"braid/internal/scheduler"
 )
 
 // llm 配置面(relay/config.go 同款四件套:Config + DefaultConfig + Validate +
@@ -37,6 +39,15 @@ type Config struct {
 	// "fallback" 保留键做未知模型估算。
 	PriceTable PriceTable
 }
+
+// dispatchMargin 是组合预算对 NodeTimeout 的扣减余量:asynq 每次投递的
+// handler ctx 默认 30min 超时自 **dequeue** 起算,而 attempt 的 reaper
+// deadline 自 **claim** 起算——dequeue 恒早于 claim(relay 轮询 + asynq
+// forwarder 轮询,常态秒级,实测重试时延下界由 forwarder ~5s 主导),预算
+// 恰吃满 NodeTimeout 的合法配置会被 asynq ctx 先掐 mid-call(执行器把取消
+// 归基础设施失败留 RUNNING,供应商在途调用可能已完成计费但 usage 丢失)。
+// 5min 保守覆盖常态派发延迟(T3.6 对抗审计 HIGH①)。
+const dispatchMargin = 5 * time.Minute
 
 // DefaultConfig 返回生产默认值(BaseURL/APIKey/单价表故意留空:必须显式供给)。
 func DefaultConfig() Config {
@@ -73,10 +84,33 @@ func (c Config) Validate() error {
 		return fmt.Errorf("llm: backoff factor %v not finite >= 1", c.BackoffFactor)
 	case c.BackoffMax < c.BackoffBase:
 		return fmt.Errorf("llm: backoff max %s < base %s", c.BackoffMax, c.BackoffBase)
+	case c.attemptBudget() > scheduler.NodeTimeout("llm")-dispatchMargin:
+		return fmt.Errorf(
+			"llm: worst-case attempt budget %s exceeds llm node budget %s (deadline %s - %s dispatch margin; asynq per-delivery ctx and reaper both cut at ~30min from dequeue/claim): tighten Timeout/MaxAttempts/backoff",
+			c.attemptBudget(), scheduler.NodeTimeout("llm")-dispatchMargin, scheduler.NodeTimeout("llm"), dispatchMargin)
 	case c.PriceTable.Len() == 0:
 		return fmt.Errorf("llm: price table empty (>=1 model required; \"fallback\" key optional)")
 	}
 	return nil
+}
+
+// attemptBudget 是单 attempt 内的最坏停留上界(HIGH① 拍板:组合上界在
+// Validate 启动即败,deadline 词表单源锚 scheduler.NodeTimeout("llm") 减
+// dispatchMargin——asynq 投递窗口恒先于 reaper 窗收紧,见 dispatchMargin):
+// 全部尝试超时 + 精确退避序列。退避项与适配器 backoff 同式
+// (base×factor^(i-1) 封顶 BackoffMax)再加 ±jitter 抖动上界,逐项 ceil
+// 保守化——预算恒 ≥ 实际最坏等待,宁可误拒临界配置不放过超窗。
+func (c Config) attemptBudget() time.Duration {
+	total := time.Duration(c.MaxAttempts) * c.Timeout
+	wait := 0.0
+	for i := 1; i < c.MaxAttempts; i++ {
+		w := float64(c.BackoffBase) * math.Pow(c.BackoffFactor, float64(i-1))
+		if w > float64(c.BackoffMax) {
+			w = float64(c.BackoffMax)
+		}
+		wait += math.Ceil(w * (1 + jitter))
+	}
+	return total + time.Duration(wait)
 }
 
 // ConfigFromEnv 从环境变量构造配置(BRAID_LLM_ 前缀;未设键取默认,

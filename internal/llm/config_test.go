@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"braid/internal/scheduler"
 )
 
 func envMap(m map[string]string) func(string) string {
@@ -120,6 +122,59 @@ func TestConfigValidate(t *testing.T) {
 	}
 	if err := valid().Validate(); err != nil {
 		t.Fatalf("valid config Validate() = %v", err)
+	}
+}
+
+// TestConfigValidateAttemptBudget 钉死组合上界(HIGH① 拍板):单 attempt 内
+// 最坏停留时长(MaxAttempts×Timeout + 精确退避序列总和)不得超过 llm 节点
+// deadline 减派发余量(scheduler.NodeTimeout("llm") - dispatchMargin)——
+// asynq 每投递 ctx 自 dequeue 起算 30min,恒先于 reaper(自 claim)收紧;
+// 超窗即 mid-call 掐断,重派新幂等键 = 供应商重复调用重复计费且首调 usage
+// 丢失。DefaultConfig 预算 = 3×120s + 3.6s ≈ 6m,余量充足。
+func TestConfigValidateAttemptBudget(t *testing.T) {
+	valid := func() Config {
+		c := DefaultConfig()
+		c.BaseURL = "https://api.example.com/v1"
+		c.APIKey = "sk-test"
+		c.PriceTable = mustTable(t, minPriceTable)
+		return c
+	}
+	// 恰触线:MaxAttempts=3、退避 1s×1.2+2s×1.2=3.6s(含抖动上界)⇒
+	// Timeout=(25m-3.6s)/3,单参数上界(≤10m)之内、组合恰等于预算上限
+	// (30m-5m)——边界含(≤ 而非 <)。
+	budget := scheduler.NodeTimeout("llm") - dispatchMargin
+	boundary := (budget - 3600*time.Millisecond) / 3
+	cases := []struct {
+		name    string
+		mut     func(*Config)
+		wantErr bool
+	}{
+		{"default within budget", nil, false},
+		{"exact boundary passes", func(c *Config) { c.Timeout = boundary }, false},
+		{"one nanosecond over", func(c *Config) { c.Timeout = boundary + time.Nanosecond }, true},
+		{"extreme combo rejected", func(c *Config) {
+			c.Timeout = 10 * time.Minute
+			c.MaxAttempts = 10
+		}, true},
+		{"long timeout few attempts ok", func(c *Config) {
+			c.Timeout = 10 * time.Minute
+			c.MaxAttempts = 2
+		}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			c := valid()
+			if tc.mut != nil {
+				tc.mut(&c)
+			}
+			err := c.Validate()
+			if tc.wantErr && err == nil {
+				t.Fatalf("Validate() = nil, want budget rejection")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want pass", err)
+			}
+		})
 	}
 }
 
