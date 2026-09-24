@@ -58,24 +58,24 @@
 
 ## M6 审计与观测(约 1.5 周)
 
-- [x] T6.1 审计写入器升级:异步批量、PII 脱敏钩子、保留期配置、prev_hash 占位 — M — 依赖 T2.6 — 验收:脱敏钩子对标记字段生效;批量写无丢失(对账单测);批量写契约 = `INSERT..ON DUPLICATE KEY UPDATE id=id` + affected-rows 与期望行数比对(禁 INSERT IGNORE——分区越界/截断会被静默降级,T1.3 审计确认) — ✅ 2026-09-24:同事务 WAL 暂存表 audit_pending(0004)+ reaper flush 循环(秒级 tick,游标翻页防队头饿死);高频四类异步、低频/回读事件同步(分阶段);批量契约经对抗审计修订 = 预过滤 + 裸 INSERT + COUNT 对账(否决 ON DUP——其 UPDATE 权限诉求与 T7.3 append-only 预检冲突,用户拍板;issue 原 ON DUP 判据在铁律下不可部署,语义等价换形:重放幂等 + 无丢失 + 禁 INSERT IGNORE 保持);COUNT 对账臂首战实证 MySQL 8.0.46 prepared 多对 row-constructor IN 返回 0 行的静默错果;脱敏钩子 = user_data 子树叶子掩蔽(T1.1 口径,双路径先于任何落库,UseNumber 保大整数);决策 D-2026-09-24-t61-audit-async-batch
-- [ ] T6.2 OTel 贯穿(API → worker → LLM/工具)— M — 依赖 T6.1、T3.1、T3.2 — 验收:API 触发一次执行,audit_log 行 trace_id 与本次 trace 一致且可按其查询;审批挂起 → 续跑经 **trace link** 关联
-- [ ] T6.3 审计查询 API(按 execution/trace/人过滤)— S — 依赖 T6.1 — 验收:三种过滤维度集成测试
-- [ ] T6.4 Prometheus 指标 + 告警规则(死信、审批积压、卡死节点、429 率、队列 Redis 内存水线)— M — 依赖 T4.1、T3.1 — 验收:promtool test rules 通过;注入死信/审批挂起后指标计数断言
+- [x] T6.1 审计写入器升级:异步批量、PII 脱敏钩子、保留期配置、prev_hash 占位 — M — 依赖 T2.6 — 验收:脱敏钩子对标记字段生效;批量写无丢失(对账单测);批量写契约 = `INSERT..ON DUPLICATE KEY UPDATE id=id` + affected-rows 与期望行数比对(禁 INSERT IGNORE——分区越界/截断会被静默降级,T1.3 审计确认;实施修订为预过滤 + 裸 INSERT + COUNT 对账,见下方 ✅ 注释与 D-t61 #3) — ✅ 2026-09-24:同事务 WAL 暂存表 audit_pending(0004)+ reaper flush 循环(秒级 tick,游标翻页防队头饿死);高频四类异步、低频/回读事件同步(分阶段);批量契约经对抗审计修订 = 预过滤 + 裸 INSERT + COUNT 对账(否决 ON DUP——其 UPDATE 权限诉求与 T7.3 append-only 预检冲突,用户拍板;issue 原 ON DUP 判据在铁律下不可部署,语义等价换形:重放幂等 + 无丢失 + 禁 INSERT IGNORE 保持);COUNT 对账臂首战实证 MySQL 8.0.46 prepared 多对 row-constructor IN 返回 0 行的静默错果;脱敏钩子 = user_data 子树叶子掩蔽(T1.1 口径,双路径先于任何落库,UseNumber 保大整数);决策 D-2026-09-24-t61-audit-async-batch
+- [ ] T6.2 OTel 贯穿(API → worker → LLM/工具)— M — 依赖 T6.1、T3.1、T3.2 — 验收:API 触发一次执行,audit_log 行 trace_id 与本次 trace 一致且可按其查询;审批挂起 → 续跑经 **trace link** 关联;含 T8.2 移交:翻转 assertDocTraceNeverForged(nodes e2e)+ linked_trace_id 三处接线(Enqueue/Append/flush,0004 已建列)——T6.1 异步暂存面 trace 语义见 D-t61 #6
+- [ ] T6.3 审计查询 API(按 execution/trace/人过滤)— S — 依赖 T6.1 — 验收:三种过滤维度集成测试;可见性口径 = D-t61 #6(高频四类 ≤ flush interval 滞后,默认 1s)
+- [ ] T6.4 Prometheus 指标 + 告警规则(死信、审批积压、卡死节点、429 率、队列 Redis 内存水线)— M — 依赖 T4.1、T3.1 — 验收:promtool test rules 通过;注入死信/审批挂起后指标计数断言;**全量移交回收(2026-09-25 排查,均曾悬空)**:登录限流/账号锁定/登录审计(D-t44 §7-①)、迟到 SUCCEEDED 携 usage 丢弃的 llm.call.discarded 审计词表(D-t36 §7/T3.6 移交)、archived 滞留告警 + notify 丢失面(D-t43/D-t45)、escalated-vs-notified 对账(D-t45 #1/#3)、audit_pending 积压信号 + AuditFlushInterval 无上界观测(D-t61)、usage 台账告警(D-t42 §7)
 
 ## M7 交付硬化(约 1 周)
 
 - [ ] T7.1 配置体系(连接池上限、审计保留期、各类超时全配置化)+ 部署文档配额表 — M — 依赖 M6 — 验收:改配置 → 行为变化单测(池上限生效)
 - [x] T7.2 tiktoken 离线 loader + 词表随安装包 + 启动预构建 tokenizer — M — 依赖 T3.1 — 验收:断网环境冷启动成功,首个 LLM 节点不触发任何外网请求 — ✅ 2026-09-24:internal/llm embedBpeLoader(go:embed cl100k+o200k,SHA-256 钉死,包 init 结构性离线)+ PrebuildTokenizers(cmd/worker 启动即败面)+ EstimatePromptTokens(cookbook 近似,usage 单源不变);断网验收 = 毒化 DefaultTransport 的 llm 单测 + nodes e2e 全链(唯一出站 = 桩供应商);决策 D-2026-09-24-t72-offline-tokenizer
 - [x] T7.3 安装自检(Redis 策略/AOF、词表、迁移版本)— M — 依赖 T7.2 — 验收:错误配置下拒绝启动并输出修复提示;含 audit_log 分区水位自检(INFORMATION_SCHEMA.PARTITIONS,不足拒绝启动)与业务账号对 audit_log 无 UPDATE/DELETE 权限断言(append-only 强制) — ✅ 2026-09-24:internal/preflight 新包(迁移版本比对 db.LatestMigrationVersion、分区水位地板 max bound > today、append-only 双平面断言、Redis noeviction+AOF everysec 契约,errors.Join 一次报全、修复提示内嵌错误文本)+ cmd 四入口装配(分区硬拒仅审计写方 api/worker,relay/reaper warn 防自愈死锁;Redis 硬拒 relay/worker,reaper warn = D-t25 fail-open 同族;词表自检复用 T7.2 PrebuildTokenizers 零新面);t13 栈 AOF off = 现成负例,集测零栈改动;二进制红臂手验(未迁移库 / AOF off 均 exit 1 带提示);决策 D-2026-09-24-t73-preflight
-- [ ] T7.4 交付 compose 定稿 + 升级手册(golang-migrate + N-1 兼容窗口)— S — 依赖 T7.1 — 验收:对上一版本数据卷完成一次升级演练;含 dirty 中断恢复 runbook(migrate force → 修复 → re-up;迁移对象全 IF NOT EXISTS,重跑安全);含 outbox DEAD 重置规程:重置 PENDING 前必须先核验 Redis 无该 task_id 记录(idx_outbox_task 反查 + Inspector)——超时误报可造出「DEAD 行 + Redis 活任务」真相分裂(T2.2 审计移交)
+- [ ] T7.4 交付 compose 定稿 + 升级手册(golang-migrate + N-1 兼容窗口)— S — 依赖 T7.1 — 验收:对上一版本数据卷完成一次升级演练;含 dirty 中断恢复 runbook(migrate force → 修复 → re-up;迁移对象全 IF NOT EXISTS,重跑安全);含 outbox DEAD 重置规程:重置 PENDING 前必须先核验 Redis 无该 task_id 记录(idx_outbox_task 反查 + Inspector)——超时误报可造出「DEAD 行 + Redis 活任务」真相分裂(T2.2 审计移交);含按组件授权方案:reaper 需 **audit_pending 表级 DELETE 精确授权**(T6.1 新写面;preflight 写面枚举与 D-t73 #7 未随 T6.1 扩充,以 internal/audit/flush.go 实际写面为准;schema 级 DELETE 会被 CheckAuditAppendOnly 拒启)
 
 ## M8 验收(约 1 周)
 
-- [ ] T8.1 CI 故障注入套件:worker 中途 kill / Redis 断连 / 审批 enqueue 失败 / 双投递 — L — 依赖 M2-M6 — 验收:全部注入下扫描间隔×3 内达终态,CI 绿
+- [ ] T8.1 CI 故障注入套件:worker 中途 kill / Redis 断连 / 审批 enqueue 失败 / 双投递 / reaper 于 flush 中途 kill 后的 audit_pending 重放与暂存行×状态迁移原子性(T6.1 新崩溃面,2026-09-25 增补)— L — 依赖 M2-M6 — 验收:全部注入下扫描间隔×3 内达终态,CI 绿
 - [x] T8.2 端到端示例:经 API 触发,文件路径输入 → file_read → LLM 解析 → 合规审查 → 摘要 → 人工审批(Web 页)→ 报告 — M — 依赖 T5.5、T3.5、T4.4 — 验收:全程审计链完整(trace 串联) — ✅ 2026-09-24:docs/examples/ 首个示例(DSL+样例输入+走链文档)+ nodes e2e 三用例真链守护(定义经 API 发布、审批走页面同源序列);branch 挂合规结论、修订独立尾(SKIPPED 级联剪枝下菱形汇聚=假成功陷阱);trace 维度按 issue #51 降级口径以 execution 串联交付,trace_id 恒 NULL 断言待 T6.2 翻转;决策 D-2026-09-24-t82-example-topology
 - [ ] T8.3 README(架构图、快速上手、故障注入演示)— M — 依赖 T8.1 — 验收:新环境按 README 30 分钟内跑通示例
 
 ## P1 停车场(不排期,防遗忘)
 
-画布(React Flow 候选,DSL 已留元数据)、并行节点、回滚/断点续跑 UI、容器沙箱 + egress 默认拒绝代理、MCP 双向、审计哈希链、会签、OIDC/LDAP 插件、IM 审批卡片、工具包签名、Helm、SaaS 多租户、完整 taint 追踪、db_query 内置工具(只读账号/参数化/凭证作用域)。
+画布(React Flow 候选,DSL 已留元数据)、并行节点、回滚/断点续跑 UI、容器沙箱 + egress 默认拒绝代理、MCP 双向、审计哈希链、会签、OIDC/LDAP 插件、IM 审批卡片、工具包签名、Helm、SaaS 多租户、完整 taint 追踪、db_query 内置工具(只读账号/参数化/凭证作用域)、PII 脱敏放开评估(D-t61 #5:当前词表无自由文本 ⇒ P0 净效果零掩蔽,放开自由文本 payload 前评估)、按 approver 扇出投递(D-t45 #2:现 BRAID_SMTP_NOTIFY_TO 固定收件,用户资料面出现 email 列后换)、token 绑定等 auth 纵深(D-t44 §7-⑦)、登录限流/账号锁定/登录审计(D-t44 §7-①;若 T6.4 未承载则落此处)。
