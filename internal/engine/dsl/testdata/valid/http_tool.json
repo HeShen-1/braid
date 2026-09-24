@@ -11,6 +11,7 @@
       "type": "tool",
       "tool": "http",
       "inputs": {
+        "name": "docs_api",
         "method": "GET",
         "path": "/api/v1/documents/{{inputs.doc_id}}",
         "query": { "verbose": "true" }

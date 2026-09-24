@@ -69,6 +69,16 @@ func (e *ToolExecutor) Run(ctx context.Context, req worker.Request, spec *dsl.To
 // ctx 分类、声明抽取)。失败码词表单源在 tools 包(CodeToolNotFound 等),
 // 本层只透传与兜底。
 func (e *ToolExecutor) executeCall(ctx context.Context, req worker.Request, in scheduler.ToolInput, spec *dsl.ToolNode) (worker.Outcome, error) {
+	// 预算 ctx(T3.5 审计 HIGH 修复):全链(asynq handler ctx 原样下传、
+	// relay 入队不带 Timeout)此前无任何一层派生 deadline,真实外层 =
+	// asynq 默认 30min,与 tool 节点 10min SLA(deadline_at,reaper 判死)
+	// 脱节——挂死端点(完成 TLS 后不回响应头)让僵尸调用每轮净占 2 个
+	// worker 槽 20min。以 NodeTimeout("tool") 单源锚定预算:ctx 到期 =
+	// 基础设施失败留 RUNNING(reaper 按 SLA 判死重派),worker 槽位与
+	// DB deadline 对齐。file_read 同链受益(读前检查;os.Open 无 ctx
+	// 中断原语,NFS 挂死仍由 reaper 兜底)。
+	ctx, cancel := context.WithTimeout(ctx, scheduler.NodeTimeout("tool"))
+	defer cancel()
 	start := time.Now()
 	res, err := e.Runner.Run(ctx, tools.RunRequest{
 		Tool:           in.Tool,
@@ -79,14 +89,18 @@ func (e *ToolExecutor) executeCall(ctx context.Context, req worker.Request, in s
 	})
 	duration := uint64(time.Since(start).Milliseconds())
 	if err != nil {
-		// ctx 取消(deadline/停机)= 基础设施失败:error 返回留 RUNNING,
-		// asynq 重试接管同 attempt 重跑(LocalRunner 已把 ctx 错误链回)。
-		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-			return worker.Outcome{}, fmt.Errorf("nodes: tool call cancelled (node_exec %d): %w", req.NodeExecutionID, err)
-		}
+		// 分类优先序(CallError 先于 ctx 门):runner 对「哨兵 + ctx 同时
+		// 到期」已按哨兵确定性裁成业务失败,本层同序尊重;纯 ctx 取消
+		// (deadline/停机)= 基础设施失败,error 返回留 RUNNING,asynq
+		// 重试接管同 attempt 重跑。ctx.Err() 环境态门兜在链判定之后:
+		// deadline 触发与传输错误竞态时 url.Error 只包传输错不含 ctx 链
+		// (T3.5 审计 MEDIUM:双层谓词不一致曾使该现场落兜底 tool_failed)。
 		var ce *tools.CallError
 		if errors.As(err, &ce) {
 			return failedOutcome(ce.Code, err.Error()), nil
+		}
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+			return worker.Outcome{}, fmt.Errorf("nodes: tool call cancelled (node_exec %d): %w", req.NodeExecutionID, err)
 		}
 		return failedOutcome(tools.CodeToolFailed, err.Error()), nil // 未分类兜底(防御,正常路径不达)
 	}
