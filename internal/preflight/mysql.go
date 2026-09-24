@@ -26,6 +26,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 	"time"
 
@@ -111,39 +112,34 @@ func partitionVerdict(maxBound, today time.Time) error {
 }
 
 // CheckAuditAppendOnly 断言当前连接账号(业务账号 = 各入口 BRAID_MYSQL_DSN
-// 的登录者)对 audit_log 无 UPDATE/DELETE 权限,按两个授权平面分别处理
+// 的登录者)对 audit_log 无 UPDATE/DELETE 权限。授权平面分两层处理
 // (empirical:MySQL 8 在 I_S 把 GRANT ALL 展开成逐项权限行,没有
 // "ALL PRIVILEGES" 字面量,「管理账号豁免」只能按平面实现):
 //
 //   - 管理平面 = USER_PRIVILEGES(全局 *.*):UPDATE/DELETE 仅 warn 不拒。
 //     root/运维账号在此(dev/test 栈即 root,硬拒 = 开发栈直接拒启);对
 //     全局权限账号逐表强制 append-only 不可实施,归属运维。
-//   - 业务平面 = SCHEMA/TABLE_PRIVILEGES(限本库/audit_log):UPDATE/DELETE
-//     硬拒——部署契约即业务账号对本库只授 INSERT/SELECT(DDL §append-only),
-//     GRANT ALL ON <db>.* 的展开落在这也拒(该形态就是违约配置)。
+//   - 业务平面 = 覆盖 audit_log 的全部授权对象,UPDATE/DELETE 硬拒:
+//     schema 级(SCHEMA_PRIVILEGES)、表级(TABLE_PRIVILEGES)、列级
+//     (COLUMN_PRIVILEGES——列级只有 UPDATE 面向违约,MySQL 无列级 DELETE)。
+//     db/table 级 GRANT 的对象名支持 %/_ 通配(mysql.db 存原始模式,I_S
+//     原样回显),`TABLE_SCHEMA = DATABASE()` 精确等值会漏行——拉全量后
+//     在 Go 侧按 LIKE 语义匹配(对抗审计 F2/F3/F4)。部署契约即业务账号
+//     对本库只授 INSERT/SELECT(DDL §append-only),GRANT ALL ON <db>.* 的
+//     展开落业务平面 = 违约配置照拒。
 //
-// 已知边界:MySQL 8 角色授予不经这三表展开;部署契约是直接授权(与 DDL
-// 注释同口径)。
+// 已知边界:MySQL 8 角色授予不经这四表展开;部署契约是直接授权(与 DDL
+// 注释同口径)。relay/reaper 自身的写权限(outbox UPDATE/DELETE、
+// audit_log ALTER)不在本断言面——按组件的授权方案归 T7.4。
 func CheckAuditAppendOnly(ctx context.Context, dbh *sql.DB) error {
 	var acct, schema string
 	if err := dbh.QueryRowContext(ctx, `SELECT CURRENT_USER(), DATABASE()`).Scan(&acct, &schema); err != nil {
 		return fmt.Errorf("preflight: read current user: %w", err)
 	}
-	grantee := granteeOf(acct)
+	grantee := granteeOf(acct) // I_S GRANTEE 匹配形态(原样嵌入,见 granteeOf 注释)
+
 	global, err := privSet(ctx, dbh, acct, `
 SELECT PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE GRANTEE = ?`, grantee)
-	if err != nil {
-		return err
-	}
-	schemaPrivs, err := privSet(ctx, dbh, acct, `
-SELECT PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.SCHEMA_PRIVILEGES
- WHERE GRANTEE = ? AND TABLE_SCHEMA = DATABASE()`, grantee)
-	if err != nil {
-		return err
-	}
-	tablePrivs, err := privSet(ctx, dbh, acct, `
-SELECT PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.TABLE_PRIVILEGES
- WHERE GRANTEE = ? AND TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'audit_log'`, grantee)
 	if err != nil {
 		return err
 	}
@@ -151,10 +147,92 @@ SELECT PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.TABLE_PRIVILEGES
 		slog.Warn("preflight: account holds global UPDATE/DELETE (admin plane; audit append-only falls back to ops for globally privileged accounts)",
 			"account", acct)
 	}
-	return appendOnlyVerdict(schema, acct, grantee, schemaPrivs, tablePrivs)
+
+	// 业务平面:覆盖 audit_log 的授权对象聚合(schema/表/列三平面,通配
+	// 模式判定见 likeMatch;三平面共用 collectPlanes 扫描循环)。
+	planes := map[string]*grantPlane{}
+	add := func(on, priv string) {
+		p := planes[on]
+		if p == nil {
+			p = &grantPlane{on: on}
+			planes[on] = p
+		}
+		p.set(priv)
+	}
+	// schema 级。
+	if err := collectPlanes(ctx, dbh, acct, grantee, `
+SELECT TABLE_SCHEMA, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.SCHEMA_PRIVILEGES`, func(row []string) error {
+		if row[0] != schema && !likeMatch(row[0], schema) {
+			return nil
+		}
+		add(tick(row[0])+".*", row[1])
+		return nil
+	}); err != nil {
+		return err
+	}
+	// 表级。
+	if err := collectPlanes(ctx, dbh, acct, grantee, `
+SELECT TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.TABLE_PRIVILEGES`, func(row []string) error {
+		if !coversObject(row[0], schema, row[1], "audit_log") {
+			return nil
+		}
+		add(tick(row[0])+"."+tick(row[1]), row[2])
+		return nil
+	}); err != nil {
+		return err
+	}
+	// 列级(只 UPDATE 面向违约;按对象聚合列名,REVOKE 需带列清单)。
+	if err := collectPlanes(ctx, dbh, acct, grantee, `
+SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.COLUMN_PRIVILEGES`, func(row []string) error {
+		if row[3] != "UPDATE" || !coversObject(row[0], schema, row[1], "audit_log") {
+			return nil
+		}
+		on := tick(row[0]) + "." + tick(row[1])
+		p := planes[on]
+		if p == nil {
+			p = &grantPlane{on: on}
+			planes[on] = p
+		}
+		p.colUpd = append(p.colUpd, row[2])
+		return nil
+	}); err != nil {
+		return err
+	}
+
+	ordered := make([]grantPlane, 0, len(planes))
+	keys := make([]string, 0, len(planes))
+	for k := range planes {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys) // 输出与提示文本稳定,测试可锚
+	for _, k := range keys {
+		p := planes[k]
+		sort.Strings(p.colUpd)
+		ordered = append(ordered, *p)
+	}
+	return appendOnlyVerdict(acct, granteeSQL(acct), ordered)
 }
 
-// privSet 执行权限查询并收为集合。
+// grantPlane 是一个授权对象(可带通配)上的违约权限聚合:REVOKE 修复提示
+// 的最小单元——按对象分组出合法语句,单语句混多个 ON 子句是 1064 语法错
+// (对抗审计 F7,已实证)。
+type grantPlane struct {
+	on     string // 授权对象字面量,如 `braid`.* / `braid%`.`audit_log`
+	update bool
+	delete bool
+	colUpd []string // 列级 UPDATE 的列名(仅列级面)
+}
+
+func (p *grantPlane) set(priv string) {
+	switch priv {
+	case "UPDATE":
+		p.update = true
+	case "DELETE":
+		p.delete = true
+	}
+}
+
+// privSet 执行单列权限查询并收为集合。
 func privSet(ctx context.Context, dbh *sql.DB, acct, query string, args ...any) (map[string]bool, error) {
 	rows, err := dbh.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -175,44 +253,171 @@ func privSet(ctx context.Context, dbh *sql.DB, acct, query string, args ...any) 
 	return privs, nil
 }
 
-// appendOnlyVerdict 是业务平面权限断言的纯判定(表驱动单测锚):逐平面点名
-// 违约权限,REVOKE 提示与授权平面严格对齐(schema 级授的权收 ON db.*,
-// 表级授的收 ON db.audit_log——错平面的 REVOKE 不生效,提示必须可执行)。
-func appendOnlyVerdict(schema, acct, grantee string, schemaPrivs, tablePrivs map[string]bool) error {
-	planes := []struct {
-		scope string
-		privs map[string]bool
-	}{
-		{schema + ".*", schemaPrivs},
-		{schema + ".audit_log", tablePrivs},
+// collectPlanes 拉取一个 I_S 权限平面的全量行(仅按 GRANTEE 过滤),行内容
+// 的覆盖判定与聚合交给调用方回调。schema/表/列三平面共用此一处扫描循环
+// (delta 复审:三份只差列数的拷贝已经开始漂移,rows.Err() 缺 preflight
+// 前缀即是漂移实例)。
+func collectPlanes(ctx context.Context, dbh *sql.DB, acct, grantee, query string, fn func(row []string) error) error {
+	rows, err := dbh.QueryContext(ctx, query+" WHERE GRANTEE = ?", grantee)
+	if err != nil {
+		return fmt.Errorf("preflight: read privileges of %s: %w", acct, err)
 	}
-	var held, revoke []string
-	for _, p := range []string{"UPDATE", "DELETE"} {
-		for _, pl := range planes {
-			if pl.privs[p] {
-				held = append(held, p+" on "+pl.scope)
-				revoke = append(revoke, p+" ON "+pl.scope)
-			}
+	defer func() { _ = rows.Close() }()
+	cols, err := rows.Columns()
+	if err != nil {
+		return fmt.Errorf("preflight: read privilege columns: %w", err)
+	}
+	for rows.Next() {
+		buf := make([]string, len(cols))
+		ptrs := make([]any, len(cols))
+		for i := range buf {
+			ptrs[i] = &buf[i]
+		}
+		if err := rows.Scan(ptrs...); err != nil {
+			return fmt.Errorf("preflight: scan privilege row: %w", err)
+		}
+		if err := fn(buf); err != nil {
+			return err
 		}
 	}
-	if len(held) == 0 {
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("preflight: read privilege rows: %w", err)
+	}
+	return nil
+}
+
+// coversObject 报告授权对象(库/表名均可含 %/_ 通配)是否覆盖实际对象。
+func coversObject(schemaPat, schema, tablePat, table string) bool {
+	if schemaPat != schema && !likeMatch(schemaPat, schema) {
+		return false
+	}
+	return tablePat == table || likeMatch(tablePat, table)
+}
+
+// likeMatch 实现 SQL LIKE 语义(% 任意串、_ 单字符、\ 转义下一字符取字面;
+// 库名本身区分大小写,匹配取区分大小写口径)。MySQL 对 mysql.db 的授权
+// 模式匹配即此语义(my_wildcmp)。
+//
+// 贪心双指针 + 单点回溯(教科书 LIKE 算法):变量长通配只有 %,失配只需
+// 回溯到**最后一个** % 处让它的匹配长度 +1,最坏 O(n×m)。不能用朴素回溯:
+// % 密集模式是指数复杂度(delta 复审实测:`%a%a%a%a%a%b` 对 64 字符库名
+// 282ms,8 组 % 超 100s),而本函数跑在四个 cmd 的启动路径上,operator
+// 可控的病态模式会让组件既不起也不报错地自旋。
+func likeMatch(pattern, s string) bool {
+	pi, si := 0, 0
+	starP, starS := -1, -1 // 最后一个 % 的模式后继位 / 文本回溯位
+	for si < len(s) {
+		if pi < len(pattern) {
+			switch pattern[pi] {
+			case '%':
+				starP, starS = pi+1, si
+				for pi < len(pattern) && pattern[pi] == '%' {
+					pi++
+				}
+				continue // % 先试匹配空串,不消费文本
+			case '_':
+				pi++
+				si++
+				continue
+			case '\\':
+				if pi+1 < len(pattern) {
+					if s[si] == pattern[pi+1] {
+						pi += 2
+						si++
+						continue
+					}
+				} else if s[si] == '\\' { // 尾部孤立 \:按字面处理
+					pi++
+					si++
+					continue
+				}
+			default:
+				if s[si] == pattern[pi] {
+					pi++
+					si++
+					continue
+				}
+			}
+		}
+		// 失配(或模式已尽而文本未尽):回溯到最后一个 %
+		if starP < 0 {
+			return false
+		}
+		starS++
+		pi, si = starP, starS
+	}
+	for pi < len(pattern) && pattern[pi] == '%' { // 残余模式须可匹配空
+		pi++
+	}
+	return pi == len(pattern)
+}
+
+// appendOnlyVerdict 是业务平面权限断言的纯判定(表驱动单测锚):逐授权对象
+// 点名违约权限,REVOKE 提示与授权对象严格对齐(通配模式授的权收在同一
+// 模式上——REVOKE ON braid.* 不撤销 ON `braid%`.* 的授权;列级 UPDATE 需
+// 带列清单;提示必须是可直接执行的合法 SQL,对抗审计 F7)。
+func appendOnlyVerdict(acct, grantee string, planes []grantPlane) error {
+	var msgs, stmts []string
+	for _, pl := range planes {
+		var privs []string
+		if pl.update {
+			privs = append(privs, "UPDATE")
+		}
+		if pl.delete {
+			privs = append(privs, "DELETE")
+		}
+		if len(privs) == 0 && len(pl.colUpd) == 0 {
+			continue
+		}
+		if len(pl.colUpd) > 0 {
+			msgs = append(msgs, fmt.Sprintf("UPDATE(%s) on %s", strings.Join(pl.colUpd, ","), pl.on))
+			stmts = append(stmts, fmt.Sprintf("REVOKE UPDATE (%s) ON %s FROM %s",
+				strings.Join(pl.colUpd, ", "), pl.on, grantee))
+			continue
+		}
+		msgs = append(msgs, strings.Join(privs, "/")+" on "+pl.on)
+		stmts = append(stmts, fmt.Sprintf("REVOKE %s ON %s FROM %s",
+			strings.Join(privs, ", "), pl.on, grantee))
+	}
+	if len(msgs) == 0 {
 		return nil
 	}
-	return fmt.Errorf("preflight: account %s holds %s covering audit_log (append-only iron law violated); fix: REVOKE %s FROM %s (business accounts get INSERT,SELECT only — migrations/0001_init.up.sql header)",
-		acct, strings.Join(held, ", "), strings.Join(revoke, ", "), grantee)
+	// 提示尾注限定 audit_log 面:relay/reaper 自身的写权限(outbox UPDATE/
+	// DELETE、audit_log ALTER)是另一套按组件授权,混进本提示会误导运维
+	// 过度收权(对抗审计 F8);授权方案归 T7.4。
+	return fmt.Errorf("preflight: account %s holds %s covering audit_log (append-only iron law violated); fix: %s (audit_log-facing business grants: INSERT,SELECT only; other components' own write grants are provisioned separately — see T7.4)",
+		acct, strings.Join(msgs, ", "), strings.Join(stmts, "; "))
 }
 
 // granteeOf 把 CURRENT_USER() 的 user@host 转成 I_S GRANTEE 列的字面量形态
-// 'user'@'host'(引号是列值的一部分;内部单引号按 SQL 字面量双写)。按
-// **最后一个** @ 切分:user 部可含 @,host 部是网络名不含。
+// 'user'@'host'。按**最后一个** @ 切分(user 部可含 @,host 部是网络名不含)。
+// 内部单引号**不做双写**:实测(MySQL 8.0.46,t13)服务端把含引号的账号名
+// 渲染为 'we'ird'@'%'(原样嵌入、不转义),SQL 字面量式双写反而恒不匹配 →
+// 权限集恒空、断言空过(对抗审计 F5)。GRANTEE 经参数占位传入,无注入面。
 func granteeOf(acct string) string {
 	i := strings.LastIndexByte(acct, '@')
 	if i < 0 {
-		return quoteSQL(acct) // 防御:CURRENT_USER 恒带 @host
+		return "'" + acct + "'" // 防御:CURRENT_USER 恒带 @host
+	}
+	return "'" + acct[:i] + "'@'" + acct[i+1:] + "'"
+}
+
+// granteeSQL 生成 REVOKE 提示里账号的 SQL 字面量(内部单引号双写)。与
+// granteeOf(原始形态)是两种用途:I_S 匹配用原始形态,渲染**可执行** SQL
+// 用双写——原始形态进 REVOKE 对含引号账号是 1064(delta 复审,t13 实证)。
+func granteeSQL(acct string) string {
+	i := strings.LastIndexByte(acct, '@')
+	if i < 0 {
+		return quoteSQL(acct)
 	}
 	return quoteSQL(acct[:i]) + "@" + quoteSQL(acct[i+1:])
 }
 
 func quoteSQL(s string) string {
 	return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+}
+
+// tick 给标识符加反引号(内部反引号按 MySQL 惯例双写)。
+func tick(s string) string {
+	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
 }

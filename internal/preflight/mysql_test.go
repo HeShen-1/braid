@@ -58,48 +58,84 @@ func TestPartitionVerdict(t *testing.T) {
 }
 
 func TestAppendOnlyVerdict(t *testing.T) {
-	// schema 平面展开集(MySQL 8 对 GRANT ALL ON sch.* 的实测形态,截断到
-	// 判定相关的写权限即可)。
-	allExpansion := map[string]bool{
-		"SELECT": true, "INSERT": true, "UPDATE": true, "DELETE": true,
-		"ALTER": true, "CREATE": true, "DROP": true,
-	}
 	tests := []struct {
-		name        string
-		schemaPrivs map[string]bool
-		tablePrivs  map[string]bool
-		wantSub     []string
+		name    string
+		planes  []grantPlane
+		wantSub []string
 	}{
-		{name: "no privileges at all"},
-		{name: "business steady state", schemaPrivs: map[string]bool{"SELECT": true, "INSERT": true}},
+		{name: "no planes at all"},
 		{
-			name:        "schema update rejected",
-			schemaPrivs: map[string]bool{"SELECT": true, "INSERT": true, "UPDATE": true},
-			wantSub:     []string{"UPDATE on sch.*", "REVOKE UPDATE ON sch.* FROM 'app'@'%'", "append-only"},
+			name:   "read-only planes invisible",
+			planes: []grantPlane{{on: "`sch`.*"}, {on: "`sch`.`audit_log`"}},
 		},
 		{
-			name:       "table delete rejected",
-			tablePrivs: map[string]bool{"DELETE": true},
-			wantSub:    []string{"DELETE on sch.audit_log", "REVOKE DELETE ON sch.audit_log"},
+			name:    "schema update rejected",
+			planes:  []grantPlane{{on: "`sch`.*", update: true}},
+			wantSub: []string{"UPDATE on `sch`.*", "REVOKE UPDATE ON `sch`.* FROM 'app'@'%'", "append-only"},
 		},
 		{
-			// GRANT ALL ON sch.* 的展开落业务平面 = 违约配置,拒。
-			name:        "schema ALL expansion rejected",
-			schemaPrivs: allExpansion,
-			wantSub:     []string{"UPDATE on sch.*", "DELETE on sch.*"},
+			name:    "table delete rejected",
+			planes:  []grantPlane{{on: "`sch`.`audit_log`", delete: true}},
+			wantSub: []string{"DELETE on `sch`.`audit_log`", "REVOKE DELETE ON `sch`.`audit_log` FROM 'app'@'%'"},
 		},
 		{
-			name:        "both planes both privileges named",
-			schemaPrivs: map[string]bool{"UPDATE": true},
-			tablePrivs:  map[string]bool{"DELETE": true},
-			wantSub:     []string{"UPDATE on sch.*", "DELETE on sch.audit_log"},
+			// GRANT ALL ON sch.* 的展开落业务平面 = 违约配置,拒;同对象
+			// 双权限合成一条合法 REVOKE(对抗审计 F7:单语句混 ON 子句 = 1064)。
+			name:    "schema ALL expansion grouped into one statement",
+			planes:  []grantPlane{{on: "`sch`.*", update: true, delete: true}},
+			wantSub: []string{"UPDATE/DELETE on `sch`.*", "REVOKE UPDATE, DELETE ON `sch`.* FROM 'app'@'%'"},
+		},
+		{
+			// 多对象 = 多条语句,分号分隔,各自合法。
+			name: "multi-plane statements stay separately executable",
+			planes: []grantPlane{
+				{on: "`sch`.*", update: true, delete: true},
+				{on: "`sch%`.`audit_log`", delete: true},
+			},
+			wantSub: []string{
+				"REVOKE UPDATE, DELETE ON `sch`.* FROM 'app'@'%'; REVOKE DELETE ON `sch%`.`audit_log` FROM 'app'@'%'",
+			},
+		},
+		{
+			name:    "column update carries column list",
+			planes:  []grantPlane{{on: "`sch`.`audit_log`", colUpd: []string{"payload", "id"}}},
+			wantSub: []string{"UPDATE(payload,id) on `sch`.`audit_log`", "REVOKE UPDATE (payload, id) ON `sch`.`audit_log` FROM 'app'@'%'"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := appendOnlyVerdict("sch", "app@%", "'app'@'%'", tt.schemaPrivs, tt.tablePrivs)
+			err := appendOnlyVerdict("app@%", "'app'@'%'", tt.planes)
 			assertSubstrings(t, err, tt.wantSub)
 		})
+	}
+}
+
+func TestLikeMatch(t *testing.T) {
+	tests := []struct {
+		pattern, s string
+		want       bool
+	}{
+		{pattern: "braid", s: "braid", want: true},
+		{pattern: "braid", s: "braidx", want: false},
+		{pattern: "braid%", s: "braid_preflight_test_ab12cd34", want: true},
+		{pattern: "bra_d", s: "braid", want: true},
+		{pattern: "bra_d", s: "brad", want: false},        // _ 恰一字符
+		{pattern: "braid\\_d", s: "braid_d", want: true},  // 转义 _ 取字面
+		{pattern: "braid\\_d", s: "braidxd", want: false}, // 字面 _ 不匹配 x
+		{pattern: "%", s: "anything", want: true},
+		{pattern: "braid\\%", s: "braidx", want: false}, // 转义 % 取字面
+		{pattern: "braid\\%", s: "braid%", want: true},
+		{pattern: "", s: "", want: true},
+		{pattern: "a%c", s: "abc", want: true},
+		{pattern: "a%c", s: "ac", want: true}, // % 匹配空串
+		// 病态 % 密集模式:贪心双指针下微秒级;若回退成朴素回溯(指数),
+		// 本用例会以超时形式红(delta 复审实测 8 组 % 即 >100s)。
+		{pattern: "%a%a%a%a%a%a%a%a%a%a%b", s: strings.Repeat("a", 64), want: false},
+	}
+	for _, tt := range tests {
+		if got := likeMatch(tt.pattern, tt.s); got != tt.want {
+			t.Errorf("likeMatch(%q, %q) = %v, want %v", tt.pattern, tt.s, got, tt.want)
+		}
 	}
 }
 
@@ -110,13 +146,32 @@ func TestGranteeOf(t *testing.T) {
 	}{
 		{acct: "root@%", want: "'root'@'%'"},
 		{acct: "app@10.0.0.1", want: "'app'@'10.0.0.1'"},
-		{acct: "u'x@h", want: "'u''x'@'h'"},
+		// 服务端 GRANTEE 渲染对内部单引号原样嵌入、不双写(MySQL 8.0.46
+		// t13 实证:'we'ird'@'%')——双写恒不匹配(对抗审计 F5)。
+		{acct: "u'x@h", want: "'u'x'@'h'"},
 		{acct: "a@b@c", want: "'a@b'@'c'"}, // 最后一个 @ 是 user/host 分界
 		{acct: "weird", want: "'weird'"},   // 防御分支
 	}
 	for _, tt := range tests {
 		if got := granteeOf(tt.acct); got != tt.want {
 			t.Errorf("granteeOf(%q) = %q, want %q", tt.acct, got, tt.want)
+		}
+	}
+}
+
+// granteeSQL 是 REVOKE 渲染形态:含引号账号双写(delta 复审,否则提示 1064)。
+func TestGranteeSQL(t *testing.T) {
+	tests := []struct {
+		acct string
+		want string
+	}{
+		{acct: "root@%", want: "'root'@'%'"},
+		{acct: "u'x@h", want: "'u''x'@'h'"},
+		{acct: "weird", want: "'weird'"},
+	}
+	for _, tt := range tests {
+		if got := granteeSQL(tt.acct); got != tt.want {
+			t.Errorf("granteeSQL(%q) = %q, want %q", tt.acct, got, tt.want)
 		}
 	}
 }
@@ -184,9 +239,23 @@ func TestSchemaVersionRejectsStaleAndDirty(t *testing.T) {
 		t.Fatalf("LatestMigrationVersion: %v", err)
 	}
 	// 铁律管的是 audit_log;schema_migrations 是迁移元数据,测试可写可还原。
+	// 无条件 DELETE+INSERT 而非 UPDATE:空表臂中途 Fatalf 时 UPDATE 匹配
+	// 0 行,共享 schema 会带着空表泄给后续测试(delta 复审)。
 	t.Cleanup(func() {
-		_, _ = dbh.Exec(`UPDATE schema_migrations SET version = ?, dirty = 0`, latest)
+		_, _ = dbh.Exec(`DELETE FROM schema_migrations`)
+		_, _ = dbh.Exec(`INSERT INTO schema_migrations (version, dirty) VALUES (?, 0)`, latest)
 	})
+	// 空 schema_migrations(表在、行无)→ 独立错误臂(对抗审计 F11)。
+	if _, err := dbh.Exec(`DELETE FROM schema_migrations`); err != nil {
+		t.Fatalf("empty setup: %v", err)
+	}
+	err = CheckSchemaVersion(ctx, dbh)
+	if err == nil || !strings.Contains(err.Error(), "is empty") {
+		t.Fatalf("empty schema_migrations: err = %v, want 'is empty'", err)
+	}
+	if _, err := dbh.Exec(`INSERT INTO schema_migrations (version, dirty) VALUES (?, 0)`, latest); err != nil {
+		t.Fatalf("restore row: %v", err)
+	}
 	if _, err := dbh.Exec(`UPDATE schema_migrations SET version = 1, dirty = 0`); err != nil {
 		t.Fatalf("stale version setup: %v", err)
 	}
@@ -257,8 +326,10 @@ SELECT PARTITION_NAME, PARTITION_DESCRIPTION FROM INFORMATION_SCHEMA.PARTITIONS
 }
 
 // TestAuditAppendOnlyEnforcement:按平面各建红绿臂——管理平面(global)只
-// warn 不拒、业务平面(schema/table)拒、收权即绿;root 的管理平面豁免臂
-// 已在 green 测试覆盖。
+// warn 不拒、业务平面(schema/table/column/通配模式)拒、收权即绿;root 的
+// 管理平面豁免臂已在 green 测试覆盖。账号名拼 worktree 键:t13 是全 worktree
+// 共享实例,固定名会被并行 worktree 的 GRANT/REVOKE 互踩出静默假判定
+// (对抗审计 F9,与 Redis 槽位纪律同族)。
 func TestAuditAppendOnlyEnforcement(t *testing.T) {
 	admin := openMigrated(t)
 	ctx := context.Background()
@@ -266,24 +337,24 @@ func TestAuditAppendOnlyEnforcement(t *testing.T) {
 	if err := admin.QueryRow(`SELECT DATABASE()`).Scan(&schema); err != nil {
 		t.Fatalf("read schema: %v", err)
 	}
-	const (
-		user = "braid_t73_acct"
-		pass = "braid_t73_pw" // t13 占位凭证,非任何真实系统凭证(sqltest 同款口径)
-	)
+	user := "braid_t73_" + db.WorktreeKey() // ≤ 32 chars:10 前缀 + 8 hex
+	pass := "braid_t73_pw"                  // t13 占位凭证,非任何真实系统凭证(sqltest 同款口径)
 	cfg, err := mysql.ParseDSN(db.TestServerDSN())
 	if err != nil {
 		t.Fatalf("parse test server DSN: %v", err)
 	}
-	t.Cleanup(func() {
-		_, _ = admin.Exec(fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", user))
-	})
 	mustExec := func(q string) {
 		t.Helper()
 		if _, err := admin.Exec(q); err != nil {
 			t.Fatalf("grant setup %q: %v", q, err)
 		}
 	}
-	mustExec(fmt.Sprintf("CREATE USER IF NOT EXISTS '%s'@'%%' IDENTIFIED BY '%s'", user, pass))
+	// 先 DROP 再 CREATE:清掉上次异常中断残留的同名授权态。
+	mustExec(fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", user))
+	t.Cleanup(func() {
+		_, _ = admin.Exec(fmt.Sprintf("DROP USER IF EXISTS '%s'@'%%'", user))
+	})
+	mustExec(fmt.Sprintf("CREATE USER '%s'@'%%' IDENTIFIED BY '%s'", user, pass))
 	limited, err := sql.Open("mysql", db.CanonicalDSN(
 		fmt.Sprintf("%s:%s@tcp(%s)/%s", user, pass, cfg.Addr, schema)))
 	if err != nil {
@@ -292,9 +363,10 @@ func TestAuditAppendOnlyEnforcement(t *testing.T) {
 	t.Cleanup(func() { _ = limited.Close() })
 
 	steps := []struct {
-		name    string
-		setup   []string
-		wantSub []string // 空 = 期望通过
+		name     string
+		setup    []string
+		wantSub  []string // 空 = 期望通过
+		execHint bool     // 把提示里的 REVOKE 原样执行并断言随后判定通过
 	}{
 		{
 			// 管理平面:全局 UPDATE 只 warn(判定过),dev/test root 同形态。
@@ -308,27 +380,54 @@ func TestAuditAppendOnlyEnforcement(t *testing.T) {
 		{
 			name:    "schema UPDATE rejected",
 			setup:   []string{fmt.Sprintf("GRANT UPDATE ON %s.* TO '%s'@'%%'", schema, user)},
-			wantSub: []string{"REVOKE UPDATE ON " + schema + ".*"},
+			wantSub: []string{fmt.Sprintf("REVOKE UPDATE ON `%s`.* FROM '%s'@'%%'", schema, user)},
 		},
 		{
 			name:  "schema revoked passes",
 			setup: []string{fmt.Sprintf("REVOKE UPDATE ON %s.* FROM '%s'@'%%'", schema, user)},
 		},
 		{
+			// 对抗审计 F2:通配模式授权(`%` 覆盖本库)不能被精确等值漏掉;
+			// REVOKE 必须收在同一模式上(收在实名上不撤销模式授权)。
+			name:    "wildcard schema pattern rejected",
+			setup:   []string{fmt.Sprintf("GRANT UPDATE ON `%s%%`.* TO '%s'@'%%'", schema, user)},
+			wantSub: []string{"REVOKE UPDATE ON `" + schema + "%`.* FROM '" + user + "'@'%'"},
+		},
+		{
+			name:  "wildcard revoked on the pattern passes",
+			setup: []string{fmt.Sprintf("REVOKE UPDATE ON `%s%%`.* FROM '%s'@'%%'", schema, user)},
+		},
+		{
 			name:    "table DELETE on audit_log rejected",
 			setup:   []string{fmt.Sprintf("GRANT DELETE ON %s.audit_log TO '%s'@'%%'", schema, user)},
-			wantSub: []string{"REVOKE DELETE ON " + schema + ".audit_log"},
+			wantSub: []string{"REVOKE DELETE ON `" + schema + "`.`audit_log` FROM '" + user + "'@'%'"},
 		},
 		{
 			name:  "table revoked passes",
 			setup: []string{fmt.Sprintf("REVOKE DELETE ON %s.audit_log FROM '%s'@'%%'", schema, user)},
 		},
 		{
+			// 对抗审计 F3/F4:列级 UPDATE 只落 COLUMN_PRIVILEGES。
+			name:    "column UPDATE on audit_log rejected",
+			setup:   []string{fmt.Sprintf("GRANT UPDATE (payload, id) ON %s.audit_log TO '%s'@'%%'", schema, user)},
+			wantSub: []string{"REVOKE UPDATE (id, payload) ON `" + schema + "`.`audit_log` FROM '" + user + "'@'%'"},
+		},
+		{
+			name:  "column revoked passes",
+			setup: []string{fmt.Sprintf("REVOKE UPDATE (payload, id) ON %s.audit_log FROM '%s'@'%%'", schema, user)},
+		},
+		{
 			// GRANT ALL ON sch.* 展开落业务平面(I_S 无 ALL 字面量,实测
-			// 逐项展开)= 违约配置,拒。
-			name:    "schema ALL expansion rejected",
-			setup:   []string{fmt.Sprintf("GRANT ALL ON %s.* TO '%s'@'%%'", schema, user)},
-			wantSub: []string{"UPDATE on " + schema + ".*", "DELETE on " + schema + ".*"},
+			// 逐项展开)= 违约配置,拒;随后把提示里的 REVOKE 语句原样执行,
+			// 锚死「提示是可直接执行的合法 SQL」(对抗审计 F7 的 1064 回归;
+			// execHint 显式字段,防用例改名静默丢锚——delta 复审)。
+			name: "schema ALL expansion rejected and hinted REVOKE executes",
+			setup: []string{
+				fmt.Sprintf("GRANT SELECT, INSERT ON %s.* TO '%s'@'%%'", schema, user),
+				fmt.Sprintf("GRANT ALL ON %s.* TO '%s'@'%%'", schema, user),
+			},
+			wantSub:  []string{"REVOKE UPDATE, DELETE ON `" + schema + "`.* FROM '" + user + "'@'%'"},
+			execHint: true,
 		},
 	}
 	for _, st := range steps {
@@ -338,6 +437,22 @@ func TestAuditAppendOnlyEnforcement(t *testing.T) {
 			}
 			err := CheckAuditAppendOnly(ctx, limited)
 			assertSubstrings(t, err, st.wantSub)
+			if st.execHint && err != nil {
+				hint := err.Error()
+				i := strings.Index(hint, "fix: ")
+				j := strings.Index(hint, " (audit_log-facing")
+				if i < 0 || j <= i {
+					t.Fatalf("cannot locate fix hint in: %v", err)
+				}
+				for _, stmt := range strings.Split(hint[i+len("fix: "):j], "; ") {
+					if _, xerr := admin.Exec(stmt); xerr != nil {
+						t.Fatalf("hinted REVOKE not executable: %q: %v", stmt, xerr)
+					}
+				}
+				if aerr := CheckAuditAppendOnly(ctx, limited); aerr != nil {
+					t.Fatalf("after executing hinted REVOKEs, check should pass: %v", aerr)
+				}
+			}
 		})
 	}
 }

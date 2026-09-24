@@ -20,6 +20,9 @@ func TestLatestVersion(t *testing.T) {
 				"migrations/0001_init.down.sql":   "",
 				"migrations/0002_auth.up.sql":     "",
 				"migrations/0003_approval.up.sql": "",
+				// 仅 down 的更高版本必须被无视:杀掉「删 .up.sql 过滤」变异
+				// (对抗审计 F10——down 版本号不高于任何 up 时该变异存活)。
+				"migrations/0009_ghost.down.sql": "",
 			},
 			want: 3,
 		},
