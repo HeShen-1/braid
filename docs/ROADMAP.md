@@ -58,7 +58,7 @@
 
 ## M6 审计与观测(约 1.5 周)
 
-- [ ] T6.1 审计写入器升级:异步批量、PII 脱敏钩子、保留期配置、prev_hash 占位 — M — 依赖 T2.6 — 验收:脱敏钩子对标记字段生效;批量写无丢失(对账单测);批量写契约 = `INSERT..ON DUPLICATE KEY UPDATE id=id` + affected-rows 与期望行数比对(禁 INSERT IGNORE——分区越界/截断会被静默降级,T1.3 审计确认)
+- [x] T6.1 审计写入器升级:异步批量、PII 脱敏钩子、保留期配置、prev_hash 占位 — M — 依赖 T2.6 — 验收:脱敏钩子对标记字段生效;批量写无丢失(对账单测);批量写契约 = `INSERT..ON DUPLICATE KEY UPDATE id=id` + affected-rows 与期望行数比对(禁 INSERT IGNORE——分区越界/截断会被静默降级,T1.3 审计确认) — ✅ 2026-09-24:同事务 WAL 暂存表 audit_pending(0004)+ reaper flush 循环(秒级 tick,游标翻页防队头饿死);高频四类异步、低频/回读事件同步(分阶段);批量契约经对抗审计修订 = 预过滤 + 裸 INSERT + COUNT 对账(否决 ON DUP——其 UPDATE 权限诉求与 T7.3 append-only 预检冲突,用户拍板;issue 原 ON DUP 判据在铁律下不可部署,语义等价换形:重放幂等 + 无丢失 + 禁 INSERT IGNORE 保持);COUNT 对账臂首战实证 MySQL 8.0.46 prepared 多对 row-constructor IN 返回 0 行的静默错果;脱敏钩子 = user_data 子树叶子掩蔽(T1.1 口径,双路径先于任何落库,UseNumber 保大整数);决策 D-2026-09-24-t61-audit-async-batch
 - [ ] T6.2 OTel 贯穿(API → worker → LLM/工具)— M — 依赖 T6.1、T3.1、T3.2 — 验收:API 触发一次执行,audit_log 行 trace_id 与本次 trace 一致且可按其查询;审批挂起 → 续跑经 **trace link** 关联
 - [ ] T6.3 审计查询 API(按 execution/trace/人过滤)— S — 依赖 T6.1 — 验收:三种过滤维度集成测试
 - [ ] T6.4 Prometheus 指标 + 告警规则(死信、审批积压、卡死节点、429 率、队列 Redis 内存水线)— M — 依赖 T4.1、T3.1 — 验收:promtool test rules 通过;注入死信/审批挂起后指标计数断言

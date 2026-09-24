@@ -225,6 +225,16 @@ func TestSuspendApprovalNode(t *testing.T) {
 	}
 
 	// 审计:双行同事务(迁移行 + 审批域事件行),attempt 锚定。
+	// 先锚同步半边(T6.1 分阶段口径,对抗审计 test-gaps:低频/回读事件回退
+	// 暂存全绿):approval.requested 不经 flush 直接在场。
+	var syncRows int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE execution_id=? AND event_type=?`,
+		execID, audit.EventApprovalRequested).Scan(&syncRows); err != nil {
+		t.Fatalf("count sync rows: %v", err)
+	}
+	if syncRows != 1 {
+		t.Fatalf("approval.requested pre-flush rows = %d, want 1(同步直写半边)", syncRows)
+	}
 	assertAuditSequence(t, d, execID, []auditEvent{
 		wantEvent(audit.EventNodeStateChanged, "a", 0),
 		wantEvent(audit.EventNodeStateChanged, "a", attemptAOf(t, d, execID)),

@@ -222,7 +222,7 @@ func newDocExampleEnv(t *testing.T, complianceVerdict string) *docExampleEnv {
 	gin.SetMode(gin.TestMode)
 	router := api.NewServer(api.Config{
 		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: 3, ResumeQueue: queue,
-	}, d, apiIDs, reg, apiSched).Router()
+	}, d, apiIDs, reg, apiSched, auth.BuiltinProvider{DB: d}).Router()
 
 	startE2ERelay(t, d, ctx)
 	workerCfg := worker.DefaultConfig()

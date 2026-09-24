@@ -10,6 +10,7 @@ import (
 	"os"
 	"time"
 
+	"braid/internal/audit"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 )
@@ -46,9 +47,11 @@ func New(d Deps, cfg Config) (*Reaper, error) {
 }
 
 // Run 阻塞运行直到 ctx 取消:janitor 独立 goroutine(分区 DDL 永不冻结扫描
-// 循环——攻击 8/12 吸收)+ tick 循环(选主闸 → RunOnce → ±20% 抖动睡眠,
-// 抖动去同步多实例同拍扫描)。Redis 选主 fail-open:不可达 → warn 后照常
-// 执行本 tick(leaderless);正确性不依赖锁(处置事务锁后复核 + CAS)。
+// 循环——攻击 8/12 吸收)+ audit flush 独立 goroutine(T6.1 暂存搬运,
+// 秒级 tick 与 janitor 小时级分置)+ tick 循环(选主闸 → RunOnce → ±20%
+// 抖动睡眠,抖动去同步多实例同拍扫描)。Redis 选主 fail-open:不可达 →
+// warn 后照常执行本 tick(leaderless);正确性不依赖锁(处置事务锁后
+// 复核 + CAS;flush 的 ON DUP 幂等使 leaderless 重叠搬运亦良性)。
 func (r *Reaper) Run(ctx context.Context) error {
 	jctx, jcancel := context.WithCancel(ctx)
 	defer jcancel()
@@ -56,6 +59,11 @@ func (r *Reaper) Run(ctx context.Context) error {
 	go func() {
 		defer close(jdone)
 		r.janitorLoop(jctx)
+	}()
+	fdone := make(chan struct{})
+	go func() {
+		defer close(fdone)
+		r.auditFlushLoop(jctx)
 	}()
 
 	token := fmt.Sprintf("%s:%d:%d", r.cfg.ID, os.Getpid(), time.Now().UnixNano())
@@ -80,6 +88,7 @@ func (r *Reaper) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			<-jdone
+			<-fdone
 			return nil
 		case <-time.After(jittered(r.cfg.ScanInterval)):
 		}
@@ -130,4 +139,43 @@ func (r *Reaper) RunOnce(ctx context.Context) error {
 func jittered(d time.Duration) time.Duration {
 	j := int64(float64(d) * 0.2)
 	return d - time.Duration(j) + time.Duration(rand.Int64N(2*j+1))
+}
+
+// auditFlushRoundCap 是单 tick 的搬运行数上限(有界 tick,余量下轮;
+// 同 janitor outboxRoundCap 语义)。搬运逻辑本体在 audit.FlushAll
+// (internal/audit,单点供测试与多消费方复用)。
+const auditFlushRoundCap = 10000
+
+// flushOnce 搬运一轮暂存审计行(audit_pending → audit_log,T6.1 异步批量
+// 的消费半边)。毒行隔离与批量契约见 audit/flush.go;此处只驱动。
+func (r *Reaper) flushOnce(ctx context.Context) error {
+	n, err := audit.FlushAll(ctx, r.deps.DB, r.cfg.AuditFlushBatch, auditFlushRoundCap)
+	if err != nil {
+		return fmt.Errorf("reaper: audit flush: %w", err)
+	}
+	if n > 0 {
+		r.log.Info("audit.flushed", "rows", n)
+	}
+	return nil
+}
+
+// auditFlushLoop 独立 goroutine:暂存审计行搬运(秒级 tick,与 janitor 的
+// 小时级分区作业分置——可见性滞后上界语义见 Config.AuditFlushInterval)。
+// 错误只记日志不退出(收敛性作业,下轮重试;与 janitorLoop 同形)。
+func (r *Reaper) auditFlushLoop(ctx context.Context) {
+	if err := r.flushOnce(ctx); err != nil {
+		r.log.Error("audit.flush_round_failed", "err", err)
+	}
+	t := time.NewTicker(r.cfg.AuditFlushInterval)
+	defer t.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			if err := r.flushOnce(ctx); err != nil {
+				r.log.Error("audit.flush_round_failed", "err", err)
+			}
+		}
+	}
 }

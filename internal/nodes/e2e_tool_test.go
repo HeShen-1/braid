@@ -154,6 +154,7 @@ func TestE2EToolNodeFullChain(t *testing.T) {
 		t.Fatalf("node output = %v", nodeOut)
 	}
 
+	flushStagedAudit(t, d) // T6.1 异步暂存排空
 	// 3) tool.call.completed 审计行:词表/actor/attempt 锚/payload;且整行
 	//    任何文本列不含 token 本体(凭证纪律端到端)。
 	if err := d.QueryRow(`SELECT id FROM node_attempt WHERE node_execution_id=? AND attempt_no=1`,

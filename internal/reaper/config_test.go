@@ -16,6 +16,9 @@ func TestDefaultConfig(t *testing.T) {
 	if c.AuditRetention != 2160*time.Hour {
 		t.Fatalf("retention = %s, want 90d", c.AuditRetention)
 	}
+	if c.AuditFlushInterval != time.Second || c.AuditFlushBatch != 500 {
+		t.Fatalf("audit flush defaults = %s/%d, want 1s/500", c.AuditFlushInterval, c.AuditFlushBatch)
+	}
 }
 
 func TestConfigValidateBounds(t *testing.T) {
@@ -37,6 +40,10 @@ func TestConfigValidateBounds(t *testing.T) {
 		{"pending_ttl_floor", func(c *Config) { c.PendingTTL = 14 * time.Minute }, false},
 		{"dispatch_stale_floor", func(c *Config) { c.DispatchStale = 9 * time.Minute }, false},
 		{"retention_floor", func(c *Config) { c.AuditRetention = 23 * time.Hour }, false},
+		{"audit_flush_interval_floor", func(c *Config) { c.AuditFlushInterval = 99 * time.Millisecond }, false},
+		{"audit_flush_interval_ok", func(c *Config) { c.AuditFlushInterval = 100 * time.Millisecond }, true},
+		{"audit_flush_batch_zero", func(c *Config) { c.AuditFlushBatch = 0 }, false},
+		{"audit_flush_batch_over", func(c *Config) { c.AuditFlushBatch = 3201 }, false},
 		{"janitor_floor", func(c *Config) { c.JanitorInterval = 4 * time.Minute }, false},
 		{"outbox_batch_zero", func(c *Config) { c.OutboxBatch = 0 }, false},
 		{"outbox_batch_over", func(c *Config) { c.OutboxBatch = 10001 }, false},
@@ -100,5 +107,21 @@ func TestConfigFromEnvParses(t *testing.T) {
 		return ""
 	}); err == nil {
 		t.Fatal("坏值应报错")
+	}
+	// T6.1 新旋钮:flush 间隔/batch 可经 env 覆盖。
+	c2, err := ConfigFromEnv(func(k string) string {
+		switch k {
+		case "BRAID_REAPER_AUDIT_FLUSH_INTERVAL":
+			return "5s"
+		case "BRAID_REAPER_AUDIT_FLUSH_BATCH":
+			return "250"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("flush env: %v", err)
+	}
+	if c2.AuditFlushInterval != 5*time.Second || c2.AuditFlushBatch != 250 {
+		t.Fatalf("flush env = %s/%d, want 5s/250", c2.AuditFlushInterval, c2.AuditFlushBatch)
 	}
 }

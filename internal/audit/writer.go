@@ -1,9 +1,11 @@
-// Package audit 实现最小同步审计写入器(T2.6,0001_init.up.sql §6):
-// 在状态迁移的同一事务内直写 audit_log 行。逐字镜像 outbox 范式:校验前置
-// 不触 DB、永不自管事务边界(同 engine.DBTX 契约)。
+// Package audit 实现审计写入器(T2.6 同步直写;T6.1 起双路径:本文件
+// Append 同步直写 + stage.go Enqueue 同事务暂存 audit_pending、flush.go
+// reaper 批量搬运)。两条路径同纪律:校验前置不触 DB、永不自管事务边界
+// (同 engine.DBTX 契约)、脱敏先于任何落库(sanitize.go)。
 //
 // 同步语义(P0):event_at = DB 端 NOW(3),与 node_execution.status_changed_at
-// 同钟系——事件时刻=迁移时刻(异步批量写的分立归 T6.1)。exec_date 分区键由
+// 同钟系——事件时刻=迁移时刻(异步半边同钟:暂存事务时刻,flush 原样
+// 搬运)。exec_date 分区键由
 // 普通一致读从 workflow_execution.created_at 物化后 INSERT VALUES 落行
 // (D-2026-09-23-t26-audit-writer-lockfree-read,修订 D-t26 #2 的单语句
 // INSERT..SELECT:RR 下其源表读取取共享 next-key 锁并持有至 COMMIT,reaper
@@ -14,10 +16,14 @@
 // 铁律:本包对 audit_log 只发 INSERT;业务账号仅 INSERT/SELECT 授权由部署层
 // 承担(T7.3 安装自检断言)。payload 只含 id/码/枚举,密钥永不入内。
 //
-// P0 未启用(走 DDL 默认,见 D-2026-09-23-t26-audit-events):trace_id(NULL
-// 占位,T6.2 前不伪造)、pii_masked(0,T6.1 脱敏钩子)、prev_hash/row_hash
-// (”/NULL,未启链期)。usage/cost 冗余列已随 T3.1 llm.call.completed 启用
+// P0 未启用(走 DDL 默认):trace_id(NULL 占位,T6.2 前不伪造)、
+// prev_hash/row_hash(”/NULL,未启链期)。pii_masked 已随 T6.1 脱敏钩子
+// 接线(SanitizePayload 掩蔽标志;现有词表无自由文本 ⇒ 恒 0,见
+// sanitize.go)。usage/cost 冗余列已随 T3.1 llm.call.completed 启用
 // (Event.Usage,与 node_attempt 双录;其余事件类型仍不携带)。
+// T6.1 起本包双写入路径:Append(本文件,同步直写,低频/回读事件)与
+// Enqueue(stage.go,同事务暂存 audit_pending,高频四类)——分阶段口径
+// 见 stage.go 头注释;搬运半边 = flush.go(reaper flush 循环消费)。
 package audit
 
 import (
@@ -202,6 +208,13 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 	if evt.TraceID != "" {
 		trace = evt.TraceID
 	}
+	// PII 脱敏钩子(T6.1):先于落库(校验前置不触 DB 契约的延续),
+	// 「原始永不入 payload」;未掩蔽时字节原样(零成本路径)。同步/异步
+	// (Append/Enqueue)两侧同规。
+	payload, piiMasked, sanitizeErr := SanitizePayload(evt.Payload)
+	if sanitizeErr != nil {
+		return sanitizeErr
+	}
 	// [1] 一致读物化分区键(零锁,见方法注释)。DATE_FORMAT 直出字符串:
 	// 不经 driver 的 time.Location 解析——go-sql-driver 把 DATE 解析为 DSN loc
 	// 的午夜,loc≠UTC 时 .UTC() 换算会静默移日(review 修;字符串往返 loc 无关,
@@ -229,23 +242,23 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 		_, err = q.ExecContext(ctx, `
 INSERT INTO audit_log
   (id, exec_date, event_at, event_type, execution_id, node_execution_id,
-   node_id, attempt_id, actor_type, actor_id, trace_id, payload,
+   node_id, attempt_id, actor_type, actor_id, trace_id, pii_masked, payload,
    model, prompt_tokens, completion_tokens, total_tokens,
    cost_amount, cost_currency, cost_estimated)
-VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?,
+VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?)`,
 			evt.ID, execDate, evt.EventType, evt.ExecutionID,
-			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, evt.Payload,
+			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, piiMasked, payload,
 			evt.Usage.Model, evt.Usage.PromptTokens, evt.Usage.CompletionTokens,
 			evt.Usage.TotalTokens, costArg, currencyArg, evt.Usage.Estimated)
 	} else {
 		_, err = q.ExecContext(ctx, `
 INSERT INTO audit_log
   (id, exec_date, event_at, event_type, execution_id, node_execution_id,
-   node_id, attempt_id, actor_type, actor_id, trace_id, payload)
-VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   node_id, attempt_id, actor_type, actor_id, trace_id, pii_masked, payload)
+VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			evt.ID, execDate, evt.EventType, evt.ExecutionID,
-			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, evt.Payload)
+			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, piiMasked, payload)
 	}
 	if err != nil {
 		return fmt.Errorf("audit: append %d (%s): %w", evt.ID, evt.EventType, err)

@@ -25,8 +25,13 @@ type auditEvent struct {
 }
 
 // auditEvents 读该执行的审计行(ORDER BY id:同事务内雪花序 = 落行序)。
+// T6.1 起高频四类经 audit_pending 异步——读取口先排空暂存(reaper flush
+// 的测试内等价物),断言面对的是全量终行。
 func auditEvents(t *testing.T, d *sql.DB, execID uint64) []auditEvent {
 	t.Helper()
+	if _, err := audit.FlushAll(context.Background(), d, 500, 10000); err != nil {
+		t.Fatalf("flush staged audit: %v", err)
+	}
 	rows, err := d.Query(`
 SELECT event_type, node_id, attempt_id, actor_type, actor_id
   FROM audit_log WHERE execution_id=? ORDER BY id`, execID)
@@ -196,5 +201,37 @@ func TestAuditTrailRetryAndExhaust(t *testing.T) {
 	}
 	if fp.From != "EXECUTING" || fp.To != "FAILED" || fp.Code != "attempts_exhausted" || fp.AttemptNo != 2 {
 		t.Fatalf("fail payload = %+v", fp)
+	}
+}
+
+// TestHotPathRoutesThroughStaging(T6.1 路由锚,对抗审计 test-gaps:stageRow
+// 任一回退 auditRow 全套件绿):flush 之前,高频 state_changed 必须在
+// audit_pending 且不在 audit_log——「高频四类走暂存」是分阶段口径的承重墙。
+func TestHotPathRoutesThroughStaging(t *testing.T) {
+	s, d := newSched(t)
+	_, execID := inst(t, s, d, chainDSL, `{"q":"hi"}`)
+	if err := s.Start(context.Background(), execID, "sched-test"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	waitNodeStatus(t, d, execID, "a", engine.NodeExecuting)
+
+	var pending, inLog int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_pending WHERE execution_id=? AND event_type=?`,
+		execID, audit.EventNodeStateChanged).Scan(&pending); err != nil {
+		t.Fatalf("count pending: %v", err)
+	}
+	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE execution_id=?`,
+		execID).Scan(&inLog); err != nil {
+		t.Fatalf("count log: %v", err)
+	}
+	if pending != 1 {
+		t.Fatalf("staged state_changed = %d, want 1(高频类必须先落暂存——回退同步直写即路由破坏)", pending)
+	}
+	if inLog != 0 {
+		t.Fatalf("audit_log rows before flush = %d, want 0", inLog)
+	}
+	// 排空后终行在场(读取口自带 flush);cleanupExec 收暂存面。
+	if got := auditEvents(t, d, execID); len(got) != 1 || got[0].eventType != audit.EventNodeStateChanged {
+		t.Fatalf("after flush = %+v, want single state_changed", got)
 	}
 }

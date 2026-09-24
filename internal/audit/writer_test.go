@@ -135,6 +135,7 @@ func seedExec(t *testing.T, d *sql.DB) uint64 {
 	  VALUES (?, ?, ?, 1, ?, 'RUNNING', 'audit-test', '{}', ?)`,
 		execID, defID, name, string(make([]byte, 64)), seedExecCreatedAt)
 	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID) // T6.1 暂存面(防御对称)
 		_, _ = d.Exec(`DELETE FROM audit_log WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_definition WHERE id=?`, defID)
@@ -256,6 +257,34 @@ func TestAppendMaterializesRow(t *testing.T) {
 	}
 	if last.nodeID.Valid {
 		t.Fatalf("empty node_id = %q, want NULL", last.nodeID.String)
+	}
+}
+
+// TestAppendSanitizesPayload(T6.1):同步路径同过脱敏钩子——掩蔽值落行、
+// pii_masked=1;未标注行 pii_masked=0(TestAppendMaterializesRow 已锚)。
+func TestAppendSanitizesPayload(t *testing.T) {
+	d := sqltest.MustOpenAt(t, testSchema)
+	execID := seedExec(t, d)
+
+	if err := Append(context.Background(), d, Event{
+		ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: execID,
+		NodeExecID: 1, NodeID: "n1", ActorType: ActorWorker, ActorID: "w1",
+		Payload: json.RawMessage(`{"user_data":{"phone":"13800000000"},"from":"PENDING"}`),
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	rows := readAudit(t, d, execID)
+	if len(rows) != 1 {
+		t.Fatalf("rows = %d, want 1", len(rows))
+	}
+	if !rows[0].piiMasked {
+		t.Fatal("pii_masked = false, want true")
+	}
+	if strings.Contains(string(rows[0].payload), "13800000000") {
+		t.Fatalf("PII leaked into audit_log: %s", rows[0].payload)
+	}
+	if !strings.Contains(string(rows[0].payload), "***") {
+		t.Fatalf("mask token missing: %s", rows[0].payload)
 	}
 }
 

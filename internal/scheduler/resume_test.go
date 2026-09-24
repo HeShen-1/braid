@@ -134,6 +134,10 @@ func TestResumeApproveAdvancesDownstream(t *testing.T) {
 	if attEvents != 1 {
 		t.Fatalf("att: events for c = %d, want 1(批准后下游推进)", attEvents)
 	}
+	// T6.1:高频四类异步暂存——断言前先排空(reaper flush 的测试内等价物)。
+	if _, err := audit.FlushAll(context.Background(), d, 500, 10000); err != nil {
+		t.Fatalf("flush staged audit: %v", err)
+	}
 	// 双迁移审计行(精确边锚,对抗审计 MEDIUM 修:计数差值断言在 dispatch
 	// 前置行面前恒真,零杀伤):WAITING_APPROVAL→EXECUTING 与
 	// EXECUTING→SUCCEEDED 各恰 1 行。
@@ -197,6 +201,10 @@ func TestResumeRejectFailsExecution(t *testing.T) {
 	ex := waitExecStatus(t, d, execID, engine.WorkflowFailed)
 	if ex.errorCode.String != "node_failed" {
 		t.Fatalf("wf error_code = %q, want node_failed(fail-fast 镜像)", ex.errorCode.String)
+	}
+	// T6.1:高频四类异步暂存——断言前先排空(reaper flush 的测试内等价物)。
+	if _, err := audit.FlushAll(context.Background(), d, 500, 10000); err != nil {
+		t.Fatalf("flush staged audit: %v", err)
 	}
 	// 驳回方向收口审计行(对抗审计 MEDIUM 修:error_code 列锚之外,审计
 	// 证据行的 EXECUTING→FAILED 边此前零锚——删 failApprovalNode 的审计

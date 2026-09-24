@@ -188,6 +188,7 @@ func TestE2EApprovalApproveResumesFlow(t *testing.T) {
 	}
 	// 审计行:approval.decided(actor=carol)在真链。
 	var n int
+	flushStagedAudit(t, d) // T6.1 异步暂存排空
 	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE execution_id=? AND event_type=? AND actor_id='carol'`,
 		execID, audit.EventApprovalDecided).Scan(&n); err != nil {
 		t.Fatalf("count approval.decided: %v", err)

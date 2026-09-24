@@ -162,6 +162,7 @@ func TestE2EApprovalNodeSuspends(t *testing.T) {
 		t.Fatalf("archived tasks = %d (err %v), want 0(挂起不留死信)", len(list), err)
 	}
 
+	flushStagedAudit(t, d) // T6.1 异步暂存排空
 	// 验收③:审计行记录挂起事件(双行、attempt 锚、域事件 payload)。
 	var gotStateChange, gotRequested int
 	rows, err := d.Query(`

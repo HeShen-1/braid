@@ -73,14 +73,14 @@ func mapFS(files map[string]string) fstest.MapFS {
 }
 
 // TestLatestMigrationVersionMatchesShippedFiles:真实内嵌 FS 的锚。硬编码
-// 当前值(3 = 0003_approval):按目录行数推导会与实现同构,锚就失去意义;
-// 新增迁移时随 bump(先红后绿的契约自提醒)。
+// 当前值(4 = 0004_audit_pending):按目录行数推导会与实现同构,锚就失去
+// 意义;新增迁移时随 bump(先红后绿的契约自提醒)。
 func TestLatestMigrationVersionMatchesShippedFiles(t *testing.T) {
 	got, err := LatestMigrationVersion()
 	if err != nil {
 		t.Fatalf("LatestMigrationVersion(): %v", err)
 	}
-	if want := uint(3); got != want {
+	if want := uint(4); got != want {
 		t.Fatalf("LatestMigrationVersion() = %d, want %d (bump this anchor when adding migrations)", got, want)
 	}
 }

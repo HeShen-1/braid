@@ -102,11 +102,16 @@ SELECT id, model, prompt_tokens, completion_tokens, total_tokens,
 
 func readAuditLLMUsage(t *testing.T, attemptID uint64) (usageSnapshot, string, string, audit.LLMCallCompletedPayload) {
 	t.Helper()
+	// T6.1:llm.call.completed 高频异步——读前先排空暂存(reaper flush 等价)。
+	wd := sqltest.MustOpenAt(t, workerSchema)
+	if _, err := audit.FlushAll(context.Background(), wd, 500, 10000); err != nil {
+		t.Fatalf("flush staged audit: %v", err)
+	}
 	var s usageSnapshot
 	var pt, ct, tt sql.NullInt64
 	var actorType, actorID string
 	var payload []byte
-	err := sqltest.MustOpenAt(t, workerSchema).QueryRow(`
+	err := wd.QueryRow(`
 SELECT model, prompt_tokens, completion_tokens, total_tokens,
        cost_amount, cost_currency, cost_estimated, actor_type, actor_id, payload
   FROM audit_log WHERE event_type=? AND attempt_id=?`,
