@@ -112,6 +112,24 @@ type ApprovalDecisionDeniedPayload struct {
 	Reason    string `json:"reason,omitempty"` // membership(缺省)| role_denied
 }
 
+// ApprovalEscalatedPayload 是 approval.escalated(T4.3 审批超时升级发射)的
+// 事件体。deadline_at 是升级判据证据(触发时刻节点行的挂起截止);策略
+// (on_timeout)与审批人名单真相源在 input_snapshot,payload 不复制(D-t26
+// §4);升级时刻真相源在 escalated_at 列。
+type ApprovalEscalatedPayload struct {
+	NodeID     string    `json:"node_id"`
+	DeadlineAt time.Time `json:"deadline_at"`
+}
+
+// ApprovalResumeRedispatchedPayload 是 approval.resume_redispatched(T4.3
+// resume 死信网幂等重投)的事件体。决策事实真相源在 approval_decision 行
+// (payload 仅 id);AttemptNo = 重投事件声称的续跑 attempt 号(TaskID 第四段)。
+type ApprovalResumeRedispatchedPayload struct {
+	NodeID     string `json:"node_id"`
+	DecisionID uint64 `json:"decision_id"`
+	AttemptNo  uint16 `json:"attempt_no"`
+}
+
 // ExecutionTriggeredPayload 是 execution.triggered(T5.5 API 触发面)的
 // 事件体。只锚定触发事实:触发者身份在行级列(actor_type/actor_id + 执行行
 // triggered_by 事实源),input 正文不影子存储(D-t26 §4:自由数据面真相源

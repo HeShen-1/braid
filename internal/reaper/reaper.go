@@ -101,7 +101,7 @@ func (r *Reaper) leaderGate(ctx context.Context, token string, ttl time.Duration
 }
 
 // RunOnce 执行一轮全量扫描(导出供测试;不调 Validate——校验属启动路径,
-// 测试经 Config 字面量注入毫秒级值)。三组扫描顺序执行、逐作业错误隔离:
+// 测试经 Config 字面量注入毫秒级值)。四组扫描顺序执行、逐作业错误隔离:
 // 单作业失败记日志不阻断其余(扫描面互相独立),首个错误仍上抛供调用方
 // 观测(测试断言),Run 循环只记日志。
 func (r *Reaper) RunOnce(ctx context.Context) error {
@@ -109,9 +109,10 @@ func (r *Reaper) RunOnce(ctx context.Context) error {
 		name string
 		fn   func(context.Context) error
 	}{
-		{"scan_attempts", r.scanAttempts}, // ① attempt 判死 → reapAttempt
-		{"scan_nodes", r.scanNodes},       // ② deadline/分支B + ③ 孤儿 → reapAttempt
-		{"scan_execs", r.scanExecs},       // ④a PENDING 判死 + ④b 终态补判
+		{"scan_attempts", r.scanAttempts},   // ① attempt 判死 → reapAttempt
+		{"scan_nodes", r.scanNodes},         // ② deadline/分支B + ③ 孤儿 → reapAttempt
+		{"scan_execs", r.scanExecs},         // ④a PENDING 判死 + ④b 终态补判
+		{"scan_approvals", r.scanApprovals}, // ⑤ WAITING_APPROVAL 超时/孤儿(T4.3)
 	}
 	var firstErr error
 	for _, j := range jobs {

@@ -186,6 +186,49 @@ func TestTaskIDVocabularyResume(t *testing.T) {
 	}
 }
 
+// TestTaskIDVocabularyNotify:notify: 词表钉死(T4.3 审批超时升级通知,approval.notify
+// 事件的 TaskID)。恰好一次语义锚在 escalated_at(DB 谓词),单段 node_execution_id
+// 即可承载「每个挂起节点至多一条通知」;变异:正则放开二段 → 二段形态红。
+func TestTaskIDVocabularyNotify(t *testing.T) {
+	d := sqltest.MustOpen(t)
+	base := Event{
+		ExecutionID: newID(),
+		EventType:   "approval.notify",
+		Payload:     json.RawMessage(`{"execution_id":1}`),
+	}
+	t.Cleanup(func() { mustExec(t, d, `DELETE FROM outbox WHERE execution_id=?`, base.ExecutionID) })
+	ok := []string{
+		fmt.Sprintf("notify:%d", newID()),
+	}
+	bad := map[string]string{
+		"空 id 段":   "notify:",
+		"非数字段":     fmt.Sprintf("notify:node-%d", newID()),
+		"二段式(词表外)": fmt.Sprintf("notify:%d:1", newID()),
+		"前缀错位":     fmt.Sprintf("notifx:%d", newID()),
+		"大写前缀":     fmt.Sprintf("Notify:%d", newID()),
+	}
+	for _, id := range ok {
+		evt := base
+		evt.TaskID = id
+		evt.ID = newID()
+		if err := Append(context.Background(), d, evt); err != nil {
+			t.Fatalf("valid notify task id %q rejected: %v", id, err)
+		}
+	}
+	for name, id := range bad {
+		evt := base
+		evt.TaskID = id
+		evt.ID = newID()
+		w := &countDBTX{d: d}
+		if err := Append(context.Background(), w, evt); !errors.Is(err, ErrInvalidEvent) {
+			t.Fatalf("%s: task id %q: want ErrInvalidEvent, got %v", name, id, err)
+		}
+		if n := w.execs.Load(); n != 0 {
+			t.Fatalf("%s: validation touched DB", name)
+		}
+	}
+}
+
 // TestClampErrLen:截断保持在 rune 边界(字节拦腰截会产出非法 UTF-8,utf8mb4
 // 严格模式 1366 拒收 → 记账回滚 → 行永动重试)。
 func TestClampErrLen(t *testing.T) {

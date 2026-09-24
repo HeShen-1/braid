@@ -72,13 +72,16 @@ const (
 // nodeEdges 是节点状态机唯一真源,逐字镜像 DDL node_execution 表注释:
 // PENDING→EXECUTING→SUCCEEDED|FAILED|WAITING_APPROVAL;
 // WAITING_APPROVAL→EXECUTING(审批复入,新 attempt);
+// WAITING_APPROVAL→FAILED(审批超时 fail 策略终败,T4.3;0001 DDL 注释形态
+// 由 D-2026-09-24-t43-approval-timeout 超越记录,error_code=approval_timeout
+// 是 DDL error_code 词表预留词);
 // EXECUTING→PENDING 仅限 reconciler 重入队(T2.5);
 // PENDING→SKIPPED(分支剪枝,T2.4);任意非终态→CANCELLED。
 // 否决 FAILED→PENDING:FAILED 必须终态(重入队只从 EXECUTING 走)。
 var nodeEdges = map[NodeState][]NodeState{
 	NodePending:         {NodeExecuting, NodeSkipped, NodeCancelled},
 	NodeExecuting:       {NodeSucceeded, NodeFailed, NodeWaitingApproval, NodePending /*仅 reconciler(T2.5)*/, NodeCancelled},
-	NodeWaitingApproval: {NodeExecuting, NodeCancelled},
+	NodeWaitingApproval: {NodeExecuting, NodeFailed, NodeCancelled},
 }
 
 // wfEdges 是工作流状态机唯一真源(DDL workflow_execution.status 列注释):
