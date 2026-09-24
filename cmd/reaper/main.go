@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"braid/internal/db"
+	"braid/internal/preflight"
 	"braid/internal/reaper"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
@@ -51,6 +52,19 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("reaper: mysql ping: %w", err)
 	}
 
+	// T7.3 安装自检:迁移版本 + append-only 硬拒;reaper 是分区水位的自愈者
+	// (janitor 首 tick 即补 +7d),水位破约仅 warn——硬拒会造出「没人补
+	// 分区 → 永远起不来」的死锁。
+	if err := errors.Join(
+		preflight.CheckSchemaVersion(ctx, mysqlDB),
+		preflight.CheckAuditAppendOnly(ctx, mysqlDB),
+	); err != nil {
+		return fmt.Errorf("reaper: %w", err)
+	}
+	if err := preflight.CheckAuditPartitions(ctx, mysqlDB); err != nil {
+		slog.Warn("reaper: audit partition watermark", "err", err)
+	}
+
 	ids, err := snowflake.New(uint16(os.Getpid() & 0x3ff))
 	if err != nil {
 		return fmt.Errorf("reaper: snowflake: %w", err)
@@ -66,6 +80,11 @@ func run(ctx context.Context) error {
 	// 的停摆面——恰是验收要消灭的场景。不可达只 warn。
 	deps := reaper.Deps{DB: mysqlDB, Sched: sched, IDs: ids}
 	if addr := os.Getenv("BRAID_REDIS_QUEUE_ADDR"); addr != "" {
+		// T7.3:队列 Redis 契约探测仅 warn(D-t25 fail-open 同族:锁实例破约
+		// 的失败模式 = 锁丢失退化为 leaderless,安全;拒启反制造停摆面)。
+		if err := preflight.CheckRedisQueue(ctx, addr); err != nil {
+			slog.Warn("reaper: redis queue policy preflight", "err", err)
+		}
 		deps.Locker = reaper.RedisLocker(redis.NewClient(&redis.Options{Addr: addr}))
 		slog.Info("reaper: leader lock enabled", "addr", addr)
 	} else {

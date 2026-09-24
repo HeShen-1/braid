@@ -18,6 +18,7 @@ import (
 
 	"braid/internal/api"
 	"braid/internal/db"
+	"braid/internal/preflight"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 	"braid/internal/tools"
@@ -66,6 +67,16 @@ func run(ctx context.Context) error {
 	defer dbh.Close() //nolint:errcheck // 主路径退出,关闭错误无处置义
 	if err := dbh.PingContext(ctx); err != nil {
 		return fmt.Errorf("api: mysql ping: %w", err)
+	}
+
+	// T7.3 安装自检:api 是审计写方(触发审计二段事务),MySQL 三项全硬拒;
+	// 错误自带修复提示,经 main 的 fatal 口径输出(slog.Error + Exit(1))。
+	if err := errors.Join(
+		preflight.CheckSchemaVersion(ctx, dbh),
+		preflight.CheckAuditAppendOnly(ctx, dbh),
+		preflight.CheckAuditPartitions(ctx, dbh),
+	); err != nil {
+		return fmt.Errorf("api: %w", err)
 	}
 	ids, err := snowflake.New(cfg.SnowflakeNode)
 	if err != nil {

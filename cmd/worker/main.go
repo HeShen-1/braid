@@ -23,6 +23,7 @@ import (
 	"braid/internal/db"
 	"braid/internal/llm"
 	"braid/internal/nodes"
+	"braid/internal/preflight"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 	"braid/internal/tools"
@@ -83,6 +84,16 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: mysql ping: %w", err)
 	}
 
+	// T7.3 安装自检:worker 是审计写方(节点事件),MySQL 三项全硬拒;词表
+	// 自检 = 下方 PrebuildTokenizers(T7.2 接线,D-t72 #4 复用不重复)。
+	if err := errors.Join(
+		preflight.CheckSchemaVersion(ctx, mysqlDB),
+		preflight.CheckAuditAppendOnly(ctx, mysqlDB),
+		preflight.CheckAuditPartitions(ctx, mysqlDB),
+	); err != nil {
+		return fmt.Errorf("worker: %w", err)
+	}
+
 	addr := os.Getenv("BRAID_REDIS_QUEUE_ADDR")
 	if addr == "" {
 		return errors.New("worker: BRAID_REDIS_QUEUE_ADDR is required")
@@ -96,6 +107,12 @@ func run(ctx context.Context) error {
 	}
 	if err := insp.Close(); err != nil {
 		return fmt.Errorf("worker: close inspector: %w", err)
+	}
+
+	// T7.3:队列 Redis 契约(noeviction + AOF everysec)硬拒——worker 是队列
+	// 数据承载方,破约 = 逐出静默丢任务、重启烧在途租约。
+	if err := preflight.CheckRedisQueue(ctx, addr); err != nil {
+		return fmt.Errorf("worker: %w", err)
 	}
 
 	// T3.6 生产装配:llm 配置缺 URL/KEY/PRICE_TABLE 即启动失败(生产 worker
