@@ -181,6 +181,18 @@ func TestFileReadTool(t *testing.T) {
 		}
 	})
 
+	t.Run("symlinked allowlist root resolving to /proc rejected", func(t *testing.T) {
+		// 别名场景:词形根无辜、解析根失守(real = /proc)——构造期
+		// 解析根同样过伪文件系统检查,响亮拒。
+		alias := filepath.Join(t.TempDir(), "proc-alias")
+		if err := os.Symlink("/proc", alias); err != nil {
+			t.Fatalf("symlink: %v", err)
+		}
+		if _, err := NewFileReadTool(FileReadConfig{Dirs: []string{alias}}); err == nil || !strings.Contains(err.Error(), "pseudo-filesystem") {
+			t.Fatalf("err = %v, want resolves-to-pseudo-filesystem rejection", err)
+		}
+	})
+
 	t.Run("symlinked allowlist root resolved at construction", func(t *testing.T) {
 		// 挂载点场景:白名单目录本身是符号链接——构造期解析根,否则
 		// 白名单内合法文件因真实路径不在词形根下恒被拒。

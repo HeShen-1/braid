@@ -94,6 +94,14 @@ func NewFileReadTool(cfg FileReadConfig) (*FileReadTool, error) {
 		if resolved, err := filepath.EvalSymlinks(c); err == nil {
 			r = resolved
 		}
+		// 解析根同样过伪文件系统检查:白名单目录是符号链接别名指向
+		// /proc 的现场(词形无辜、解析失守——首道与终判都以 real 根
+		// 放行)在此响亮拒。
+		for _, bad := range pseudoFSRoots {
+			if r == bad || strings.HasPrefix(r, bad+string(filepath.Separator)) {
+				return nil, fmt.Errorf("tools: file_read allowlist dir %q resolves to pseudo-filesystem %q (worker credentials readable)", d, bad)
+			}
+		}
 		real = append(real, r)
 	}
 	max := cfg.MaxBytes
