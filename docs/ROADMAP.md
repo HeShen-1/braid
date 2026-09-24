@@ -73,7 +73,7 @@
 ## M8 验收(约 1 周)
 
 - [ ] T8.1 CI 故障注入套件:worker 中途 kill / Redis 断连 / 审批 enqueue 失败 / 双投递 — L — 依赖 M2-M6 — 验收:全部注入下扫描间隔×3 内达终态,CI 绿
-- [ ] T8.2 端到端示例:经 API 触发,文件路径输入 → file_read → LLM 解析 → 合规审查 → 摘要 → 人工审批(Web 页)→ 报告 — M — 依赖 T5.5、T3.5、T4.4 — 验收:全程审计链完整(trace 串联)
+- [x] T8.2 端到端示例:经 API 触发,文件路径输入 → file_read → LLM 解析 → 合规审查 → 摘要 → 人工审批(Web 页)→ 报告 — M — 依赖 T5.5、T3.5、T4.4 — 验收:全程审计链完整(trace 串联) — ✅ 2026-09-24:docs/examples/ 首个示例(DSL+样例输入+走链文档)+ nodes e2e 三用例真链守护(定义经 API 发布、审批走页面同源序列);branch 挂合规结论、修订独立尾(SKIPPED 级联剪枝下菱形汇聚=假成功陷阱);trace 维度按 issue #51 降级口径以 execution 串联交付,trace_id 恒 NULL 断言待 T6.2 翻转;决策 D-2026-09-24-t82-example-topology
 - [ ] T8.3 README(架构图、快速上手、故障注入演示)— M — 依赖 T8.1 — 验收:新环境按 README 30 分钟内跑通示例
 
 ## P1 停车场(不排期,防遗忘)
