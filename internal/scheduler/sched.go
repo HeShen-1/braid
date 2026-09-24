@@ -608,7 +608,7 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 			if err != nil {
 				return err
 			}
-			if err := st.auditRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
+			if err := st.stageRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
 				From: string(engine.NodeExecuting), To: string(engine.NodeSucceeded),
 				NodeID: n.nodeID, Version: newVer, AttemptNo: n.attempts, WorkerID: n.workerID.String,
 			}); err != nil {
@@ -663,7 +663,7 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 				if err != nil {
 					return err
 				}
-				if err := st.auditRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
+				if err := st.stageRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
 					From: string(engine.NodeExecuting), To: string(engine.NodeFailed),
 					NodeID: n.nodeID, Version: failVer, Code: code,
 					AttemptNo: n.attempts, WorkerID: n.workerID.String,
@@ -928,7 +928,7 @@ func (st *execState) skipOne(row *nodeRow) error {
 	if err != nil {
 		return err
 	}
-	if err := st.auditRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
+	if err := st.stageRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
 		From: string(engine.NodePending), To: string(engine.NodeSkipped),
 		NodeID: row.nodeID, Version: newVer,
 	}); err != nil {
@@ -964,7 +964,7 @@ func (st *execState) dispatchOne(row *nodeRow) error {
 	row.status = engine.NodeExecuting
 	row.attempts++
 	row.workerID = sql.NullString{String: st.workerID, Valid: true}
-	if err := st.auditRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
+	if err := st.stageRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
 		From: string(engine.NodePending), To: string(engine.NodeExecuting),
 		NodeID: row.nodeID, Version: newVer, AttemptNo: row.attempts, WorkerID: st.workerID,
 	}); err != nil {
@@ -998,7 +998,7 @@ func (st *execState) dispatchBranch(row *nodeRow, b *dsl.BranchNode) error {
 	if err != nil {
 		return err
 	}
-	if err := st.auditRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
+	if err := st.stageRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
 		From: string(engine.NodePending), To: string(engine.NodeExecuting),
 		NodeID: row.nodeID, Version: ver1, AttemptNo: row.attempts + 1, WorkerID: st.workerID,
 	}); err != nil {
@@ -1008,13 +1008,13 @@ func (st *execState) dispatchBranch(row *nodeRow, b *dsl.BranchNode) error {
 	if err != nil {
 		return err
 	}
-	if err := st.auditRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
+	if err := st.stageRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
 		From: string(engine.NodeExecuting), To: string(engine.NodeSucceeded),
 		NodeID: row.nodeID, Version: ver2, AttemptNo: row.attempts + 1, WorkerID: st.workerID,
 	}); err != nil {
 		return err
 	}
-	if err := st.auditRow(audit.EventBranchEvaluated, row, 0, audit.BranchEvaluatedPayload{
+	if err := st.stageRow(audit.EventBranchEvaluated, row, 0, audit.BranchEvaluatedPayload{
 		NodeID: row.nodeID, Next: next,
 	}); err != nil {
 		return err
@@ -1066,6 +1066,11 @@ func (st *execState) appendNodeTask(row *nodeRow) error {
 // 所在 worker 进程(调度逻辑运行于 worker,归因到进程,非 DSL 语义角色)。
 // attemptID 仅观察者路径(Complete)携带——attempt 行此时已存在可锚定;
 // 派发路径 attempt 行尚未由 worker 创建,只携 payload.attempt_no。
+//
+// T6.1 双路径:本 helper 走 Append 同步直写,仅低频事件(node.redispatched、
+// approval.requested)使用;高频四类(node.state_changed/branch.evaluated/
+// llm.call.completed/tool.call.completed)走 stageRow(Enqueue 暂存
+// audit_pending,reaper flush 批量搬运)——分阶段口径见 audit/stage.go。
 func (st *execState) auditRow(eventType string, row *nodeRow, attemptID uint64, payload any) error {
 	raw, err := json.Marshal(payload)
 	if err != nil {
@@ -1076,6 +1081,24 @@ func (st *execState) auditRow(eventType string, row *nodeRow, attemptID uint64, 
 		return fmt.Errorf("scheduler: gen audit id: %w", err)
 	}
 	return audit.Append(st.ctx, st.q, audit.Event{
+		ID: id, EventType: eventType, ExecutionID: st.execID,
+		NodeExecID: row.id, NodeID: row.nodeID, AttemptID: attemptID,
+		ActorType: audit.ActorWorker, ActorID: st.workerID, Payload: raw,
+	})
+}
+
+// stageRow 暂存一条高频审计行(T6.1 异步批量,同事务落 audit_pending;
+// 形参与 auditRow 对称,调用点按事件类分流)。
+func (st *execState) stageRow(eventType string, row *nodeRow, attemptID uint64, payload any) error {
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("scheduler: marshal audit %s payload: %w", eventType, err)
+	}
+	id, err := st.s.deps.IDs.Next()
+	if err != nil {
+		return fmt.Errorf("scheduler: gen audit id: %w", err)
+	}
+	return audit.Enqueue(st.ctx, st.q, audit.Event{
 		ID: id, EventType: eventType, ExecutionID: st.execID,
 		NodeExecID: row.id, NodeID: row.nodeID, AttemptID: attemptID,
 		ActorType: audit.ActorWorker, ActorID: st.workerID, Payload: raw,
@@ -1103,7 +1126,8 @@ func (st *execState) auditLLMCall(row *nodeRow, req CompletionRequest) error {
 	if err != nil {
 		return fmt.Errorf("scheduler: gen audit id: %w", err)
 	}
-	return audit.Append(st.ctx, st.q, audit.Event{
+	// T6.1:高频四类走暂存(Enqueue),reaper flush 批量搬运。
+	return audit.Enqueue(st.ctx, st.q, audit.Event{
 		ID: id, EventType: audit.EventLLMCallCompleted, ExecutionID: st.execID,
 		NodeExecID: row.id, NodeID: row.nodeID, AttemptID: req.AttemptID,
 		ActorType: audit.ActorLLM, ActorID: req.Usage.Model,
@@ -1128,7 +1152,8 @@ func (st *execState) auditToolCall(row *nodeRow, req CompletionRequest) error {
 	if err != nil {
 		return fmt.Errorf("scheduler: gen audit id: %w", err)
 	}
-	return audit.Append(st.ctx, st.q, audit.Event{
+	// T6.1:高频四类走暂存(Enqueue),reaper flush 批量搬运。
+	return audit.Enqueue(st.ctx, st.q, audit.Event{
 		ID: id, EventType: audit.EventToolCallCompleted, ExecutionID: st.execID,
 		NodeExecID: row.id, NodeID: row.nodeID, AttemptID: req.AttemptID,
 		ActorType: audit.ActorTool, ActorID: req.ToolCall.Name,

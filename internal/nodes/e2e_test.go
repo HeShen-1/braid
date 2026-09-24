@@ -381,6 +381,7 @@ func cleanupNodesE2E(t *testing.T, d *sql.DB, execID, defID uint64) {
 	for _, q := range []string{
 		`DELETE FROM outbox WHERE execution_id=?`,
 		`DELETE FROM node_attempt WHERE execution_id=?`,
+		`DELETE FROM audit_pending WHERE execution_id=?`, // T6.1 暂存面(漏删 ⇒ ghost 累积)
 		`DELETE FROM approval_decision WHERE execution_id=?`,
 		`DELETE FROM node_execution WHERE execution_id=?`,
 		`DELETE FROM workflow_execution WHERE id=?`,
@@ -476,6 +477,7 @@ SELECT id, model, prompt_tokens, completion_tokens, total_tokens,
 		t.Fatalf("attempt cost = %s %s estimated=%v, want %s CNY estimated=false", amount.String, currency.String, estimated, wantAmount)
 	}
 
+	flushStagedAudit(t, d) // T6.1:llm.call.completed 高频异步,读前排空
 	var aModel string
 	var apt, act, att int64
 	var aAmount, aCurrency sql.NullString
@@ -493,5 +495,14 @@ SELECT model, prompt_tokens, completion_tokens, total_tokens,
 		t.Fatalf("double-write diverged: node_attempt=(%s %d/%d/%d %s %s %v) audit=(%s %d/%d/%d %s %s %v)",
 			model, pt, ct, tt, amount.String, currency.String, estimated,
 			aModel, apt, act, att, aAmount.String, aCurrency.String, aEstimated)
+	}
+}
+
+// flushStagedAudit 排空暂存审计行(T6.1 高频四类异步——e2e 断言读 audit_log
+// 前的 reaper flush 等价物)。
+func flushStagedAudit(t *testing.T, d *sql.DB) {
+	t.Helper()
+	if _, err := audit.FlushAll(context.Background(), d, 500, 10000); err != nil {
+		t.Fatalf("flush staged audit: %v", err)
 	}
 }

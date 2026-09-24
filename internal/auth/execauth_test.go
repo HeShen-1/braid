@@ -54,6 +54,7 @@ func seedExec(t *testing.T, d *sql.DB, triggeredBy string) execSeed {
 		t.Fatalf("seed node_execution: %v", err)
 	}
 	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM audit_pending`) // T6.1 暂存面(防御:auth 面零暂存,保持清理面对称)
 		_, _ = d.Exec(`DELETE FROM audit_log`)
 		_, _ = d.Exec(`DELETE FROM node_execution WHERE execution_id = ?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id = ?`, execID)
@@ -288,7 +289,7 @@ func TestAuthorizeCallInfraErrors(t *testing.T) {
 // 空工具名/空角色集 = 构造期响亮失败(词表纪律:判定面变形即启动即现)。
 func TestNewToolPolicyRejectsInvalid(t *testing.T) {
 	cases := []struct {
-		name    string
+		name     string
 		defaults []Role
 		perTool  map[string][]Role
 	}{

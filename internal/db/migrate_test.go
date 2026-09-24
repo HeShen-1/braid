@@ -73,6 +73,7 @@ var engineTables = map[string]bool{
 	"approval_decision":   true, // 0003(T4.2 审批决定事实表,引擎域)
 	"outbox":              true,
 	"audit_log":           true,
+	"audit_pending":       true, // 0004(T6.1 审计异步批量 WAL 暂存表,引擎域)
 }
 
 // authTables:0002 起按域分 map 登记(T5.1)——后续新增域只加自己的 map,

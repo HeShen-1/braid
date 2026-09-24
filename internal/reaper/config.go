@@ -38,6 +38,13 @@ type Config struct {
 	// AuditRetention 是 audit_log 分区保留期(DROP 边界;保留期语义 ≥ retention,
 	// 被活执行钉住的分区本轮跳过)。
 	AuditRetention time.Duration
+	// AuditFlushInterval 是暂存审计行(audit_pending → audit_log,T6.1 异步
+	// 批量)的搬运 tick。上限语义 = 审计行可见性滞后上界(T6.3 查询面按
+	// 此口径读 audit_log);leaderless 重叠下并发搬运收敛(1062 回滚 +
+	// 下轮预过滤核销,见 audit/flush.go)。默认 1s。
+	AuditFlushInterval time.Duration
+	// AuditFlushBatch 是单批搬运行数上限(批间无隙连搬至排空/轮上限)。
+	AuditFlushBatch int
 	// JanitorInterval 是分区水位/outbox 清理作业的节流间隔(独立 goroutine)。
 	JanitorInterval time.Duration
 	// OutboxBatch 是 outbox DISPATCHED 清理的单批 DELETE 上限。
@@ -53,15 +60,17 @@ type Config struct {
 // DefaultConfig 返回生产默认值。
 func DefaultConfig() Config {
 	return Config{
-		ScanInterval:    30 * time.Second,
-		DeadGrace:       45 * time.Second,
-		ExecStale:       2 * time.Minute,
-		PendingTTL:      30 * time.Minute,
-		DispatchStale:   30 * time.Minute,
-		AuditRetention:  2160 * time.Hour, // 90d
-		JanitorInterval: time.Hour,
-		OutboxBatch:     500,
-		Queue:           "default",
+		ScanInterval:       30 * time.Second,
+		DeadGrace:          45 * time.Second,
+		ExecStale:          2 * time.Minute,
+		PendingTTL:         30 * time.Minute,
+		DispatchStale:      30 * time.Minute,
+		AuditRetention:     2160 * time.Hour, // 90d
+		AuditFlushInterval: time.Second,
+		AuditFlushBatch:    500,
+		JanitorInterval:    time.Hour,
+		OutboxBatch:        500,
+		Queue:              "default",
 	}
 }
 
@@ -85,6 +94,13 @@ func (c Config) Validate() error {
 		return fmt.Errorf("reaper: dispatch stale %s < 10m", c.DispatchStale)
 	case c.AuditRetention < 24*time.Hour:
 		return fmt.Errorf("reaper: audit retention %s < 24h", c.AuditRetention)
+	// 100ms 硬下限:搬运是周期收敛作业,亚百毫秒 tick 只剩 DB 空转开销。
+	case c.AuditFlushInterval < 100*time.Millisecond:
+		return fmt.Errorf("reaper: audit flush interval %s < 100ms", c.AuditFlushInterval)
+	// 3200 上界 = prepared statement 占位符预算:每行 20 占位符,20×3200
+	// = 64000 < MySQL 65535 上限(留余量);batch 越界则每轮 flush 必败。
+	case c.AuditFlushBatch < 1 || c.AuditFlushBatch > 3200:
+		return fmt.Errorf("reaper: audit flush batch %d out of [1,3200]", c.AuditFlushBatch)
 	case c.JanitorInterval < 5*time.Minute:
 		return fmt.Errorf("reaper: janitor interval %s < 5m", c.JanitorInterval)
 	case c.OutboxBatch < 1 || c.OutboxBatch > 10000:
@@ -118,6 +134,12 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		return c, err
 	}
 	if c.AuditRetention, err = envDuration(getenv, "BRAID_REAPER_AUDIT_RETENTION", c.AuditRetention); err != nil {
+		return c, err
+	}
+	if c.AuditFlushInterval, err = envDuration(getenv, "BRAID_REAPER_AUDIT_FLUSH_INTERVAL", c.AuditFlushInterval); err != nil {
+		return c, err
+	}
+	if c.AuditFlushBatch, err = envInt(getenv, "BRAID_REAPER_AUDIT_FLUSH_BATCH", c.AuditFlushBatch); err != nil {
 		return c, err
 	}
 	if c.JanitorInterval, err = envDuration(getenv, "BRAID_REAPER_JANITOR_INTERVAL", c.JanitorInterval); err != nil {

@@ -187,7 +187,7 @@ func (s *Scheduler) suspendOnce(ctx context.Context, req SuspendRequest,
 		// 7. 双审计行(同事务):迁移行(与全部既有迁移一致)+ 审批域事件
 		// 行(T4.4 待办/T6.4 积压指标字源;DDL 0001 词表注释预留同名)。
 		st := newExecState(s, ctx, q, req.ExecID, wf, g, rows, req.WorkerID)
-		if err := st.auditRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
+		if err := st.stageRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
 			From: string(engine.NodeExecuting), To: string(engine.NodeWaitingApproval),
 			NodeID: n.nodeID, Version: newVer, AttemptNo: n.attempts, WorkerID: n.workerID.String,
 		}); err != nil {

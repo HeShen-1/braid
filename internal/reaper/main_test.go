@@ -56,6 +56,7 @@ func TestMain(m *testing.M) {
 	if d, err := sqltest.OpenAt(reaperSchema); err == nil {
 		_, _ = d.Exec(`DELETE FROM audit_log`)
 		_, _ = d.Exec(`DELETE FROM outbox`)
+		_, _ = d.Exec(`DELETE FROM audit_pending`) // T6.1 暂存面(全清 schema 级助手)
 		_, _ = d.Exec(`DELETE FROM node_attempt`)
 		_, _ = d.Exec(`DELETE FROM node_execution`)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE triggered_by='reap-seed'`)
@@ -149,6 +150,7 @@ func seedReap(t *testing.T, d *sql.DB, heartbeatStale, deadlinePast time.Duratio
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM audit_log WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM outbox WHERE execution_id=?`, execID)
+		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID) // T6.1 暂存面
 		_, _ = d.Exec(`DELETE FROM node_attempt WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM node_execution WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)
@@ -181,6 +183,7 @@ func seedExecRow(t *testing.T, d *sql.DB, status string, stale time.Duration) (u
 		execID, defID, name, string(make([]byte, 64)), status)
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM outbox WHERE execution_id=?`, execID)
+		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID) // T6.1 暂存面
 		_, _ = d.Exec(`DELETE FROM node_attempt WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM node_execution WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)

@@ -94,6 +94,7 @@ func seedWaitingApprovalEscalated(t *testing.T, d *sql.DB) (execID, nodeExecID u
 	// 共享 schema(braid_worker_test)跨运行累积防污染:按 id 清四表
 	// (sender_test seed 同款卫生,对抗审计 LOW⑨)。
 	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execIDNum) // T6.1 暂存面
 		_, _ = d.Exec(`DELETE FROM audit_log WHERE execution_id=?`, execIDNum)
 		_, _ = d.Exec(`DELETE FROM node_execution WHERE id=?`, nodeExecIDNum)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execIDNum)

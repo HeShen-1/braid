@@ -15,9 +15,9 @@ package reaper
 import (
 	"bufio"
 	"context"
-	"io"
 	"database/sql"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -120,6 +120,7 @@ func TestAcceptanceKill9ConvergesWithoutIntervention(t *testing.T) {
 		nodeID, execID)
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM outbox WHERE execution_id=?`, execID)
+		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID) // T6.1 暂存面
 		_, _ = d.Exec(`DELETE FROM node_attempt WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM node_execution WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)
@@ -185,7 +186,7 @@ func TestAcceptanceKill9ConvergesWithoutIntervention(t *testing.T) {
 		return d.QueryRow(`SELECT COUNT(*) FROM node_attempt WHERE node_execution_id=? AND status='RUNNING'`, nodeID).
 			Scan(&n) == nil && n == 1
 	})
-	_ = stdin // 不预先关闭:EOF 会解除 gate 阻塞让子进程正常收口,污染 kill 现场
+	_ = stdin                                  // 不预先关闭:EOF 会解除 gate 阻塞让子进程正常收口,污染 kill 现场
 	if err := cmd.Process.Kill(); err != nil { // SIGKILL:真·未收口现场
 		t.Fatalf("kill: %v", err)
 	}

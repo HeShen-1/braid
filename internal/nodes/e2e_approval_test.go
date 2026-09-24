@@ -65,7 +65,9 @@ func seedApprovalE2E(t *testing.T, d *sql.DB, sched *scheduler.Scheduler) (defID
 
 func waitE2EExecWaitingApproval(t *testing.T, d *sql.DB, execID uint64) {
 	t.Helper()
-	deadline := time.Now().Add(30 * time.Second)
+	// 预算 60s(t8.2 先例:并行 worktree 共享 t13 栈 + 包内重 e2e 前置负载下
+	// 30s 假红一次实测;孤立跑 5.6s,预算只吸收栈竞争不作语义等待)。
+	deadline := time.Now().Add(60 * time.Second)
 	for time.Now().Before(deadline) {
 		var status engine.WorkflowState
 		if err := d.QueryRow(`SELECT status FROM workflow_execution WHERE id=?`, execID).
@@ -74,7 +76,7 @@ func waitE2EExecWaitingApproval(t *testing.T, d *sql.DB, execID uint64) {
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	t.Fatalf("execution %d not WAITING_APPROVAL within 30s", execID)
+	t.Fatalf("execution %d not WAITING_APPROVAL within 60s", execID)
 }
 
 func TestE2EApprovalNodeSuspends(t *testing.T) {
@@ -162,6 +164,7 @@ func TestE2EApprovalNodeSuspends(t *testing.T) {
 		t.Fatalf("archived tasks = %d (err %v), want 0(挂起不留死信)", len(list), err)
 	}
 
+	flushStagedAudit(t, d) // T6.1 异步暂存排空
 	// 验收③:审计行记录挂起事件(双行、attempt 锚、域事件 payload)。
 	var gotStateChange, gotRequested int
 	rows, err := d.Query(`

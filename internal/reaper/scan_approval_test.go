@@ -74,6 +74,7 @@ func seedApproval(t *testing.T, d *sql.DB, wfStatus string, deadlinePast time.Du
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM approval_decision WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM audit_log WHERE execution_id=?`, execID)
+		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID) // T6.1 暂存面
 		_, _ = d.Exec(`DELETE FROM outbox WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM node_execution WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)

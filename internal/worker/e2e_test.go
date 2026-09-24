@@ -313,6 +313,7 @@ func cleanupE2E(t *testing.T, d *sql.DB, execID, defID uint64) {
 	t.Helper()
 	for _, q := range []string{
 		`DELETE FROM outbox WHERE execution_id=?`,
+		`DELETE FROM audit_pending WHERE execution_id=?`, // T6.1 暂存面(漏删 ⇒ ghost 累积)
 		`DELETE FROM node_attempt WHERE execution_id=?`,
 		`DELETE FROM node_execution WHERE execution_id=?`,
 		`DELETE FROM workflow_execution WHERE id=?`,
