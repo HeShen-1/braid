@@ -7,6 +7,7 @@ package api
 import (
 	"fmt"
 	"net"
+	"regexp"
 	"strconv"
 
 	"braid/internal/auth"
@@ -25,7 +26,13 @@ const (
 	// api=1、worker=2;relay 无雪花生成器,reaper 为 PID 派生(显式化归
 	// T7.1 配置体系)。
 	DefaultSnowflakeNode = 1
+	// DefaultResumeQueue 是审批续跑事件的默认队列(T4.2;见 Config.ResumeQueue)。
+	DefaultResumeQueue = "default"
 )
+
+// queueNameRe 镜像 outbox 队列字符集(校验单点在 outbox.Append;此处启动
+// 期预检让配置错在启动即现,而非首个审批决定 500)。
+var queueNameRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 
 // Config 是 api 的全部可调参数。
 type Config struct {
@@ -38,6 +45,12 @@ type Config struct {
 	// SnowflakeNode 雪花节点号,definition.id 应用侧生成(发布前可知,
 	// 供钉版引用)。跨进程重号唯一症状是业务表 PK 1062。
 	SnowflakeNode uint16
+	// ResumeQueue 是审批续跑事件(execution.resume)的 outbox 队列名
+	// (T4.2)。必须在 worker ServeQueues 内,否则事件永挂 pending
+	// (outbox 包注释的已知边界)。缺省 "default"(与 scheduler.Deps.Queue
+	// 同值,worker 默认消费);DDL §5 queue 列注释钦定「审批/续跑与重
+	// LLM 任务隔离」的独立队列在此换装(T7.1 配置体系迁居)。
+	ResumeQueue string
 }
 
 // DefaultConfig 返回生产默认值(JWTSecret 故意留空:必须显式供给)。
@@ -45,6 +58,7 @@ func DefaultConfig() Config {
 	return Config{
 		Addr:          DefaultAddr,
 		SnowflakeNode: DefaultSnowflakeNode,
+		ResumeQueue:   DefaultResumeQueue,
 	}
 }
 
@@ -58,6 +72,9 @@ func (c Config) Validate() error {
 	}
 	if c.SnowflakeNode > snowflake.MaxNodeID {
 		return fmt.Errorf("api: snowflake node %d > %d", c.SnowflakeNode, snowflake.MaxNodeID)
+	}
+	if !queueNameRe.MatchString(c.ResumeQueue) {
+		return fmt.Errorf("api: resume queue %q violates ^[a-z][a-z0-9_-]{0,63}$", c.ResumeQueue)
 	}
 	return nil
 }
@@ -80,6 +97,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 			return c, fmt.Errorf("api: BRAID_API_SNOWFLAKE_NODE=%q: want 0..%d", raw, snowflake.MaxNodeID)
 		}
 		c.SnowflakeNode = uint16(n)
+	}
+	if v := getenv("BRAID_API_RESUME_QUEUE"); v != "" {
+		c.ResumeQueue = v
 	}
 	// BRAID_TOOL_ALLOWLIST 已随 T3.2 退役:发布白名单真源 = tools.Registry
 	// 注册名(NewServer 注入;空 registry = 禁用一切工具,语义不变)。

@@ -51,19 +51,27 @@ var ErrInvalidEvent = errors.New("audit: invalid event")
 //     node.state_changed(EXECUTING→WAITING_APPROVAL)同事务双行——本行是
 //     审批域事件(T4.4 待办/T6.4 积压指标字源),快照全文真相源在
 //     node_execution.input_snapshot,payload 不复制自由文本(D-t26 §4);
+//   - approval.decided:审批决定落库(T4.2;与 approval_decision 行 +
+//     outbox execution.resume 事件同事务,api 审批面发射)。actor=user/
+//     决定者;node_id 携目标节点,attempt_id NULL(决定先于续跑 attempt 创建);
+//   - approval.decision_denied:越权决定尝试被拒(T4.2;issue #33 硬约束
+//     「越权调用被拒并落审计」)。actor=user/尝试者;独立小事务(主事务无
+//     别的写入,拒绝路径不与决定行同存亡)。
 //   - execution.triggered:API 触发落执行(T5.5;DDL 开放词表注释预留同名,
 //     D-t26 §6 显式留给 T5 接入登记)。执行级事件(node_id NULL),与
 //     scheduler 侧行不同事务(Instantiate 不写审计,api 二段事务补)。
 const (
-	EventNodeStateChanged     = "node.state_changed"
-	EventNodeRedispatched     = "node.redispatched"
-	EventAttemptReaped        = "attempt.reaped"
-	EventNodeDeadlineExtended = "node.deadline_extended"
-	EventBranchEvaluated      = "branch.evaluated"
-	EventLLMCallCompleted     = "llm.call.completed"
-	EventToolCallCompleted    = "tool.call.completed"
-	EventApprovalRequested    = "approval.requested"
-	EventExecutionTriggered   = "execution.triggered"
+	EventNodeStateChanged       = "node.state_changed"
+	EventNodeRedispatched       = "node.redispatched"
+	EventAttemptReaped          = "attempt.reaped"
+	EventNodeDeadlineExtended   = "node.deadline_extended"
+	EventBranchEvaluated        = "branch.evaluated"
+	EventLLMCallCompleted       = "llm.call.completed"
+	EventToolCallCompleted      = "tool.call.completed"
+	EventApprovalRequested      = "approval.requested"
+	EventApprovalDecided        = "approval.decided"
+	EventApprovalDecisionDenied = "approval.decision_denied"
+	EventExecutionTriggered     = "execution.triggered"
 )
 
 // actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval);
@@ -95,15 +103,17 @@ const (
 
 // knownEvents / knownActors 是闭集校验表(词表登记处,见上)。
 var knownEvents = map[string]bool{
-	EventNodeStateChanged:     true,
-	EventNodeRedispatched:     true,
-	EventAttemptReaped:        true,
-	EventNodeDeadlineExtended: true,
-	EventBranchEvaluated:      true,
-	EventLLMCallCompleted:     true,
-	EventToolCallCompleted:    true,
-	EventApprovalRequested:    true,
-	EventExecutionTriggered:   true,
+	EventNodeStateChanged:       true,
+	EventNodeRedispatched:       true,
+	EventAttemptReaped:          true,
+	EventNodeDeadlineExtended:   true,
+	EventBranchEvaluated:        true,
+	EventLLMCallCompleted:       true,
+	EventToolCallCompleted:      true,
+	EventApprovalRequested:      true,
+	EventApprovalDecided:        true,
+	EventApprovalDecisionDenied: true,
+	EventExecutionTriggered:     true,
 }
 
 var knownActors = map[string]bool{

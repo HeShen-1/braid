@@ -540,3 +540,49 @@ func TestTakeoverYieldsToDeadAttempt(t *testing.T) {
 		t.Fatalf("attempt 1 = %s, want DEAD(裁决不被接管回写)", got)
 	}
 }
+
+// TestResumeEventBadPayloadArchived(T4.2):execution.resume 事件的消费
+// 错误面——坏 JSON/零 id 在触 Sched 之前被拒;「fabricated decision」子用例
+// 的执行 id 不存在,死于 scheduler.Resume 的 loadExecution(注:决策复核层
+// 的真锚在 scheduler 包 TestResumeDecisionMissingFails/AnchorMismatch,此处
+// 验证 handler→Sched→error→asynq archived 的链路形状)。三者都:重试穷尽
+// archived(死信可见,镜像 TestBadPayloadArchived),零节点执行器触达。
+func TestResumeEventBadPayloadArchived(t *testing.T) {
+	d := sqltest.MustOpenAt(t, workerSchema)
+	ex := &fakeExec{fn: func(req Request, callNo int) (Outcome, error) {
+		return Outcome{Status: engine.AttemptSucceed}, nil
+	}}
+	cfg := DefaultConfig()
+	cfg.RetryDelay = 50 * time.Millisecond
+	queue := startWorker(t, d, ex, cfg)
+
+	client := asynq.NewClient(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = client.Close() })
+	insp := asynq.NewInspector(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = insp.Close() })
+
+	for _, tc := range []struct {
+		name    string
+		taskID  string
+		payload []byte
+	}{
+		{"bad json", "resume:1:boss:2", []byte("{not json")},
+		{"zero id fields", "resume:2:boss:2", []byte(`{"execution_id":0,"node_execution_id":0,"decision_id":0}`)},
+		{"fabricated decision", "resume:3:boss:2",
+			[]byte(`{"execution_id":1,"node_execution_id":2,"decision_id":9527,"attempt_no":2}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if _, err := client.EnqueueContext(ctx,
+				asynq.NewTask(scheduler.EventTypeExecutionResume, tc.payload),
+				asynq.TaskID(tc.taskID), asynq.Queue(queue), asynq.MaxRetry(1)); err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			waitTaskState(t, insp, queue, tc.taskID, asynq.TaskStateArchived)
+			if got := ex.count(); got != 0 {
+				t.Errorf("executor calls = %d, want 0(resume 事件不经节点执行器)", got)
+			}
+		})
+	}
+}

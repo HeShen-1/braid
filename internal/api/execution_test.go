@@ -27,7 +27,7 @@ import (
 func cleanExecutionChain(t *testing.T, dbh *sql.DB) {
 	t.Helper()
 	for _, table := range []string{
-		"audit_log", "outbox", "node_attempt", "node_execution", "workflow_execution", "workflow_definition",
+		"audit_log", "outbox", "node_attempt", "approval_decision", "node_execution", "workflow_execution", "workflow_definition",
 	} {
 		if _, err := dbh.Exec("DELETE FROM " + table); err != nil {
 			t.Fatalf("clean %s: %v", table, err)

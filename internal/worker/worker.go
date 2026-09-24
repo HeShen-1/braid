@@ -158,6 +158,7 @@ func Run(ctx context.Context, d Deps, cfg Config, opt asynq.RedisClientOpt) erro
 	mux := asynq.NewServeMux()
 	mux.HandleFunc(EventTypeNodeTask, h.handleNodeTask)
 	mux.HandleFunc(scheduler.EventTypeExecutionStart, h.handleExecStart)
+	mux.HandleFunc(scheduler.EventTypeExecutionResume, h.handleNodeResume)
 
 	if err := srv.Start(mux); err != nil {
 		return fmt.Errorf("worker: start server: %w", err)
@@ -381,6 +382,36 @@ func (h *attHandler) handleExecStart(ctx context.Context, t *asynq.Task) error {
 	if err := h.deps.Sched.Start(ctx, p.ExecutionID, h.cfg.WorkerID); err != nil {
 		return fmt.Errorf("worker: start execution %d (task %s): %w", p.ExecutionID, taskID, err)
 	}
+	return nil
+}
+
+// handleNodeResume 处理 execution.resume(T4.2 审批续跑):调度器复入审批节点
+// 并按决定收口(批准→SUCCEEDED+下游推进;驳回→FAILED+fail-fast)。幂等收敛
+// 在调度器事务内裁决(节点已非 WAITING_APPROVAL → no-op);决策复核(事件
+// 引用的 approval_decision 行)也在调度器——payload 仅 id 引用,消费必回表。
+func (h *attHandler) handleNodeResume(ctx context.Context, t *asynq.Task) error {
+	taskID, ok := asynq.GetTaskID(ctx)
+	if !ok {
+		return errors.New("worker: no task id in handler context")
+	}
+	var p scheduler.ResumePayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("worker: task %s payload: %w", taskID, err)
+	}
+	if p.ExecutionID == 0 || p.NodeExecutionID == 0 || p.DecisionID == 0 {
+		return fmt.Errorf("worker: task %s payload: zero id field(s) %+v", taskID, p)
+	}
+	if err := h.deps.Sched.Resume(ctx, scheduler.ResumeRequest{
+		ExecID:     p.ExecutionID,
+		NodeExecID: p.NodeExecutionID,
+		DecisionID: p.DecisionID,
+		AttemptNo:  p.AttemptNo,
+		WorkerID:   h.cfg.WorkerID,
+	}); err != nil {
+		return fmt.Errorf("worker: resume node %d (task %s): %w", p.NodeExecutionID, taskID, err)
+	}
+	h.log.Info("approval.resume_processed",
+		"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID, "task_id", taskID)
 	return nil
 }
 

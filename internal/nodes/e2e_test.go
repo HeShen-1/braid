@@ -381,6 +381,7 @@ func cleanupNodesE2E(t *testing.T, d *sql.DB, execID, defID uint64) {
 	for _, q := range []string{
 		`DELETE FROM outbox WHERE execution_id=?`,
 		`DELETE FROM node_attempt WHERE execution_id=?`,
+		`DELETE FROM approval_decision WHERE execution_id=?`,
 		`DELETE FROM node_execution WHERE execution_id=?`,
 		`DELETE FROM workflow_execution WHERE id=?`,
 		`DELETE FROM audit_log WHERE execution_id=?`,
