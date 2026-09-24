@@ -27,7 +27,7 @@
 //     残余交错(与 heartbeat 的 attempt→wf 序)由 engine.Transient(1213/1205)
 //     内部重试兜住(≤3 次,只重试回写、不重跑 executor、不烧 asynq 重试预算)。
 //   - 锁序 = node 行(node_id 升序)→ attempt → workflow_execution(最后),
-//     与 T2.3 心跳(attempt→wf)一致;Start 例外先拿 wf(见 wfcas.go 备忘:
+//     与 T2.3 心跳(attempt→wf)一致;Start 例外先拿 wf(安全性即此备忘:
 //     PENDING 执行不可能存在 claim/attempt,无并发 Complete)。
 //   - 终态判定在提交后的新事务(新鲜快照):不相交臂的并发完成各自事务内
 //     快照都看到对方在飞 ⇒ 都不判终态(事务内判定会漏判);提交后重查者必
@@ -412,7 +412,7 @@ func (s *Scheduler) Start(ctx context.Context, execID uint64, workerID string) e
 		return err
 	}
 	return engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
-		// 锁序例外(先 wf 后 node 行)的安全性见包注释:wfcas.go 备忘。
+		// 锁序例外(先 wf 后 node 行)的安全性见包注释锁序节。
 		var status engine.WorkflowState
 		err := q.QueryRowContext(ctx,
 			`SELECT status FROM workflow_execution WHERE id=? FOR UPDATE`, execID).Scan(&status)
