@@ -71,10 +71,14 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("api: snowflake: %w", err)
 	}
-	// 发布白名单真源(T3.2 换源):tools.Registry 注册名。P0 无内置工具
-	// (T3.5 注册 http/file_read),空 registry = 禁用一切工具(与原
-	// BRAID_TOOL_ALLOWLIST 空名单语义一致);api 与 worker 装配同一注册集。
-	toolReg, err := tools.NewRegistry()
+	// 发布白名单真源(T3.2 换源):tools.Registry 注册名。内置 http/
+	// file_read 按配置注册(T3.5,未配置即不注册 = 引用即发布被拒);
+	// api 与 worker 经 BuiltinToolsFromEnv 单源装配同一注册集。
+	builtins, err := tools.BuiltinToolsFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("api: builtin tools: %w", err)
+	}
+	toolReg, err := tools.NewRegistry(builtins...)
 	if err != nil {
 		return fmt.Errorf("api: tool registry: %w", err)
 	}

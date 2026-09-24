@@ -132,7 +132,8 @@ func renderMessages(in scheduler.LLMInput) []llm.Message {
 //   - 无声明 → {"content": 全文}(仅供审计观察;T1.2 保证未声明字段不可被
 //     引用,语义上等价无输出但不丢运行证据);
 //   - 有声明 → content 必须是 JSON 对象,逐声明字段抽取并校验类型
-//     (json.Number 原文往返,大整数不失真);任一缺字段/类型不符/非对象
+//     (json.Number 原文往返,大整数不失真)+ 数值落 MySQL DOUBLE 范围
+//     校验(见 doubleRangeOK);任一缺字段/类型不符/非对象/超范围数值
 //     即失败——声明即契约,响亮失败优于静默错值(GATE 1 语义 a)。
 func extractOutputs(content string, outs map[string]string) (json.RawMessage, error) {
 	if len(outs) == 0 {
@@ -153,9 +154,48 @@ func extractOutputs(content string, outs map[string]string) (json.RawMessage, er
 		if !outputTypeMatches(v, decl) {
 			return nil, fmt.Errorf("declared output %q wants %s, got %T", name, decl, v)
 		}
+		if err := doubleRangeOK(v, name); err != nil {
+			return nil, err
+		}
 		out[name] = v
 	}
 	return json.Marshal(out)
+}
+
+// doubleRangeOK 递归校验抽取值内的 JSON 数值可落 MySQL DOUBLE 列
+// (T3.5 审计 HIGH 修复,管线单点):RFC 8259 数值无范围限制,超
+// double 范围的合法 JSON 数(如 1e309)经 UseNumber 原文保真穿到
+// node_execution.output(JSON 列)时被 MySQL 以 ERROR 3140 拒绝——
+// 收口事务(CloseAttempt+SucceedNode 同事务)整体回滚,attempt 恒
+// RUNNING,asynq/reaper 循环重放外部调用且新 attempt 幂等键变化、对
+// 非幂等端点形成重复副作用。在抽取单点拦下,覆盖 http body /
+// CommandTool stdout / LLM content 三个数值来源。上溢一律拒——数值
+// 保真优先,不静默变形;下溢(如 1e-400)Go ParseFloat 归 0 无错误
+// 信号,MySQL 同存 0,两侧口径一致放行。
+func doubleRangeOK(v any, path string) error {
+	switch t := v.(type) {
+	case json.Number:
+		if _, err := t.Float64(); err != nil {
+			return fmt.Errorf("declared output %s: number %s out of double range", path, t.String())
+		}
+		return nil
+	case map[string]any:
+		for k, vv := range t {
+			if err := doubleRangeOK(vv, path+"."+k); err != nil {
+				return err
+			}
+		}
+		return nil
+	case []any:
+		for i, vv := range t {
+			if err := doubleRangeOK(vv, fmt.Sprintf("%s[%d]", path, i)); err != nil {
+				return err
+			}
+		}
+		return nil
+	default:
+		return nil
+	}
 }
 
 // outputTypeMatches 校验值与 DSL 类型声明词表(string|number|boolean|object|array)。

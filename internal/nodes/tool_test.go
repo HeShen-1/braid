@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"braid/internal/engine"
 	"braid/internal/engine/dsl"
@@ -146,4 +147,71 @@ func TestToolExecToolCallBridge(t *testing.T) {
 
 func workerRequest7() worker.Request {
 	return worker.Request{ExecutionID: 1, NodeExecutionID: 7, AttemptNo: 1, TaskID: "att:7:1"}
+}
+
+// deadlineRuntime 捕获到达 ToolRuntime 的 ctx deadline(预算派生断言锚)。
+type deadlineRuntime struct {
+	deadline time.Time
+	ok       bool
+}
+
+func (d *deadlineRuntime) Run(ctx context.Context, _ tools.RunRequest) (tools.Result, error) {
+	d.deadline, d.ok = ctx.Deadline()
+	return tools.Result{Output: json.RawMessage(`{"ok":true}`)}, nil
+}
+
+// TestToolExecDerivesNodeBudget:T3.5 审计 HIGH 修复锚——预算 ctx 以
+// scheduler.NodeTimeout("tool") 单源派生(全链此前无 deadline,asynq
+// 默认 30min 与 10min SLA 脱节,挂死端点让僵尸调用每轮净占 2 槽);
+// 父 ctx 更短 deadline 必须保留(WithTimeout 取更早者)。
+func TestToolExecDerivesNodeBudget(t *testing.T) {
+	rt := &deadlineRuntime{}
+	e := &ToolExecutor{Runner: rt}
+	if _, err := e.executeCall(context.Background(), workerRequest7(),
+		scheduler.ToolInput{Tool: "t", Inputs: map[string]any{}}, &dsl.ToolNode{Tool: "t"}); err != nil {
+		t.Fatalf("executeCall: %v", err)
+	}
+	if !rt.ok {
+		t.Fatal("tool runtime received ctx without deadline")
+	}
+	budget := time.Until(rt.deadline)
+	want := scheduler.NodeTimeout("tool")
+	if budget <= 0 || budget > want {
+		t.Fatalf("derived budget = %v, want in (0, %v]", budget, want)
+	}
+	if budget < want-time.Minute {
+		t.Fatalf("derived budget = %v, want ≈ %v (not a shorter default)", budget, want)
+	}
+
+	rt2 := &deadlineRuntime{}
+	parent, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	e2 := &ToolExecutor{Runner: rt2}
+	if _, err := e2.executeCall(parent, workerRequest7(),
+		scheduler.ToolInput{Tool: "t", Inputs: map[string]any{}}, &dsl.ToolNode{Tool: "t"}); err != nil {
+		t.Fatalf("executeCall: %v", err)
+	}
+	if d := time.Until(rt2.deadline); d > time.Minute {
+		t.Fatalf("shorter parent deadline not preserved: child budget %v > 1m", d)
+	}
+}
+
+// TestToolExecCtxEnvGateOverFallback:T3.5 审计 MEDIUM 修复锚——deadline
+// 触发与传输错误竞态时 url.Error 只包传输错不含 ctx 链,环境态门
+// (ctx.Err())必须兜住分类:基础设施 error 留 RUNNING,不落兜底
+// tool_failed 收口。
+func TestToolExecCtxEnvGateOverFallback(t *testing.T) {
+	e := &ToolExecutor{Runner: &fakeRuntime{
+		err: errors.New(`Get "https://a/x": read tcp: connection reset`),
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	out, err := e.executeCall(ctx, workerRequest7(),
+		scheduler.ToolInput{Tool: "t", Inputs: map[string]any{}}, &dsl.ToolNode{Tool: "t"})
+	if err == nil {
+		t.Fatalf("outcome = %+v, want infra error (env-state ctx expiry)", out)
+	}
+	if out.Status == engine.AttemptFailed {
+		t.Fatalf("env-state ctx expiry misrouted to FAILED Outcome: %+v", out)
+	}
 }

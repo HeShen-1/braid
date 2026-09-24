@@ -117,11 +117,17 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: scheduler: %w", err)
 	}
 
-	// T3.2 工具运行时装配:registry(P0 无内置工具,T3.5 注册 http/
-	// file_read;空 = 一切 tool 节点 tool_not_found 收口)+ scoped token
-	// 签发器(BRAID_TOOL_TOKEN_SECRET 缺省 = 进程内随机,重启即轮换——
-	// P0 校验点在同进程调用门,自洽;P1 工具回调平台时经部署配置显式供给)。
-	toolReg, err := tools.NewRegistry()
+	// T3.2/T3.5 工具运行时装配:registry(内置 http/file_read 按配置注册,
+	// 未配置即不注册——空 = 一切 tool 节点 tool_not_found 收口;api 与
+	// worker 经 BuiltinToolsFromEnv 单源装配,注册集与发布白名单一致)+
+	// scoped token 签发器(BRAID_TOOL_TOKEN_SECRET 缺省 = 进程内随机,
+	// 重启即轮换——P0 校验点在同进程调用门,自洽;P1 工具回调平台时经
+	// 部署配置显式供给)。
+	builtins, err := tools.BuiltinToolsFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("worker: builtin tools: %w", err)
+	}
+	toolReg, err := tools.NewRegistry(builtins...)
 	if err != nil {
 		return fmt.Errorf("worker: tool registry: %w", err)
 	}

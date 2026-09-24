@@ -73,6 +73,9 @@ func TestExtractOutputs(t *testing.T) {
 		{"content not json", "oops", map[string]string{"s": "string"}, ""},
 		{"content json but not object", `[1,2]`, map[string]string{"s": "string"}, ""},
 		{"content null", `null`, map[string]string{"s": "string"}, ""},
+		{"number out of double range", `{"n":1e309}`, map[string]string{"n": "number"}, ""},
+		{"nested number out of double range", `{"o":{"deep":-2e400}}`, map[string]string{"o": "object"}, ""},
+		{"array element out of double range", `{"arr":[1,2e400]}`, map[string]string{"arr": "array"}, ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -109,6 +112,19 @@ func TestExtractOutputsBigNumberFidelity(t *testing.T) {
 	}
 	if string(out) != `{"n":12345678901234567890}` {
 		t.Fatalf("output = %s, big integer lost fidelity", out)
+	}
+}
+
+// 超 DOUBLE 范围数值在抽取单点被拒(T3.5 审计 HIGH):1e309 若原文穿到
+// node_execution.output,MySQL JSON 列以 ERROR 3140 拒写,收口事务回滚、
+// attempt 恒 RUNNING 循环重放外部调用——必须在此响亮失败(业务分类)。
+func TestExtractOutputsDoubleRangeRejected(t *testing.T) {
+	_, err := extractOutputs(`{"n":1e309}`, map[string]string{"n": "number"})
+	if err == nil {
+		t.Fatal("extractOutputs accepted 1e309, want out-of-double-range rejection")
+	}
+	if !strings.Contains(err.Error(), "1e309") {
+		t.Fatalf("err = %v, want offending literal in diagnostics", err)
 	}
 }
 

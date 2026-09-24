@@ -192,12 +192,12 @@ func answerDNS(q []byte, hostToIPs map[string][]string) ([]byte, bool) {
 	}
 
 	resp := make([]byte, 0, 12+(off+4)+len(answers))
-	resp = append(resp, q[0], q[1]) // ID 回显
-	resp = append(resp, 0x81, 0x80) // QR=1 RD=1 RA=1, RCODE=0
-	resp = binary.BigEndian.AppendUint16(resp, 1)          // QDCOUNT
+	resp = append(resp, q[0], q[1])                           // ID 回显
+	resp = append(resp, 0x81, 0x80)                           // QR=1 RD=1 RA=1, RCODE=0
+	resp = binary.BigEndian.AppendUint16(resp, 1)             // QDCOUNT
 	resp = binary.BigEndian.AppendUint16(resp, uint16(count)) // ANCOUNT
-	resp = append(resp, 0, 0, 0, 0)     // NSCOUNT / ARCOUNT
-	resp = append(resp, q[12:off+4]...) // 问题段原样(QNAME+QTYPE+QCLASS)
+	resp = append(resp, 0, 0, 0, 0)                           // NSCOUNT / ARCOUNT
+	resp = append(resp, q[12:off+4]...)                       // 问题段原样(QNAME+QTYPE+QCLASS)
 	resp = append(resp, answers...)
 	return resp, true
 }

@@ -77,6 +77,88 @@ func TestRunMapsSSRFBlocked(t *testing.T) {
 	})
 }
 
+// hostBlockTool 模拟 T3.5 http 工具的 host 白名单拒绝返回:裸错误携带
+// ErrHostBlocked 哨兵(白名单门是策略层,独立于 SSRF 守卫哨兵,独立失败
+// 码;映射契约同款——工具不自包 CallError,分类单点在 runner)。
+type hostBlockTool struct{}
+
+func (hostBlockTool) Name() string { return "http" }
+func (hostBlockTool) Run(_ context.Context, _ Call) (Result, error) {
+	return Result{}, fmt.Errorf(`Get "https://public.test/x": %w`, ErrHostBlocked)
+}
+
+// pathBlockTool 模拟 T3.5 file_read 的路径白名单拒绝返回(含符号链接
+// 逃逸现场)。
+type pathBlockTool struct{}
+
+func (pathBlockTool) Name() string { return "file_read" }
+func (pathBlockTool) Run(_ context.Context, _ Call) (Result, error) {
+	return Result{}, fmt.Errorf("file_read %q: %w", "/etc/passwd", ErrPathBlocked)
+}
+
+// TestRunMapsWhitelistBlocked 钉住两个白名单哨兵→失败码映射(T3.5):策略
+// 拒连(host/路径白名单)独立于 SSRF 守卫(tool_ssrf_blocked)分桶,审计
+// 可区分;哨兵优先于 ctx 门(与 SSRF 哨兵同语义,竞态现场不吞分类)。
+func TestRunMapsWhitelistBlocked(t *testing.T) {
+	t.Run("host blocked maps to tool_host_blocked", func(t *testing.T) {
+		r := NewLocalRunner(registryOf(t, hostBlockTool{}), NewTokenIssuer(nil, 0, nil))
+		_, err := r.Run(context.Background(), RunRequest{Tool: "http", NodeExecID: 1, AttemptNo: 1})
+		if got := callCodeOf(t, err); got != CodeHostBlocked {
+			t.Errorf("code = %q, want %q (err=%v)", got, CodeHostBlocked, err)
+		}
+	})
+
+	t.Run("path blocked maps to tool_path_blocked", func(t *testing.T) {
+		r := NewLocalRunner(registryOf(t, pathBlockTool{}), NewTokenIssuer(nil, 0, nil))
+		_, err := r.Run(context.Background(), RunRequest{Tool: "file_read", NodeExecID: 1, AttemptNo: 1})
+		if got := callCodeOf(t, err); got != CodePathBlocked {
+			t.Errorf("code = %q, want %q (err=%v)", got, CodePathBlocked, err)
+		}
+	})
+
+	t.Run("host sentinel wins over concurrent ctx expiry", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		r := NewLocalRunner(registryOf(t, hostBlockTool{}), NewTokenIssuer(nil, 0, nil))
+		_, err := r.Run(ctx, RunRequest{Tool: "http", NodeExecID: 1, AttemptNo: 1})
+		if got := callCodeOf(t, err); got != CodeHostBlocked {
+			t.Errorf("code = %q — ctx gate must not swallow sentinel (err=%v)", got, err)
+		}
+	})
+
+	t.Run("path sentinel wins over concurrent ctx expiry", func(t *testing.T) {
+		// 三哨兵对称锚(审计 LOW:file_read 丢弃 ctx 签名,cancelled ctx
+		// 下照样返回哨兵——正是竞态现场;缺此用例时 ctx 门被重构提前的
+		// 变异对 path 分类失守不可见)。
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		r := NewLocalRunner(registryOf(t, pathBlockTool{}), NewTokenIssuer(nil, 0, nil))
+		_, err := r.Run(ctx, RunRequest{Tool: "file_read", NodeExecID: 1, AttemptNo: 1})
+		if got := callCodeOf(t, err); got != CodePathBlocked {
+			t.Errorf("code = %q — ctx gate must not swallow sentinel (err=%v)", got, err)
+		}
+	})
+}
+
+// TestRunnerOutputSizeCap:T3.5 审计 MEDIUM 修复锚——工具产出超
+// DefaultMaxToolOutput = bad_tool_output(业务失败收口,不放大下游拷贝链)。
+func TestRunnerOutputSizeCap(t *testing.T) {
+	big := json.RawMessage(`{"k":"` + strings.Repeat("x", DefaultMaxToolOutput) + `"}`)
+	r := NewLocalRunner(registryOf(t, outputTool{out: big}), NewTokenIssuer(nil, 0, nil))
+	_, err := r.Run(context.Background(), RunRequest{Tool: "big_out", NodeExecID: 1, AttemptNo: 1})
+	if got := callCodeOf(t, err); got != CodeBadToolOutput {
+		t.Fatalf("code = %q, want %q", got, CodeBadToolOutput)
+	}
+}
+
+// outputTool 回放固定产出。
+type outputTool struct{ out json.RawMessage }
+
+func (o outputTool) Name() string { return "big_out" }
+func (o outputTool) Run(_ context.Context, _ Call) (Result, error) {
+	return Result{Output: o.out}, nil
+}
+
 func registryOf(t *testing.T, tools ...Tool) *Registry {
 	t.Helper()
 	r, err := NewRegistry(tools...)
