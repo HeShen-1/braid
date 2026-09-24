@@ -3,6 +3,7 @@ package dsl
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -164,8 +165,45 @@ func (v *validator) checkNodeRefs() {
 			v.checkTool(n)
 		case n.Branch != nil:
 			v.checkBranch(n)
+		case n.Approval != nil:
+			v.checkApproval(n)
 		}
 	}
+}
+
+// approverRe / reservedApprovers 镜像 username 词域(internal/auth/users.go
+// usernameRe + reservedUsernames 同则;DDL chk_user_username 双闸先例)。
+// 镜像而非 import auth:DSL 语言核心不耦合账号域;三方(auth Go 侧 / DDL /
+// 此处)逐字一致由 TestApproverDomainPinnedToDDL 锚死。
+var (
+	approverRe        = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,127}$`)
+	reservedApprovers = map[string]bool{"system": true}
+)
+
+// checkApproval 校验 approvers[] 逐项对齐 username 词域(T4.4 必带件,
+// D-t42 §9-②):名单是执行时审批权真相源,域外项(非 username 形态)
+// 发布合法但运行面永无人能命中——审批永 403 死面,GET 详情也无人能读
+// (T5.2 收窄后读面同名单)。schema ^\S+$ 放行的形态在此拒收;词域内
+// 但尚无账号/角色的主体是运行面事实(账号可后建),不属发布期判据。
+func (v *validator) checkApproval(n *Node) {
+	for i, a := range n.Approval.Approvers {
+		if reservedApprovers[a] || !approverRe.MatchString(a) {
+			v.add(IssueBadApprover, n.ID, a,
+				fmt.Sprintf("approvers[%d] %q is not a valid username (must match %s, reserved %s; out-of-domain approvers can never read or decide)",
+					i, a, approverRe.String(), reservedApproverList()))
+		}
+	}
+}
+
+// reservedApproverList 是保留字集的确定性展示(词表排序;消息文本随
+// reservedApprovers 单源,防字面量漂移——对抗审计 LOW)。
+func reservedApproverList() string {
+	rs := make([]string, 0, len(reservedApprovers))
+	for r := range reservedApprovers {
+		rs = append(rs, r)
+	}
+	sort.Strings(rs)
+	return strings.Join(rs, ",")
 }
 
 func (v *validator) checkLLM(n *Node) {

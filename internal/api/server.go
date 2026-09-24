@@ -55,6 +55,14 @@ func (s *Server) Router() *gin.Engine {
 		c.JSON(200, gin.H{"status": "ok"})
 	})
 
+	// Web 审批页静态面(T4.4):内嵌资产 + 安全头,见 web.go。
+	s.registerWeb(r)
+
+	// 登录面(T4.4):authed 组外——凭据换 token(错误面/防枚举语义见
+	// login.go)。无独立限流:bcrypt ~100ms 即天然节流,基础设施层限流
+	// 归 T6.4。
+	r.POST("/api/v1/auth/login", s.login)
+
 	authed := r.Group("/api/v1", Authenticate(s.cfg.JWTSecret))
 	v1 := authed
 	v1.POST("/definitions", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.createDefinition)
@@ -74,6 +82,10 @@ func (s *Server) Router() *gin.Engine {
 	v1.POST("/executions", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.triggerExecution)
 	v1.GET("/executions", s.listExecutions)
 	v1.GET("/executions/:id", s.getExecution)
+
+	// 待办列表(T4.4):任意有效 token,主体过滤即读边界(名单真相源 =
+	// 快照 approvers,谓词面见 approvaltodo.go)。
+	v1.GET("/approvals/pending", s.listPendingApprovals)
 
 	// 审批面(T4.2 立,T5.2 换装后形态):POST 决定的门 = approver|admin
 	// 角色闸(handler 内,403 role_denied + approval.decision_denied 审计

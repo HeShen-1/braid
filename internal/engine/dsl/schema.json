@@ -306,7 +306,7 @@
           "type": "array",
           "minItems": 1,
           "maxItems": 64,
-          "items": { "type": "string", "pattern": "^\\S+$", "minLength": 1, "maxLength": 64 }
+          "items": { "type": "string", "pattern": "^\\S+$", "minLength": 1, "maxLength": 128, "description": "词域对齐 username(^[a-z][a-z0-9_-]{0,127}$,T4.4 语义校验拒域外);长度界 128 = users.username VARCHAR(128) 同值域" }
         },
         "mode": { "enum": ["any"], "default": "any", "description": "或签。会签(all)为 P1,P1 放开时同步放开本枚举。" },
         "timeout_hours": { "type": "number", "minimum": 0.1, "maximum": 2160, "default": 72, "description": "缺省 72h;平台级默认可配(Q9,T4.3)。" },
