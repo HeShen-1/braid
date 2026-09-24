@@ -32,7 +32,7 @@ func newTestServer(t *testing.T, allowlist ...string) (*gin.Engine, *sql.DB, fun
 }
 
 // newTestServerWithTrigger:newTestServer 的触发缝可控变体(T5.5)。真链
-// 变体传 *scheduler.Scheduler;清理走六表链(真实链测试落 execution 行后,
+// 变体传 *scheduler.Scheduler;清理走八表链(真实链测试落 execution 行后,
 // 单表 DELETE 被 FK RESTRICT 阻拦,见 cleanExecutionChain)。
 func newTestServerWithTrigger(t *testing.T, trig ExecutionTrigger, allowlist ...string) (*gin.Engine, *sql.DB, func(roles ...auth.Role) string) {
 	t.Helper()

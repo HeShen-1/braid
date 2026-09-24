@@ -46,7 +46,7 @@ func toolDSL(name string) []byte {
 
 // newTestStore 返回干净的 store + 连接:每用例清空定义表(List 的 total
 // 断言依赖全局可见行,共享 schema 下必须从零开始)。T5.5 起真实链测试会
-// 落 execution/outbox/audit 行,清理统一走六表链 cleanExecutionChain
+// 落 execution/outbox/audit 行,清理统一走八表链 cleanExecutionChain
 // (单表 DELETE 会被 FK RESTRICT 阻拦)。
 func newTestStore(t *testing.T) (*Store, *sql.DB) {
 	t.Helper()
