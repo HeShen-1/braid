@@ -67,7 +67,7 @@
 
 - [ ] T7.1 配置体系(连接池上限、审计保留期、各类超时全配置化)+ 部署文档配额表 — M — 依赖 M6 — 验收:改配置 → 行为变化单测(池上限生效)
 - [x] T7.2 tiktoken 离线 loader + 词表随安装包 + 启动预构建 tokenizer — M — 依赖 T3.1 — 验收:断网环境冷启动成功,首个 LLM 节点不触发任何外网请求 — ✅ 2026-09-24:internal/llm embedBpeLoader(go:embed cl100k+o200k,SHA-256 钉死,包 init 结构性离线)+ PrebuildTokenizers(cmd/worker 启动即败面)+ EstimatePromptTokens(cookbook 近似,usage 单源不变);断网验收 = 毒化 DefaultTransport 的 llm 单测 + nodes e2e 全链(唯一出站 = 桩供应商);决策 D-2026-09-24-t72-offline-tokenizer
-- [ ] T7.3 安装自检(Redis 策略/AOF、词表、迁移版本)— M — 依赖 T7.2 — 验收:错误配置下拒绝启动并输出修复提示;含 audit_log 分区水位自检(INFORMATION_SCHEMA.PARTITIONS,不足拒绝启动)与业务账号对 audit_log 无 UPDATE/DELETE 权限断言(append-only 强制)
+- [x] T7.3 安装自检(Redis 策略/AOF、词表、迁移版本)— M — 依赖 T7.2 — 验收:错误配置下拒绝启动并输出修复提示;含 audit_log 分区水位自检(INFORMATION_SCHEMA.PARTITIONS,不足拒绝启动)与业务账号对 audit_log 无 UPDATE/DELETE 权限断言(append-only 强制) — ✅ 2026-09-24:internal/preflight 新包(迁移版本比对 db.LatestMigrationVersion、分区水位地板 max bound > today、append-only 双平面断言、Redis noeviction+AOF everysec 契约,errors.Join 一次报全、修复提示内嵌错误文本)+ cmd 四入口装配(分区硬拒仅审计写方 api/worker,relay/reaper warn 防自愈死锁;Redis 硬拒 relay/worker,reaper warn = D-t25 fail-open 同族;词表自检复用 T7.2 PrebuildTokenizers 零新面);t13 栈 AOF off = 现成负例,集测零栈改动;二进制红臂手验(未迁移库 / AOF off 均 exit 1 带提示);决策 D-2026-09-24-t73-preflight
 - [ ] T7.4 交付 compose 定稿 + 升级手册(golang-migrate + N-1 兼容窗口)— S — 依赖 T7.1 — 验收:对上一版本数据卷完成一次升级演练;含 dirty 中断恢复 runbook(migrate force → 修复 → re-up;迁移对象全 IF NOT EXISTS,重跑安全);含 outbox DEAD 重置规程:重置 PENDING 前必须先核验 Redis 无该 task_id 记录(idx_outbox_task 反查 + Inspector)——超时误报可造出「DEAD 行 + Redis 活任务」真相分裂(T2.2 审计移交)
 
 ## M8 验收(约 1 周)

@@ -16,6 +16,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"braid/internal/db"
+	"braid/internal/preflight"
 	"braid/internal/relay"
 )
 
@@ -49,6 +50,18 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("relay: mysql ping: %w", err)
 	}
 
+	// T7.3 安装自检:迁移版本 + append-only 硬拒;relay 零审计写,分区水位
+	// 破约仅 warn(不该把投递链 brick 在审计水位上)。
+	if err := errors.Join(
+		preflight.CheckSchemaVersion(ctx, mysqlDB),
+		preflight.CheckAuditAppendOnly(ctx, mysqlDB),
+	); err != nil {
+		return fmt.Errorf("relay: %w", err)
+	}
+	if err := preflight.CheckAuditPartitions(ctx, mysqlDB); err != nil {
+		slog.Warn("relay: audit partition watermark", "err", err)
+	}
+
 	addr := os.Getenv("BRAID_REDIS_QUEUE_ADDR")
 	if addr == "" {
 		return errors.New("relay: BRAID_REDIS_QUEUE_ADDR is required")
@@ -62,6 +75,12 @@ func run(ctx context.Context) error {
 	}
 	if err := insp.Close(); err != nil {
 		return fmt.Errorf("relay: close inspector: %w", err)
+	}
+
+	// T7.3:队列 Redis 契约(noeviction + AOF everysec)硬拒——relay 是队列
+	// 数据承载方,破约 = 重启烧队列、逐出静默丢事件。
+	if err := preflight.CheckRedisQueue(ctx, addr); err != nil {
+		return fmt.Errorf("relay: %w", err)
 	}
 
 	eq := relay.NewAsynqEnqueuer(asynq.RedisClientOpt{Addr: addr})

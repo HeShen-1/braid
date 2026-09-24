@@ -22,7 +22,7 @@
 - 远端:private `HeShen-1/braid`;CI = `.github/workflows/ci.yml`(lint / test / gitleaks 三作业,零 Secrets;集成测试无栈自动 skip)。
 - fork:`/handoff fork <task-id>` = 认领 issue + `git worktree add .worktrees/<id> -b feat/<id>`(基于最新 master)+ bootstrap(cp deploy/.env、写 .testenv、初始化 .handoff/);每 worktree 独立 .handoff;注册表 = `git worktree list` + `gh issue list`,不建第二真源;人工派单起步,自动认领(issue assignee + 分支存在双信号 CAS)后续再加。
 - 并行公约:engine 包同一时刻单 worktree 持有;migrations 序号独占(第二个迁移任务必须基于已合并 master);go.mod 冲突合并后必须 `go mod tidy` + 三件套重跑;ROADMAP 勾选写各自 PR,相邻行冲突后者 rebase;活进程联调(dev 栈)仅主仓,worktree 只跑测试;t13 栈 tmpfs 契约下 `docker compose restart` 即全清测试 schema。
-- Redis 测试 DB 槽位(人工分配,禁哈希自动分配——哈希下 3 worktree 碰撞率≈18%,失败模式是静默互踩):DB = 槽位×4 + 包基号(relay=0、worker=1、reaper=2、nodes=3——T3.6 登记,已满),0..15 恰容纳 4 个并行槽位(主仓 = 槽位 0,worktree 用 1..3)× 4 包;第 5 个 Redis 消费包出现时必须先扩分配表(如改基号步长)再动工。测试隔离已 env 化(T2.7 落地):schema 名自动拼 worktree 后缀,`BRAID_TEST_REDIS_DB` 语义即槽位号(组合发生在消费包 TestMain,统一入口 `internal/db/testenv.go`)。
+- Redis 测试 DB 槽位(人工分配,禁哈希自动分配——哈希下 3 worktree 碰撞率≈18%,失败模式是静默互踩):DB = 槽位×4 + 包基号(relay=0、worker=1、reaper=2、nodes=3——T3.6 登记,已满;preflight=0 与 relay 共租——零键空间、仅 CONFIG GET 实例级探测,T7.3 登记),0..15 恰容纳 4 个并行槽位(主仓 = 槽位 0,worktree 用 1..3)× 4 包;第 5 个 Redis 消费包出现时必须先扩分配表再动工(0..15 放不下第 5 独立基号;零键空间的实例级探测包可共租既有基号,如 preflight)。测试隔离已 env 化(T2.7 落地):schema 名自动拼 worktree 后缀,`BRAID_TEST_REDIS_DB` 语义即槽位号(组合发生在消费包 TestMain,统一入口 `internal/db/testenv.go`)。
 
 ## ECC 编排(可选加速层)
 
