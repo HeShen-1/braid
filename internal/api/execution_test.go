@@ -21,13 +21,16 @@ import (
 	"braid/internal/snowflake"
 )
 
-// cleanExecutionChain 按子→父清空六表(FK RESTRICT 决定顺序)。真实链
+// cleanExecutionChain 按子→父清空八表(audit_pending 无 FK 列于链首随链
+// 清零,余七表 FK RESTRICT 决定顺序)。真实链
 // 集成测试会落 outbox/execution/audit 行,共享 schema 下后续用例的
 // workflow_definition 单表清理会被孤儿引用阻拦(FK 1701)——统一走本链。
+// audit_pending(T6.3 起本包测试会 Enqueue 暂存行)无 FK,随链清空防
+// ghost 行跨 run 累积(D-t61 #4-③ 同判)。
 func cleanExecutionChain(t *testing.T, dbh *sql.DB) {
 	t.Helper()
 	for _, table := range []string{
-		"audit_log", "outbox", "node_attempt", "approval_decision", "node_execution", "workflow_execution", "workflow_definition",
+		"audit_pending", "audit_log", "outbox", "node_attempt", "approval_decision", "node_execution", "workflow_execution", "workflow_definition",
 	} {
 		if _, err := dbh.Exec("DELETE FROM " + table); err != nil {
 			t.Fatalf("clean %s: %v", table, err)

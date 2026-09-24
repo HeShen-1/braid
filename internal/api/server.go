@@ -113,5 +113,11 @@ func (s *Server) Router() *gin.Engine {
 	// fail-closed,状态读面在 GET /executions/:id)。
 	v1.GET("/executions/:id/approvals/:node_id", s.getApproval)
 	v1.POST("/executions/:id/approvals/:node_id/decision", s.decideApproval)
+
+	// 审计查询面(T6.3):三维度互斥恰一(execution_id/trace_id/actor_id);
+	// 可见性 = 仅读 audit_log(高频四类 ≤ flush interval 滞后,D-t63 #1)。
+	// actor 维度 in-handler admin 闸(参数条件闸,路由中间件做不到——
+	// 形态镜像 T5.2 审批决定面);execution/trace 维度读面任意有效 token。
+	v1.GET("/audit", s.listAuditEvents)
 	return r
 }
