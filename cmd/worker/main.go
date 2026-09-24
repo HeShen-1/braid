@@ -108,6 +108,13 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: llm client: %w", err)
 	}
 
+	// T7.2 离线 tokenizer 预构建:随包词表 SHA-256 校验 + BPE 解析在此
+	// 启动即败;此后首个 LLM 节点的请求前估算零懒加载、零外网(断网
+	// 冷启动验收)。
+	if err := llm.PrebuildTokenizers(); err != nil {
+		return fmt.Errorf("worker: prebuild tokenizers: %w", err)
+	}
+
 	ids, err := snowflake.New(cfg.SnowflakeNode)
 	if err != nil {
 		return fmt.Errorf("worker: snowflake: %w", err)
