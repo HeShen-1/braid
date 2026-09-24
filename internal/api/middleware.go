@@ -56,11 +56,9 @@ func RequireAnyRole(roles ...auth.Role) gin.HandlerFunc {
 			abort(c, 401, "missing_token")
 			return
 		}
-		for _, want := range roles {
-			if err := auth.RequireRole(claims, want); err == nil {
-				c.Next()
-				return
-			}
+		if claimsHaveAnyRole(claims, roles...) {
+			c.Next()
+			return
 		}
 		abort(c, 403, "forbidden")
 	}
@@ -74,6 +72,19 @@ func ClaimsFrom(c *gin.Context) (auth.Claims, bool) {
 	}
 	claims, ok := v.(auth.Claims)
 	return claims, ok
+}
+
+// claimsHaveAnyRole 是 RequireAnyRole 的判定核(T5.2 抽出共享):命中
+// 任一所需角色放行。in-handler 角色闸(如审批决定面,拒绝需落审计与
+// 分面错误码,路由中间件面做不到)与路由级中间件共用同一判定,避免
+// 两处漂移。
+func claimsHaveAnyRole(claims auth.Claims, roles ...auth.Role) bool {
+	for _, want := range roles {
+		if auth.RequireRole(claims, want) == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // abort 统一错误响应体:{ "error": "<code>" }(DSL 校验类另带 issues)。

@@ -50,6 +50,14 @@ func TestToolExecErrorClassification(t *testing.T) {
 			wantCode: tools.CodeBadToolOutput},
 		{name: "ctx_cancelled", rtErr: fmt.Errorf("tools: x: %w", context.Canceled), wantErrIs: context.Canceled},
 		{name: "ctx_deadline", rtErr: fmt.Errorf("tools: x: %w", context.DeadlineExceeded), wantErrIs: context.DeadlineExceeded},
+		// T5.2:执行时 RBAC 拒绝 = 业务失败(tool_rbac_denied 收口)。
+		{name: "rbac_denied", rtErr: &tools.CallError{Code: tools.CodeRBACDenied,
+			Err: fmt.Errorf("auth: deny: %w", tools.ErrCallDenied)}, wantCode: tools.CodeRBACDenied},
+		// T5.2 go 评审 HIGH 的回归锚:授权面故障哨兵 = 基础设施失败留
+		// RUNNING,不落 tool_failed 兜底。
+		{name: "authz_unavailable_stays_running",
+			rtErr:     fmt.Errorf("tools: authorize call: %w: %w", tools.ErrAuthorizerUnavailable, errors.New("db gone")),
+			wantErrIs: tools.ErrAuthorizerUnavailable},
 		{name: "unclassified_becomes_tool_failed", rtErr: errors.New("weird"), wantCode: tools.CodeToolFailed},
 	}
 	for _, tt := range tests {

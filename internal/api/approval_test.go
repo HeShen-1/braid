@@ -372,7 +372,13 @@ func TestApprovalDetail(t *testing.T) {
 	if code, _ := doJSON(t, r, http.MethodGet, approvalPath(execID), "", nil); code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated detail = %d, want 401", code)
 	}
+	// T5.2 换装②:读面收窄到名单内审批人——alice(名单外)403。
 	code, body := doJSON(t, r, http.MethodGet, approvalPath(execID), token, nil)
+	if code != http.StatusForbidden || body["error"] != "not_approver" {
+		t.Fatalf("non-member detail = %d %v, want 403 not_approver", code, body)
+	}
+	carol := signSubject(t, "carol", auth.RoleApprover)
+	code, body = doJSON(t, r, http.MethodGet, approvalPath(execID), carol, nil)
 	if code != http.StatusOK {
 		t.Fatalf("detail = %d %v, want 200", code, body)
 	}
@@ -389,11 +395,10 @@ func TestApprovalDetail(t *testing.T) {
 		t.Fatalf("decisions = %v, want []", body["decisions"])
 	}
 	// 决定后回读:时间线出现。
-	carol := signSubject(t, "carol", auth.RoleApprover)
 	if code, _ := doJSON(t, r, http.MethodPost, decisionPath(execID), carol, []byte(`{"decision":"reject","comment":"不行"}`)); code != http.StatusCreated {
 		t.Fatalf("decide = %d, want 201", code)
 	}
-	_, body = doJSON(t, r, http.MethodGet, approvalPath(execID), token, nil)
+	_, body = doJSON(t, r, http.MethodGet, approvalPath(execID), carol, nil)
 	decisions := body["decisions"].([]any)
 	if len(decisions) != 1 {
 		t.Fatalf("decisions after reject = %v, want 1", decisions)

@@ -30,7 +30,44 @@ const (
 	// ErrHostBlocked/ErrPathBlocked 与 ErrSSRFBlocked 同款映射契约。
 	CodeHostBlocked = "tool_host_blocked"
 	CodePathBlocked = "tool_path_blocked"
+	// CodeRBACDenied:执行时 RBAC 拒绝(T5.2,ARCHITECTURE §3.4 双重校验的
+	// 执行侧半边):定义期白名单(registry.Names(),T5.4)之外,调用发生时
+	// 对触发者主体再校验,角色不足 = 业务失败收口。映射契约同款:授权门
+	// 返回携带 ErrCallDenied 哨兵的裸错误,Run 以 errors.Is 映射到此码。
+	CodeRBACDenied = "tool_rbac_denied"
 )
+
+// ErrCallDenied 是执行时授权拒绝哨兵:CallAuthorizer 实现以此(或包装
+// 此哨兵)标记「确定性的越权拒绝」;不含哨兵的错误 = 授权面基础设施
+// 故障(裸 error,attempt 留 RUNNING 由重试接管),二者语义严格分立。
+var ErrCallDenied = errors.New("tools: tool call denied by execution-time authorizer")
+
+// ErrAuthorizerUnavailable 是授权面基础设施故障哨兵:授权门自身故障
+// (DB 不可达、锚行缺失等一切非确定性拒绝的错误)由 Run 统一包装本
+// 哨兵——nodes 消费侧据此把调用留 RUNNING(重试接管),不落
+// tool_failed 业务失败兜底(裸 error 在 nodes 的未分类兜底会被误收口,
+// T5.2 go 评审 HIGH)。
+var ErrAuthorizerUnavailable = errors.New("tools: execution-time authorizer unavailable")
+
+// CallAuthorizer 是执行时 RBAC 门(T5.2):每次工具调用分派前按
+// node_exec 锚定执行主体再校验。接口保持原语签名(node_exec id + 工具名)
+// ——本包是可开源核心层,不 import 企业侧 auth(分层单向:实现方在
+// internal/auth,方向 = 企业→核心)。返回错误语义:
+//   - 包装 ErrCallDenied → 越权拒绝(CallError{CodeRBACDenied});
+//   - 其余 → 基础设施失败(裸 error 透传,不收口)。
+type CallAuthorizer interface {
+	AuthorizeCall(ctx context.Context, nodeExecID uint64, tool string) error
+}
+
+// AllowAllAuthorizer 是恒放行授权门:测试与装配迁移期的最小缝。生产
+// 装配(cmd/worker)禁用——RBAC 缺位必须响亮失败(NewLocalRunner 的
+// nil panic),不得静默降级为放行。
+type AllowAllAuthorizer struct{}
+
+// AuthorizeCall 恒 nil(放行)。
+func (AllowAllAuthorizer) AuthorizeCall(context.Context, uint64, string) error {
+	return nil
+}
 
 // CallError 是工具调用的业务失败(收口为节点 FAILED,新 attempt 可重试)。
 // 与基础设施失败(error 透传、errors.Is 判 ctx)的分立在 Run 的注释。
@@ -54,29 +91,43 @@ type RunRequest struct {
 	IdempotencyKey string
 }
 
-// LocalRunner 是 ToolRunner 的 P0 本地实现(ARCHITECTURE §3.4):token
-// 校验门 → registry 分派 → 产出契约校验。P1 换 Docker 载体时本编排层与
-// registry 不动(载体在 Tool 接口之下替换)。
+// LocalRunner 是 ToolRunner 的 P0 本地实现(ARCHITECTURE §3.4):RBAC
+// 授权门 → token 校验门 → registry 分派 → 产出契约校验。P1 换 Docker
+// 载体时本编排层与 registry 不动(载体在 Tool 接口之下替换)。
 type LocalRunner struct {
 	reg    *Registry
 	issuer *TokenIssuer
+	authz  CallAuthorizer
 }
 
 // NewLocalRunner 构造 Runner;nil 依赖 panic(装配缺陷启动即现,nodes.NewMux
-// 同款惯例)。
-func NewLocalRunner(reg *Registry, issuer *TokenIssuer) *LocalRunner {
-	if reg == nil || issuer == nil {
-		panic("tools: nil Registry or TokenIssuer")
+// 同款惯例)。authz 是执行时 RBAC 门(T5.2):生产装配传
+// auth.ExecutionAuthorizer,测试缝用 AllowAllAuthorizer。
+func NewLocalRunner(reg *Registry, issuer *TokenIssuer, authz CallAuthorizer) *LocalRunner {
+	if reg == nil || issuer == nil || authz == nil {
+		panic("tools: nil Registry, TokenIssuer or CallAuthorizer")
 	}
-	return &LocalRunner{reg: reg, issuer: issuer}
+	return &LocalRunner{reg: reg, issuer: issuer, authz: authz}
 }
 
 // Run 执行一次工具调用。错误语义:
-//   - 业务失败(未注册、token 过期/无效、工具报错、产出不履约)→ *CallError
-//     (nodes 侧按 Outcome{FAILED} 收口);
-//   - 基础设施失败(ctx 取消/deadline、工具内部 panic 防线)→ 裸 error
-//     透传,attempt 不收口留 RUNNING,asynq 重试接管(与 LLM 执行器同语义)。
+//   - 业务失败(越权拒绝、未注册、token 过期/无效、工具报错、产出不
+//     履约)→ *CallError(nodes 侧按 Outcome{FAILED} 收口);
+//   - 基础设施失败(ctx 取消/deadline、授权面故障、工具内部 panic
+//     防线)→ 裸 error 透传,attempt 不收口留 RUNNING,asynq 重试接管
+//     (与 LLM 执行器同语义)。
 func (r *LocalRunner) Run(ctx context.Context, req RunRequest) (Result, error) {
+	// 执行时 RBAC 门(T5.2)在一切能力签发之前:越权调用零触达 token、
+	// 零触达工具。拒绝(ErrCallDenied 哨兵)= 业务失败;授权面自身故障 =
+	// 基础设施失败(挂 ErrAuthorizerUnavailable 哨兵留 RUNNING 重试,
+	// 内层错误链保留),不放行也不误杀。
+	if err := r.authz.AuthorizeCall(ctx, req.NodeExecID, req.Tool); err != nil {
+		if errors.Is(err, ErrCallDenied) {
+			return Result{}, &CallError{Code: CodeRBACDenied, Err: err}
+		}
+		return Result{}, fmt.Errorf("tools: authorize call (node_exec %d): %w: %w",
+			req.NodeExecID, ErrAuthorizerUnavailable, err)
+	}
 	scope := TokenScope{NodeExecID: req.NodeExecID, AttemptNo: req.AttemptNo, Tool: req.Tool}
 	token := req.Token
 	if token == "" {

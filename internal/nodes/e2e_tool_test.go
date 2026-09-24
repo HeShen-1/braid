@@ -22,10 +22,10 @@ import (
 	"strings"
 	"sync"
 	"testing"
-
-	"braid/internal/audit"
 	"time"
 
+	"braid/internal/audit"
+	"braid/internal/auth"
 	"braid/internal/db/sqltest"
 	"braid/internal/engine"
 	"braid/internal/redistest"
@@ -35,6 +35,44 @@ import (
 	"braid/internal/tools"
 	"braid/internal/worker"
 )
+
+// mustE2EAuthz:T5.2 执行时 RBAC 真件装配(生产同构:auth.
+// ExecutionAuthorizer + 默认策略)。雪花 node 2(与 seedToolExec 的 1、
+// worker 装配错峰,审计 id 无撞)。
+func mustE2EAuthz(t *testing.T, d *sql.DB) *auth.ExecutionAuthorizer {
+	t.Helper()
+	ids, err := snowflake.New(2)
+	if err != nil {
+		t.Fatalf("authz snowflake: %v", err)
+	}
+	return auth.NewExecutionAuthorizer(d, ids, auth.DefaultToolPolicy())
+}
+
+// ensureE2EUser:幂等种用户(真实门下执行主体必须有用户行;schema 跨测试
+// 保留,已存在即跳过)。
+func ensureE2EUser(t *testing.T, d *sql.DB, username string, roles ...auth.Role) {
+	t.Helper()
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM users WHERE username=?`, username).Scan(&n); err != nil {
+		t.Fatalf("count user %q: %v", username, err)
+	}
+	if n > 0 {
+		return
+	}
+	hash, err := auth.HashPassword("e2e-user-password-placeholder", 4) // bcrypt.MinCost:测试速度
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	ids, err := snowflake.New(2)
+	if err != nil {
+		t.Fatalf("user snowflake: %v", err)
+	}
+	if err := auth.CreateUser(context.Background(), d, ids, auth.CreateUserParams{
+		Username: username, PasswordHash: hash, Roles: roles,
+	}); err != nil {
+		t.Fatalf("create user %q: %v", username, err)
+	}
+}
 
 // e2eSpyTool:进程内工具真件形态(T3.5 内置工具的同构前身)——回显固定
 // 声明友好输出,记录收到的完整 Call(token/幂等键传递面的断言锚)。
@@ -62,7 +100,8 @@ func TestE2EToolNodeFullChain(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	runner := tools.NewLocalRunner(reg, tools.NewTokenIssuer(nil, 0, nil))
+	ensureE2EUser(t, d, "e2e", auth.RoleAuthor)
+	runner := tools.NewLocalRunner(reg, tools.NewTokenIssuer(nil, 0, nil), mustE2EAuthz(t, d))
 	executor := NewMux(mustE2ESched(t, d, queue), &fakeRunner{}, &ToolExecutor{
 		Runner: runner, DB: d,
 	}, ApprovalExecutor{}) // tool e2e 不触 approval 路由,装配完整即可
@@ -174,7 +213,8 @@ func TestE2EToolNodeFailurePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	runner := tools.NewLocalRunner(reg, tools.NewTokenIssuer(nil, 0, nil))
+	ensureE2EUser(t, d, "e2e", auth.RoleAuthor)
+	runner := tools.NewLocalRunner(reg, tools.NewTokenIssuer(nil, 0, nil), mustE2EAuthz(t, d))
 	executor := NewMux(mustE2ESched(t, d, queue), &fakeRunner{}, &ToolExecutor{
 		Runner: runner, DB: d,
 	}, ApprovalExecutor{}) // tool e2e 不触 approval 路由,装配完整即可
@@ -214,6 +254,71 @@ SELECT ne.error_code, na.error_code, ne.attempts
 	}
 	if audited != 0 {
 		t.Fatalf("tool.call.completed rows = %d, want 0(仅 SUCCEEDED 发射)", audited)
+	}
+}
+
+// TestE2EToolNodeRBACDenied:T5.2 执行时 RBAC 真链路——仅审批人主体触发的
+// 执行,tool 节点在调用现场被拒:节点/attempt 双双 tool_rbac_denied 收口、
+// 执行 fail-fast、工具零触达、tool.call.denied 审计行落地、零
+// tool.call.completed。
+func TestE2EToolNodeRBACDenied(t *testing.T) {
+	d := sqltest.MustOpenAt(t, nodesSchema)
+	ctx := context.Background()
+	queue := fmt.Sprintf("t_n%d", queueSeq+102)
+
+	spy := &e2eSpyTool{}
+	reg, err := tools.NewRegistry(spy)
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	ensureE2EUser(t, d, "e2e_approver", auth.RoleApprover)
+	runner := tools.NewLocalRunner(reg, tools.NewTokenIssuer(nil, 0, nil), mustE2EAuthz(t, d))
+	executor := NewMux(mustE2ESched(t, d, queue), &fakeRunner{}, &ToolExecutor{
+		Runner: runner, DB: d,
+	}, ApprovalExecutor{})
+
+	sched := mustE2ESched(t, d, queue)
+	defID, execID := seedToolExecBy(t, d, sched, "e2e_approver")
+	t.Cleanup(func() { cleanupNodesE2E(t, d, execID, defID) })
+
+	startE2ERelay(t, d, ctx)
+	workerCfg := worker.DefaultConfig()
+	workerCfg.HeartbeatInterval = 40 * time.Millisecond
+	startE2EWorker(t, d, executor, workerCfg, queue)
+
+	waitE2EExecFailed(t, d, execID)
+	assertE2ENodeState(t, d, execID, "read", engine.NodeFailed)
+
+	var nodeCode, attCode sql.NullString
+	if err := d.QueryRow(`
+SELECT ne.error_code, na.error_code
+  FROM node_execution ne JOIN node_attempt na ON na.node_execution_id = ne.id
+ WHERE ne.execution_id=? AND ne.node_id='read'`, execID).
+		Scan(&nodeCode, &attCode); err != nil {
+		t.Fatalf("read failure rows: %v", err)
+	}
+	if !nodeCode.Valid || nodeCode.String != tools.CodeRBACDenied || !attCode.Valid || attCode.String != tools.CodeRBACDenied {
+		t.Fatalf("codes = %v/%v, want tool_rbac_denied both", nodeCode, attCode)
+	}
+	// 工具零触达(授权门在 token 签发与分派之前)。
+	if spy.seen {
+		t.Fatal("tool was dispatched despite RBAC denial")
+	}
+	// 审计:拒绝行落地(actor=被拒主体),完成行零发射。
+	var denied, completed int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE execution_id=? AND event_type=? AND actor_id='e2e_approver'`,
+		execID, audit.EventToolCallDenied).Scan(&denied); err != nil {
+		t.Fatalf("count denied audit: %v", err)
+	}
+	if denied != 1 {
+		t.Fatalf("tool.call.denied rows = %d, want 1(越权拒绝必须落审计)", denied)
+	}
+	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE execution_id=? AND event_type=?`,
+		execID, audit.EventToolCallCompleted).Scan(&completed); err != nil {
+		t.Fatalf("count completed audit: %v", err)
+	}
+	if completed != 0 {
+		t.Fatalf("tool.call.completed rows = %d, want 0", completed)
 	}
 }
 
@@ -269,6 +374,13 @@ func waitE2EExecFailed(t *testing.T, d *sql.DB, execID uint64) {
 
 func seedToolExec(t *testing.T, d *sql.DB, sched *scheduler.Scheduler) (defID, execID uint64) {
 	t.Helper()
+	return seedToolExecBy(t, d, sched, "e2e")
+}
+
+// seedToolExecBy:seedToolExec 的指定触发主体变体(T5.2 拒绝链路用
+// 仅审批人主体触发,越权面构造)。
+func seedToolExecBy(t *testing.T, d *sql.DB, sched *scheduler.Scheduler, triggeredBy string) (defID, execID uint64) {
+	t.Helper()
 	ids, err := snowflake.New(1)
 	if err != nil {
 		t.Fatalf("seed snowflake: %v", err)
@@ -292,7 +404,7 @@ func seedToolExec(t *testing.T, d *sql.DB, sched *scheduler.Scheduler) (defID, e
 	}
 	execID, err = sched.Instantiate(context.Background(), scheduler.InstantiateParams{
 		DefinitionID: defID, Input: json.RawMessage(`{"doc":"/tmp/report.md"}`),
-		TriggeredBy: "e2e", TriggerType: "TEST",
+		TriggeredBy: triggeredBy, TriggerType: "TEST",
 	})
 	if err != nil {
 		t.Fatalf("Instantiate: %v", err)

@@ -272,7 +272,7 @@ func TestFileReadTool(t *testing.T) {
 	})
 
 	t.Run("runner maps block to tool_path_blocked", func(t *testing.T) {
-		r := NewLocalRunner(registryOf(t, tool), NewTokenIssuer(nil, 0, nil))
+		r := NewLocalRunner(registryOf(t, tool), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 		_, err := r.Run(context.Background(), RunRequest{
 			Tool: "file_read", Inputs: map[string]any{"path": "/etc/passwd"},
 			NodeExecID: 9, AttemptNo: 1,

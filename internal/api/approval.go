@@ -5,15 +5,18 @@
 // (task_id=resume:<exec>:<node>:<attempt>,0003 词表)——三写同存亡,
 // 续跑权威在 worker 侧 scheduler.Resume(事件驱动,ARCHITECTURE §3.3)。
 //
-// 鉴权:POST 的门 = DSL approvers[](快照真相源,越权 403 + 落
-// approval.decision_denied 审计行,issue #33 硬约束);角色闸不叠加
-// (T5.2 RBAC 换装点,DSL 名单是执行时权威)。GET 读面任意有效 token
-// (与 GET /executions/:id 惯例一致:节点状态本就开放,快照的静态声明面
-// 无增量敏感)。
+// 鉴权(T5.2 换装后形态,D-t42 §7):POST 的门 = approver|admin 角色闸
+// (in-handler,拒绝 403 role_denied + 落 approval.decision_denied 审计行
+// reason=role_denied)叠加 DSL approvers[](快照真相源,越权 403 +
+// 同事件 reason=membership,issue #33 硬约束;DSL 名单仍是执行时权威)。
+// GET 读面收窄到名单内审批人(快照可证名单;含 comment 自由文本的
+// decisions[] 时间线不再对任意有效 token 开放);未挂起(无快照)
+// fail-closed 403,节点状态读面仍在 GET /executions/:id。
 package api
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +29,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"braid/internal/audit"
+	"braid/internal/auth"
 	"braid/internal/engine"
 	"braid/internal/outbox"
 	"braid/internal/scheduler"
@@ -132,6 +136,19 @@ func (s *Server) decideApproval(c *gin.Context) {
 	}
 	actor := actorFrom(c)
 
+	// 角色闸(T5.2 换装①,D-t42 §7):in-handler 而非路由中间件——拒绝
+	// 需落审计 + 分面错误码,中间件面做不到。角色集 approver|admin 与
+	// definitions/trigger 写面的 admin 豁免惯例一致;角色面在名单门之前
+	// (claims-only 零 DB,快速失败),DSL 名单仍是执行时权威。已知取舍
+	// (sec 评审 LOW):claims 不回查 DB,被撤角色的 token 在过期前仍过
+	// 角色闸(平台级 DISABLED 窗口,auth/config.go 同记)——名单门 +
+	// 快照真相源仍在,执行时 RBAC(execauth)对工具调用是现查现判。
+	if claims, ok := ClaimsFrom(c); !ok || !claimsHaveAnyRole(claims, auth.RoleApprover, auth.RoleAdmin) {
+		s.writeDecisionDeniedAudit(c, execID, nodeID, actor, face, "role_denied")
+		c.JSON(http.StatusForbidden, gin.H{"error": "role_denied"})
+		return
+	}
+
 	// 执行存在性前置(404 面;终态/快照守卫在事务内权威裁决)。
 	if _, err := s.st.GetExecution(c.Request.Context(), s.dbh, execID); err != nil {
 		mapStoreError(c, err)
@@ -234,7 +251,7 @@ func (s *Server) decideApproval(c *gin.Context) {
 			// 越权拒绝必须落审计(issue #33 硬约束)。独立小事务:主事务
 			// 已回滚,拒绝事实不与任何决定写同存亡。审计失败仅 slog——403
 			// 的裁决不受旁路写入失败影响。
-			s.writeDecisionDeniedAudit(c, execID, nodeID, actor, face)
+			s.writeDecisionDeniedAudit(c, execID, nodeID, actor, face, "membership")
 			mapApprovalError(c, err)
 			return
 		}
@@ -268,10 +285,12 @@ func (s *Server) resolveDeciderRace(c *gin.Context, execID uint64, nodeID, actor
 	mapApprovalError(c, ErrDecisionConflict)
 }
 
-// getApproval:GET /executions/:id/approvals/:node_id —— 审批人可读面:
-// 节点状态 + 挂起快照(approvers/mode/instructions,issue 钦定的快照读
-// 端点)+ 截止时刻 + 已决票时间线。读面无事务(与 GET /executions/:id
-// 同语义:钉版契约下并发迁移间的轻微不一致 P0 可接受)。
+// getApproval:GET /executions/:id/approvals/:node_id —— 名单内审批人可读
+// 面(T5.2 换装②,D-t42 §7):节点状态 + 挂起快照(approvers/mode/
+// instructions)+ 截止时刻 + 已决票时间线(含 comment 自由文本——收窄
+// 动机:这是 comment 全文唯一暴露面,不再对任意有效 token 开放)。读面
+// 无事务(与 GET /executions/:id 同语义:钉版契约下并发迁移间的轻微不
+// 一致 P0 可接受)。
 func (s *Server) getApproval(c *gin.Context) {
 	execID, ok := parseIDParam(c)
 	if !ok {
@@ -295,24 +314,35 @@ func (s *Server) getApproval(c *gin.Context) {
 		mapApprovalError(c, ErrNotApproval)
 		return
 	}
-	detail := approvalDetailDTO{
-		ExecutionID: strconv.FormatUint(execID, 10),
-		NodeID:      node.NodeID,
-		NodeStatus:  node.Status,
-		DeadlineAt:  node.DeadlineAt,
-		Decisions:   []decisionDTO{},
+	// 读面收窄(T5.2 换装②):名单 = 挂起快照的 approvers[](真相源同
+	// POST)。未挂起(快照 NULL)无名单可证 → fail-closed 403,节点状态
+	// 读面不丢(GET /executions/:id 开放);坏快照 → 500 不伪造名单
+	// (POST 同纪律:WAITING ⇒ 快照可解析是 engine 不变量)。
+	if len(node.Snapshot) == 0 {
+		mapApprovalError(c, ErrNotApprover)
+		return
 	}
-	// 快照可读面:WAITING 起 NOT NULL(engine 不变量);未挂起(PENDING/
-	// 复入后)零值省略——快照列在终态保留(复现真相源),详情仍回显。
-	if len(node.Snapshot) > 0 {
-		var snap scheduler.ApprovalInput
-		if err := json.Unmarshal(node.Snapshot, &snap); err == nil {
-			detail.Approvers = snap.Approvers
-			detail.Mode = snap.Mode
-			detail.TimeoutHours = snap.TimeoutHours
-			detail.OnTimeout = snap.OnTimeout
-			detail.Instructions = snap.Instructions
-		}
+	var snap scheduler.ApprovalInput
+	if err := json.Unmarshal(node.Snapshot, &snap); err != nil {
+		slog.Error("api: approval snapshot unreadable", "err", err, "execution_id", execID, "node_id", nodeID)
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal"})
+		return
+	}
+	if !containsString(snap.Approvers, actorFrom(c)) {
+		mapApprovalError(c, ErrNotApprover)
+		return
+	}
+	detail := approvalDetailDTO{
+		ExecutionID:  strconv.FormatUint(execID, 10),
+		NodeID:       node.NodeID,
+		NodeStatus:   node.Status,
+		DeadlineAt:   node.DeadlineAt,
+		Approvers:    snap.Approvers,
+		Mode:         snap.Mode,
+		TimeoutHours: snap.TimeoutHours,
+		OnTimeout:    snap.OnTimeout,
+		Instructions: snap.Instructions,
+		Decisions:    []decisionDTO{},
 	}
 	decisions, err := s.st.ListDecisions(c.Request.Context(), s.dbh, node.NodeExecID)
 	if err != nil {
@@ -361,24 +391,39 @@ func (s *Server) appendApprovalAudit(ctx context.Context, tx DBTX,
 }
 
 // writeDecisionDeniedAudit 落 approval.decision_denied 审计行(独立小事务;
-// 失败仅 slog,不影响 403 裁决)。
-func (s *Server) writeDecisionDeniedAudit(c *gin.Context, execID uint64, nodeID, actor, face string) {
+// 失败仅 slog,不影响 403 裁决)。reason 区分拒绝面:membership(名单外)
+// / role_denied(名单内缺角色,T5.2 换装①)。
+//
+// 灌水防线(T5.2 sec 评审 MEDIUM):角色闸在存在性守卫之前——任意持
+// token 主体可对任意 (exec, node_id) 组合触发 403。审计行只在锚定到
+// 真实 approval 节点行时落:幻影 node_id / 非 approval 节点的拒绝裁决
+// 照常生效但不留痕,append-only 审计面不可被无界灌水、取证面不混入
+// 不存在节点的行。membership 路径主事务已确认真实 approval 节点,
+// 锚定恒成功,行为不变。
+func (s *Server) writeDecisionDeniedAudit(c *gin.Context, execID uint64, nodeID, actor, face, reason string) {
+	var nodeExecID uint64
+	var nodeType string
+	switch err := s.dbh.QueryRowContext(c.Request.Context(),
+		`SELECT id, type FROM node_execution WHERE execution_id=? AND node_id=?`, execID, nodeID).
+		Scan(&nodeExecID, &nodeType); {
+	case errors.Is(err, sql.ErrNoRows), nodeType != "approval":
+		return // 无锚定行 / 非 approval 节点:拒绝裁决生效,审计不落(防灌水)
+	case err != nil:
+		slog.Error("api: anchor approval.decision_denied", "err", err, "execution_id", execID, "node_id", nodeID)
+		return // best-effort 纪律:锚定读失败不阻断裁决,也不落无锚行
+	}
 	auditID, err := s.ids.Next()
 	if err != nil {
 		slog.Error("api: audit id gen for approval.decision_denied", "err", err, "execution_id", execID)
 		return
 	}
 	raw, err := json.Marshal(audit.ApprovalDecisionDeniedPayload{
-		NodeID: nodeID, Attempted: face,
+		NodeID: nodeID, Attempted: face, Reason: reason,
 	})
 	if err != nil {
 		slog.Error("api: marshal approval.decision_denied payload", "err", err, "execution_id", execID)
 		return
 	}
-	// 节点行 id 锚定:读面失败不阻断(行存在性已在主事务守卫确认过)。
-	var nodeExecID uint64
-	_ = s.dbh.QueryRowContext(c.Request.Context(),
-		`SELECT id FROM node_execution WHERE execution_id=? AND node_id=?`, execID, nodeID).Scan(&nodeExecID)
 	err = WithTx(c.Request.Context(), s.dbh, func(tx DBTX) error {
 		return audit.Append(c.Request.Context(), tx, audit.Event{
 			ID: auditID, EventType: audit.EventApprovalDecisionDenied,

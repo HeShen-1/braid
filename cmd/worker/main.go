@@ -19,6 +19,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/hibiken/asynq"
 
+	"braid/internal/auth"
 	"braid/internal/db"
 	"braid/internal/llm"
 	"braid/internal/nodes"
@@ -117,12 +118,14 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: scheduler: %w", err)
 	}
 
-	// T3.2/T3.5 工具运行时装配:registry(内置 http/file_read 按配置注册,
-	// 未配置即不注册——空 = 一切 tool 节点 tool_not_found 收口;api 与
-	// worker 经 BuiltinToolsFromEnv 单源装配,注册集与发布白名单一致)+
-	// scoped token 签发器(BRAID_TOOL_TOKEN_SECRET 缺省 = 进程内随机,
-	// 重启即轮换——P0 校验点在同进程调用门,自洽;P1 工具回调平台时经
-	// 部署配置显式供给)。
+	// T3.2/T3.5 工具运行时装配 + T5.2 执行时 RBAC 门:registry(内置
+	// http/file_read 按配置注册,未配置即不注册——空 = 一切 tool 节点
+	// tool_not_found 收口;api 与 worker 经 BuiltinToolsFromEnv 单源装配,
+	// 注册集与发布白名单一致)+ scoped token 签发器(BRAID_TOOL_TOKEN_SECRET
+	// 缺省 = 进程内随机,重启即轮换——P0 校验点在同进程调用门,自洽;P1
+	// 工具回调平台时经部署配置显式供给)+ 执行时授权器(发布期白名单之外
+	// 的调用现场再校验,拒绝落 tool.call.denied 审计;默认策略 author|admin,
+	// system 触发哨兵放行)。
 	builtins, err := tools.BuiltinToolsFromEnv(os.Getenv)
 	if err != nil {
 		return fmt.Errorf("worker: builtin tools: %w", err)
@@ -136,8 +139,12 @@ func run(ctx context.Context) error {
 		return err
 	}
 	toolExec := &nodes.ToolExecutor{
-		Runner: tools.NewLocalRunner(toolReg, tools.NewTokenIssuer(toolKey, 0, nil)),
-		DB:     mysqlDB,
+		Runner: tools.NewLocalRunner(
+			toolReg,
+			tools.NewTokenIssuer(toolKey, 0, nil),
+			auth.NewExecutionAuthorizer(mysqlDB, ids, auth.DefaultToolPolicy()),
+		),
+		DB: mysqlDB,
 	}
 
 	executor := nodes.NewMux(sched, &nodes.LLMExecutor{
