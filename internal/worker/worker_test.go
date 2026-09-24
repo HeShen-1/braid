@@ -464,10 +464,12 @@ func waitTaskGone(t *testing.T, insp *asynq.Inspector, queue, taskID string) {
 // 错误不 fatal,与 waitAttemptStatus 同款韧性)。
 func waitTaskState(t *testing.T, insp *asynq.Inspector, queue, taskID string, want asynq.TaskState) {
 	t.Helper()
-	// 45s 上界:archived 路径的墙钟下限 ≈ asynq 调度粒度 5s/跳 ×(首跑+重试);
+	// 90s 上界:archived 路径的墙钟下限 ≈ asynq 调度粒度 5s/跳 ×(首跑+重试);
 	// 15s 只有三跳余量,包并行(go test ./...)下 CPU 抖动即假红(T4.3 期间实测
-	// 串行全绿、并行偶发超时)。上限只影响失败用例的确诊延迟,不影响绿路径。
-	const budget = 45 * time.Second
+	// 串行全绿、并行偶发超时)→ T4.3 提 45s;T8.2 复发(nodes e2e 新增三条
+	// 真链 + 并行 worktree 会话共享栈,负载常态化的同族假红)再提 90s。
+	// 上限只影响失败用例的确诊延迟,不影响绿路径。
+	const budget = 90 * time.Second
 	deadline := time.Now().Add(budget)
 	var lastState = asynq.TaskState(0)
 	var lastErr error

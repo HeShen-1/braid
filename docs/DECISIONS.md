@@ -259,3 +259,14 @@
   7. TLSRootCAs 程序化注入面(Config 字段,私有 CA 中继部署;env 文件路径形态 BRAID_SMTP_CA_FILE 归 T7.1 配置体系)。发送语义:DATA 已被服务器接受(w.Close 成功)后 QUIT 失败非致命仅 warn(否则必然重发 + 去重锚缺席,review M)。
 - 理由:去重锚取「送达事实」而非意图或传输层状态,同时服务幂等收敛与 T6.4 可观测;降级面保 dev 栈可用性且经审计对账非静默;net/smtp stdlib 保零迁移零新依赖。
 - 影响:internal/audit(approval.notified 词 + ApprovalNotifiedPayload)、internal/notify 新包(config/sender + notifytest 共享测试桩:自签 STARTTLS 升级 + AUTH PLAIN 广告 + QUIT 应答旋钮)、internal/worker(Deps.Notifier + handleApprovalNotify 换装(注册行不动)+ reason 闸 + startWorker* Notifier 注入通道 + 测试)、internal/scheduler(ReasonApprovalEscalated 常量 + 词表注释更新)、internal/reaper(常量接线 + 注释更新)、cmd/worker(buildNotifier 装配决策面 + main_test)、deploy/.env.example(SMTP 组)、docs/ROADMAP.md(T4.5 勾选)。ECC security/quality 双 reviewer APPROVE 0 blocking(9 项 M/L 全修:拨号超时、QUIT 非致命、header 编码 CR/LF、去重分区谓词、词表常量、陈旧注释、mode 硬编码、降级日志名、seed 类型);6 维度对抗审计 0 CRITICAL/HIGH(11 项 M/L 全收口)。零迁移、零 go.mod 变更;engine 包零改动。
+
+## D-2026-09-24-t82-example-topology
+- 背景:T8.2(issue #51)端到端示例。实现期发现两处引擎语义与「直觉拓扑」冲突,示例资产(用户可见面)必须按真义落地。
+- 决策(任务内拍板,用户 GATE 1 批准框架):
+  1. **branch 挂在合规结论上**(issue #51「branch 合规审查(T3.4)」的正读):compliance verdict==pass → 摘要 → 人工审批 → 报告主线(= ROADMAP T8.2 原链);default → 修订建议独立尾。两向均真实可达(LLM 输出是分支输入,e2e 桩控两向各测)。
+  2. **修订尾不与主线汇聚**:调度器剪枝语义 = 任一 SKIPPED 前驱 → 后继级联剪枝(sched.go advance/skipOne 传递闭包),菱形汇聚点(revision→report 回边)在 pass 路径被级联剪掉,形成「SUCCEEDED 但报告为 null」的假成功——蓝本 testdata doc_compliance.json 的 report_revision→report 汇聚边即此陷阱(仅过 schema 校验、从未真跑)。示例拓扑改为独立尾,双输出键各锚各节点(null 显式物化,非缺键)。
+  3. **驳回语义如实陈述**:驳回 = approval 节点终败(approval_rejected)+ fail-fast,下游不推进(resume.go failApprovalNode 现义)。「驳回后走修订回路」属 P1 停车场(回滚/断点续跑族),示例文档不伪造。
+  4. **审计验收降级口径落地**(issue #51 钦定):按 execution_id 串联全序断言完整事件链(ORDER BY id);execution.triggered 行与首个节点事件的写入方是两个进程(api 二段事务 vs worker),全序比较排除该行、单独断言形状,避免跨进程竞态敏化;trace_id 恒 NULL 断言(T6.2 合入后翻转为一致性断言)。
+  5. 页面形态 = API 模拟(Web 页是纯既有 API 的静态壳,webjourney_test.go 已证同源 HTTP 序列等价;审批走 login → 待办 → 详情 → POST decision)。
+- 理由:示例是用户可见的真值传播面——拓扑若按直觉画(汇聚回边),读者照抄即踩「假成功」陷阱;按引擎真义落地 + 守护测试单一真源(测试直读示例资产),文档与实现不脱钩。
+- 影响:docs/examples/ 新增(doc-compliance-review.json + sample-doc.txt + doc-compliance-review.md,首个示例文档目录)、internal/nodes/e2e_doc_example_test.go(三用例:批准主线全序审计 / fail 分流+级联剪枝 / 驳回 fail-fast)、docs/ROADMAP.md(T8.2 勾选)。零迁移、零 go.mod、零新 env、engine 与 api 零改动(只读复用)。另:internal/worker/worker_test.go waitTaskState 预算 45→90s(T4.3 同族包并行假红的先例跟进,T8.2 新增三条真链 + 并行 worktree 共享 t13 栈为边际负载)。review:security 维 APPROVE 0 blocking;quality 维 1 HIGH 已修(资产三 llm 节点缺 response_format:"json" 且模板散文——声明 outputs ⇒ content 必须 JSON 对象,真供应商下节点必败,桩恒回 JSON 掩蔽;补 response_format + 模板显式返回键 + md 契约说明)+ 4 LOW 修(defName 单源化 / fetchDetail 收敛 / 排序假设注释 / md 归因中性化);1 LOW 登记:docExamplePassword 与 ensureE2EUser 字面量重复(漂移时 login 响亮失败可诊断,抽共享 const 留后续收敛)。
