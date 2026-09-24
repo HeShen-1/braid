@@ -91,11 +91,8 @@ func TestValidateRejectsInvalidEvents(t *testing.T) {
 		})
 	}
 	// 合法全集快速回归(全部事件词表 × 两种 actor)。
-	for _, et := range []string{
-		EventNodeStateChanged, EventNodeRedispatched, EventAttemptReaped,
-		EventNodeDeadlineExtended, EventBranchEvaluated,
-		EventApprovalRequested, EventExecutionTriggered,
-	} {
+	// 遍历 knownEvents 而非硬编码清单:新词登记后此循环自动覆盖,防词表回归静默逃逸。
+	for et := range knownEvents {
 		for _, at := range []string{ActorWorker, ActorSystem, ActorUser, ActorTool, ActorLLM, ActorApproval} {
 			evt := valid
 			evt.EventType = et
