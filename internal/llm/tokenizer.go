@@ -23,6 +23,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/pkoukk/tiktoken-go"
 )
@@ -145,8 +146,8 @@ var (
 )
 
 // tokenizerFor 取 encoding 的进程级单例实例。入参恒为随包编码词表
-// (encodingForModel 只产两常量),default 分支 = cl100k(防御性收敛,
-// 不可能到达)。
+// (encodingForModel 只产两常量):default 即 cl100k 主路径(未知模型
+// 收敛后的常态路由),兼作词表外值的防御性兜底。
 func tokenizerFor(enc string) (*tiktoken.Tiktoken, error) {
 	switch enc {
 	case encO200K:
@@ -205,15 +206,33 @@ func EstimatePromptTokens(model string, msgs []Message) (int, error) {
 }
 
 // estimateContent 数一段 content 的 token:短内容精算;超采样上限时精算
-// 前缀后按 rune 比例外推(向上取整,预算估算宁可高估)。rune 切换保证
-// 采样边界不切割多字节字符。
+// 前缀后按 rune 比例外推(向上取整,预算估算宁可高估)。全程零 O(content)
+// 分配(delta 审计 MEDIUM 修:全量 []rune 镜像会把 1MB CJK 变 4MB 瞬时
+// 分配,采样钉住了 CPU 却留内存线性)——rune 计数用 utf8 零拷贝 API,
+// 前缀按字节边界前向解出(DecodeRuneInString 对无效字节产 RuneError,
+// 与全量 []rune 转换同语义,采样边界不切割多字节字符)。
 func estimateContent(tke *tiktoken.Tiktoken, content string) int {
-	r := []rune(content)
-	if len(r) <= estimateSampleRunes {
+	n := utf8.RuneCountInString(content)
+	if n <= estimateSampleRunes {
 		// Encode(text,nil,nil) 不启用特殊 token 拦截:用户内容含
 		// "<|endoftext|>" 字面量时按普通文本编码,估算不 panic。
 		return len(tke.Encode(content, nil, nil))
 	}
-	sampled := int64(len(tke.Encode(string(r[:estimateSampleRunes]), nil, nil)))
-	return int((sampled*int64(len(r)) + estimateSampleRunes - 1) / estimateSampleRunes)
+	end := sampleCut(content, estimateSampleRunes)
+	sampled := int64(len(tke.Encode(content[:end], nil, nil)))
+	return int((sampled*int64(n) + estimateSampleRunes - 1) / estimateSampleRunes)
+}
+
+// sampleCut 返回 content 前 want 个 rune 的字节边界(前向解码恰好 want
+// 步,调用方已保证 want <= rune 总数)。
+func sampleCut(content string, want int) int {
+	end := 0
+	for i := 0; i < want; i++ {
+		_, size := utf8.DecodeRuneInString(content[end:])
+		if size == 0 {
+			break // 串尾提前到达(防御;调用方契约下不发生)
+		}
+		end += size
+	}
+	return end
 }
