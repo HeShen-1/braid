@@ -519,7 +519,7 @@ func TestHTTPToolHostAllowlistRedirects(t *testing.T) {
 	t.Run("runner maps rejection to tool_host_blocked", func(t *testing.T) {
 		// 全链:client.Do 的 url.Error 包装 → 裸错误 → LocalRunner errors.Is
 		// 分类(nodes 消费侧同款链路)。
-		r := NewLocalRunner(registryOf(t, tool), NewTokenIssuer(nil, 0, nil))
+		r := NewLocalRunner(registryOf(t, tool), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 		_, err := r.Run(context.Background(), RunRequest{
 			Tool: "http", Inputs: map[string]any{"name": "docs", "path": "/hop-evil"},
 			NodeExecID: 7, AttemptNo: 1, IdempotencyKey: "att:7:1",

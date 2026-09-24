@@ -104,10 +104,12 @@ type ApprovalDecidedPayload struct {
 
 // ApprovalDecisionDeniedPayload 是 approval.decision_denied(T4.2 越权决定
 // 尝试被拒)的事件体。attempted 是尝试方向(approve|reject);尝试者身份在
-// 行级 actor_id;拒绝理由恒 membership(越权面仅此一种,P0 不扩词表)。
+// 行级 actor_id;reason 区分拒绝面:T4.2 仅 membership(DSL 名单外),
+// T5.2 换装新增 role_denied(名单内但缺审批角色)——旧行缺省即 membership。
 type ApprovalDecisionDeniedPayload struct {
 	NodeID    string `json:"node_id"`
-	Attempted string `json:"attempted"` // approve | reject
+	Attempted string `json:"attempted"`       // approve | reject
+	Reason    string `json:"reason,omitempty"` // membership(缺省)| role_denied
 }
 
 // ExecutionTriggeredPayload 是 execution.triggered(T5.5 API 触发面)的
@@ -117,4 +119,18 @@ type ApprovalDecisionDeniedPayload struct {
 type ExecutionTriggeredPayload struct {
 	DefinitionID uint64 `json:"definition_id"` // 钉版定义行 id
 	TriggerType  string `json:"trigger_type"`  // DDL ENUM(API|SCHEDULE,词表单源 DDL)
+}
+
+// ToolCallDeniedPayload 是 tool.call.denied(T5.2 执行时 RBAC 越权工具调用
+// 被拒)的事件体。被拒主体在行级 actor_id(= workflow_execution.
+// triggered_by);actor_roles 是被拒时主体实持角色(id/枚举面,运维对账
+// 「为什么拒」的免 join 字段);reason 是拒绝分因(unknown_subject/
+// disabled/role_mismatch——账号态细节只进审计,不进公开的节点
+// error_message,sec 评审 LOW);拒绝时点即调用时点,attempt_id NULL
+// (拒绝发生在 attempt 收口之前——工具零触达)。
+type ToolCallDeniedPayload struct {
+	NodeID     string   `json:"node_id"`
+	Tool       string   `json:"tool"`
+	ActorRoles []string `json:"actor_roles"` // 拒绝时实持角色(可能空:主体无用户行)
+	Reason     string   `json:"reason"`      // unknown_subject | disabled | role_mismatch
 }

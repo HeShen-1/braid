@@ -75,10 +75,12 @@ func (s *Server) Router() *gin.Engine {
 	v1.GET("/executions", s.listExecutions)
 	v1.GET("/executions/:id", s.getExecution)
 
-	// 审批面(T4.2):决定 POST 的门 = DSL approvers[](快照真相源,越权
-	// 403 + approval.decision_denied 审计;handler 内裁决,不挂角色闸——
-	// DSL 名单是执行时权威,T5.2 RBAC 换装点再评估叠加)。GET 详情任意
-	// 有效 token(读面惯例,与 GET /executions/:id 一致)。
+	// 审批面(T4.2 立,T5.2 换装后形态):POST 决定的门 = approver|admin
+	// 角色闸(handler 内,403 role_denied + approval.decision_denied 审计
+	// reason=role_denied)叠加 DSL approvers[](快照真相源,越权 403 +
+	// 同事件 reason=membership;DSL 名单是执行时权威)。GET 详情收窄到
+	// 名单内审批人(comment 自由文本唯一暴露面不再开放;快照缺失
+	// fail-closed,状态读面在 GET /executions/:id)。
 	v1.GET("/executions/:id/approvals/:node_id", s.getApproval)
 	v1.POST("/executions/:id/approvals/:node_id/decision", s.decideApproval)
 	return r

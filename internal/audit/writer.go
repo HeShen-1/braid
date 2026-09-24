@@ -60,6 +60,11 @@ var ErrInvalidEvent = errors.New("audit: invalid event")
 //   - execution.triggered:API 触发落执行(T5.5;DDL 开放词表注释预留同名,
 //     D-t26 §6 显式留给 T5 接入登记)。执行级事件(node_id NULL),与
 //     scheduler 侧行不同事务(Instantiate 不写审计,api 二段事务补)。
+//   - tool.call.denied:执行时 RBAC 越权工具调用被拒(T5.2;ARCHITECTURE
+//     §3.4 双重校验执行侧半边,先例 = approval.decision_denied)。actor=
+//     user/被拒主体(workflow_execution.triggered_by);独立小事务(由
+//     auth.ExecutionAuthorizer 在调用现场发射,best-effort——拒绝裁决
+//     不受旁路写入失败影响)。
 const (
 	EventNodeStateChanged       = "node.state_changed"
 	EventNodeRedispatched       = "node.redispatched"
@@ -72,11 +77,13 @@ const (
 	EventApprovalDecided        = "approval.decided"
 	EventApprovalDecisionDenied = "approval.decision_denied"
 	EventExecutionTriggered     = "execution.triggered"
+	EventToolCallDenied         = "tool.call.denied"
 )
 
-// actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval);
-// P0 只发 worker(system 由 reaper)。user/tool/llm/approval 为 T5/T3.x 预留,
-// 校验按全集——DDL 开放面不变,只是本任务尚无发射点。
+// actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval)。
+// 发射面演进:P0 worker(system 由 reaper);T4.2 起 user(api 审批面);
+// T5.2 起 user 的第二发射点(auth.ExecutionAuthorizer 的 tool.call.denied)。
+// tool/llm/approval 仍为预留,校验按全集——DDL 开放面不变。
 const (
 	ActorUser     = "user"
 	ActorSystem   = "system"
@@ -114,6 +121,7 @@ var knownEvents = map[string]bool{
 	EventApprovalDecided:        true,
 	EventApprovalDecisionDenied: true,
 	EventExecutionTriggered:     true,
+	EventToolCallDenied:         true,
 }
 
 var knownActors = map[string]bool{

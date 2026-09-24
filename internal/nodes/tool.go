@@ -102,6 +102,12 @@ func (e *ToolExecutor) executeCall(ctx context.Context, req worker.Request, in s
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
 			return worker.Outcome{}, fmt.Errorf("nodes: tool call cancelled (node_exec %d): %w", req.NodeExecutionID, err)
 		}
+		if errors.Is(err, tools.ErrAuthorizerUnavailable) {
+			// 授权面基础设施故障(T5.2 go 评审 HIGH):attempt 留 RUNNING
+			// 由重试接管——不落未分类兜底误收口 tool_failed(默认
+			// max_attempts=1 的一次性业务失败)。
+			return worker.Outcome{}, fmt.Errorf("nodes: tool call authorization failed (node_exec %d): %w", req.NodeExecutionID, err)
+		}
 		return failedOutcome(tools.CodeToolFailed, err.Error()), nil // 未分类兜底(防御,正常路径不达)
 	}
 	out, err := extractOutputs(string(res.Output), spec.Outputs)

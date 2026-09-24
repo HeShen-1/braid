@@ -52,7 +52,7 @@ func (ssrfTool) Run(_ context.Context, _ Call) (Result, error) {
 // tool_failed、不落基础设施失败。
 func TestRunMapsSSRFBlocked(t *testing.T) {
 	t.Run("bare sentinel via url error wrap", func(t *testing.T) {
-		r := NewLocalRunner(registryOf(t, ssrfTool{}), NewTokenIssuer(nil, 0, nil))
+		r := NewLocalRunner(registryOf(t, ssrfTool{}), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 		_, err := r.Run(context.Background(), RunRequest{
 			Tool: "http", NodeExecID: 1, AttemptNo: 1, IdempotencyKey: "k1",
 		})
@@ -66,7 +66,7 @@ func TestRunMapsSSRFBlocked(t *testing.T) {
 		// 确定性证据,必须优先于 ctx 门,否则业务分类被吞。
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		r := NewLocalRunner(registryOf(t, ssrfTool{}), NewTokenIssuer(nil, 0, nil))
+		r := NewLocalRunner(registryOf(t, ssrfTool{}), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 		_, err := r.Run(ctx, RunRequest{
 			Tool: "http", NodeExecID: 1, AttemptNo: 1, IdempotencyKey: "k1",
 		})
@@ -101,7 +101,7 @@ func (pathBlockTool) Run(_ context.Context, _ Call) (Result, error) {
 // 可区分;哨兵优先于 ctx 门(与 SSRF 哨兵同语义,竞态现场不吞分类)。
 func TestRunMapsWhitelistBlocked(t *testing.T) {
 	t.Run("host blocked maps to tool_host_blocked", func(t *testing.T) {
-		r := NewLocalRunner(registryOf(t, hostBlockTool{}), NewTokenIssuer(nil, 0, nil))
+		r := NewLocalRunner(registryOf(t, hostBlockTool{}), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 		_, err := r.Run(context.Background(), RunRequest{Tool: "http", NodeExecID: 1, AttemptNo: 1})
 		if got := callCodeOf(t, err); got != CodeHostBlocked {
 			t.Errorf("code = %q, want %q (err=%v)", got, CodeHostBlocked, err)
@@ -109,7 +109,7 @@ func TestRunMapsWhitelistBlocked(t *testing.T) {
 	})
 
 	t.Run("path blocked maps to tool_path_blocked", func(t *testing.T) {
-		r := NewLocalRunner(registryOf(t, pathBlockTool{}), NewTokenIssuer(nil, 0, nil))
+		r := NewLocalRunner(registryOf(t, pathBlockTool{}), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 		_, err := r.Run(context.Background(), RunRequest{Tool: "file_read", NodeExecID: 1, AttemptNo: 1})
 		if got := callCodeOf(t, err); got != CodePathBlocked {
 			t.Errorf("code = %q, want %q (err=%v)", got, CodePathBlocked, err)
@@ -119,7 +119,7 @@ func TestRunMapsWhitelistBlocked(t *testing.T) {
 	t.Run("host sentinel wins over concurrent ctx expiry", func(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		r := NewLocalRunner(registryOf(t, hostBlockTool{}), NewTokenIssuer(nil, 0, nil))
+		r := NewLocalRunner(registryOf(t, hostBlockTool{}), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 		_, err := r.Run(ctx, RunRequest{Tool: "http", NodeExecID: 1, AttemptNo: 1})
 		if got := callCodeOf(t, err); got != CodeHostBlocked {
 			t.Errorf("code = %q — ctx gate must not swallow sentinel (err=%v)", got, err)
@@ -132,7 +132,7 @@ func TestRunMapsWhitelistBlocked(t *testing.T) {
 		// 变异对 path 分类失守不可见)。
 		ctx, cancel := context.WithCancel(context.Background())
 		cancel()
-		r := NewLocalRunner(registryOf(t, pathBlockTool{}), NewTokenIssuer(nil, 0, nil))
+		r := NewLocalRunner(registryOf(t, pathBlockTool{}), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 		_, err := r.Run(ctx, RunRequest{Tool: "file_read", NodeExecID: 1, AttemptNo: 1})
 		if got := callCodeOf(t, err); got != CodePathBlocked {
 			t.Errorf("code = %q — ctx gate must not swallow sentinel (err=%v)", got, err)
@@ -144,7 +144,7 @@ func TestRunMapsWhitelistBlocked(t *testing.T) {
 // DefaultMaxToolOutput = bad_tool_output(业务失败收口,不放大下游拷贝链)。
 func TestRunnerOutputSizeCap(t *testing.T) {
 	big := json.RawMessage(`{"k":"` + strings.Repeat("x", DefaultMaxToolOutput) + `"}`)
-	r := NewLocalRunner(registryOf(t, outputTool{out: big}), NewTokenIssuer(nil, 0, nil))
+	r := NewLocalRunner(registryOf(t, outputTool{out: big}), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 	_, err := r.Run(context.Background(), RunRequest{Tool: "big_out", NodeExecID: 1, AttemptNo: 1})
 	if got := callCodeOf(t, err); got != CodeBadToolOutput {
 		t.Fatalf("code = %q, want %q", got, CodeBadToolOutput)
@@ -179,7 +179,7 @@ func callCodeOf(t *testing.T, err error) string {
 
 func TestRunnerHappyPath(t *testing.T) {
 	spy := &spyTool{}
-	r := NewLocalRunner(registryOf(t, spy), NewTokenIssuer(nil, 0, nil))
+	r := NewLocalRunner(registryOf(t, spy), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 	res, err := r.Run(context.Background(), RunRequest{
 		Tool: "spy", Inputs: map[string]any{"k": "v"},
 		NodeExecID: 5, AttemptNo: 2, IdempotencyKey: "att:5:2",
@@ -203,7 +203,7 @@ func TestRunnerHappyPath(t *testing.T) {
 }
 
 func TestRunnerToolNotFound(t *testing.T) {
-	r := NewLocalRunner(registryOf(t), NewTokenIssuer(nil, 0, nil))
+	r := NewLocalRunner(registryOf(t), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 	_, err := r.Run(context.Background(), RunRequest{Tool: "ghost", NodeExecID: 1, AttemptNo: 1})
 	if code := callCodeOf(t, err); code != CodeToolNotFound {
 		t.Fatalf("code = %q, want %q", code, CodeToolNotFound)
@@ -223,7 +223,7 @@ func TestRunnerExpiredTokenRejected(t *testing.T) {
 	clk.now = clk.now.Add(time.Minute) // 越过 exp
 
 	now := &fakeClock{now: clk.now}
-	r := NewLocalRunner(registryOf(t, spy), NewTokenIssuer([]byte("k"), 30*time.Second, now.Now))
+	r := NewLocalRunner(registryOf(t, spy), NewTokenIssuer([]byte("k"), 30*time.Second, now.Now), AllowAllAuthorizer{})
 	_, err = r.Run(context.Background(), RunRequest{
 		Tool: "spy", Token: expired, NodeExecID: 9, AttemptNo: 4,
 	})
@@ -238,7 +238,7 @@ func TestRunnerExpiredTokenRejected(t *testing.T) {
 func TestRunnerTamperedTokenRejected(t *testing.T) {
 	spy := &spyTool{}
 	iss := NewTokenIssuer([]byte("k"), time.Minute, nil)
-	r := NewLocalRunner(registryOf(t, spy), iss)
+	r := NewLocalRunner(registryOf(t, spy), iss, AllowAllAuthorizer{})
 	_, err := r.Run(context.Background(), RunRequest{
 		Tool: "spy", Token: "broken.sig", NodeExecID: 9, AttemptNo: 4,
 	})
@@ -248,7 +248,7 @@ func TestRunnerTamperedTokenRejected(t *testing.T) {
 }
 
 func TestRunnerToolFailure(t *testing.T) {
-	r := NewLocalRunner(registryOf(t, failTool{}), NewTokenIssuer(nil, 0, nil))
+	r := NewLocalRunner(registryOf(t, failTool{}), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 	_, err := r.Run(context.Background(), RunRequest{Tool: "always_fail", NodeExecID: 1, AttemptNo: 1})
 	var ce *CallError
 	if !errors.As(err, &ce) || ce.Code != CodeToolFailed {
@@ -260,7 +260,7 @@ func TestRunnerToolFailure(t *testing.T) {
 }
 
 func TestRunnerBadOutput(t *testing.T) {
-	r := NewLocalRunner(registryOf(t, badOutputTool{}), NewTokenIssuer(nil, 0, nil))
+	r := NewLocalRunner(registryOf(t, badOutputTool{}), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 	_, err := r.Run(context.Background(), RunRequest{Tool: "bad_out", NodeExecID: 1, AttemptNo: 1})
 	if code := callCodeOf(t, err); code != CodeBadToolOutput {
 		t.Fatalf("code = %q, want %q", code, CodeBadToolOutput)
@@ -284,7 +284,7 @@ func TestRunnerCtxCancelIsInfraError(t *testing.T) {
 	// ctx 取消 = 基础设施失败:裸 error 透传(不包 CallError),nodes 侧据此
 	// 走 error 返回留 RUNNING,asynq 重试接管(与 LLM 执行器同语义)。
 	blk := blockerTool{release: make(chan struct{})}
-	r := NewLocalRunner(registryOf(t, blk), NewTokenIssuer(nil, 0, nil))
+	r := NewLocalRunner(registryOf(t, blk), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() { time.Sleep(50 * time.Millisecond); cancel() }()
 	_, err := r.Run(ctx, RunRequest{Tool: "blocker", NodeExecID: 1, AttemptNo: 1})
