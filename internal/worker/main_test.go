@@ -188,6 +188,37 @@ func (f *fakeExec) count() int {
 	return len(f.calls)
 }
 
+// notifyCall 是 fakeNotifier 的调用记录。
+type notifyCall struct {
+	execID, nodeExecID uint64
+	reason             string
+}
+
+// fakeNotifier 是 ApprovalNotifier 测试桩(T4.5):记录调用,fn 决定返回
+// (成功 / error / notify.ErrAlreadyNotified 编排)。
+type fakeNotifier struct {
+	mu    sync.Mutex
+	calls []notifyCall
+	fn    func(call notifyCall) error
+}
+
+func (f *fakeNotifier) NotifyApproval(_ context.Context, execID, nodeExecID uint64, reason string) error {
+	call := notifyCall{execID: execID, nodeExecID: nodeExecID, reason: reason}
+	f.mu.Lock()
+	f.calls = append(f.calls, call)
+	f.mu.Unlock()
+	if f.fn == nil {
+		return nil
+	}
+	return f.fn(call)
+}
+
+func (f *fakeNotifier) callsSnapshot() []notifyCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]notifyCall(nil), f.calls...)
+}
+
 // queueSeq 生成 per-process 唯一队列名(redistest 键级隔离契约)。
 var queueSeq atomic.Uint64
 
@@ -201,14 +232,26 @@ func nextQueue(t *testing.T) string {
 // 的队列,否则永挂 pending)。
 func startWorker(t *testing.T, d *sql.DB, ex Executor, cfg Config) (queue string) {
 	t.Helper()
-	queue = nextQueue(t)
-	startWorkerOnQueue(t, d, ex, cfg, queue)
-	return queue
+	return startWorkerOpt(t, d, ex, cfg, nil)
 }
 
 // startWorkerOnQueue 在指定队列上起 worker(e2e:Instantiate 的调度器先于
 // worker 存在,需同一队列名)。
 func startWorkerOnQueue(t *testing.T, d *sql.DB, ex Executor, cfg Config, queue string) {
+	t.Helper()
+	startWorkerOnQueueOpt(t, d, ex, cfg, queue, nil)
+}
+
+// startWorkerOpt = startWorker + T4.5 通知面注入(nil = SMTP 未配置降级)。
+func startWorkerOpt(t *testing.T, d *sql.DB, ex Executor, cfg Config, n ApprovalNotifier) (queue string) {
+	t.Helper()
+	queue = nextQueue(t)
+	startWorkerOnQueueOpt(t, d, ex, cfg, queue, n)
+	return queue
+}
+
+// startWorkerOnQueueOpt 是全部 startWorker* 变体的实体(Notifier 注入面)。
+func startWorkerOnQueueOpt(t *testing.T, d *sql.DB, ex Executor, cfg Config, queue string, n ApprovalNotifier) {
 	t.Helper()
 	opt := redistest.MustOpt(t)
 	cfg.Queues = map[string]int{queue: 1}
@@ -226,7 +269,7 @@ func startWorkerOnQueue(t *testing.T, d *sql.DB, ex Executor, cfg Config, queue 
 	wctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(wctx, Deps{DB: d, IDs: ids, Executor: ex, Sched: sched}, cfg, opt)
+		done <- Run(wctx, Deps{DB: d, IDs: ids, Executor: ex, Sched: sched, Notifier: n}, cfg, opt)
 	}()
 	t.Cleanup(func() {
 		cancel()

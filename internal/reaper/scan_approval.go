@@ -11,7 +11,7 @@ package reaper
 //	                       asynq Inspector RunTask,archived 告警归 T6.4)
 //	    未决票 + escalate → 升级通知恰好一次(escalated_at 谓词锚)+ 保持等待
 //	                       (Q9:永不自动通过);通知 = approval.notify outbox 事件
-//	                       (首个发射点,worker 占位消费,T4.5 SMTP 换装)
+//	                       (首个发射点;T4.5 起消费面 = notify.Sender SMTP 发送)
 //	    未决票 + fail     → FailSuspendedNode(approval_timeout)显式终败 +
 //	                       执行终局化 FAILED(ROADMAP T4.3 验收面)
 //	⑤b 孤儿(wf 已终态,fail-fast 遗留;resume.go 终态守卫移交)→ 平台裁决
@@ -383,11 +383,12 @@ SELECT COUNT(*) FROM outbox
 // appendApprovalNotifyEvent 落升级通知事件(approval.notify 首个发射点;
 // 恰好一次锚在 escalated_at——本调用只在 MarkNodeEscalated 同事务后到达,
 // 同节点永无第二条通知意图,TaskID notify:<node_exec_id> 满足词表不变量)。
-// 消费面:worker 占位 handler(log-only ack),T4.5 SMTP 换装。
+// 消费面:worker handleApprovalNotify → notify.Sender SMTP 发送(T4.5;
+// SMTP 未配置时降级 log-only ack)。
 func (r *Reaper) appendApprovalNotifyEvent(ctx context.Context, q engine.DBTX,
 	execID, nodeExecID uint64) error {
 	raw, err := json.Marshal(scheduler.ApprovalNotifyPayload{
-		ExecutionID: execID, NodeExecutionID: nodeExecID, Reason: "escalated",
+		ExecutionID: execID, NodeExecutionID: nodeExecID, Reason: scheduler.ReasonApprovalEscalated,
 	})
 	if err != nil {
 		return fmt.Errorf("reaper: marshal notify payload: %w", err)

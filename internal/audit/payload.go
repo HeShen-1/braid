@@ -108,7 +108,7 @@ type ApprovalDecidedPayload struct {
 // T5.2 换装新增 role_denied(名单内但缺审批角色)——旧行缺省即 membership。
 type ApprovalDecisionDeniedPayload struct {
 	NodeID    string `json:"node_id"`
-	Attempted string `json:"attempted"`       // approve | reject
+	Attempted string `json:"attempted"`        // approve | reject
 	Reason    string `json:"reason,omitempty"` // membership(缺省)| role_denied
 }
 
@@ -128,6 +128,17 @@ type ApprovalResumeRedispatchedPayload struct {
 	NodeID     string `json:"node_id"`
 	DecisionID uint64 `json:"decision_id"`
 	AttemptNo  uint16 `json:"attempt_no"`
+}
+
+// ApprovalNotifiedPayload 是 approval.notified(T4.5 SMTP 送达)的事件体。
+// reason 与事件成因码同词表(ApprovalNotifyPayload.Reason 单源,P0 仅
+// escalated)。收件地址/邮件主题不入行(D-t26 §4:自由文本与配置面不入审计;
+// 收件配置真相源在部署 env),邮件正文的工作流上下文真相源在
+// node_execution.input_snapshot(渲染由 notify 包单点)。送达时刻真相源在
+// 行级 event_at。
+type ApprovalNotifiedPayload struct {
+	NodeID string `json:"node_id"`
+	Reason string `json:"reason"` // escalated(P0 词表,scheduler.ApprovalNotifyPayload 同源)
 }
 
 // ExecutionTriggeredPayload 是 execution.triggered(T5.5 API 触发面)的
