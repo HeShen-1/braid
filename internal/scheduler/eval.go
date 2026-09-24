@@ -243,13 +243,19 @@ func RenderText(v any) string {
 	return string(b)
 }
 
-type approvalSnapshotData struct {
+// ApprovalInput 是 approval 节点 input_snapshot 的形状契约(T4.2 起导出:
+// api 审批面解码 approvers/approvers 可读字段的单源,镜像 LLMInput/ToolInput
+// 编译期形状锚——形状漂移在消费方编译期/单测暴露,而非运行期 JSON 缺字段)。
+type ApprovalInput struct {
 	Approvers    []string `json:"approvers"`
 	Mode         string   `json:"mode"`
 	TimeoutHours float64  `json:"timeout_hours"`
 	OnTimeout    string   `json:"on_timeout"`
 	Instructions string   `json:"instructions"`
 }
+
+// approvalSnapshotData 是 ApprovalInput 的历史别名(物化点内部引用面不变)。
+type approvalSnapshotData = ApprovalInput
 
 // branchOperands 构建 branch 节点的 input_snapshot:{"operands":{引用原文:值}}。
 // 收集 cases 全部纯引用(when.left 恒为;when.right 为引用字符串时亦入),仅含

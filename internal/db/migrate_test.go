@@ -70,6 +70,7 @@ var engineTables = map[string]bool{
 	"workflow_execution":  true,
 	"node_execution":      true,
 	"node_attempt":        true,
+	"approval_decision":   true, // 0003(T4.2 审批决定事实表,引擎域)
 	"outbox":              true,
 	"audit_log":           true,
 }
@@ -228,6 +229,21 @@ func TestSchemaContract(t *testing.T) {
 	}
 	if idx != 1 {
 		t.Fatalf("idx_audit_attempt missing")
+	}
+
+	// 0003 复合 FK 载体键(对抗审计 LOW 修防回退):approval_decision 的
+	// (node_execution_id, execution_id) 复合外键依赖本键把「同链配对」钉死
+	// 为 DB 不变量——键被误删时复合 FK 建不起来,迁移本身会红;此断言钉住
+	// 键形态不被无声降级为普通索引。
+	var ukCols int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM information_schema.STATISTICS
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'node_execution'
+		   AND INDEX_NAME = 'uk_node_id_exec' AND NON_UNIQUE = 0`).Scan(&ukCols); err != nil {
+		t.Fatalf("uk_node_id_exec: %v", err)
+	}
+	if ukCols != 2 {
+		t.Fatalf("uk_node_id_exec columns = %d, want 2 (id, execution_id)", ukCols)
 	}
 }
 

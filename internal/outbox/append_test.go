@@ -141,6 +141,51 @@ SELECT status, deliver_attempts, queue, payload, dispatched_at, last_error, trac
 	}
 }
 
+// TestTaskIDVocabularyResume:resume: 词表四段式形态钉死(T4.2,append.go 包
+// 注释的不变量锚)。旧三段式(0001 §5 注释形态)必须拒收——它正是「同
+// (exec,node) 二次续跑复用同 ID 被 archived 副本挡死」豁口的载体;变异:
+// 正则回退三段式 → 旧形态用例红;放开 attempt 段词表 → 非数字段红。
+func TestTaskIDVocabularyResume(t *testing.T) {
+	d := sqltest.MustOpen(t)
+	base := Event{
+		ExecutionID: newID(),
+		EventType:   "execution.resume",
+		Payload:     json.RawMessage(`{"execution_id":1}`),
+	}
+	t.Cleanup(func() { mustExec(t, d, `DELETE FROM outbox WHERE execution_id=?`, base.ExecutionID) })
+	ok := []string{
+		fmt.Sprintf("resume:%d:boss:2", newID()),
+		fmt.Sprintf("resume:%d:a1_b2:10", newID()),
+	}
+	bad := map[string]string{
+		"旧三段式(T4.2 前 DDL 注释形态,已扩)": fmt.Sprintf("resume:%d:boss", newID()),
+		"attempt 段非数字":             fmt.Sprintf("resume:%d:boss:x", newID()),
+		"node_id 段大写":              fmt.Sprintf("resume:%d:Boss:1", newID()),
+		"attempt 段非数字(字母)":         fmt.Sprintf("resume:%d:boss:x", newID()),
+		"前缀错位":                     fmt.Sprintf("resumex:%d:boss:1", newID()),
+	}
+	for _, id := range ok {
+		evt := base
+		evt.TaskID = id
+		evt.ID = newID()
+		if err := Append(context.Background(), d, evt); err != nil {
+			t.Fatalf("valid resume task id %q rejected: %v", id, err)
+		}
+	}
+	for name, id := range bad {
+		evt := base
+		evt.TaskID = id
+		evt.ID = newID()
+		w := &countDBTX{d: d}
+		if err := Append(context.Background(), w, evt); !errors.Is(err, ErrInvalidEvent) {
+			t.Fatalf("%s: task id %q: want ErrInvalidEvent, got %v", name, id, err)
+		}
+		if n := w.execs.Load(); n != 0 {
+			t.Fatalf("%s: validation touched DB", name)
+		}
+	}
+}
+
 // TestClampErrLen:截断保持在 rune 边界(字节拦腰截会产出非法 UTF-8,utf8mb4
 // 严格模式 1366 拒收 → 记账回滚 → 行永动重试)。
 func TestClampErrLen(t *testing.T) {

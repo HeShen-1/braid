@@ -43,7 +43,10 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"sort"
+	"strings"
 	"time"
+
+	"github.com/go-sql-driver/mysql"
 
 	"braid/internal/audit"
 	"braid/internal/engine"
@@ -54,10 +57,16 @@ import (
 
 // 事件词表:event_type 即 asynq task type(relay 直投约定)。
 // node.task_enqueue 与 worker 侧 T2.3 定名逐字一致;execution.start 是本包新增
-// (TaskID 词表 exec:<id>,outbox.append 校验通过)。
+// (TaskID 词表 exec:<id>,outbox.append 校验通过)。execution.resume 是 T4.2
+// 审批续跑事件(DDL §5 开放词表注释预留同名;TaskID 词表 resume:<exec>:<node>:<attempt>,
+// 0003 头注释定稿)——发射点在 api 审批面(决策事务),消费面在 worker
+// handleNodeResume → Scheduler.Resume。approval.notify 词面登记(D-t41 #3 移交:
+// DDL 预留、消费方 T4.5 SMTP;现在发 = 死事件,P0 零发射点,常量先锚词表)。
 const (
-	EventTypeNodeTask       = "node.task_enqueue"
-	EventTypeExecutionStart = "execution.start"
+	EventTypeNodeTask        = "node.task_enqueue"
+	EventTypeExecutionStart  = "execution.start"
+	EventTypeExecutionResume = "execution.resume"
+	EventTypeApprovalNotify  = "approval.notify"
 )
 
 // NodeTaskPayload 是 node.task_enqueue 事件的自描述体(outbox 契约:仅 id 引用)。
@@ -71,6 +80,17 @@ type NodeTaskPayload struct {
 // ExecStartPayload 是 execution.start 事件的自描述体。
 type ExecStartPayload struct {
 	ExecutionID uint64 `json:"execution_id"`
+}
+
+// ResumePayload 是 execution.resume 事件的自描述体(outbox 契约:仅 id 引用;
+// 决定全文真相源在 approval_decision 行,worker 侧续跑事务按 DecisionID 复核)。
+// AttemptNo 是本次续跑将创建的 attempt 号(= TaskID 第四段,自描述对账用;
+// 权威值由 node 行锁内读出,事件重放不因它分叉)。
+type ResumePayload struct {
+	ExecutionID     uint64 `json:"execution_id"`
+	NodeExecutionID uint64 `json:"node_execution_id"`
+	DecisionID      uint64 `json:"decision_id"`
+	AttemptNo       uint16 `json:"attempt_no"`
 }
 
 // Deps 是运行依赖。Router 为 nil 用 CondRouter;Queue 为空用 "default"(必须在
@@ -264,6 +284,10 @@ type InstantiateParams struct {
 	TriggeredBy  string          // 必填(审计事实源,T2.6)
 	TriggerType  string          // 空 → "API"(DDL ENUM 词表)
 	TraceID      string          // 可空(T6.2 前占位不伪造)
+	// IdempotencyKey 是触发幂等键的落库值(T4.2 兑现 D-t55 §5;api 侧已完成
+	// 主体+定义二维作用域哈希,此处只透传落列)。空 → NULL(不去重,现状);
+	// 撞 uk_exec_idem → ErrConflict(调用方读原行做重放响应)。
+	IdempotencyKey string
 }
 
 // Instantiate 从钉住定义物化执行:单事务 INSERT workflow_execution(PENDING,
@@ -309,13 +333,24 @@ func (s *Scheduler) Instantiate(ctx context.Context, p InstantiateParams) (uint6
 	}
 
 	err = engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		var idem any
+		if p.IdempotencyKey != "" {
+			idem = p.IdempotencyKey
+		}
 		if _, err := q.ExecContext(ctx, `
 INSERT INTO workflow_execution
   (id, definition_id, definition_name, definition_version, definition_hash,
-   status, trigger_type, triggered_by, trace_id, input)
-VALUES (?,?,?,?,?, 'PENDING', ?, ?, ?, ?)`,
+   status, trigger_type, triggered_by, trace_id, input, idempotency_key)
+VALUES (?,?,?,?,?, 'PENDING', ?, ?, ?, ?, ?)`,
 			execID, p.DefinitionID, def.name, def.version.Int64, def.hash,
-			triggerType, p.TriggeredBy, trace, input); err != nil {
+			triggerType, p.TriggeredBy, trace, input, idem); err != nil {
+			var me *mysql.MySQLError
+			if errors.As(err, &me) && me.Number == 1062 && strings.Contains(me.Message, "uk_exec_idem") {
+				// 幂等键双投递(T8.1 收敛面):非缺陷,结构化上抛供调用方重放。
+				return fmt.Errorf("%w: idempotency key already triggered an execution", engine.ErrConflict)
+			}
+			// 其余 1062(PK 撞 = 生成器缺陷)与普通错误同路:不映射 ErrConflict
+			// ——那会诱发 T2.5 式重决策循环(append.go 同哲学)。
 			return fmt.Errorf("scheduler: insert execution %d: %w", execID, err)
 		}
 		for _, nodeID := range sortedNodes(g.nodes) {

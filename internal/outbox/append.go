@@ -11,10 +11,14 @@
 //
 // TaskID 词表不变量(ErrTaskIDConflict 幂等收敛的安全前提,勿破坏):词表全部
 // 由不可变标识符构成——同一 task_id 永不表达「需要再投一次的新意图」。判死
-// 重入队天然携带新 attempt_no(att: 词表)满足此条;**resume: 词表是已知豁口**:
-// 同一 (exec,node) 的第二次续跑会复用同 ID,被 asynq 侧仍滞留的旧任务副本
-// (archived 滞留无保证上界,仅同队列惰性裁剪)误判「已投递」而挡死——T4.2
-// 必须引入新 ID 形态或显式论证一次性;该不变量由 T2.3 验收断言承接。
+// 重入队天然携带新 attempt_no(att: 词表)满足此条;resume: 词表同理四段化
+// (T4.2,原三段式 resume:<exec>:<node> 是已知豁口:同 (exec,node) 二次续跑
+// 复用同 ID,被 asynq 侧仍滞留的 archived 副本误判「已投递」而静默挡死)——
+// 现形态 resume:<exec>:<node>:<attempt>,attempt = 本次续跑将创建的 attempt 号
+// (API 事务 node 行锁内读出,确定性):同一续跑意图的对账重投复用同 ID(冲突
+// 即收敛);新续跑轮次(P1 回滚重挂→再挂起)携带新 attempt ⇒ 新 ID。契约记录
+// = 迁移 0003 头注释 + D-2026-09-24-t42-approval-resume(0001 §5 注释形态由
+// 0003 扩展,0001 已应用不可改);该不变量由 T2.3 验收断言承接。
 package outbox
 
 import (
@@ -42,11 +46,11 @@ const (
 	maxErrText = 2000
 )
 
-// TaskID 词表(全库统一,DDL §5 表注释):node_id 段与 DSL 词表一致
-// (dsl/refs.go 同款 [a-z][a-z0-9_]{0,63})。
+// TaskID 词表(全库统一,DDL §5 表注释 + 0003 扩展):node_id 段与 DSL 词表
+// 一致(dsl/refs.go 同款 [a-z][a-z0-9_]{0,63})。
 var (
 	taskIDReExec   = regexp.MustCompile(`^exec:\d+$`)
-	taskIDReResume = regexp.MustCompile(`^resume:\d+:[a-z][a-z0-9_]{0,63}$`)
+	taskIDReResume = regexp.MustCompile(`^resume:\d+:[a-z][a-z0-9_]{0,63}:\d+$`)
 	taskIDReAtt    = regexp.MustCompile(`^att:\d+:\d+$`)
 	queueRe        = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 	traceIDRe      = regexp.MustCompile(`^[0-9a-f]{32}$`)

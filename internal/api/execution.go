@@ -6,6 +6,9 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -31,6 +34,34 @@ const triggerTypeAPI = "API"
 // 形态预检):非域形态 400 区别于 404(与 bad_id/bad_version 哲学一致,
 // 形态非法 ≠ 不存在)。
 var definitionNameRe = regexp.MustCompile(`^[a-z][a-z0-9-]{1,63}$`)
+
+// IdempotencyKeyHeader 是触发幂等键的 HTTP 头(D-t55 §5 定名,Stripe
+// 惯例)。可选项:缺省 → 不去重(DDL uk_exec_idem 允许多 NULL,现状);
+// 提供 → 作用域 = 主体+定义二维(防全局键跨主体抢注,DDL :75 注释),
+// 落库值 = 作用域复合的 SHA-256(64 hex,适配 VARCHAR(128);长度前缀
+// 帧防分隔符碰撞)。去重窗口 = 永久(uk 语义);重放响应 200 + 原执行
+// 回显(非 201:无新资源创建)。
+const (
+	IdempotencyKeyHeader = "Idempotency-Key"
+	// maxIdempotencyKeyLen 是原始键上限(DDL 列宽 128;哈希后 64 恒适配,
+	// 原始值限宽保证客户端可读对账面不至于无界)。
+	maxIdempotencyKeyLen = 128
+	// idempotencyScopeV1 是作用域哈希的域分隔版本前缀(升版 = 全量键
+	// 重新生效,显式不兼容换装点)。
+	idempotencyScopeV1 = "braid.exec.idem.v1"
+)
+
+// scopedIdempotencyKey 计算落库值:SHA-256 over 长度前缀帧的
+// (版本, 主体, 定义名, 原始键)——定长 64 hex,主体/定义/键任意字节
+// (含分隔符形态)无碰撞歧义。
+func scopedIdempotencyKey(subject, definitionName, key string) string {
+	h := sha256.New()
+	for _, part := range []string{idempotencyScopeV1, subject, definitionName, key} {
+		_ = binary.Write(h, binary.BigEndian, uint64(len(part)))
+		_, _ = h.Write([]byte(part))
+	}
+	return hex.EncodeToString(h.Sum(nil))
+}
 
 // ExecutionTrigger 是触发缝:*scheduler.Scheduler 结构性满足(方法集
 // 子集)。Instantiate 仅触 MySQL(单事务物化执行 + 全节点行 + outbox),
@@ -138,14 +169,25 @@ func (s *Server) triggerExecution(c *gin.Context) {
 		mapStoreError(c, err)
 		return
 	}
+	// 幂等键(D-t55 §5,T4.2 兑现):作用域哈希后透传;撞键重放见下。
+	idemKey := c.GetHeader(IdempotencyKeyHeader)
+	if len(idemKey) > maxIdempotencyKeyLen {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_idempotency_key"})
+		return
+	}
+	scoped := ""
+	if idemKey != "" {
+		scoped = scopedIdempotencyKey(actorFrom(c), def.Name, idemKey)
+	}
 	// TriggerType 显式 "API"(与审计 payload 同值单源);TraceID 留空:
 	// T6.2 前占位不伪造(DDL 注释契约)。
 	actor := actorFrom(c)
 	execID, err := s.trig.Instantiate(c.Request.Context(), scheduler.InstantiateParams{
-		DefinitionID: def.ID,
-		Input:        req.Input,
-		TriggeredBy:  actor,
-		TriggerType:  triggerTypeAPI,
+		DefinitionID:   def.ID,
+		Input:          req.Input,
+		TriggeredBy:    actor,
+		TriggerType:    triggerTypeAPI,
+		IdempotencyKey: scoped,
 	})
 	if err != nil {
 		switch {
@@ -153,6 +195,31 @@ func (s *Server) triggerExecution(c *gin.Context) {
 			// 解析→物化之间版本被归档(TOCTOU 竞态窗):Instantiate 内部
 			// PUBLISHED 复核兜底,对外与「无发布版本」同面 404。
 			c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
+		case errors.Is(err, engine.ErrConflict) && scoped != "":
+			// 幂等键撞(uk_exec_idem):读回原执行做重放响应。校验维度与
+			// 作用域哈希同维(定义名,非版本行 id)——跨版本发布后的合法
+			// 重放(v4 解析、v3 落库)按名匹配 200 回显首执行;异名命中
+			// 才是作用域违规(SHA-256 碰撞或键空间错乱,不可达)→ 500
+			// 响亮不静默错回显。
+			prior, rerr := s.st.GetExecutionByIdempotencyKey(c.Request.Context(), s.dbh, scoped)
+			if rerr != nil {
+				mapStoreError(c, rerr)
+				return
+			}
+			if prior.DefinitionName != def.Name {
+				slog.Error("api: idempotency key scope violation",
+					"execution_id", prior.ID, "key_definition", prior.DefinitionName, "request_definition", def.Name)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "internal"})
+				return
+			}
+			c.JSON(http.StatusOK, executionAckDTO{
+				ID:                strconv.FormatUint(prior.ID, 10),
+				DefinitionName:    prior.DefinitionName,
+				DefinitionVersion: prior.DefinitionVersion,
+				Status:            prior.Status,
+				TriggerType:       prior.TriggerType,
+				TriggeredBy:       prior.TriggeredBy,
+			})
 		default:
 			slog.Error("api: instantiate execution", "err", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal"})

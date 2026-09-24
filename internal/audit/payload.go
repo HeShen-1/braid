@@ -91,6 +91,25 @@ type ApprovalRequestedPayload struct {
 	DeadlineAt   time.Time `json:"deadline_at"`
 }
 
+// ApprovalDecidedPayload 是 approval.decided(T4.2 审批决定落库)的事件体。
+// 决定者身份在行级列(actor_id = JWT sub;审批人词表真相源在
+// node_execution.input_snapshot,审计不复制);决定全文(备注、时刻)真相源
+// 在 approval_decision 行(D-t26 §4:payload 只含 id/码/枚举,业务事实表
+// 自证);T4.4 审批历史/T6.4 审批吞吐指标的免 join 字段在此。
+type ApprovalDecidedPayload struct {
+	NodeID   string `json:"node_id"`
+	Decision string `json:"decision"` // approved | rejected(请求面词表,区别于 DB ENUM)
+	Mode     string `json:"mode"`     // any(P0 唯一值;快照同源,首票定局的裁决依据)
+}
+
+// ApprovalDecisionDeniedPayload 是 approval.decision_denied(T4.2 越权决定
+// 尝试被拒)的事件体。attempted 是尝试方向(approve|reject);尝试者身份在
+// 行级 actor_id;拒绝理由恒 membership(越权面仅此一种,P0 不扩词表)。
+type ApprovalDecisionDeniedPayload struct {
+	NodeID    string `json:"node_id"`
+	Attempted string `json:"attempted"` // approve | reject
+}
+
 // ExecutionTriggeredPayload 是 execution.triggered(T5.5 API 触发面)的
 // 事件体。只锚定触发事实:触发者身份在行级列(actor_type/actor_id + 执行行
 // triggered_by 事实源),input 正文不影子存储(D-t26 §4:自由数据面真相源

@@ -74,5 +74,12 @@ func (s *Server) Router() *gin.Engine {
 	v1.POST("/executions", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.triggerExecution)
 	v1.GET("/executions", s.listExecutions)
 	v1.GET("/executions/:id", s.getExecution)
+
+	// 审批面(T4.2):决定 POST 的门 = DSL approvers[](快照真相源,越权
+	// 403 + approval.decision_denied 审计;handler 内裁决,不挂角色闸——
+	// DSL 名单是执行时权威,T5.2 RBAC 换装点再评估叠加)。GET 详情任意
+	// 有效 token(读面惯例,与 GET /executions/:id 一致)。
+	v1.GET("/executions/:id/approvals/:node_id", s.getApproval)
+	v1.POST("/executions/:id/approvals/:node_id/decision", s.decideApproval)
 	return r
 }
