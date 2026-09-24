@@ -1,0 +1,101 @@
+/* braid 审批台(T4.4):单页静态样式。CSP style-src 'self'——零内联
+   style 属性,全部规则收敛在本文件。 */
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #1f2430;
+  background: #f5f6f8;
+  line-height: 1.5;
+}
+
+header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.75rem 1.5rem;
+  background: #20232a;
+  color: #fff;
+}
+
+header h1 { font-size: 1.1rem; margin: 0; }
+
+#session { display: flex; align-items: center; gap: 0.75rem; }
+
+main { max-width: 56rem; margin: 1.5rem auto; padding: 0 1rem; }
+
+.card {
+  background: #fff;
+  border: 1px solid #e2e4e9;
+  border-radius: 8px;
+  padding: 1.25rem 1.5rem;
+}
+
+.bar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 0.75rem;
+}
+
+label { display: block; margin: 0.5rem 0; }
+
+input, textarea {
+  display: block;
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.4rem 0.5rem;
+  border: 1px solid #c4c8d0;
+  border-radius: 6px;
+  font: inherit;
+}
+
+#login-form { max-width: 22rem; }
+#login-form button { margin-top: 0.75rem; }
+
+button {
+  padding: 0.4rem 0.9rem;
+  border: 1px solid #c4c8d0;
+  border-radius: 6px;
+  background: #fff;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover:not(:disabled) { background: #eef0f4; }
+button:disabled { opacity: 0.45; cursor: default; }
+
+button.primary { background: #1f6f43; border-color: #1f6f43; color: #fff; }
+button.primary:hover:not(:disabled) { background: #2a8a55; }
+button.danger { background: #a13030; border-color: #a13030; color: #fff; }
+button.danger:hover:not(:disabled) { background: #bb3a3a; }
+
+table { width: 100%; border-collapse: collapse; background: #fff; }
+
+th, td {
+  text-align: left;
+  padding: 0.5rem 0.75rem;
+  border-bottom: 1px solid #e6e8ec;
+}
+
+th { background: #eceef2; font-weight: 600; }
+
+.mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em; }
+
+.error { color: #a13030; min-height: 1.2em; }
+
+.overdue { color: #a13030; font-weight: 600; }
+
+dl { display: grid; grid-template-columns: auto 1fr; gap: 0.35rem 1rem; margin: 0; }
+dl div { display: contents; }
+dt { color: #5b6270; }
+dd { margin: 0; }
+
+#detail-instructions { white-space: pre-wrap; background: #f7f8fa; padding: 0.6rem 0.75rem; border-radius: 6px; }
+#detail-decisions { padding-left: 1.25rem; }
+#decision-form { margin-top: 1rem; }
+#decision-form .actions { display: flex; gap: 0.75rem; margin-top: 0.5rem; }
+
+#todo-empty { color: #5b6270; }
