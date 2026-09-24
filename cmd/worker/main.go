@@ -23,6 +23,7 @@ import (
 	"braid/internal/db"
 	"braid/internal/llm"
 	"braid/internal/nodes"
+	"braid/internal/notify"
 	"braid/internal/preflight"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
@@ -42,6 +43,27 @@ func toolTokenKey(getenv func(string) string) ([]byte, error) {
 		return nil, fmt.Errorf("worker: BRAID_TOOL_TOKEN_SECRET: want hex: %w", err)
 	}
 	return key, nil
+}
+
+// buildNotifier 是 T4.5 SMTP 通知装配的决策面(抽函数 = 装配分支可测,
+// cmd/worker/main_test.go):整组缺省(BRAID_SMTP_HOST 空)→ nil(worker
+// 对 approval.notify 走降级 log-only ack);反向/正向半配置、坏配置 →
+// error 启动即败(notify.Validate);全配置 → notify.Sender。
+func buildNotifier(getenv func(string) string, db *sql.DB, ids *snowflake.Generator, workerID string) (worker.ApprovalNotifier, error) {
+	cfg, err := notify.ConfigFromEnv(getenv)
+	if err != nil {
+		return nil, fmt.Errorf("worker: smtp config: %w", err)
+	}
+	if cfg.Host == "" {
+		return nil, nil
+	}
+	s, err := notify.NewSender(notify.Deps{
+		DB: db, IDs: ids, WorkerID: workerID, Logger: slog.Default(),
+	}, cfg)
+	if err != nil {
+		return nil, fmt.Errorf("worker: notify sender: %w", err)
+	}
+	return s, nil
 }
 
 func main() {
@@ -142,6 +164,13 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: scheduler: %w", err)
 	}
 
+	// T4.5 SMTP 通知装配:决策面在 buildNotifier(整组缺省 → nil 降级;
+	// 半配置/坏配置启动即败)。凭证仅经 env 注入,不进日志/审计(铁律)。
+	notifier, err := buildNotifier(os.Getenv, mysqlDB, ids, cfg.WorkerID)
+	if err != nil {
+		return err
+	}
+
 	// T3.2/T3.5 工具运行时装配 + T5.2 执行时 RBAC 门:registry(内置
 	// http/file_read 按配置注册,未配置即不注册——空 = 一切 tool 节点
 	// tool_not_found 收口;api 与 worker 经 BuiltinToolsFromEnv 单源装配,
@@ -181,6 +210,7 @@ func run(ctx context.Context) error {
 		IDs:      ids,
 		Executor: executor,
 		Sched:    sched,
+		Notifier: notifier,
 		Logger:   slog.Default(),
 	}, cfg, asynq.RedisClientOpt{Addr: addr})
 }

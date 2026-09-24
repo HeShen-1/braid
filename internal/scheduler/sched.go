@@ -61,8 +61,8 @@ import (
 // 审批续跑事件(DDL §5 开放词表注释预留同名;TaskID 词表 resume:<exec>:<node>:<attempt>,
 // 0003 头注释定稿)——发射点在 api 审批面(决策事务),消费面在 worker
 // handleNodeResume → Scheduler.Resume。approval.notify(T4.3 起有发射点 = reaper
-// 审批超时升级事务;TaskID notify:<node_exec_id>,消费面 worker 占位 handler,
-// T4.5 SMTP 换装;D-t41 #3 移交闭环)。
+// 审批超时升级事务;TaskID notify:<node_exec_id>,T4.5 起消费面 = worker
+// handleApprovalNotify → notify.Sender SMTP 发送;D-t41 #3 移交闭环)。
 const (
 	EventTypeNodeTask        = "node.task_enqueue"
 	EventTypeExecutionStart  = "execution.start"
@@ -95,15 +95,25 @@ type ResumePayload struct {
 }
 
 // ApprovalNotifyPayload 是 approval.notify 事件的自描述体(T4.3 起有发射点:
-// reaper 审批超时升级事务;消费面 worker 占位 handler → T4.5 SMTP 换装)。
+// reaper 审批超时升级事务;T4.5 起消费面 = worker handleApprovalNotify →
+// notify.Sender SMTP 发送,未配置 SMTP 时降级 log-only ack)。
 // TaskID = notify:<node_execution_id>(恰好一次锚在 escalated_at)。Reason 是
-// 成因码(P0 词表仅 "escalated",后续成因在此扩词);payload 仅 id 引用:
-// 审批人/策略/截止真相源在 node_execution 行,消费方回表。
+// 成因码(词表单源见 ReasonApproval* 常量,后续成因在此扩词);payload 仅
+// id 引用:审批人/策略/截止真相源在 node_execution 行,消费方回表。
 type ApprovalNotifyPayload struct {
 	ExecutionID     uint64 `json:"execution_id"`
 	NodeExecutionID uint64 `json:"node_execution_id"`
 	Reason          string `json:"reason"`
 }
+
+// approval.notify 的成因码词表(发射点 reaper 与消费面 worker 词表闸同源,
+// 单一定义防两方漂移——review LOW④)。P0 唯一词;扩词 = 追加常量 +
+// reaper 发射分支 + worker 词表闸同 PR 旅行。
+const (
+	// ReasonApprovalEscalated:审批超时升级(Q9 escalate 策略,恰好一次锚
+	// escalated_at)。
+	ReasonApprovalEscalated = "escalated"
+)
 
 // Deps 是运行依赖。Router 为 nil 用 CondRouter;Queue 为空用 "default"(必须在
 // worker ServeQueues 内,否则事件永挂 pending——outbox 包注释的已知边界);

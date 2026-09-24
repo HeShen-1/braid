@@ -35,6 +35,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"braid/internal/engine"
+	"braid/internal/notify"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 )
@@ -115,12 +116,23 @@ type Executor interface {
 	Execute(ctx context.Context, req Request) (Outcome, error)
 }
 
-// Deps 是运行依赖。Logger 为 nil 时用 slog.Default()。
+// ApprovalNotifier 是审批通知发射缝(T4.5,D-t43 #3 锁定的换装点):消费
+// approval.notify 事件后的发送面。生产实现 notify.Sender(结构化满足,
+// cmd/worker 装配;发送/去重/审计编排全在 notify 包)。nil = 未配置 SMTP
+// 的降级面——保留 T4.3 占位 log-only ack 语义(dev 栈无 SMTP 可用;送达
+// 缺口由 T6.4 的 escalated-vs-notified 审计对账暴露,非静默)。
+type ApprovalNotifier interface {
+	NotifyApproval(ctx context.Context, execID, nodeExecID uint64, reason string) error
+}
+
+// Deps 是运行依赖。Logger 为 nil 时用 slog.Default()。Notifier 为 nil 是
+// 合法降级形态(见 ApprovalNotifier);其余依赖 nil 拒启动。
 type Deps struct {
 	DB       *sql.DB
 	IDs      *snowflake.Generator // attempt 行 id 生成(应用侧 Snowflake)
 	Executor Executor
 	Sched    *scheduler.Scheduler // T2.4 调度器(完成回写 + execution.start);nil 拒启动
+	Notifier ApprovalNotifier     // T4.5 审批通知面;nil = SMTP 未配置降级
 	Logger   *slog.Logger
 }
 
@@ -416,13 +428,14 @@ func (h *attHandler) handleNodeResume(ctx context.Context, t *asynq.Task) error 
 	return nil
 }
 
-// handleApprovalNotify 处理 approval.notify(T4.3 审批超时升级通知):占位
-// 消费者 = 可换装缝,T4.5 SMTP 落地时替换体(读审批上下文/发邮件/审批链接)。
-// P0 语义 = 解析校验 + 日志 ack:通知的事实记录已在 outbox 事件行与
-// approval.escalated 审计行(reaper 同事务落定),此处不回表——通知事件
-// 不写状态,payload 携的 id 仅供 T4.5 回表用;恰好一次锚在 escalated_at
-// (reaper 侧),asynq at-least-once 的重复投递 = 重复日志行,SMTP 落地时
-// 按 task_id 去重。不触节点执行器。
+// handleApprovalNotify 处理 approval.notify(T4.3 审批超时升级通知;T4.5
+// 起换装为 SMTP 发送面,注册行不动)。P0 语义 = 解析校验 + reason 词表闸 +
+// Notifier 分派:通知的事实记录在 outbox 事件行与 approval.escalated 审计行
+// (reaper 同事务落定);通知事件不写节点状态——发送/去重(approval.notified
+// 审计行锚)/邮件渲染全在 notify 包。Notifier nil(SMTP 未配置)= 降级
+// log-only ack(T4.3 占位语义的显式保留)。错误上抛 ⇒ asynq 内部重试一次
+// 后 archived(死信可见,notify 无死信网——D-t43 已知边界,告警归 T6.4);
+// 重投的幂等收敛 = notify.ErrAlreadyNotified → ack。不触节点执行器。
 func (h *attHandler) handleApprovalNotify(ctx context.Context, t *asynq.Task) error {
 	taskID, ok := asynq.GetTaskID(ctx)
 	if !ok {
@@ -435,11 +448,34 @@ func (h *attHandler) handleApprovalNotify(ctx context.Context, t *asynq.Task) er
 	if p.ExecutionID == 0 || p.NodeExecutionID == 0 {
 		return fmt.Errorf("worker: task %s payload: zero id field(s) %+v", taskID, p)
 	}
-	h.log.Info("approval.notified",
-		"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID,
-		"reason", p.Reason, "task_id", taskID,
-		"hint", "placeholder consumer; T4.5 swaps this handler for SMTP delivery")
-	return nil
+	// 成因词表闸(scheduler.ReasonApproval* 常量单源,P0 仅 escalated;
+	// 扩词 = 常量 + reaper 发射分支 + 此闸同 PR 旅行):词表外值 = 发射面
+	// 漂移,响亮失败 archived 优于静默发送语义不明的邮件。
+	if p.Reason != scheduler.ReasonApprovalEscalated {
+		return fmt.Errorf("worker: task %s notify reason %q outside vocabulary", taskID, p.Reason)
+	}
+	if h.deps.Notifier == nil {
+		h.log.Info("approval.notify_degraded",
+			"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID,
+			"reason", p.Reason, "task_id", taskID,
+			"hint", "smtp unconfigured; log-only ack (T4.5)")
+		return nil
+	}
+	err := h.deps.Notifier.NotifyApproval(ctx, p.ExecutionID, p.NodeExecutionID, p.Reason)
+	switch {
+	case err == nil:
+		h.log.Info("approval.notified",
+			"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID,
+			"reason", p.Reason, "task_id", taskID)
+		return nil
+	case errors.Is(err, notify.ErrAlreadyNotified):
+		h.log.Info("approval.notify_deduped",
+			"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID,
+			"reason", p.Reason, "task_id", taskID)
+		return nil
+	default:
+		return fmt.Errorf("worker: notify approval node %d (task %s): %w", p.NodeExecutionID, taskID, err)
+	}
 }
 
 // heartbeat 周期刷新 attempt 心跳(尽力语义:失败记日志不中断执行——判死

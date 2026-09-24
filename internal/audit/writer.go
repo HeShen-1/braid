@@ -63,6 +63,12 @@ var ErrInvalidEvent = errors.New("audit: invalid event")
 //   - approval.resume_redispatched:resume 死信网幂等重投(T4.3,D-t42 §8-②
 //     移交;已决票+超阈 WAITING_APPROVAL 的续跑事件重投,与 outbox 行同事务,
 //     reaper 发射)。actor=system/reaper。
+//   - approval.notified:审批通知送达(T4.5 SMTP;worker 消费 approval.notify
+//     事件、邮件发送成功后落行)。与 escalated(意图)/notify outbox 事件不同
+//     事务——本行是**送达**事实,兼作 at-least-once 重投的去重锚(先查行后
+//     发送,命中即 ack 跳过;task_id=notify:<node_exec_id> 与 (execution_id,
+//     node_execution_id) 单射)。actor=worker/消费进程。T6.4 对账面:
+//     escalated 有行而本行缺 = 通知丢失(D-t43 已知边界获得观测信号)。
 //   - execution.triggered:API 触发落执行(T5.5;DDL 开放词表注释预留同名,
 //     D-t26 §6 显式留给 T5 接入登记)。执行级事件(node_id NULL),与
 //     scheduler 侧行不同事务(Instantiate 不写审计,api 二段事务补)。
@@ -84,6 +90,7 @@ const (
 	EventApprovalDecisionDenied     = "approval.decision_denied"
 	EventApprovalEscalated          = "approval.escalated"
 	EventApprovalResumeRedispatched = "approval.resume_redispatched"
+	EventApprovalNotified           = "approval.notified"
 	EventExecutionTriggered         = "execution.triggered"
 	EventToolCallDenied             = "tool.call.denied"
 )
@@ -130,6 +137,7 @@ var knownEvents = map[string]bool{
 	EventApprovalDecisionDenied:     true,
 	EventApprovalEscalated:          true,
 	EventApprovalResumeRedispatched: true,
+	EventApprovalNotified:           true,
 	EventExecutionTriggered:         true,
 	EventToolCallDenied:             true,
 }

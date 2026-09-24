@@ -28,6 +28,7 @@ import (
 
 	"braid/internal/db/sqltest"
 	"braid/internal/engine"
+	"braid/internal/notify"
 	"braid/internal/redistest"
 	"braid/internal/scheduler"
 )
@@ -466,7 +467,8 @@ func waitTaskState(t *testing.T, insp *asynq.Inspector, queue, taskID string, wa
 	// 45s 上界:archived 路径的墙钟下限 ≈ asynq 调度粒度 5s/跳 ×(首跑+重试);
 	// 15s 只有三跳余量,包并行(go test ./...)下 CPU 抖动即假红(T4.3 期间实测
 	// 串行全绿、并行偶发超时)。上限只影响失败用例的确诊延迟,不影响绿路径。
-	deadline := time.Now().Add(45 * time.Second)
+	const budget = 45 * time.Second
+	deadline := time.Now().Add(budget)
 	var lastState = asynq.TaskState(0)
 	var lastErr error
 	for time.Now().Before(deadline) {
@@ -482,16 +484,17 @@ func waitTaskState(t *testing.T, insp *asynq.Inspector, queue, taskID string, wa
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	t.Fatalf("task %s did not reach state %d within 15s (last state=%d, last err=%v)",
-		taskID, want, lastState, lastErr)
+	t.Fatalf("task %s did not reach state %d within %s (last state=%d, last err=%v)",
+		taskID, want, budget, lastState, lastErr)
 }
 
-// TestApprovalNotifyPlaceholderConsumed(T4.3):approval.notify 的占位消费
-// 面——合法 payload 解析校验后日志 ack(零 DB/零执行器触达,通知事实记录
-// 在 outbox/audit 行);坏 JSON/零 id 在触任何东西之前被拒,重试穷尽
-// archived(死信可见,镜像 TestResumeEventBadPayloadArchived 形状)。
-// Retention 让完成态可观测(默认完成即删,TaskState 不可断言)。
-func TestApprovalNotifyPlaceholderConsumed(t *testing.T) {
+// TestApprovalNotifyConsumed(T4.3→T4.5):approval.notify 的消费面——
+// SMTP 未配置(Notifier nil)时保留占位降级语义:合法 payload 解析校验后
+// 日志 ack(零 DB/零执行器触达,通知事实记录在 outbox/audit 行);坏 JSON/
+// 零 id/reason 词表外在触任何东西之前被拒,重试穷尽 archived(死信可见,
+// 镜像 TestResumeEventBadPayloadArchived 形状)。Retention 让完成态可观测
+// (默认完成即删,TaskState 不可断言)。
+func TestApprovalNotifyConsumed(t *testing.T) {
 	d := sqltest.MustOpenAt(t, workerSchema)
 	ex := &fakeExec{fn: func(req Request, callNo int) (Outcome, error) {
 		return Outcome{Status: engine.AttemptSucceed}, nil
@@ -505,7 +508,7 @@ func TestApprovalNotifyPlaceholderConsumed(t *testing.T) {
 	insp := asynq.NewInspector(redistest.MustOpt(t))
 	t.Cleanup(func() { _ = insp.Close() })
 
-	t.Run("valid payload acked", func(t *testing.T) {
+	t.Run("valid payload acked (smtp unconfigured)", func(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
 		payload, err := json.Marshal(scheduler.ApprovalNotifyPayload{
@@ -532,6 +535,7 @@ func TestApprovalNotifyPlaceholderConsumed(t *testing.T) {
 	}{
 		{"bad json", "notify:3", []byte("{not json")},
 		{"zero id fields", "notify:4", []byte(`{"execution_id":0,"node_execution_id":0}`)},
+		{"reason outside vocabulary", "notify:5", []byte(`{"execution_id":1,"node_execution_id":2,"reason":"failed"}`)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -542,6 +546,67 @@ func TestApprovalNotifyPlaceholderConsumed(t *testing.T) {
 				t.Fatalf("enqueue: %v", err)
 			}
 			waitTaskState(t, insp, queue, tc.taskID, asynq.TaskStateArchived)
+			if got := ex.count(); got != 0 {
+				t.Errorf("executor calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
+// TestApprovalNotifyDispatch(T4.5 换装面):Notifier 非 nil 时 handler 分派
+// 发送——成功 ack;错误上抛(内部重试一次后 archived);去重哨兵
+// (notify.ErrAlreadyNotified)映射 ack 不烧重试预算。悬空 id 合法:回表在
+// notify.Sender 内,fake 桩不触 DB。
+func TestApprovalNotifyDispatch(t *testing.T) {
+	d := sqltest.MustOpenAt(t, workerSchema)
+	ex := &fakeExec{fn: func(req Request, callNo int) (Outcome, error) {
+		return Outcome{Status: engine.AttemptSucceed}, nil
+	}}
+	boom := errors.New("smtp down")
+	cases := []struct {
+		name      string
+		fn        func(call notifyCall) error
+		wantState asynq.TaskState
+	}{
+		{"delivered", nil, asynq.TaskStateCompleted},
+		{"sender error archived", func(call notifyCall) error { return boom }, asynq.TaskStateArchived},
+		{"dedup sentinel acked", func(call notifyCall) error { return notify.ErrAlreadyNotified }, asynq.TaskStateCompleted},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			n := &fakeNotifier{fn: tc.fn}
+			cfg := DefaultConfig()
+			cfg.RetryDelay = 50 * time.Millisecond
+			queue := startWorkerOpt(t, d, ex, cfg, n)
+
+			payload, err := json.Marshal(scheduler.ApprovalNotifyPayload{
+				ExecutionID: 11, NodeExecutionID: 12, Reason: "escalated",
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			client := asynq.NewClient(redistest.MustOpt(t))
+			t.Cleanup(func() { _ = client.Close() })
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			taskID := fmt.Sprintf("notify:%s", tc.name)
+			if _, err := client.EnqueueContext(ctx,
+				asynq.NewTask(scheduler.EventTypeApprovalNotify, payload),
+				asynq.TaskID(taskID), asynq.Queue(queue),
+				asynq.MaxRetry(1), asynq.Retention(time.Minute)); err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			insp := asynq.NewInspector(redistest.MustOpt(t))
+			t.Cleanup(func() { _ = insp.Close() })
+			waitTaskState(t, insp, queue, taskID, tc.wantState)
+			calls := n.callsSnapshot()
+			if len(calls) == 0 {
+				t.Fatal("notifier not called")
+			}
+			last := calls[len(calls)-1]
+			if last.execID != 11 || last.nodeExecID != 12 || last.reason != "escalated" {
+				t.Fatalf("notifier call = %+v, want 11/12/escalated", last)
+			}
 			if got := ex.count(); got != 0 {
 				t.Errorf("executor calls = %d, want 0", got)
 			}
