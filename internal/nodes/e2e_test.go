@@ -314,6 +314,9 @@ SELECT ne.error_code, na.error_code, na.prompt_tokens, ne.attempts
 	if usageNull.Valid {
 		t.Fatalf("prompt_tokens = %v on FAILED attempt, want NULL(失败不计费)", usageNull)
 	}
+	// T6.1 高频异步:负向计数前必须排空暂存,否则误发行滞留 audit_pending、
+	// COUNT(audit_log) 恒 0,断言空转掏空(post-merge triage MEDIUM 修)。
+	flushStagedAudit(t, d)
 	var audited int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE execution_id=? AND event_type=?`,
 		execID, audit.EventLLMCallCompleted).Scan(&audited); err != nil {

@@ -41,7 +41,7 @@ human_review ◀── summary ◀────(主线)              report_revis
 
 ## 本地走链
 
-前置:dev 栈(MySQL/Redis/Asynqmon)+ 三个 host 业务进程(api、relay、worker):
+前置:dev 栈(MySQL/Redis/Asynqmon)+ 四个 host 业务进程(api、relay、worker、reaper):
 
 ```bash
 # 1) 基础设施(compose 只起 MySQL/Redis/Asynqmon;业务进程在 host 跑)
@@ -52,10 +52,12 @@ cp deploy/.env.example deploy/.env   # 首次
 #   BRAID_FILEREAD_DIRS=["/abs/path/to/braid/docs/examples"]   # file_read 白名单
 docker compose -f deploy/dev.docker-compose.yml up -d
 
-# 2) 迁移 + 业务进程(三个终端,各自 source deploy/.env 或用 --env-file 注入)
+# 2) 迁移 + 业务进程(四个终端,各自 source deploy/.env 或用 --env-file 注入)
 go run ./cmd/api      # 默认 127.0.0.1:8081
 go run ./cmd/relay
 go run ./cmd/worker
+go run ./cmd/reaper   # 审计异步批量搬运 + 审批超时扫描——不跑则下表高频
+                      # 四类事件滞留 audit_pending 暂存表,对账查询看不到(不丢)
 ```
 
 账号:当前版本无 CLI 建号入口;先用 MySQL 插入 author 与 approver 两个
@@ -121,6 +123,12 @@ SELECT id, event_type, node_id, actor_type, actor_id
 ```
 
 `trace_id` 全链 NULL(T6.2 前不伪造);执行详情的 `audit.trace_id` 同口径。
+
+可见性滞后(T6.1 异步批量):表中高频四类(`node.state_changed` /
+`branch.evaluated` / `llm.call.completed` / `tool.call.completed`)先同事务
+写入 `audit_pending` 暂存表,由 reaper 周期搬运(默认间隔 1s,
+`BRAID_AUDIT_FLUSH_INTERVAL` 可调)——对账查询前若刚跑完执行,等 ≤ 该间隔
+再查;`execution.triggered` 与 `approval.*` 系同步直写,无滞后。
 
 ## 守护测试
 

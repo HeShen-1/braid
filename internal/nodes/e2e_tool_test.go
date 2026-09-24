@@ -248,6 +248,8 @@ SELECT ne.error_code, na.error_code, ne.attempts
 	if !nodeCode.Valid || nodeCode.String != tools.CodeToolFailed || !attCode.Valid || attCode.String != tools.CodeToolFailed {
 		t.Fatalf("codes = %v/%v, want tool_failed both", nodeCode, attCode)
 	}
+	// T6.1 高频异步:负向计数前排空暂存,防断言空转(triage MEDIUM 修)。
+	flushStagedAudit(t, d)
 	var audited int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE execution_id=? AND event_type=?`,
 		execID, audit.EventToolCallCompleted).Scan(&audited); err != nil {
@@ -306,6 +308,8 @@ SELECT ne.error_code, na.error_code
 		t.Fatal("tool was dispatched despite RBAC denial")
 	}
 	// 审计:拒绝行落地(actor=被拒主体),完成行零发射。
+	// T6.1 高频异步:tool.call.completed 走暂存,负向计数前排空(triage 修)。
+	flushStagedAudit(t, d)
 	var denied, completed int
 	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE execution_id=? AND event_type=? AND actor_id='e2e_approver'`,
 		execID, audit.EventToolCallDenied).Scan(&denied); err != nil {
