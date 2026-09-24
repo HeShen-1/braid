@@ -102,9 +102,9 @@ func NewGuardedClient(cfg GuardConfig) *http.Client {
 	tr := &http.Transport{
 		DialContext:         dialer.DialContext,
 		TLSClientConfig:     cfg.TLS,
-		TLSHandshakeTimeout: 10 * time.Second,  // DefaultTransport 基线
-		IdleConnTimeout:     90 * time.Second,  // 同上
-		MaxIdleConns:        100,               // 同上
+		TLSHandshakeTimeout: 10 * time.Second, // DefaultTransport 基线
+		IdleConnTimeout:     90 * time.Second, // 同上
+		MaxIdleConns:        100,              // 同上
 	}
 	return &http.Client{
 		Transport: &httpsOnlyTransport{rt: tr},
