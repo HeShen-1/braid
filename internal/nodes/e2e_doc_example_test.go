@@ -577,6 +577,9 @@ func assertDocAuditSequence(t *testing.T, d *sql.DB, execID uint64, want []docAu
 	// 时间戳毫秒差 >0 时成立。相邻的跨进程行(approval.decided → resume
 	// 状态迁移)实际先后由 outbox→relay 墙钟间隔保证(测试 IdleInterval
 	// 20ms,生产更大)——勿把 relay 轮询调到亚毫秒,否则此处开始假红。
+	// T6.1:高频四类经 audit_pending 异步——读链前先排空(reaper flush 的
+	// 测试内等价物);triggered 同步行恒在场,排除逻辑不受影响。
+	flushStagedAudit(t, d)
 	got := docAuditChain(t, d, execID)
 	// triggered 行单独断言(跨进程写入,与首个节点事件的相对序不保证)。
 	filtered := got[:0:0]

@@ -51,7 +51,8 @@ func New(d Deps, cfg Config) (*Reaper, error) {
 // 秒级 tick 与 janitor 小时级分置)+ tick 循环(选主闸 → RunOnce → ±20%
 // 抖动睡眠,抖动去同步多实例同拍扫描)。Redis 选主 fail-open:不可达 →
 // warn 后照常执行本 tick(leaderless);正确性不依赖锁(处置事务锁后
-// 复核 + CAS;flush 的 ON DUP 幂等使 leaderless 重叠搬运亦良性)。
+// 复核 + CAS;flush 的预过滤 + 裸 INSERT 使 leaderless 重叠搬运收敛
+// ——1062 整批回滚 + 下轮预过滤核销,见 audit/flush.go)。
 func (r *Reaper) Run(ctx context.Context) error {
 	jctx, jcancel := context.WithCancel(ctx)
 	defer jcancel()

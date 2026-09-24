@@ -1,7 +1,8 @@
 package audit
 
 // Flush 集成测试(t13 真 MySQL):批量搬运、exec_date 物化、事件时刻保真、
-// 崩溃重放幂等收敛(批量契约 ON DUPLICATE KEY UPDATE id=id)、ghost
+// 崩溃重放幂等收敛(批量契约 = 预过滤 + 裸 INSERT,ON DUP 已否决——
+// UPDATE 权限与 T7.3 append-only 预检冲突,见 flush.go 头注释)、ghost
 // execution 隔离、单批上限语义。「批量写无丢失」总对账在
 // TestFlushReconcilesByAttempt(片 5)。
 
@@ -75,7 +76,10 @@ func TestFlushDrainsStagedToAuditLog(t *testing.T) {
 	})
 
 	// 混合形状:两执行 × 三类事件,含 usage 组、空 payload、掩蔽行。
-	llmPayload, _ := json.Marshal(LLMCallCompletedPayload{NodeID: "n1", Model: "glm-5.3", TotalTokens: 120})
+	llmPayload, err := json.Marshal(LLMCallCompletedPayload{NodeID: "n1", Model: "glm-5.3", TotalTokens: 120})
+	if err != nil {
+		t.Fatalf("marshal llm payload: %v", err)
+	}
 	events := []Event{
 		{ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: exec1,
 			NodeExecID: 1, NodeID: "n1", AttemptID: 11, ActorType: ActorWorker, ActorID: "w1",

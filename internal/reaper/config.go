@@ -40,8 +40,8 @@ type Config struct {
 	AuditRetention time.Duration
 	// AuditFlushInterval 是暂存审计行(audit_pending → audit_log,T6.1 异步
 	// 批量)的搬运 tick。上限语义 = 审计行可见性滞后上界(T6.3 查询面按
-	// 此口径读 audit_log);leaderless 重叠下并发搬运结构性安全(ON DUP
-	// 幂等,见 audit/flush.go)。默认 1s。
+	// 此口径读 audit_log);leaderless 重叠下并发搬运收敛(1062 回滚 +
+	// 下轮预过滤核销,见 audit/flush.go)。默认 1s。
 	AuditFlushInterval time.Duration
 	// AuditFlushBatch 是单批搬运行数上限(批间无隙连搬至排空/轮上限)。
 	AuditFlushBatch int

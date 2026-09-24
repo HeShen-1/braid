@@ -87,6 +87,9 @@ SELECT id, CAST(event_at AS CHAR), event_type, execution_id,
        cost_amount, cost_currency, cost_estimated, payload
   FROM audit_pending`
 
+// linked_trace_id 有意不在搬运面:T6.2 前恒 NULL;T6.2 接线时
+// Enqueue/Append/flush 三处同步加列(0004 已建列防漏)。
+
 // Flush 搬运 afterID 之后的一批暂存审计行到 audit_log(单批语义:LIMIT batch,
 // 余量留驻,调用方 FlushAll 循环翻页至排空)。afterID=0 即从队头。步骤:
 // [1] 无事务读批(WHERE id > afterID ORDER BY id = snowflake 时序翻页)
@@ -225,7 +228,7 @@ VALUES `+ph.String(), args...)
 		if err != nil {
 			return fmt.Errorf("audit: flush insert %d rows: %w", len(pending), err)
 		}
-		affected, _ := execRes.RowsAffected()
+		affected, _ := execRes.RowsAffected() // 错误有意忽略:COUNT 对账是权威裁决
 		res.Inserted = affected
 
 		// COUNT 对账:本批新行必须全部在场;缺失 = 批量契约破坏,回滚响亮。
@@ -302,7 +305,11 @@ func selectPresentIDs(ctx context.Context, db *sql.DB, dateOrder []string, idsBy
 		return nil, nil
 	}
 	var where strings.Builder
-	args := make([]any, 0, len(idsByDate))
+	total := 0
+	for _, ids := range idsByDate {
+		total += len(ids)
+	}
+	args := make([]any, 0, total+len(dateOrder))
 	for di, d := range dateOrder {
 		if di > 0 {
 			where.WriteString(" OR ")
