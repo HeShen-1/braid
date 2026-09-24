@@ -47,11 +47,15 @@ const (
 )
 
 // TaskID 词表(全库统一,DDL §5 表注释 + 0003 扩展):node_id 段与 DSL 词表
-// 一致(dsl/refs.go 同款 [a-z][a-z0-9_]{0,63})。
+// 一致(dsl/refs.go 同款 [a-z][a-z0-9_]{0,63})。notify: 是 T4.3 审批超时
+// 升级通知(approval.notify)的 TaskID:单段 node_execution_id——恰好一次
+// 语义锚在 node_execution.escalated_at(DB 谓词),同节点永无第二条通知意图,
+// 不变量「同一 task_id 永不表达需要再投一次的新意图」因此保持。
 var (
 	taskIDReExec   = regexp.MustCompile(`^exec:\d+$`)
 	taskIDReResume = regexp.MustCompile(`^resume:\d+:[a-z][a-z0-9_]{0,63}:\d+$`)
 	taskIDReAtt    = regexp.MustCompile(`^att:\d+:\d+$`)
+	taskIDReNotify = regexp.MustCompile(`^notify:\d+$`)
 	queueRe        = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 	traceIDRe      = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )
@@ -117,7 +121,7 @@ func validate(evt Event) error {
 	case evt.EventType == "" || len(evt.EventType) > maxEventText:
 		return fmt.Errorf("%w: event_type %q", ErrInvalidEvent, evt.EventType)
 	case !validTaskID(evt.TaskID):
-		return fmt.Errorf("%w: task_id %q not in vocabulary (exec:/resume:/att:)", ErrInvalidEvent, evt.TaskID)
+		return fmt.Errorf("%w: task_id %q not in vocabulary (exec:/resume:/att:/notify:)", ErrInvalidEvent, evt.TaskID)
 	}
 	if !queueRe.MatchString(evt.Queue) || len(evt.Queue) > maxEventText {
 		return fmt.Errorf("%w: queue %q", ErrInvalidEvent, evt.Queue)
@@ -135,7 +139,8 @@ func validate(evt Event) error {
 }
 
 func validTaskID(id string) bool {
-	return taskIDReExec.MatchString(id) || taskIDReResume.MatchString(id) || taskIDReAtt.MatchString(id)
+	return taskIDReExec.MatchString(id) || taskIDReResume.MatchString(id) ||
+		taskIDReAtt.MatchString(id) || taskIDReNotify.MatchString(id)
 }
 
 // clampErrLen 截断错误摘要到 DDL last_error 宽度。按字节拦腰截多字节字符会

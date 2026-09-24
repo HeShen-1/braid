@@ -57,6 +57,12 @@ var ErrInvalidEvent = errors.New("audit: invalid event")
 //   - approval.decision_denied:越权决定尝试被拒(T4.2;issue #33 硬约束
 //     「越权调用被拒并落审计」)。actor=user/尝试者;独立小事务(主事务无
 //     别的写入,拒绝路径不与决定行同存亡)。
+//   - approval.escalated:审批超时升级发射(T4.3,Q9 escalate 策略;与
+//     escalated_at 落定 + approval.notify outbox 事件同事务,reaper 发射,
+//     恰好一次锚在 escalated_at IS NULL 谓词)。actor=system/reaper。
+//   - approval.resume_redispatched:resume 死信网幂等重投(T4.3,D-t42 §8-②
+//     移交;已决票+超阈 WAITING_APPROVAL 的续跑事件重投,与 outbox 行同事务,
+//     reaper 发射)。actor=system/reaper。
 //   - execution.triggered:API 触发落执行(T5.5;DDL 开放词表注释预留同名,
 //     D-t26 §6 显式留给 T5 接入登记)。执行级事件(node_id NULL),与
 //     scheduler 侧行不同事务(Instantiate 不写审计,api 二段事务补)。
@@ -66,18 +72,20 @@ var ErrInvalidEvent = errors.New("audit: invalid event")
 //     auth.ExecutionAuthorizer 在调用现场发射,best-effort——拒绝裁决
 //     不受旁路写入失败影响)。
 const (
-	EventNodeStateChanged       = "node.state_changed"
-	EventNodeRedispatched       = "node.redispatched"
-	EventAttemptReaped          = "attempt.reaped"
-	EventNodeDeadlineExtended   = "node.deadline_extended"
-	EventBranchEvaluated        = "branch.evaluated"
-	EventLLMCallCompleted       = "llm.call.completed"
-	EventToolCallCompleted      = "tool.call.completed"
-	EventApprovalRequested      = "approval.requested"
-	EventApprovalDecided        = "approval.decided"
-	EventApprovalDecisionDenied = "approval.decision_denied"
-	EventExecutionTriggered     = "execution.triggered"
-	EventToolCallDenied         = "tool.call.denied"
+	EventNodeStateChanged           = "node.state_changed"
+	EventNodeRedispatched           = "node.redispatched"
+	EventAttemptReaped              = "attempt.reaped"
+	EventNodeDeadlineExtended       = "node.deadline_extended"
+	EventBranchEvaluated            = "branch.evaluated"
+	EventLLMCallCompleted           = "llm.call.completed"
+	EventToolCallCompleted          = "tool.call.completed"
+	EventApprovalRequested          = "approval.requested"
+	EventApprovalDecided            = "approval.decided"
+	EventApprovalDecisionDenied     = "approval.decision_denied"
+	EventApprovalEscalated          = "approval.escalated"
+	EventApprovalResumeRedispatched = "approval.resume_redispatched"
+	EventExecutionTriggered         = "execution.triggered"
+	EventToolCallDenied             = "tool.call.denied"
 )
 
 // actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval)。
@@ -110,18 +118,20 @@ const (
 
 // knownEvents / knownActors 是闭集校验表(词表登记处,见上)。
 var knownEvents = map[string]bool{
-	EventNodeStateChanged:       true,
-	EventNodeRedispatched:       true,
-	EventAttemptReaped:          true,
-	EventNodeDeadlineExtended:   true,
-	EventBranchEvaluated:        true,
-	EventLLMCallCompleted:       true,
-	EventToolCallCompleted:      true,
-	EventApprovalRequested:      true,
-	EventApprovalDecided:        true,
-	EventApprovalDecisionDenied: true,
-	EventExecutionTriggered:     true,
-	EventToolCallDenied:         true,
+	EventNodeStateChanged:           true,
+	EventNodeRedispatched:           true,
+	EventAttemptReaped:              true,
+	EventNodeDeadlineExtended:       true,
+	EventBranchEvaluated:            true,
+	EventLLMCallCompleted:           true,
+	EventToolCallCompleted:          true,
+	EventApprovalRequested:          true,
+	EventApprovalDecided:            true,
+	EventApprovalDecisionDenied:     true,
+	EventApprovalEscalated:          true,
+	EventApprovalResumeRedispatched: true,
+	EventExecutionTriggered:         true,
+	EventToolCallDenied:             true,
 }
 
 var knownActors = map[string]bool{

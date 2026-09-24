@@ -14,7 +14,7 @@ func TestNodeTransitionMatrix(t *testing.T) {
 	want := map[NodeState][]NodeState{
 		NodePending:         {NodeExecuting, NodeSkipped, NodeCancelled},
 		NodeExecuting:       {NodeSucceeded, NodeFailed, NodeWaitingApproval, NodePending, NodeCancelled},
-		NodeWaitingApproval: {NodeExecuting, NodeCancelled},
+		NodeWaitingApproval: {NodeExecuting, NodeFailed, NodeCancelled},
 		NodeSucceeded:       {},
 		NodeFailed:          {},
 		NodeSkipped:         {},

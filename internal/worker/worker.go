@@ -159,6 +159,7 @@ func Run(ctx context.Context, d Deps, cfg Config, opt asynq.RedisClientOpt) erro
 	mux.HandleFunc(EventTypeNodeTask, h.handleNodeTask)
 	mux.HandleFunc(scheduler.EventTypeExecutionStart, h.handleExecStart)
 	mux.HandleFunc(scheduler.EventTypeExecutionResume, h.handleNodeResume)
+	mux.HandleFunc(scheduler.EventTypeApprovalNotify, h.handleApprovalNotify)
 
 	if err := srv.Start(mux); err != nil {
 		return fmt.Errorf("worker: start server: %w", err)
@@ -412,6 +413,32 @@ func (h *attHandler) handleNodeResume(ctx context.Context, t *asynq.Task) error 
 	}
 	h.log.Info("approval.resume_processed",
 		"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID, "task_id", taskID)
+	return nil
+}
+
+// handleApprovalNotify 处理 approval.notify(T4.3 审批超时升级通知):占位
+// 消费者 = 可换装缝,T4.5 SMTP 落地时替换体(读审批上下文/发邮件/审批链接)。
+// P0 语义 = 解析校验 + 日志 ack:通知的事实记录已在 outbox 事件行与
+// approval.escalated 审计行(reaper 同事务落定),此处不回表——通知事件
+// 不写状态,payload 携的 id 仅供 T4.5 回表用;恰好一次锚在 escalated_at
+// (reaper 侧),asynq at-least-once 的重复投递 = 重复日志行,SMTP 落地时
+// 按 task_id 去重。不触节点执行器。
+func (h *attHandler) handleApprovalNotify(ctx context.Context, t *asynq.Task) error {
+	taskID, ok := asynq.GetTaskID(ctx)
+	if !ok {
+		return errors.New("worker: no task id in handler context")
+	}
+	var p scheduler.ApprovalNotifyPayload
+	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+		return fmt.Errorf("worker: task %s payload: %w", taskID, err)
+	}
+	if p.ExecutionID == 0 || p.NodeExecutionID == 0 {
+		return fmt.Errorf("worker: task %s payload: zero id field(s) %+v", taskID, p)
+	}
+	h.log.Info("approval.notified",
+		"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID,
+		"reason", p.Reason, "task_id", taskID,
+		"hint", "placeholder consumer; T4.5 swaps this handler for SMTP delivery")
 	return nil
 }
 

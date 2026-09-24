@@ -116,6 +116,42 @@ UPDATE node_execution
 	return checkNodeCAS(ctx, q, res, id, NodeExecuting, expectVer)
 }
 
+// FailSuspendedNode:WAITING_APPROVAL→FAILED(T4.3 审批超时 fail 策略终败;
+// error_code 词表 DDL 预留 approval_timeout)。无 worker_id 门——超时裁决方是
+// reaper,无租约可验(version CAS 足够,镜像 RequeueNode/RedispatchNode 的无
+// worker_id 形态);worker_id 保留挂起归因不动。挂起行 attempt 已收口(T4.1
+// 挂起契约),无 attempt 侧动作。
+func FailSuspendedNode(ctx context.Context, q DBTX, id uint64, expectVer uint32, code, msg string) (uint32, error) {
+	res, err := q.ExecContext(ctx, `
+UPDATE node_execution
+   SET status='FAILED', error_code=?, error_message=?, deadline_at=NULL,
+       finished_at=NOW(3), status_changed_at=NOW(3), version=version+1
+ WHERE id=? AND status='WAITING_APPROVAL' AND version=?`,
+		code, msg, id, expectVer)
+	if err != nil {
+		return 0, fmt.Errorf("engine: fail suspended node %d: %w", id, err)
+	}
+	return checkNodeCAS(ctx, q, res, id, NodeWaitingApproval, expectVer)
+}
+
+// MarkNodeEscalated:挂起节点的升级通知时刻一次性落定(Q9:escalate 仅一次,
+// DDL escalated_at 注释)。status-preserving CAS(RedispatchNode/
+// ExtendNodeDeadline 同款);escalated_at IS NULL 进谓词 = 并发双写的 DB 兜底
+// (调用方在行锁内先读 escalated_at 分支,正常路径不会撞)。escalated_at
+// NULL→值必改行,version+1 ⇒ RowsAffected==matched 不变量保持。deadline 不清:
+// 升级后节点仍处超时判定面(fail 策略换装/后续裁决仍需 deadline)。
+func MarkNodeEscalated(ctx context.Context, q DBTX, id uint64, expectVer uint32) (uint32, error) {
+	res, err := q.ExecContext(ctx, `
+UPDATE node_execution
+   SET escalated_at=NOW(3), version=version+1
+ WHERE id=? AND status='WAITING_APPROVAL' AND version=? AND escalated_at IS NULL`,
+		id, expectVer)
+	if err != nil {
+		return 0, fmt.Errorf("engine: mark node escalated %d: %w", id, err)
+	}
+	return checkNodeCAS(ctx, q, res, id, NodeWaitingApproval, expectVer)
+}
+
 // RequeueNode:EXECUTING→PENDING,恢复干净 PENDING——快照/租约/截止/非终局错误全清
 // (DDL 契约「PENDING 未解析 input_snapshot 恒 NULL」);错误史在 node_attempt 与
 // audit_log,状态列只保终局语义。仅 reconciler 语义(T2.5 判死重入队)。

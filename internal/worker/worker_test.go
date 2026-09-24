@@ -463,7 +463,10 @@ func waitTaskGone(t *testing.T, insp *asynq.Inspector, queue, taskID string) {
 // 错误不 fatal,与 waitAttemptStatus 同款韧性)。
 func waitTaskState(t *testing.T, insp *asynq.Inspector, queue, taskID string, want asynq.TaskState) {
 	t.Helper()
-	deadline := time.Now().Add(15 * time.Second)
+	// 45s 上界:archived 路径的墙钟下限 ≈ asynq 调度粒度 5s/跳 ×(首跑+重试);
+	// 15s 只有三跳余量,包并行(go test ./...)下 CPU 抖动即假红(T4.3 期间实测
+	// 串行全绿、并行偶发超时)。上限只影响失败用例的确诊延迟,不影响绿路径。
+	deadline := time.Now().Add(45 * time.Second)
 	var lastState = asynq.TaskState(0)
 	var lastErr error
 	for time.Now().Before(deadline) {
@@ -481,6 +484,69 @@ func waitTaskState(t *testing.T, insp *asynq.Inspector, queue, taskID string, wa
 	}
 	t.Fatalf("task %s did not reach state %d within 15s (last state=%d, last err=%v)",
 		taskID, want, lastState, lastErr)
+}
+
+// TestApprovalNotifyPlaceholderConsumed(T4.3):approval.notify 的占位消费
+// 面——合法 payload 解析校验后日志 ack(零 DB/零执行器触达,通知事实记录
+// 在 outbox/audit 行);坏 JSON/零 id 在触任何东西之前被拒,重试穷尽
+// archived(死信可见,镜像 TestResumeEventBadPayloadArchived 形状)。
+// Retention 让完成态可观测(默认完成即删,TaskState 不可断言)。
+func TestApprovalNotifyPlaceholderConsumed(t *testing.T) {
+	d := sqltest.MustOpenAt(t, workerSchema)
+	ex := &fakeExec{fn: func(req Request, callNo int) (Outcome, error) {
+		return Outcome{Status: engine.AttemptSucceed}, nil
+	}}
+	cfg := DefaultConfig()
+	cfg.RetryDelay = 50 * time.Millisecond
+	queue := startWorker(t, d, ex, cfg)
+
+	client := asynq.NewClient(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = client.Close() })
+	insp := asynq.NewInspector(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = insp.Close() })
+
+	t.Run("valid payload acked", func(t *testing.T) {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		payload, err := json.Marshal(scheduler.ApprovalNotifyPayload{
+			ExecutionID: 1, NodeExecutionID: 2, Reason: "escalated",
+		})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if _, err := client.EnqueueContext(ctx,
+			asynq.NewTask(scheduler.EventTypeApprovalNotify, payload),
+			asynq.TaskID("notify:2"), asynq.Queue(queue),
+			asynq.MaxRetry(1), asynq.Retention(time.Minute)); err != nil {
+			t.Fatalf("enqueue: %v", err)
+		}
+		waitTaskState(t, insp, queue, "notify:2", asynq.TaskStateCompleted)
+		if got := ex.count(); got != 0 {
+			t.Errorf("executor calls = %d, want 0(通知事件不经节点执行器)", got)
+		}
+	})
+	for _, tc := range []struct {
+		name    string
+		taskID  string
+		payload []byte
+	}{
+		{"bad json", "notify:3", []byte("{not json")},
+		{"zero id fields", "notify:4", []byte(`{"execution_id":0,"node_execution_id":0}`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			if _, err := client.EnqueueContext(ctx,
+				asynq.NewTask(scheduler.EventTypeApprovalNotify, tc.payload),
+				asynq.TaskID(tc.taskID), asynq.Queue(queue), asynq.MaxRetry(1)); err != nil {
+				t.Fatalf("enqueue: %v", err)
+			}
+			waitTaskState(t, insp, queue, tc.taskID, asynq.TaskStateArchived)
+			if got := ex.count(); got != 0 {
+				t.Errorf("executor calls = %d, want 0", got)
+			}
+		})
+	}
 }
 
 // TestTakeoverYieldsToDeadAttempt:接管让位(D-2026-09-22-t25-reaper-semantics
