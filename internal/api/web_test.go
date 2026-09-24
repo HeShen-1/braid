@@ -1,8 +1,9 @@
 package api
 
 // T4.4 Web 资产服务契约测试:内嵌静态面(/ui/)+ 安全头。零栈依赖——
-// Server 构造传 nil dbh(静态路由不触 DB;NewServer 仅要求非 nil 的
-// registry/trig,dbh 是运行期依赖),CI 无 t13 栈也全量覆盖。
+// Server 构造传 nil dbh(静态路由不触 DB;NewServer 要求非 nil 的
+// registry/trig/idp,dbh 是运行期依赖;idp 用零值 BuiltinProvider——
+// 本文件不触登录路由,零值 DB 即无害),CI 无 t13 栈也全量覆盖。
 //
 // 锚两件事:①安全头契约(CSP 无 unsafe-inline、nosniff、no-referrer);
 // ②端点锚——页面脚本必须引用真实 API 面(login/pending/decision),
@@ -20,24 +21,15 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"braid/internal/snowflake"
-	"braid/internal/tools"
+	"braid/internal/auth"
 )
 
 // newWebTestRouter 零栈路由:静态面 + healthz 即可。
 func newWebTestRouter(t *testing.T) *gin.Engine {
 	t.Helper()
-	ids, err := snowflake.New(1)
-	if err != nil {
-		t.Fatalf("snowflake: %v", err)
-	}
-	reg, err := tools.NewRegistry()
-	if err != nil {
-		t.Fatalf("registry: %v", err)
-	}
-	gin.SetMode(gin.TestMode)
-	return NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1},
-		nil, ids, reg, fakeTrigger{id: 1}).Router()
+	// 构造序列与 login_idp_test.go 的 newIDPTestRouter 同构,直接复用
+	// (idp 零值内置:本文件不触登录路由)。
+	return newIDPTestRouter(t, auth.BuiltinProvider{})
 }
 
 func webGet(t *testing.T, r *gin.Engine, path string) *httptest.ResponseRecorder {

@@ -17,6 +17,7 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 
 	"braid/internal/api"
+	"braid/internal/auth"
 	"braid/internal/db"
 	"braid/internal/preflight"
 	"braid/internal/scheduler"
@@ -101,9 +102,12 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("api: scheduler: %w", err)
 	}
 
+	// 认证身份源真源(T5.3):内置 BuiltinProvider = 用户名口令 + bcrypt
+	// (默认);P1 凭证核验型插件(如 LDAP bind)在此换装,契约见
+	// internal/auth/identity.go。
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewServer(cfg, dbh, ids, toolReg, sched).Router(),
+		Handler:           api.NewServer(cfg, dbh, ids, toolReg, sched, auth.BuiltinProvider{DB: dbh}).Router(),
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,

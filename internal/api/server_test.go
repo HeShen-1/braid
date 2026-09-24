@@ -53,7 +53,7 @@ func newTestServerWithTrigger(t *testing.T, trig ExecutionTrigger, allowlist ...
 		t.Fatalf("registry: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
-	r := NewServer(cfg, dbh, ids, reg, trig).Router()
+	r := NewServer(cfg, dbh, ids, reg, trig, auth.BuiltinProvider{DB: dbh}).Router()
 	sign := func(roles ...auth.Role) string {
 		t.Helper()
 		s, err := auth.SignToken(testSecret, time.Hour, "alice", roles)
@@ -377,7 +377,7 @@ func newNoDBServer(t *testing.T) (*gin.Engine, string) {
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	return NewServer(cfg, dead, ids, reg, fakeTrigger{id: 1}).Router(), token
+	return NewServer(cfg, dead, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{DB: dead}).Router(), token
 }
 
 // TestHTTPInternalErrorMapping 钉死 500 契约:存储故障 → 500 {"error":

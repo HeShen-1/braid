@@ -1,7 +1,7 @@
 // Package auth 实现 ARCHITECTURE Q13 锁定的内置用户体系(T5.1):users /
 // user_role 模型(迁移 0002)、bcrypt 密码哈希、无状态 JWT(HS256)的
-// 签发与校验。RBAC 中间件(T5.2)与 IdentityProvider 桩(T5.3)叠加在
-// 本包接口面之上,不在此实现。
+// 签发与校验。RBAC 中间件(T5.2)叠加在本包接口面之上;IdentityProvider
+// 认证缝(T5.3)已落 identity.go——内置实现为默认,替换契约见彼处。
 //
 // 契约:
 //   - 错误面:未知用户与错密码统一 ErrInvalidCredentials(防用户名枚举);
