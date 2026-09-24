@@ -2,6 +2,7 @@ package api
 
 import (
 	"database/sql"
+	"reflect"
 
 	"github.com/gin-gonic/gin"
 
@@ -24,21 +25,38 @@ type Server struct {
 	// 单方法面让测试以 fake 替身注入(Instantiate 仅触 MySQL,api 保持
 	// 零 Redis 消费包)。nil 响亮拒绝,理由同 toolReg。
 	trig ExecutionTrigger
+	// idp 是认证身份源缝(T5.3,ARCHITECTURE §3.6):登录面唯一消费者
+	// (login.go)。生产默认 auth.BuiltinProvider(内置用户/角色 + bcrypt);
+	// 替换实现注入即换源(凭证核验型插件 P1,如 LDAP bind;OIDC 属
+	// redirect 流,不经本接口,须另立回调路由面——错误族与 User→
+	// SignToken 契约可复用),契约见 internal/auth/identity.go。nil 响亮
+	// 拒绝,理由同 toolReg。
+	idp auth.IdentityProvider
 }
 
 // NewServer 构造 definition CRUD + execution 触发服务(dbh 为连接池;
 // ids 生成草稿行 id;toolReg 发布白名单来源,发布点经 dsl.WithToolAllowlist
-// (registry 名单);trig 触发缝,生产装配传 *scheduler.Scheduler)。
-// nil registry / nil trig 响亮拒绝:静默空缺会把「配置缺漏」伪装成
-// 「禁用工具」/「触发面 500」。
-func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry, trig ExecutionTrigger) *Server {
+// (registry 名单);trig 触发缝,生产装配传 *scheduler.Scheduler;idp
+// 认证身份源缝,生产默认 auth.BuiltinProvider{DB: dbh})。
+// nil registry / nil trig / nil idp(含 typed-nil)响亮拒绝:静默空缺会把
+// 「配置缺漏」伪装成「禁用工具」/「触发面 500」/「认证面 panic」。
+func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry, trig ExecutionTrigger, idp auth.IdentityProvider) *Server {
 	if toolReg == nil {
 		panic("api: nil tools.Registry (publish allowlist source)")
 	}
 	if trig == nil {
 		panic("api: nil ExecutionTrigger (execution trigger seam)")
 	}
-	return &Server{cfg: cfg, st: NewStore(ids), ids: ids, dbh: dbh, toolReg: toolReg, trig: trig}
+	if idp == nil {
+		panic("api: nil IdentityProvider (authenticate seam)")
+	}
+	// typed-nil 探测(对抗审计 MEDIUM 收口):ProviderFunc(nil)/(*T)(nil)
+	// 装箱后接口值非 nil,== 检查放行,panic 被推迟到首个登录请求且呈现为
+	// 空 body 500(不可诊断);构造期响亮失败,语义与 nil 检查一致。
+	if v := reflect.ValueOf(idp); (v.Kind() == reflect.Pointer || v.Kind() == reflect.Func) && v.IsNil() {
+		panic("api: typed-nil IdentityProvider (authenticate seam)")
+	}
+	return &Server{cfg: cfg, st: NewStore(ids), ids: ids, dbh: dbh, toolReg: toolReg, trig: trig, idp: idp}
 }
 
 // Router 注册全部路由。角色面:写(author|admin)与读(任意有效 token)

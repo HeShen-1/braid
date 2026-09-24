@@ -117,7 +117,7 @@ func newApprovalAPIServer(t *testing.T, d *sql.DB, queue string) *gin.Engine {
 	gin.SetMode(gin.TestMode)
 	return api.NewServer(api.Config{
 		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: 3, ResumeQueue: queue,
-	}, d, ids, reg, sched).Router()
+	}, d, ids, reg, sched, auth.BuiltinProvider{DB: d}).Router()
 }
 
 // postDecision 经真 gin 路由发决定(carol 主体)。

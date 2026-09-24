@@ -1,6 +1,7 @@
 // 登录面(T4.4):POST /api/v1/auth/login —— 凭据换 Bearer token,Web
-// 审批页的入口。复用 auth.Authenticate(防枚举三态统一 + dummy 时序均衡
-// + DISABLED 密码后判定)与 auth.SignToken(claims 形状与中间件
+// 审批页的入口。认证经 s.idp 缝(T5.3,默认内置 auth.BuiltinProvider:
+// 防枚举三态统一 + dummy 时序均衡 + DISABLED 密码后判定;替换实现契约
+// 见 internal/auth/identity.go)与 auth.SignToken(claims 形状与中间件
 // ParseToken 同构,签发即可用);错误面在这里只做映射:
 //   - CredentialsError(未知用户/错密码/域外输入)→ 401 invalid_credentials
 //     ——Reason 是日志词(auth/errors.go 契约),绝不进响应;
@@ -27,8 +28,8 @@ import (
 	"braid/internal/auth"
 )
 
-// loginRequest 登录请求体;域校验(词域/长度)在 auth.Authenticate 前置
-// 拒绝,此处不做第二套(两套判据必漂移)。
+// loginRequest 登录请求体;域校验(词域/长度)由身份源前置拒绝(内置
+// 实现在 auth.Authenticate 内),此处不做第二套(两套判据必漂移)。
 type loginRequest struct {
 	Username string `json:"username"`
 	Password string `json:"password"`
@@ -74,7 +75,7 @@ func (s *Server) login(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_request"})
 		return
 	}
-	user, err := auth.Authenticate(c.Request.Context(), s.dbh, req.Username, req.Password)
+	user, err := s.idp.Authenticate(c.Request.Context(), req.Username, req.Password)
 	if err != nil {
 		var creds *auth.CredentialsError
 		switch {
