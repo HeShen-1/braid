@@ -80,9 +80,10 @@ const (
 	EventToolCallDenied         = "tool.call.denied"
 )
 
-// actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval);
-// P0 只发 worker(system 由 reaper)。user/tool/llm/approval 为 T5/T3.x 预留,
-// 校验按全集——DDL 开放面不变,只是本任务尚无发射点。
+// actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval)。
+// 发射面演进:P0 worker(system 由 reaper);T4.2 起 user(api 审批面);
+// T5.2 起 user 的第二发射点(auth.ExecutionAuthorizer 的 tool.call.denied)。
+// tool/llm/approval 仍为预留,校验按全集——DDL 开放面不变。
 const (
 	ActorUser     = "user"
 	ActorSystem   = "system"

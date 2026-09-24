@@ -394,23 +394,33 @@ func (s *Server) appendApprovalAudit(ctx context.Context, tx DBTX,
 // 失败仅 slog,不影响 403 裁决)。reason 区分拒绝面:membership(名单外)
 // / role_denied(名单内缺角色,T5.2 换装①)。
 //
-// 灌水防线(T5.2 sec 评审 MEDIUM):角色闸在存在性守卫之前——任意持
-// token 主体可对任意 (exec, node_id) 组合触发 403。审计行只在锚定到
-// 真实 approval 节点行时落:幻影 node_id / 非 approval 节点的拒绝裁决
-// 照常生效但不留痕,append-only 审计面不可被无界灌水、取证面不混入
-// 不存在节点的行。membership 路径主事务已确认真实 approval 节点,
-// 锚定恒成功,行为不变。
+// 灌水防线(T5.2 sec 评审 MEDIUM + 对抗审计收紧):角色闸在存在性守卫
+// 之前——任意持 token 主体可对任意 (exec, node_id) 组合触发 403。审计行
+// 只在锚定到「真实 approval 节点且快照在册」(= membership 审计的同一
+// 谓词面:挂起过、名单可证)时落:幻影 node_id / 非 approval / 未挂起
+// PENDING 节点的拒绝裁决照常生效但不留痕——append-only 审计面不混入
+// 无名单可证的行。真实挂起节点上的重复拒绝仍逐行留痕(每次尝试都是
+// 事实,与 membership 路径同语义);无界灌水的最终闸是基础设施层限流
+// (T6.4 域,本面不伪造「不可灌水」承诺)。锚读瞬态故障 = best-effort
+// 跳过但必须留 slog(零遥测的静默丢弃是对抗审计 MEDIUM)。
 func (s *Server) writeDecisionDeniedAudit(c *gin.Context, execID uint64, nodeID, actor, face, reason string) {
 	var nodeExecID uint64
 	var nodeType string
-	switch err := s.dbh.QueryRowContext(c.Request.Context(),
-		`SELECT id, type FROM node_execution WHERE execution_id=? AND node_id=?`, execID, nodeID).
-		Scan(&nodeExecID, &nodeType); {
-	case errors.Is(err, sql.ErrNoRows), nodeType != "approval":
-		return // 无锚定行 / 非 approval 节点:拒绝裁决生效,审计不落(防灌水)
+	err := s.dbh.QueryRowContext(c.Request.Context(),
+		`SELECT id, type FROM node_execution
+		 WHERE execution_id=? AND node_id=? AND input_snapshot IS NOT NULL`, execID, nodeID).
+		Scan(&nodeExecID, &nodeType)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		return // 幻影/未挂起:拒绝裁决生效,审计不落(防灌水)
 	case err != nil:
+		// 瞬态 DB 故障:裁决不受影响(best-effort 纪律),但静默丢弃零
+		// 遥测不可接受——slog 兜底。注意 Scan 出错时 dest 不动,错误分支
+		// 必须先于 type 判定(否则 nodeType 零值恒吞掉本分支)。
 		slog.Error("api: anchor approval.decision_denied", "err", err, "execution_id", execID, "node_id", nodeID)
-		return // best-effort 纪律:锚定读失败不阻断裁决,也不落无锚行
+		return
+	case nodeType != "approval":
+		return // 非 approval 节点(有快照的 llm 等):不留痕
 	}
 	auditID, err := s.ids.Next()
 	if err != nil {

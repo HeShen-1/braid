@@ -138,6 +138,40 @@ func TestAuthorizeCallDisabledUser(t *testing.T) {
 	if strings.Contains(err.Error(), "auth_disabled") || strings.Contains(err.Error(), "DISABLED") {
 		t.Fatalf("denial message leaks account state: %v", err)
 	}
+	// reason 变异锚(对抗审计):disabled 分因进 payload。
+	var payload []byte
+	if err := d.QueryRow(`SELECT payload FROM audit_log WHERE node_execution_id=?`, nodeExecID).Scan(&payload); err != nil {
+		t.Fatalf("audit row missing: %v", err)
+	}
+	var p audit.ToolCallDeniedPayload
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatalf("payload unmarshal: %v (raw=%s)", err, payload)
+	}
+	if p.Reason != "disabled" {
+		t.Fatalf("reason = %q, want disabled", p.Reason)
+	}
+}
+
+// failingIDs 恒败 IDGen(best-effort 纪律的故障注入面)。
+type failingIDs struct{}
+
+func (failingIDs) Next() (uint64, error) { return 0, errors.New("idgen boom") }
+
+// TestAuthorizeCallDenialIndependentOfAuditWrite:best-effort 契约的失败
+// 注入锚(对抗审计 #15)——审计写链路死(雪花源故障)时拒绝裁决不受
+// 影响:越权照拒 ErrCallDenied。
+func TestAuthorizeCallDenialIndependentOfAuditWrite(t *testing.T) {
+	d := newDB(t)
+	createUser(t, d, "auth_approver3", "pw-approver3-words-placeholder", RoleApprover)
+	authz := NewExecutionAuthorizer(d, failingIDs{}, DefaultToolPolicy())
+	seed := seedExec(t, d, "auth_approver3")
+	var nodeExecID uint64
+	if err := d.QueryRow(`SELECT id FROM node_execution WHERE execution_id = ?`, seed.execID).Scan(&nodeExecID); err != nil {
+		t.Fatalf("read node_exec id: %v", err)
+	}
+	if err := authz.AuthorizeCall(context.Background(), nodeExecID, "http"); !errors.Is(err, tools.ErrCallDenied) {
+		t.Fatalf("err = %v, want ErrCallDenied despite audit-write failure", err)
+	}
 }
 
 // TestAuthorizeCallDeniedAudited:越权拒绝必须落 tool.call.denied 审计行
@@ -214,6 +248,9 @@ func TestAuthorizeCallUnknownSubjectAuditedRolesEmpty(t *testing.T) {
 	}
 	if p.ActorRoles == nil || len(p.ActorRoles) != 0 {
 		t.Fatalf("actor_roles = %#v, want empty non-nil array", p.ActorRoles)
+	}
+	if p.Reason != "unknown_subject" {
+		t.Fatalf("reason = %q, want unknown_subject", p.Reason)
 	}
 }
 

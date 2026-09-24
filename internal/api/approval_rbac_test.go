@@ -61,8 +61,8 @@ func TestApprovalDecisionRoleGate(t *testing.T) {
 	}
 
 	// 防灌水(sec 评审 MEDIUM):角色闸对幻影节点照旧 403,但拒绝审计
-	// 只锚定真实 approval 节点——幻影 node_id 不落行,append-only 审计面
-	// 不可被无界灌水。
+	// 只锚定「真实 approval 节点且快照在册」——幻影 node_id 与未挂起
+	// PENDING 节点都不落行。
 	ghost := signSubject(t, "eve", auth.RoleAuthor)
 	code, _ = doJSON(t, r, http.MethodPost,
 		fmt.Sprintf("/api/v1/executions/%d/approvals/ghost/decision", execID), ghost,
@@ -72,6 +72,21 @@ func TestApprovalDecisionRoleGate(t *testing.T) {
 	}
 	if n := countRows(t, dbh, `SELECT COUNT(*) FROM audit_log WHERE actor_id='eve'`); n != 0 {
 		t.Fatalf("phantom-node denial rows = %d, want 0(无锚定不落审计)", n)
+	}
+	// PENDING(未挂起,快照 NULL,名单不可证)真实 approval 节点:同不
+	// 落审计(对抗审计收紧:membership 审计同一谓词面)。
+	pendExec, _ := seedSuspendedApproval(t, dbh, "RUNNING", "PENDING", "carol")
+	if _, err := dbh.Exec(`UPDATE node_execution SET input_snapshot=NULL WHERE execution_id=?`, pendExec); err != nil {
+		t.Fatalf("null snapshot: %v", err)
+	}
+	code, _ = doJSON(t, r, http.MethodPost, decisionPath(pendExec), ghost,
+		[]byte(`{"decision":"approve"}`))
+	if code != http.StatusForbidden {
+		t.Fatalf("pending-node role denial = %d, want 403", code)
+	}
+	if n := countRows(t, dbh, `SELECT COUNT(*) FROM audit_log WHERE execution_id=? AND actor_id='eve'`,
+		pendExec); n != 0 {
+		t.Fatalf("pending-node denial rows = %d, want 0(快照不在册不落审计)", n)
 	}
 }
 
