@@ -437,6 +437,20 @@ func TestValidateLLMUsage(t *testing.T) {
 	if err := validate(plain); err != nil {
 		t.Fatalf("validate(plain) = %v, want nil", err)
 	}
+	// llm.call.discarded 是 usage 冗余列组第二合法携带者(T6.4,D-t36 §7):
+	// 该行是被丢弃调用唯一留下的台账痕迹,金额必须随行。(fresh Usage 指针:
+	// 上方 cases 经共享指针变异已污染 base.Usage。)
+	discarded := base
+	discarded.EventType = EventLLMCallDiscarded
+	discarded.ActorType = ActorWorker
+	discarded.ActorID = "w1"
+	discarded.Usage = &engine.AttemptUsage{
+		Model: "glm-5.3", PromptTokens: 1000, CompletionTokens: 150, TotalTokens: 1150,
+		CostAmount: "0.003200", CostCurrency: "CNY", Billed: true,
+	}
+	if err := validate(discarded); err != nil {
+		t.Fatalf("validate(discarded with usage) = %v, want nil", err)
+	}
 }
 
 // TestAppendLLMCallMaterializesRow(T3.1 双录 audit 半边):llm.call.completed

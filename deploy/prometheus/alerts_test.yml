@@ -1,0 +1,219 @@
+# promtool 单测(T6.4 验收面):注入死信/审批挂起/429 序列后断言告警触发。
+# 运行:promtool test rules deploy/prometheus/alerts_test.yml
+rule_files:
+  - alerts.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ① 死信注入:outbox DEAD 出现并持续 → 5m 后 firing(ROADMAP 验收字面)。
+  - interval: 1m
+    input_series:
+      - series: 'braid_outbox_rows{status="dead"}'
+        values: '0+0x4 2+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: OutboxDeadLetter
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "outbox 死信 2 行(relay 投递穷尽)"
+              description: "投递退避穷尽转 DEAD,事件永不再投。恢复 = T7.4 runbook:核验 Redis 无该 task_id 后人工重置 PENDING。字源 braid_outbox_rows{status=dead}(reaper gauge)。"
+
+  # ② 瞬时死信抖动(单点后归零)不告警:for 窗语义锚。
+  - interval: 1m
+    input_series:
+      - series: 'braid_outbox_rows{status="dead"}'
+        values: '0+0x4 1+0x2 0+0x15'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: OutboxDeadLetter
+        exp_alerts: []
+
+  # ③ 审批挂起注入:backlog 60 持续 30m → firing(验收字面);50 以下不 fire。
+  - interval: 1m
+    input_series:
+      - series: 'braid_approval_backlog_rows'
+        values: '60+0x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: ApprovalBacklogHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "待审积压 60 个"
+              description: "WAITING_APPROVAL × 活执行存量。审批触达面(SMTP 配置/收件人)与超时升级是否正常需一并核查。"
+      - eval_time: 10m
+        alertname: ApprovalBacklogHigh
+        exp_alerts: []
+
+  # ④ 429 率:15m 窗内 429 占比 >20% 持续 → firing。
+  - interval: 1m
+    input_series:
+      - series: 'braid_llm_http_failures_total{code="429"}'
+        values: '0+6x30' # 6/min 失败
+      - series: 'braid_llm_calls_total{outcome="succeeded"}'
+        values: '0+20x30' # 20/min 成功
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: LLMRateLimitShareHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "LLM 429 占比 23.08%(15m 窗)"
+              description: "含被适配器重试吸收的中间 429(D-t36 口径)。持续高位 = 供应商限流或配额耗尽,节点重试预算正在被烧。"
+
+  # ⑤ 429 率低占比(<20%)不告警。
+  - interval: 1m
+    input_series:
+      - series: 'braid_llm_http_failures_total{code="429"}'
+        values: '0+1x30'
+      - series: 'braid_llm_calls_total{outcome="succeeded"}'
+        values: '0+20x30'
+    alert_rule_test:
+      - eval_time: 31m
+        alertname: LLMRateLimitShareHigh
+        exp_alerts: []
+
+  # ⑥ 队列 Redis 水线:used/max > 0.8 持续 10m → firing。
+  - interval: 1m
+    input_series:
+      - series: 'braid_redis_memory_used_bytes'
+        values: '220+0x20' # 220MB
+      - series: 'braid_redis_memory_max_bytes'
+        values: '256+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: QueueRedisMemoryWatermark
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "队列 Redis 内存水位 85.94%"
+              description: "noeviction 实例写满 = 入队开始失败(noerr OOM),队列面静默停摆(ARCHITECTURE §2 队列实例水线告警)。0.8 = 扩容/排水行动线。"
+
+  # ⑦ notify 丢失 × SMTP 已配置(降级假阳性防御的 firing 半边;未配置半边见 ⑧)。
+  - interval: 1m
+    input_series:
+      - series: 'braid_approval_notify_missing_rows'
+        values: '3+0x15'
+      - series: 'braid_smtp_configured'
+        values: '1+0x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ApprovalNotifyMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "3 个升级通知丢失(escalated 有行、notified 缺行)"
+              description: "escalated-vs-notified 对账缺口(D-t45 #1):升级意图已落、超宽限窗无送达行——relay 耗尽转 DEAD 或 worker archived 的统一信号。braid_smtp_configured==1 门闸:SMTP 未配置时缺失是设计行为,不告警。"
+
+  # ⑧ notify 缺失但 SMTP 未配置 → 不告警(设计性缺席,假阳性防御锚)。
+  - interval: 1m
+    input_series:
+      - series: 'braid_approval_notify_missing_rows'
+        values: '3+0x15'
+      - series: 'braid_smtp_configured'
+        values: '0+0x15'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ApprovalNotifyMissing
+        exp_alerts: []
+
+  # ⑨ 已计费丢弃:任一增量即 firing(无 for —— 资金面零容忍)。
+  - interval: 1m
+    input_series:
+      - series: 'braid_llm_calls_discarded_total'
+        values: '0+0x5 0+1x1 1+0x5'
+    alert_rule_test:
+      - eval_time: 7m
+        alertname: LLMBilledCallDiscarded
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "1 次已计费调用被让位丢弃(零台账)"
+              description: "reaper 判死后迟到 SUCCEEDED 携 usage 丢弃(D-t36 §7):供应商已计费,平台台账双缺,唯一凭证 = llm.call.discarded 审计行。偶发 = 判死双执行竞态;持续 = DeadGrace 配置与真实执行时延失配。"
+
+  # ⑩ audit_pending 可见性滞后:oldest 持续 >30s → 5m 后 firing。
+  - interval: 1m
+    input_series:
+      - series: 'braid_audit_pending_oldest_age_seconds'
+        values: '5+0x3 45+0x10'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: AuditPendingBacklog
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "审计暂存最老行滞留 45s(可见性滞后失真)"
+              description: "AuditFlushInterval 默认 1s = 审计可见性滞后上界;oldest 持续 >30s = flush 排水速率不足或间隔旋钮被放大(D-t61 无上界观测面)。T6.3 查询面按滞后上界口径承诺,此告警是承诺的守护线。"
+
+  # ⑪ resume 滞留(已决票语义):decided+超阈持续 → firing;escalated-only
+  # (Q9 等人决定)不触发——极性修复的规则面回归锚。
+  - interval: 1m
+    input_series:
+      - series: 'braid_resume_stuck_rows'
+        values: '2+0x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: ResumeArchivedStranded
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "2 个已决审批的续跑事件滞留(⑤a 谓词持续命中)"
+              description: "已决票/已升级但续跑事件死或滞留,执行永挂 WAITING_APPROVAL(D-t42 §8-②)。reaper 每 tick 幂等重投仍不收敛 = 深层故障,查 relay 队列与 outbox DEAD。"
+      - eval_time: 10m
+        alertname: ResumeArchivedStranded
+        exp_alerts: []
+
+  # ⑫ asynq archived 死信存量。
+  - interval: 1m
+    input_series:
+      - series: 'braid_asynq_archived_tasks'
+        values: '0+0x30 4+0x40'
+    alert_rule_test:
+      - eval_time: 65m
+        alertname: AsynqArchivedDeadLetters
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "asynq archived 死信 4 条(Redis 侧,DB 无痕)"
+              description: "worker handler 二次失败进 archived。resume/notify 族的事件对账网见 D-t42 §8-②/D-t43;人工恢复 = asynq Inspector RunTask。"
+
+  # ⑬ 登录暴力破解:locked 触发率持续超阈。
+  - interval: 1m
+    input_series:
+      - series: 'braid_login_attempts_total{result="locked"}'
+        values: '0+12x30'
+    alert_rule_test:
+      - eval_time: 25m
+        alertname: LoginBruteForceSuspected
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "账号锁定持续触发(15m 均 0.19999999999999998/s)"
+              description: "D-t44 §7-① 登录防御观测面:锁定计数持续触发 = 暴力破解进行中(限流+锁定已减速,不构成破口)。持久层 = login_audit 表按 username 聚合可查攻击面。"
+
+  # ⑭ 审批积压老化:最老待审 >4h 持续 15m。
+  - interval: 1m
+    input_series:
+      - series: 'braid_approval_backlog_oldest_age_seconds'
+        values: '20000+0x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: ApprovalBacklogAging
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "最老待审已挂起超过 5h 33m 20s"
+              description: "超过 4h 的待审接近默认 72h 超时升级线;升级与通知链路(T4.3/T4.5)是否健康需核查。"

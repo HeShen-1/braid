@@ -591,8 +591,8 @@ func TestHTTPAuditVisibilityFlushSemantics(t *testing.T) {
 	}
 
 	moved, err := audit.FlushAll(context.Background(), dbh, 500, 10)
-	if err != nil || moved != 1 {
-		t.Fatalf("FlushAll = %d, %v, want 1/<nil>", moved, err)
+	if err != nil || moved.Flushed != 1 { // T6.4:聚合签名(Flushed = 搬运行数)
+		t.Fatalf("FlushAll = %+v, %v, want Flushed=1/<nil>", moved, err)
 	}
 	code, body = doJSON(t, r, http.MethodGet, q, author, nil)
 	if code != http.StatusOK || auditTotal(t, body) != 1 {

@@ -14,8 +14,10 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/hibiken/asynq"
+	"github.com/redis/go-redis/v9"
 
 	"braid/internal/db"
+	"braid/internal/metrics"
 	"braid/internal/preflight"
 	"braid/internal/relay"
 )
@@ -68,14 +70,14 @@ func run(ctx context.Context) error {
 	}
 	// Redis 可达性自检(Inspector.Queues 即一次真实往返),启动即败响亮:
 	// 拉起一个投不出去的 relay 只会把事件烧成退避。
+	// 启动自检后保留 Inspector 生命周期移交 defer(探测面复用同一连接;
+	// 可达性语义不变:首轮探测在 Run 的 probe 里,失败只记日志)。
 	insp := asynq.NewInspector(asynq.RedisClientOpt{Addr: addr})
 	if _, err := insp.Queues(); err != nil {
 		_ = insp.Close()
 		return fmt.Errorf("relay: redis queue %s unreachable: %w", addr, err)
 	}
-	if err := insp.Close(); err != nil {
-		return fmt.Errorf("relay: close inspector: %w", err)
-	}
+	defer insp.Close() //nolint:errcheck // 停机路径,关闭错误无处置义
 
 	// T7.3:队列 Redis 契约(noeviction + AOF everysec)硬拒——relay 是队列
 	// 数据承载方,破约 = 重启烧队列、逐出静默丢事件。
@@ -83,7 +85,22 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("relay: %w", err)
 	}
 
+	// T6.4:指标面(投递计数 + Redis 内存水线;BRAID_METRICS_ADDR 空 = 不启)。
+	mset, mreg := metrics.NewSet()
+	if _, ok, err := metrics.Serve(ctx, os.Getenv("BRAID_METRICS_ADDR"), mreg); err != nil {
+		return fmt.Errorf("relay: %w", err)
+	} else if ok {
+		slog.Info("metrics: serving", "addr", os.Getenv("BRAID_METRICS_ADDR"))
+	}
+
 	eq := relay.NewAsynqEnqueuer(asynq.RedisClientOpt{Addr: addr})
 	defer eq.Close() //nolint:errcheck // 同上
-	return relay.Run(ctx, relay.Deps{DB: mysqlDB, Enqueuer: eq, Logger: slog.Default()}, cfg)
+	rc := redis.NewClient(&redis.Options{Addr: addr})
+	defer rc.Close() //nolint:errcheck // 同上
+	return relay.Run(ctx, relay.Deps{
+		DB: mysqlDB, Enqueuer: eq, Logger: slog.Default(),
+		Metrics:   mset.Relay,
+		RDB:       rc,
+		Inspector: insp,
+	}, cfg)
 }

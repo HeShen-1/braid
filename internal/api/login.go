@@ -15,6 +15,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -26,6 +27,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"braid/internal/auth"
+	"braid/internal/metrics"
 )
 
 // loginRequest 登录请求体;域校验(词域/长度)由身份源前置拒绝(内置
@@ -65,14 +67,77 @@ func logUsername(s string) string {
 	return cut + fmt.Sprintf("...(len=%d)", len(s))
 }
 
+// mLogin 是登录指标计数的 nil-safe 发射(T6.4)。
+func (s *Server) mLogin(result string) {
+	if s.loginMetrics != nil {
+		s.loginMetrics.Attempts.WithLabelValues(result).Inc()
+	}
+}
+
+// loginAuditEvent 落审计行 + 指标(同一发射点双半边,词面单源映射)。
+// ctx = 请求上下文(镜像 writeTriggerAudit 契约,rev2 advisory)。
+func (s *Server) loginAuditEvent(ctx context.Context, eventType, ip, username, reason string) {
+	s.mLogin(loginResultLabel(eventType))
+	s.writeLoginAudit(ctx, eventType, ip, username, reason)
+}
+
+// loginDefenseGate 是认证前的防御闸(rev3 提取:防御逻辑单点)。两段:
+// body 形态无关段(超限/坏 JSON,计入 IP-only 窗口)与 username 段(锁定
+// × IP 窗口)。防御拒绝一律 429 同形(防枚举 oracle)且只发指标不落 DB
+// ——拒绝路径的请求频率由攻击者控制,逐行落库即写放大;登录判定
+// (succeeded/failed)才是审计行的事实域。alreadyResponded = 调用方
+// 不得再写响应(readBodyLimited 已写 413/400,二次写 = 双写缺陷)。
+func (s *Server) loginDefenseGate(c *gin.Context, ip, username string, alreadyResponded bool) bool {
+	if username == "" {
+		if _, limited := s.loginLimiter.checkIP(ip); limited {
+			s.mLogin(metrics.ResultRateLimited)
+			if !alreadyResponded {
+				c.JSON(http.StatusTooManyRequests, gin.H{"error": "too_many_attempts"})
+			}
+			return false
+		}
+		if alreadyResponded {
+			s.mLogin(metrics.ResultFailed)
+			return false // 响应已由 readBodyLimited 落定:拦截,调用方裸返回
+		}
+		return true // 未限流且响应未写:调用方继续(自己的 400)
+	}
+	locked, limited := s.loginLimiter.check(ip, username)
+	if locked || limited {
+		if locked {
+			s.mLogin(metrics.ResultLocked)
+		} else {
+			s.mLogin(metrics.ResultRateLimited)
+		}
+		c.JSON(http.StatusTooManyRequests, gin.H{"error": "too_many_attempts"})
+		return false
+	}
+	return true
+}
+
 func (s *Server) login(c *gin.Context) {
+	ip := c.ClientIP()
 	var req loginRequest
 	b, ok := readBodyLimited(c)
 	if !ok {
+		// readBodyLimited 已写终态响应(413/400):此处只消费窗口与发指标,
+		// 不再二次写响应(rev3 双写缺陷修复)。超限 body 同样计入 IP 窗口。
+		s.loginDefenseGate(c, ip, "", true)
 		return
 	}
 	if err := json.Unmarshal(b, &req); err != nil {
+		// 坏 JSON 同样计入 IP 固定窗口(review HIGH:此路径原先绕过防御层,
+		// 每请求一行审计 = 未限流的持久写放大)。只发指标不落 DB——
+		// username 不可知,持久细节留给后续可解析请求的 failed 行。
+		if !s.loginDefenseGate(c, ip, "", false) {
+			return
+		}
+		s.mLogin(metrics.ResultFailed)
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_request"})
+		return
+	}
+	// 认证前防御闸(不付 bcrypt;锁定与限流同形 429,防枚举口径见上)。
+	if !s.loginDefenseGate(c, ip, req.Username, false) {
 		return
 	}
 	user, err := s.idp.Authenticate(c.Request.Context(), req.Username, req.Password)
@@ -81,17 +146,26 @@ func (s *Server) login(c *gin.Context) {
 		switch {
 		case errors.As(err, &creds):
 			// 主体名有界化进日志(见 logUsername);Reason 是日志词
-			// (auth/errors.go 契约),绝不进响应。
+			// (auth/errors.go 契约),绝不进响应;审计行携 Reason(DB 面
+			// 不对外,防枚举契约不受影响)。
 			slog.Info("api: login rejected", "username", logUsername(creds.Username), "reason", creds.Reason)
+			s.loginLimiter.record(req.Username, false)
+			s.loginAuditEvent(c.Request.Context(), loginEventFailed, ip, creds.Username, creds.Reason)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		case errors.Is(err, auth.ErrUserDisabled):
+			s.loginLimiter.record(req.Username, false)
+			s.loginAuditEvent(c.Request.Context(), loginEventFailed, ip, req.Username, "user_disabled")
 			c.JSON(http.StatusForbidden, gin.H{"error": "user_disabled"})
 		default:
+			// 身份源故障不是登录判定结果:不计数不审计(与 500 同判,
+			// 旁路观测由日志承载)。
 			slog.Error("api: login authenticate", "err", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal"})
 		}
 		return
 	}
+	s.loginLimiter.record(req.Username, true)
+	s.loginAuditEvent(c.Request.Context(), loginEventSucceeded, ip, user.Username, "")
 	ttl := auth.DefaultTokenTTL
 	token, err := auth.SignToken(s.cfg.JWTSecret, ttl, user.Username, user.Roles)
 	if err != nil {

@@ -45,7 +45,7 @@ func newTestClient(t *testing.T, cfgMut func(*Config), handler http.HandlerFunc)
 	if cfgMut != nil {
 		cfgMut(&cfg)
 	}
-	c, err := NewOpenAICompat(cfg)
+	c, err := NewOpenAICompat(cfg, nil)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
@@ -340,13 +340,13 @@ func TestBackoffBounds(t *testing.T) {
 
 func TestNewOpenAICompatRejectsBadConfig(t *testing.T) {
 	cfg := DefaultConfig() // 空 BaseURL/APIKey/表
-	if _, err := NewOpenAICompat(cfg); err == nil {
+	if _, err := NewOpenAICompat(cfg, nil); err == nil {
 		t.Fatal("bad config accepted, want rejection")
 	}
 	// 换合法配置后错误消息可定位
 	cfg.BaseURL = "https://x/v1"
 	cfg.APIKey = "k"
-	if _, err := NewOpenAICompat(cfg); err == nil || !strings.Contains(err.Error(), "price table") {
+	if _, err := NewOpenAICompat(cfg, nil); err == nil || !strings.Contains(err.Error(), "price table") {
 		t.Fatalf("err = %v, want price table error", err)
 	}
 }

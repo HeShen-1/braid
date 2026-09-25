@@ -35,6 +35,7 @@ import (
 	"github.com/hibiken/asynq"
 
 	"braid/internal/engine"
+	"braid/internal/metrics"
 	"braid/internal/notify"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
@@ -134,6 +135,9 @@ type Deps struct {
 	Sched    *scheduler.Scheduler // T2.4 调度器(完成回写 + execution.start);nil 拒启动
 	Notifier ApprovalNotifier     // T4.5 审批通知面;nil = SMTP 未配置降级
 	Logger   *slog.Logger
+	// Metrics 是观测面(T6.4):nil = 关闭(测试默认)。notify 结果计数 +
+	// asynq archived 死信 gauge(探测 goroutine 随 Run 生命周期)。
+	Metrics *metrics.WorkerSet
 }
 
 // Run 阻塞运行 worker 直到 ctx 取消(优雅停机受 cfg.ShutdownTimeout 界住,
@@ -151,6 +155,12 @@ func Run(ctx context.Context, d Deps, cfg Config, opt asynq.RedisClientOpt) erro
 		log = slog.Default()
 	}
 	h := &attHandler{deps: d, cfg: cfg, log: log}
+
+	// T6.4:asynq archived 死信探测(Redis 侧零 DB 痕迹的唯一可观测面;
+	// D-t42 §8-②/T4.5 已知边界的告警字源)。观测 goroutine,失败只记日志。
+	if d.Metrics != nil {
+		go h.probeAsynqArchived(ctx, opt)
+	}
 
 	// RetryDelayFunc 显式钉死(T2.2 审计移交②的决策落地):MaxRetry=1 的
 	// asynq 实际语义 = handler 首败后自管**一次**内部重试(server 默认
@@ -441,8 +451,14 @@ func (h *attHandler) handleApprovalNotify(ctx context.Context, t *asynq.Task) er
 	if !ok {
 		return errors.New("worker: no task id in handler context")
 	}
+	return h.dispatchApprovalNotify(ctx, taskID, t.Payload())
+}
+
+// dispatchApprovalNotify 是 notify 消费核心(asynq 壳之外可单测:指标四分支
+// 的零栈断言面)。
+func (h *attHandler) dispatchApprovalNotify(ctx context.Context, taskID string, payload []byte) error {
 	var p scheduler.ApprovalNotifyPayload
-	if err := json.Unmarshal(t.Payload(), &p); err != nil {
+	if err := json.Unmarshal(payload, &p); err != nil {
 		return fmt.Errorf("worker: task %s payload: %w", taskID, err)
 	}
 	if p.ExecutionID == 0 || p.NodeExecutionID == 0 {
@@ -459,6 +475,7 @@ func (h *attHandler) handleApprovalNotify(ctx context.Context, t *asynq.Task) er
 			"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID,
 			"reason", p.Reason, "task_id", taskID,
 			"hint", "smtp unconfigured; log-only ack (T4.5)")
+		h.mNotify(metrics.NotifyOutcomeDegraded)
 		return nil
 	}
 	err := h.deps.Notifier.NotifyApproval(ctx, p.ExecutionID, p.NodeExecutionID, p.Reason)
@@ -467,14 +484,69 @@ func (h *attHandler) handleApprovalNotify(ctx context.Context, t *asynq.Task) er
 		h.log.Info("approval.notified",
 			"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID,
 			"reason", p.Reason, "task_id", taskID)
+		h.mNotify(metrics.NotifyOutcomeSent)
 		return nil
 	case errors.Is(err, notify.ErrAlreadyNotified):
 		h.log.Info("approval.notify_deduped",
 			"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID,
 			"reason", p.Reason, "task_id", taskID)
+		h.mNotify(metrics.NotifyOutcomeDeduped)
 		return nil
 	default:
+		h.mNotify(metrics.NotifyOutcomeFailed)
 		return fmt.Errorf("worker: notify approval node %d (task %s): %w", p.NodeExecutionID, taskID, err)
+	}
+}
+
+// asynqProbeInterval 是 archived/队列深度探测周期(观测粒度,非运维旋钮)。
+const asynqProbeInterval = 30 * time.Second
+
+// probeAsynqArchived 周期汇总各消费队列的 archived 存量。失败记日志继续
+// (探测不可用 ≠ worker 不可用;长故障由扫描间隔外的告警静默兜底)。
+func (h *attHandler) probeAsynqArchived(ctx context.Context, opt asynq.RedisClientOpt) {
+	insp := asynq.NewInspector(opt)
+	defer insp.Close() //nolint:errcheck // 停机路径,关闭错误无处置义
+	t := time.NewTicker(asynqProbeInterval)
+	defer t.Stop()
+	probe := func() {
+		var archived int
+		probed := 0
+		for q := range h.cfg.Queues {
+			info, err := insp.GetQueueInfo(q)
+			if err != nil {
+				// 单队列失败(未实例化/瞬断)不清零整个探测面:该队列按
+				// 0 计,其余照常(review A1——一个配错队列永久致盲整指标)。
+				if errors.Is(err, asynq.ErrQueueNotFound) {
+					probed++ // 配置了但从未投递的队列,archived 恒 0,是结论不是盲区
+					continue
+				}
+				h.log.Warn("metrics.asynq_queue", "queue", q, "err", err)
+				continue
+			}
+			archived += info.Archived
+			probed++
+		}
+		// 全队列探测失败(Redis 故障)不写假零(对抗审计 A4):保持上轮
+		// 值,死信告警恰在故障期最需要活着;零成功 = 无结论。
+		if probed > 0 {
+			h.deps.Metrics.AsynqArchived.Set(float64(archived))
+		}
+	}
+	probe()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			probe()
+		}
+	}
+}
+
+// mNotify 是 notify 结果计数的 nil-safe 发射(T6.4)。
+func (h *attHandler) mNotify(outcome string) {
+	if h.deps.Metrics != nil {
+		h.deps.Metrics.NotifyResults.WithLabelValues(outcome).Inc()
 	}
 }
 

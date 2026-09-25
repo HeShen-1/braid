@@ -163,3 +163,20 @@ type ToolCallDeniedPayload struct {
 	ActorRoles []string `json:"actor_roles"` // 拒绝时实持角色(可能空:主体无用户行)
 	Reason     string   `json:"reason"`      // unknown_subject | disabled | role_mismatch
 }
+
+// LLMCallDiscardedPayload 是 llm.call.discarded(T6.4,D-t36 §7)的事件体:
+// 迟到 SUCCEEDED 携 usage 在 Complete 让位路径被丢弃(供应商已计费、平台
+// 台账双缺)。字段镜像 LLMCallCompletedPayload——这是该调用唯一留下的
+// 台账痕迹,对账/告警按本行计数;ObservedAttempt 记录收口冲突时观测到的
+// attempt 终态(恒 DEAD,防未来语义漂移时静默)。
+type LLMCallDiscardedPayload struct {
+	NodeID           string `json:"node_id"`
+	Model            string `json:"model"`
+	PromptTokens     uint32 `json:"prompt_tokens"`
+	CompletionTokens uint32 `json:"completion_tokens"`
+	TotalTokens      uint32 `json:"total_tokens"`
+	CostAmount       string `json:"cost_amount,omitempty"`
+	CostCurrency     string `json:"cost_currency,omitempty"`
+	CostEstimated    bool   `json:"cost_estimated"`
+	ObservedAttempt  string `json:"observed_attempt"`
+}

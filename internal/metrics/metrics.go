@@ -1,0 +1,317 @@
+// Package metrics centralizes braid's Prometheus metric vocabulary.
+//
+// Every metric the platform exports is defined in this package and anchored
+// by the closed-set test (TestNewSetRegistersClosedVocabulary), mirroring the
+// audit event vocabulary precedent in internal/audit. Components receive the
+// relevant subset via Deps injection; narrow consumer-side interfaces (e.g.
+// llm's Observability, scheduler's MetricsSink) are satisfied implicitly by
+// these types so leaf packages never import this one.
+//
+// Naming: counters end in _total, gauges do not; everything is prefixed
+// braid_. Label values are exported constants in this package — callers must
+// use them, never raw strings, so label drift is a compile error.
+package metrics
+
+import (
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+)
+
+// Label vocabularies (closed sets, consumed as constants).
+const (
+	// LLM HTTP failure classes observed inside the adapter retry loop.
+	// Literals are pinned to llm.HTTPClass* by the cmd/worker anchor test.
+	CodeRateLimited = "429"
+	CodeServerError = "5xx"
+	CodeClientError = "4xx"
+	CodeNetworkErr  = "network"
+	CodeTimeout     = "timeout"
+	CodeProtocolErr = "protocol"
+
+	// LLM call outcomes at the ChatCompletion layer. Literals pinned to
+	// llm.CallOutcome* by the same anchor test.
+	CallSucceeded = "succeeded"
+	CallFailed    = "failed"
+
+	// Reaper death verdicts (node_attempt closure codes).
+	CodeStaleAttempt  = "stale_attempt"
+	CodeDeadlineBurst = "deadline_exceeded"
+	CodeHeartbeatLost = "heartbeat_lost"
+
+	// Redispatch triggers.
+	TriggerReaped        = "reaped"
+	TriggerAttemptFailed = "attempt_failed"
+	TriggerApprovalRes   = "approval_resume"
+
+	// Scan identifiers for backlog saturation counters.
+	ScanAttempt        = "attempt"
+	ScanNodeDeadline   = "node_deadline"
+	ScanNodeOrphan     = "node_orphan"
+	ScanExecPending    = "exec_pending"
+	ScanExecStale      = "exec_stale"
+	ScanApproval       = "approval"
+	ScanApprovalOrphan = "approval_orphan"
+
+	// Flush batch outcomes.
+	FlushOK       = "ok"
+	FlushRollback = "rollback"
+
+	// Flush row kinds.
+	FlushKindFlushed  = "flushed"
+	FlushKindReplayed = "replayed"
+
+	// Outbox row statuses for gauges.
+	OutboxDead    = "dead"
+	OutboxPending = "pending"
+
+	// Notification handler outcomes.
+	NotifyOutcomeSent     = "sent"
+	NotifyOutcomeDeduped  = "deduped"
+	NotifyOutcomeDegraded = "degraded"
+	NotifyOutcomeFailed   = "failed"
+
+	// Relay delivery outcomes.
+	DeliverDispatched = "dispatched"
+	DeliverConflict   = "conflict"
+	DeliverBackoff    = "backoff"
+	DeliverDead       = "dead"
+
+	// Login attempt results.
+	ResultSucceeded   = "succeeded"
+	ResultFailed      = "failed"
+	ResultLocked      = "locked"
+	ResultRateLimited = "rate_limited"
+)
+
+// LLMSet covers the LLM adapter retry loop and the scheduler discard path.
+type LLMSet struct {
+	// HTTPFailures counts every failed HTTP round trip observed by the
+	// adapter's retry loop, labeled by failure class. This is the only place
+	// mid-call 429s (absorbed by retry) are visible (T6.4/D-t36); successful
+	// round trips are counted by braid_llm_calls_total{succeeded}.
+	HTTPFailures *prometheus.CounterVec
+	// Calls counts ChatCompletion calls by terminal outcome.
+	Calls *prometheus.CounterVec
+	// CallDuration observes full ChatCompletion wall time per attempt chain.
+	CallDuration prometheus.Histogram
+	discarded    prometheus.Counter
+}
+
+// IncLLMCallDiscarded marks one late-SUCCEEDED-with-usage outcome dropped by the
+// Complete yield path: billed by the provider, absent from the ledger
+// (D-t36 §7). The audit row llm.call.discarded is the durable twin.
+func (l *LLMSet) IncLLMCallDiscarded() { l.discarded.Inc() }
+
+// ObserveHTTPAttempt satisfies the llm package's Observability seam.
+func (l *LLMSet) ObserveHTTPAttempt(class string) {
+	l.HTTPFailures.WithLabelValues(class).Inc()
+}
+
+// ObserveCall satisfies the llm package's Observability seam.
+func (l *LLMSet) ObserveCall(outcome string, d time.Duration) {
+	l.Calls.WithLabelValues(outcome).Inc()
+	l.CallDuration.Observe(d.Seconds())
+}
+
+// ReaperSet covers reaper verdicts, scans, flush observability, and the
+// periodic DB-sourced gauges (backlog/aging/dead-letter surfaces).
+type ReaperSet struct {
+	Reaped                *prometheus.CounterVec
+	Redispatches          *prometheus.CounterVec
+	NodeFailures          prometheus.Counter
+	NodeCancellations     prometheus.Counter
+	ApprovalsEscalated    prometheus.Counter
+	ScanBacklog           *prometheus.CounterVec
+	FlushBatches          *prometheus.CounterVec
+	FlushRows             *prometheus.CounterVec
+	FlushPoison           prometheus.Counter
+	FlushDuration         prometheus.Histogram
+	AuditPendingRows      prometheus.Gauge
+	AuditPendingOldest    prometheus.Gauge
+	OutboxRows            *prometheus.GaugeVec
+	OutboxOldest          *prometheus.GaugeVec
+	ApprovalBacklog       prometheus.Gauge
+	ApprovalOldest        prometheus.Gauge
+	StuckCandidates       *prometheus.GaugeVec
+	ResumeStuck           prometheus.Gauge
+	ApprovalNotifyMissing prometheus.Gauge
+}
+
+// WorkerSet covers notify outcomes, SMTP availability, and asynq archived
+// backlog.
+type WorkerSet struct {
+	NotifyResults  *prometheus.CounterVec
+	SMTPConfigured prometheus.Gauge
+	AsynqArchived  prometheus.Gauge
+}
+
+// RelaySet covers outbox delivery outcomes and queue-Redis health.
+type RelaySet struct {
+	Deliveries      *prometheus.CounterVec
+	RedisMemoryUsed prometheus.Gauge
+	RedisMemoryMax  prometheus.Gauge
+	QueueTasks      *prometheus.GaugeVec
+}
+
+// LoginSet covers login attempt outcomes (the durable twin lives in the
+// login_audit table, migration 0005).
+type LoginSet struct {
+	Attempts *prometheus.CounterVec
+}
+
+// Set aggregates every component subset; exactly one per process.
+type Set struct {
+	LLM    *LLMSet
+	Reaper *ReaperSet
+	Worker *WorkerSet
+	Relay  *RelaySet
+	Login  *LoginSet
+}
+
+// NewSet builds a Set registered into a fresh Registry and returns both.
+// A fresh registry per process keeps tests hermetic (no global registration).
+func NewSet() (*Set, *prometheus.Registry) {
+	reg := prometheus.NewRegistry()
+	f := promauto.With(reg)
+	s := &Set{
+		LLM: &LLMSet{
+			HTTPFailures: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_llm_http_failures_total",
+				Help: "Failed LLM HTTP round trips inside the adapter retry loop, by failure class (mid-call 429s included).",
+			}, []string{"code"}),
+			Calls: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_llm_calls_total",
+				Help: "LLM ChatCompletion calls by terminal outcome.",
+			}, []string{"outcome"}),
+			CallDuration: f.NewHistogram(prometheus.HistogramOpts{
+				Name:    "braid_llm_call_duration_seconds",
+				Help:    "LLM ChatCompletion wall time per attempt chain.",
+				Buckets: []float64{.1, .5, 1, 5, 30, 60, 120, 300},
+			}),
+			discarded: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_llm_calls_discarded_total",
+				Help: "Late SUCCEEDED outcomes carrying usage dropped by the Complete yield path: billed by the provider, absent from the ledger (D-t36 §7).",
+			}),
+		},
+		Reaper: &ReaperSet{
+			Reaped: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_reaper_reaped_total",
+				Help: "Attempts closed DEAD by the reaper, by verdict code.",
+			}, []string{"code"}),
+			Redispatches: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_reaper_redispatches_total",
+				Help: "Node redispatches, by trigger.",
+			}, []string{"trigger"}),
+			NodeFailures: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_reaper_node_failures_total",
+				Help: "Nodes failed by reaper verdicts (fail-fast mirrors included).",
+			}),
+			NodeCancellations: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_reaper_node_cancellations_total",
+				Help: "Nodes cancelled as platform rulings (orphans under terminal executions).",
+			}),
+			ApprovalsEscalated: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_reaper_approvals_escalated_total",
+				Help: "Approval nodes escalated on timeout (exactly-once anchored by escalated_at).",
+			}),
+			ScanBacklog: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_reaper_scan_backlog_total",
+				Help: "Scan ticks that saturated their batch budget (scan.backlog): candidate supply exceeds one tick's capacity.",
+			}, []string{"scan"}),
+			FlushBatches: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_audit_flush_batches_total",
+				Help: "Audit flush batches by outcome (rollback = reconciliation mismatch or 1062, retried next tick).",
+			}, []string{"outcome"}),
+			FlushRows: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_audit_flush_rows_total",
+				Help: "Audit rows moved from audit_pending to audit_log, by kind.",
+			}, []string{"kind"}),
+			FlushPoison: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_audit_flush_poison_rows_total",
+				Help: "Audit pending rows isolated as poison (ghost executions etc.); they never clear and rescan every tick.",
+			}),
+			FlushDuration: f.NewHistogram(prometheus.HistogramOpts{
+				Name:    "braid_audit_flush_duration_seconds",
+				Help:    "Audit flush batch wall time.",
+				Buckets: prometheus.DefBuckets,
+			}),
+			AuditPendingRows: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_audit_pending_rows",
+				Help: "Rows currently staged in audit_pending (WAL backlog).",
+			}),
+			AuditPendingOldest: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_audit_pending_oldest_age_seconds",
+				Help: "Age of the oldest audit_pending row; visibility lag upper bound is AuditFlushInterval — growth here means the knob or the drain rate is off (D-t61).",
+			}),
+			OutboxRows: f.NewGaugeVec(prometheus.GaugeOpts{
+				Name: "braid_outbox_rows",
+				Help: "Outbox rows by status; dead is the durable dead-letter surface (relay exhaustion).",
+			}, []string{"status"}),
+			OutboxOldest: f.NewGaugeVec(prometheus.GaugeOpts{
+				Name: "braid_outbox_oldest_age_seconds",
+				Help: "Age of the oldest outbox row by status; pending growth = relay starvation.",
+			}, []string{"status"}),
+			ApprovalBacklog: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_approval_backlog_rows",
+				Help: "Approvals currently WAITING_APPROVAL under live executions.",
+			}),
+			ApprovalOldest: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_approval_backlog_oldest_age_seconds",
+				Help: "Time since the oldest WAITING_APPROVAL node changed state (backlog aging).",
+			}),
+			StuckCandidates: f.NewGaugeVec(prometheus.GaugeOpts{
+				Name: "braid_stuck_node_candidates",
+				Help: "Scan candidate counts per sweep: attempt (lost heartbeat), node_deadline (EXECUTING past deadline), exec_stale (RUNNING execution, stale activity).",
+			}, []string{"scan"}),
+			ResumeStuck: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_resume_stuck_rows",
+				Help: "Decided approvals still WAITING_APPROVAL past deadline (resume event dead/stranded): the archived-stranding surface (D-t42). Escalated-but-undecided rows are Q9-by-design waiting and excluded.",
+			}),
+			ApprovalNotifyMissing: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_approval_notify_missing_rows",
+				Help: "Escalated approvals with no approval.notified row past the grace window (escalated-vs-notified reconciliation, D-t45).",
+			}),
+		},
+		Worker: &WorkerSet{
+			NotifyResults: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_notify_results_total",
+				Help: "Approval notify handler outcomes; degraded = SMTP unconfigured (missing notified rows are expected then, see braid_smtp_configured).",
+			}, []string{"outcome"}),
+			SMTPConfigured: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_smtp_configured",
+				Help: "1 when the worker runs with SMTP configured, 0 in degraded log-only mode; gates the notify-missing alert.",
+			}),
+			AsynqArchived: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_asynq_archived_tasks",
+				Help: "Tasks in asynq archived state (dead letters with no DB trace).",
+			}),
+		},
+		Relay: &RelaySet{
+			Deliveries: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_relay_deliveries_total",
+				Help: "Outbox delivery attempts by outcome.",
+			}, []string{"outcome"}),
+			RedisMemoryUsed: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_redis_memory_used_bytes",
+				Help: "Queue Redis used_memory from periodic INFO memory probes.",
+			}),
+			RedisMemoryMax: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_redis_memory_max_bytes",
+				Help: "Queue Redis maxmemory; used/max is the watermark alert basis (0 = unlimited).",
+			}),
+			QueueTasks: f.NewGaugeVec(prometheus.GaugeOpts{
+				Name: "braid_asynq_queue_tasks",
+				Help: "Asynq queue depths (pending+active+retry) by queue.",
+			}, []string{"queue"}),
+		},
+		Login: &LoginSet{
+			Attempts: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_login_attempts_total",
+				Help: "Login attempts by result; durable twin in login_audit (migration 0005).",
+			}, []string{"result"}),
+		},
+	}
+	return s, reg
+}

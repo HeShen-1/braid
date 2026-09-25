@@ -11,6 +11,7 @@ import (
 
 	"braid/internal/audit"
 	"braid/internal/engine"
+	"braid/internal/metrics"
 	"braid/internal/outbox"
 	"braid/internal/scheduler"
 )
@@ -91,6 +92,7 @@ SELECT id, node_execution_id, execution_id
 			return nil
 		}
 	}
+	r.mBacklog(metrics.ScanAttempt)
 	r.log.Warn("scan.backlog", "scanner", "attempts",
 		"hint", "candidates exceeded per-tick cap; retrying next tick")
 	return nil
@@ -180,6 +182,7 @@ SELECT id, status, heartbeat_at, started_at, worker_id
 					fmt.Sprintf("node terminal %s, attempt left RUNNING", nodeStatus)); err != nil {
 					return err
 				}
+				r.mReaped(metrics.CodeStaleAttempt)
 				if err := r.auditRow(ctx, q, audit.EventAttemptReaped, execID, nodeExecID, attID, nodeID,
 					audit.AttemptReapedPayload{
 						NodeExecutionID: nodeExecID, Code: "stale_attempt", NodeStatus: string(nodeStatus),
@@ -254,6 +257,7 @@ SELECT COUNT(*) FROM outbox
 					fmt.Sprintf("first-owner worker=%s: execution window exhausted (SLA)", w)); err != nil {
 					return err
 				}
+				r.mReaped(metrics.CodeDeadlineBurst)
 				if err := r.auditRow(ctx, q, audit.EventAttemptReaped, execID, nodeExecID, attID, nodeID,
 					audit.AttemptReapedPayload{
 						NodeExecutionID: nodeExecID, Code: "deadline_exceeded", WorkerID: w,
@@ -284,6 +288,7 @@ SELECT COUNT(*) FROM outbox
 				fmt.Sprintf("first-owner worker=%s stale=%s", w, stale)); err != nil {
 				return err
 			}
+			r.mReaped(code)
 			if err := r.auditRow(ctx, q, audit.EventAttemptReaped, execID, nodeExecID, attID, nodeID,
 				audit.AttemptReapedPayload{
 					NodeExecutionID: nodeExecID, Code: code, WorkerID: w, Stale: stale.String(),
@@ -314,6 +319,7 @@ SELECT COUNT(*) FROM outbox
 				}
 				return err
 			}
+			r.mNodeCancelled()
 			if err := r.auditRow(ctx, q, audit.EventNodeStateChanged, execID, nodeExecID, attID, nodeID,
 				audit.NodeStateChangedPayload{
 					From: string(nodeStatus), To: string(engine.NodeCancelled),
@@ -340,6 +346,7 @@ SELECT COUNT(*) FROM outbox
 			}); err != nil {
 				return err
 			}
+			r.mRedispatched(metrics.TriggerReaped)
 			if err := r.auditRow(ctx, q, audit.EventNodeRedispatched, execID, nodeExecID, 0, nodeID,
 				audit.NodeRedispatchedPayload{
 					NodeID: nodeID, AttemptNo: attempts + 1,
@@ -366,6 +373,7 @@ SELECT COUNT(*) FROM outbox
 			if err != nil {
 				return err
 			}
+			r.mNodeFailed()
 			if err := r.auditRow(ctx, q, audit.EventNodeStateChanged, execID, nodeExecID, attID, nodeID,
 				audit.NodeStateChangedPayload{
 					From: string(nodeStatus), To: string(engine.NodeFailed),

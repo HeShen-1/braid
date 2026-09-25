@@ -108,7 +108,7 @@ func TestE2ELLMNodeOfflineColdStart(t *testing.T) {
 		t.Fatalf("price table: %v", err)
 	}
 	llmCfg.PriceTable = table
-	client, err := llm.NewOpenAICompat(llmCfg)
+	client, err := llm.NewOpenAICompat(llmCfg, nil)
 	if err != nil {
 		t.Fatalf("llm client: %v", err)
 	}

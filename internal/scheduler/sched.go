@@ -115,15 +115,22 @@ const (
 	ReasonApprovalEscalated = "escalated"
 )
 
+// MetricsSink 是调度器的指标缝(T6.4):由 cmd 装配注入(生产 = metrics 适配
+// 器,测试默认 nil = 观测关闭)。窄面:本包唯一发射点 = Complete 让位丢弃。
+type MetricsSink interface {
+	IncLLMCallDiscarded()
+}
+
 // Deps 是运行依赖。Router 为 nil 用 CondRouter;Queue 为空用 "default"(必须在
 // worker ServeQueues 内,否则事件永挂 pending——outbox 包注释的已知边界);
-// Logger 为 nil 用 slog.Default()。
+// Logger 为 nil 用 slog.Default();Metrics nil = 观测关闭。
 type Deps struct {
-	DB     *sql.DB
-	IDs    *snowflake.Generator // execution/node/outbox 行 id(应用侧 Snowflake)
-	Router Router
-	Queue  string
-	Logger *slog.Logger
+	DB      *sql.DB
+	IDs     *snowflake.Generator // execution/node/outbox 行 id(应用侧 Snowflake)
+	Router  Router
+	Queue   string
+	Logger  *slog.Logger
+	Metrics MetricsSink
 }
 
 // Scheduler 是调度器实例(无内部状态,字段在构造时定格)。
@@ -488,6 +495,21 @@ const maxTransientRetries = 3
 // 经 errors.Is 在事务外识别。
 var errAttemptAlreadyClosed = errors.New("scheduler: attempt already closed (converged)")
 
+// discardedByReaperError 携带让位丢弃事实的哨兵包装(T6.4,D-t36 §7):
+// 仅当 Observed==DEAD(丢弃成因 = reaper 判死,区别于早前 Complete 收口)
+// 且 req 携 usage(已计费)时返回。errors.Is 命中 errAttemptAlreadyClosed
+// 语义不变;Complete 层解包后在事务外另发 llm.call.discarded 审计行
+// (发射点必须事务外:哨兵自 WithTx 闭包返回 ⇒ 让位事务整体回滚)。
+type discardedByReaperError struct {
+	req    CompletionRequest
+	nodeID string
+}
+
+func (e *discardedByReaperError) Error() string { return errAttemptAlreadyClosed.Error() }
+func (e *discardedByReaperError) Is(target error) bool {
+	return target == errAttemptAlreadyClosed
+}
+
 // Complete 是执行完成回写:单事务 = 锁全行集 → CloseAttempt → 节点收口
 // (Succeed/Redispatch/Fail)→ 入度推进(派发/剪枝/fail-fast)→ TouchExecution;
 // 提交后新事务判执行终态(SUCCEEDED + outputs 物化)。
@@ -519,6 +541,10 @@ func (s *Scheduler) Complete(ctx context.Context, req CompletionRequest) error {
 			return nil
 		}
 		if errors.Is(err, errAttemptAlreadyClosed) {
+			var d *discardedByReaperError
+			if errors.As(err, &d) {
+				s.emitLLMCallDiscarded(ctx, d.req, d.nodeID)
+			}
 			return nil
 		}
 		if !engine.Transient(err) || attempt >= maxTransientRetries {
@@ -569,6 +595,13 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 					s.log.Warn("complete.discarded_by_reaper",
 						"execution_id", req.ExecID, "node_execution_id", req.NodeExecID,
 						"attempt_id", req.AttemptID, "outcome", string(req.Status))
+					// T6.4:已计费丢弃(携 usage)走哨兵包装,Complete 层事务外
+					// 另发 llm.call.discarded;无 usage 维持裸哨兵(旧行为)。
+					if req.Usage != nil {
+						if n := rows.byID[req.NodeExecID]; n != nil {
+							return &discardedByReaperError{req: req, nodeID: n.nodeID}
+						}
+					}
 				}
 				return errAttemptAlreadyClosed
 			}
@@ -1103,6 +1136,83 @@ func (st *execState) stageRow(eventType string, row *nodeRow, attemptID uint64, 
 		NodeExecID: row.id, NodeID: row.nodeID, AttemptID: attemptID,
 		ActorType: audit.ActorWorker, ActorID: st.workerID, Payload: raw,
 	})
+}
+
+// emitLLMCallDiscarded 发 llm.call.discarded(T6.4,D-t36 §7):迟到 SUCCEEDED
+// 携 usage 被 reaper 判死让位丢弃——供应商已计费而 node_attempt 台账列与
+// llm.call.completed 行双缺,本行是该调用唯一留下的持久凭证(已计费零台账
+// 的观测闭环)。独立小事务同步直写(低频:判死竞态窗;不走暂存——对账面
+// 需要 read-your-writes 同款纪律)。best-effort:Complete 已幂等成功,审计
+// 失败不翻转业务结果,counter 先于审计发射(计数记事实,不依赖 DB 成败)。
+func (s *Scheduler) emitLLMCallDiscarded(ctx context.Context, req CompletionRequest, nodeID string) {
+	if s.deps.Metrics != nil {
+		s.deps.Metrics.IncLLMCallDiscarded()
+	}
+	raw, err := json.Marshal(audit.LLMCallDiscardedPayload{
+		NodeID:           nodeID,
+		Model:            req.Usage.Model,
+		PromptTokens:     req.Usage.PromptTokens,
+		CompletionTokens: req.Usage.CompletionTokens,
+		TotalTokens:      req.Usage.TotalTokens,
+		CostAmount:       req.Usage.CostAmount,
+		CostCurrency:     req.Usage.CostCurrency,
+		CostEstimated:    req.Usage.Estimated,
+		ObservedAttempt:  string(engine.AttemptDead),
+	})
+	if err != nil {
+		s.log.Error("marshal llm.call.discarded payload",
+			"execution_id", req.ExecID, "node_execution_id", req.NodeExecID,
+			"attempt_id", req.AttemptID, "err", err)
+		return
+	}
+	// 幂等锚(对抗审计 A2):asynq at-least-once 重投会让同一迟到
+	// attempt 多次走让位路径——先查同 attempt 的 discarded 行,在场即
+	// 跳过(审计行与 counter 都不重复;行 = 资金观测面,双记即假账)。
+	existing, err := s.discardedRowExists(ctx, req.AttemptID)
+	if err != nil {
+		s.log.Error("probe llm.call.discarded dedup",
+			"execution_id", req.ExecID, "attempt_id", req.AttemptID, "err", err)
+		return
+	}
+	if existing {
+		return
+	}
+	id, err := s.deps.IDs.Next()
+	if err != nil {
+		s.log.Error("gen audit id for llm.call.discarded",
+			"execution_id", req.ExecID, "err", err)
+		return
+	}
+	evt := audit.Event{
+		ID: id, EventType: audit.EventLLMCallDiscarded, ExecutionID: req.ExecID,
+		NodeExecID: req.NodeExecID, NodeID: nodeID, AttemptID: req.AttemptID,
+		ActorType: audit.ActorWorker, ActorID: req.WorkerID,
+		Payload: raw, Usage: req.Usage,
+	}
+	if err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		return audit.Append(ctx, q, evt)
+	}); err != nil {
+		s.log.Error("audit llm.call.discarded",
+			"execution_id", req.ExecID, "node_execution_id", req.NodeExecID,
+			"attempt_id", req.AttemptID, "err", err)
+	}
+}
+
+// discardedRowExists 判同 attempt 的 llm.call.discarded 行是否已在场
+// (emitLLMCallDiscarded 的幂等锚;audit_log 按执行日分区,此处走
+// idx_audit_attempt 点查,attempt_id 全表唯一无需分区谓词)。
+func (s *Scheduler) discardedRowExists(ctx context.Context, attemptID uint64) (bool, error) {
+	var one int
+	err := s.deps.DB.QueryRowContext(ctx, `
+SELECT 1 FROM audit_log WHERE attempt_id=? AND event_type='llm.call.discarded' LIMIT 1`,
+		attemptID).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	return true, nil
 }
 
 // auditLLMCall 发 llm.call.completed(T3.1):usage/cost 冗余列组的唯一携带者,

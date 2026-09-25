@@ -1,0 +1,134 @@
+# braid 告警规则集(T6.4,ARCHITECTURE §2 可观测 / §4.6 告警集)。
+#
+# 消费面:reaper(gauge 采集 = 周期 SQL 快照)、relay(投递/Redis 探测)、
+# worker(notify/asynq archived/SMTP 可用性)、api(登录)、scheduler/
+# llm(429/discarded)。指标词汇表真源 = internal/metrics(闭集锚测试),
+# 本文件的指标名与 label 值必须与之一致——漂移在 promtool 单测红。
+#
+# 分级口径:critical = 数据/资金/任务丢失面(死信、通知丢失、已计费零
+# 台账、Redis 逐出前兆);warning = 积压/老化/防御触发(排水自愈面)。
+groups:
+  - name: braid-dead-letters
+    rules:
+      - alert: OutboxDeadLetter
+        expr: sum(braid_outbox_rows{status="dead"}) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "outbox 死信 {{ $value }} 行(relay 投递穷尽)"
+          description: "投递退避穷尽转 DEAD,事件永不再投。恢复 = T7.4 runbook:核验 Redis 无该 task_id 后人工重置 PENDING。字源 braid_outbox_rows{status=dead}(reaper gauge)。"
+      - alert: AsynqArchivedDeadLetters
+        expr: sum(braid_asynq_archived_tasks) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "asynq archived 死信 {{ $value }} 条(Redis 侧,DB 无痕)"
+          description: "worker handler 二次失败进 archived。resume/notify 族的事件对账网见 D-t42 §8-②/D-t43;人工恢复 = asynq Inspector RunTask。"
+      - alert: ResumeArchivedStranded
+        expr: sum(braid_resume_stuck_rows) > 0
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} 个已决审批的续跑事件滞留(⑤a 谓词持续命中)"
+          description: "已决票/已升级但续跑事件死或滞留,执行永挂 WAITING_APPROVAL(D-t42 §8-②)。reaper 每 tick 幂等重投仍不收敛 = 深层故障,查 relay 队列与 outbox DEAD。"
+      - alert: ApprovalNotifyMissing
+        # 门闸 unless 形(对抗审计 A9/A14):max==0(SMTP 全 fleet 未配置)
+        # 才静默;braid_smtp_configured 系列缺席(worker 未起/scrape 未及)时
+        # unless 右侧为空 → 告警照发(观测 fail-open——series 缺席不该静默
+        # critical)。
+        expr: sum(braid_approval_notify_missing_rows) > 0 unless on() max(braid_smtp_configured) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} 个升级通知丢失(escalated 有行、notified 缺行)"
+          description: "escalated-vs-notified 对账缺口(D-t45 #1):升级意图已落、超宽限窗无送达行——relay 耗尽转 DEAD 或 worker archived 的统一信号。braid_smtp_configured==1 门闸:SMTP 未配置时缺失是设计行为,不告警。"
+
+  - name: braid-llm
+    rules:
+      - alert: LLMRateLimitShareHigh
+        expr: |
+          sum(rate(braid_llm_http_failures_total{code="429"}[15m]))
+            / clamp_min(sum(rate(braid_llm_calls_total[15m])) + sum(rate(braid_llm_http_failures_total[15m])), 0.000001) > 0.2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "LLM 429 占比 {{ $value | humanizePercentage }}(15m 窗)"
+          description: "含被适配器重试吸收的中间 429(D-t36 口径)。持续高位 = 供应商限流或配额耗尽,节点重试预算正在被烧。"
+      - alert: LLMBilledCallDiscarded
+        expr: increase(braid_llm_calls_discarded_total[15m]) > 0
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} 次已计费调用被让位丢弃(零台账)"
+          description: "reaper 判死后迟到 SUCCEEDED 携 usage 丢弃(D-t36 §7):供应商已计费,平台台账双缺,唯一凭证 = llm.call.discarded 审计行。偶发 = 判死双执行竞态;持续 = DeadGrace 配置与真实执行时延失配。"
+
+  - name: braid-backlog
+    rules:
+      - alert: ApprovalBacklogHigh
+        expr: sum(braid_approval_backlog_rows) > 50
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "待审积压 {{ $value }} 个"
+          description: "WAITING_APPROVAL × 活执行存量。审批触达面(SMTP 配置/收件人)与超时升级是否正常需一并核查。"
+      - alert: ApprovalBacklogAging
+        expr: sum(braid_approval_backlog_oldest_age_seconds) > 14400
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "最老待审已挂起超过 {{ $value | humanizeDuration }}"
+          description: "超过 4h 的待审接近默认 72h 超时升级线;升级与通知链路(T4.3/T4.5)是否健康需核查。"
+      - alert: StuckNodeCandidatesHigh
+        expr: sum(braid_stuck_node_candidates) > 10
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "卡死候选 {{ $value }} 个(心跳丢失/deadline 超期/执行静默)"
+          description: "reaper 三扫描候选水位(与处置计数 braid_reaper_reaped_total 互补:水位持续高 + 处置不落 = 处置事务失败;水位高 + 处置落 = 判死循环重派)。"
+      - alert: AuditPendingBacklog
+        expr: sum(braid_audit_pending_oldest_age_seconds) > 30
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "审计暂存最老行滞留 {{ $value | humanizeDuration }}(可见性滞后失真)"
+          description: "AuditFlushInterval 默认 1s = 审计可见性滞后上界;oldest 持续 >30s = flush 排水速率不足或间隔旋钮被放大(D-t61 无上界观测面)。T6.3 查询面按滞后上界口径承诺,此告警是承诺的守护线。"
+      - alert: AuditFlushPoisonRows
+        expr: increase(braid_audit_flush_poison_rows_total[1h]) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "审计毒行 {{ $value }} 行(ghost execution 等)"
+          description: "暂存行因执行行缺失无法搬运,永久滞留且每 tick 重扫。多为测试残留或执行被外部删除;查 audit_pending.execution_id 与 workflow_execution 是否成对。"
+
+  - name: braid-infra
+    rules:
+      - alert: QueueRedisMemoryWatermark
+        expr: |
+          sum(braid_redis_memory_used_bytes) / sum(braid_redis_memory_max_bytes) > 0.8
+            and sum(braid_redis_memory_max_bytes) > 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "队列 Redis 内存水位 {{ $value | humanizePercentage }}"
+          description: "noeviction 实例写满 = 入队开始失败(noerr OOM),队列面静默停摆(ARCHITECTURE §2 队列实例水线告警)。0.8 = 扩容/排水行动线。"
+
+  - name: braid-auth
+    rules:
+      - alert: LoginBruteForceSuspected
+        expr: sum(rate(braid_login_attempts_total{result="locked"}[15m])) > 0.1
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "账号锁定持续触发(15m 均 {{ $value }}/s)"
+          description: "D-t44 §7-① 登录防御观测面:锁定计数持续触发 = 暴力破解进行中(限流+锁定已减速,不构成破口)。持久层 = login_audit 表按 username 聚合可查攻击面。"

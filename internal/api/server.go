@@ -2,11 +2,13 @@ package api
 
 import (
 	"database/sql"
+	"fmt"
 	"reflect"
 
 	"github.com/gin-gonic/gin"
 
 	"braid/internal/auth"
+	"braid/internal/metrics"
 	"braid/internal/tools"
 )
 
@@ -32,6 +34,11 @@ type Server struct {
 	// SignToken 契约可复用),契约见 internal/auth/identity.go。nil 响亮
 	// 拒绝,理由同 toolReg。
 	idp auth.IdentityProvider
+	// loginLimiter 登录防御层(T6.4,进程内存;构造于 NewServer)。
+	loginLimiter *loginLimiter
+	// loginMetrics 是登录指标面(T6.4;nil = 观测关闭——测试默认,
+	// cmd/api 装配注入)。
+	loginMetrics *metrics.LoginSet
 }
 
 // NewServer 构造 definition CRUD + execution 触发服务(dbh 为连接池;
@@ -56,8 +63,15 @@ func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry, trig
 	if v := reflect.ValueOf(idp); (v.Kind() == reflect.Pointer || v.Kind() == reflect.Func) && v.IsNil() {
 		panic("api: typed-nil IdentityProvider (authenticate seam)")
 	}
-	return &Server{cfg: cfg, st: NewStore(ids), ids: ids, dbh: dbh, toolReg: toolReg, trig: trig, idp: idp}
+	return &Server{
+		cfg: cfg, st: NewStore(ids), ids: ids, dbh: dbh,
+		toolReg: toolReg, trig: trig, idp: idp,
+		loginLimiter: newLoginLimiter(cfg),
+	}
 }
+
+// LoginMetrics 注入登录指标面(T6.4;cmd/api 装配,测试默认 nil)。
+func (s *Server) LoginMetrics(m *metrics.LoginSet) { s.loginMetrics = m }
 
 // Router 注册全部路由。角色面:写(author|admin)与读(任意有效 token)
 // 在路由声明,中间件形态见 middleware.go(T5.2 换装点)。草稿走独立
@@ -66,9 +80,14 @@ func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry, trig
 func (s *Server) Router() *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
-	// 不信任任何代理头:当前路由面不用 ClientIP,先解除 X-Forwarded-For
-	// 伪造面(fail-closed),T5.2 若需要真实客户端 IP 再显式开名单。
-	_ = r.SetTrustedProxies(nil)
+	// 代理信任面(T6.4):TrustedProxies 显式 CIDR 列表(空 = 不信任任何
+	// 代理,fail-closed)。ClientIP 是登录防御/审计的键位:反代公开面必须
+	// 配置代理段,否则全体客户端折叠进代理单地址的同一限流窗口(rev2
+	// HIGH);名单只接受 CIDR,拒绝裸 IP 段语法错误静默放行。
+	if err := r.SetTrustedProxies(s.cfg.TrustedProxies); err != nil {
+		// ConfigFromEnv 已逐项 ParseCIDR 预检,此处不可达;防御性响亮。
+		panic(fmt.Sprintf("api: trusted proxies %v: %v", s.cfg.TrustedProxies, err))
+	}
 	r.GET("/healthz", func(c *gin.Context) {
 		c.JSON(200, gin.H{"status": "ok"})
 	})

@@ -79,8 +79,9 @@ var engineTables = map[string]bool{
 // authTables:0002 起按域分 map 登记(T5.1)——后续新增域只加自己的 map,
 // 不改写 engine map 的语义;assertTables 遍历全部域。
 var authTables = map[string]bool{
-	"users":     true,
-	"user_role": true,
+	"users":       true,
+	"user_role":   true,
+	"login_audit": true, // 0005(T6.4 登录审计,append-only 账号域事实)
 }
 
 var allDomainTables = []map[string]bool{engineTables, authTables}

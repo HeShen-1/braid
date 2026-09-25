@@ -25,6 +25,9 @@ const maxResponseBytes = 16 << 20
 type OpenAICompat struct {
 	cfg Config
 	hc  *http.Client
+	// obs 是指标缝(T6.4):nil = 观测关闭(单测默认)。生产由 cmd/worker
+	// 注入 metrics 适配器(隐式满足,本包不 import metrics)。
+	obs Observability
 	// jitterSrc 返回抖动因子原语(乘以 ±jitter 幅度)。并发安全由注入方承担:
 	// 生产 = 顶层 rand.Float64(math/rand/v2 顶层函数文档化并发安全;*Rand
 	// 实例不是——本类型是 executor 缝上的共享单例,worker 并发调用,持有
@@ -33,14 +36,16 @@ type OpenAICompat struct {
 	jitterSrc func() float64
 }
 
-// NewOpenAICompat 构造生产 Client(配置矛盾启动即败)。
-func NewOpenAICompat(cfg Config) (*OpenAICompat, error) {
+// NewOpenAICompat 构造生产 Client(配置矛盾启动即败)。obs 为指标缝,
+// nil 合法 = 观测关闭。
+func NewOpenAICompat(cfg Config, obs Observability) (*OpenAICompat, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	return &OpenAICompat{
 		cfg:       cfg,
 		hc:        &http.Client{},
+		obs:       obs,
 		jitterSrc: rand.Float64,
 	}, nil
 }
@@ -51,13 +56,22 @@ func (c *OpenAICompat) ChatCompletion(ctx context.Context, req Request) (Respons
 	if err != nil {
 		return Response{}, err
 	}
+	start := time.Now()
+	outcome := CallOutcomeFailed
+	defer func() {
+		if c.obs != nil {
+			c.obs.ObserveCall(outcome, time.Since(start))
+		}
+	}()
 	var lastErr error
 	attempt := 1
 	for ; attempt <= c.cfg.MaxAttempts; attempt++ {
 		resp, err := c.call(ctx, req, body)
 		if err == nil {
+			outcome = CallOutcomeSucceeded
 			return resp, nil
 		}
+		c.observeFailure(err)
 		lastErr = err
 		if attempt == c.cfg.MaxAttempts || !retryable(ctx, err) {
 			break

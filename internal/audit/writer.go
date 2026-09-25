@@ -84,12 +84,17 @@ var ErrInvalidEvent = errors.New("audit: invalid event")
 //     auth.ExecutionAuthorizer 在调用现场发射,best-effort——拒绝裁决
 //     不受旁路写入失败影响)。
 const (
-	EventNodeStateChanged           = "node.state_changed"
-	EventNodeRedispatched           = "node.redispatched"
-	EventAttemptReaped              = "attempt.reaped"
-	EventNodeDeadlineExtended       = "node.deadline_extended"
-	EventBranchEvaluated            = "branch.evaluated"
-	EventLLMCallCompleted           = "llm.call.completed"
+	EventNodeStateChanged     = "node.state_changed"
+	EventNodeRedispatched     = "node.redispatched"
+	EventAttemptReaped        = "attempt.reaped"
+	EventNodeDeadlineExtended = "node.deadline_extended"
+	EventBranchEvaluated      = "branch.evaluated"
+	EventLLMCallCompleted     = "llm.call.completed"
+	// llm.call.discarded(T6.4,D-t36 §7 移交):reaper 判死后迟到 SUCCEEDED 携
+	// usage 被 Complete 让位丢弃——已计费调用原先零台账痕迹,此词是唯一持久
+	// 凭证。低频(判死竞态窗),同步 Append 直写;usage 冗余列组唯一第二
+	// 允许携带者(与 completed 同源 engine.AttemptUsage)。
+	EventLLMCallDiscarded           = "llm.call.discarded"
 	EventToolCallCompleted          = "tool.call.completed"
 	EventApprovalRequested          = "approval.requested"
 	EventApprovalDecided            = "approval.decided"
@@ -137,6 +142,7 @@ var knownEvents = map[string]bool{
 	EventNodeDeadlineExtended:       true,
 	EventBranchEvaluated:            true,
 	EventLLMCallCompleted:           true,
+	EventLLMCallDiscarded:           true,
 	EventToolCallCompleted:          true,
 	EventApprovalRequested:          true,
 	EventApprovalDecided:            true,
@@ -282,8 +288,8 @@ func validate(evt Event) error {
 		return fmt.Errorf("%w: node_id %q too long", ErrInvalidEvent, evt.NodeID)
 	case evt.TraceID != "" && !traceIDRe.MatchString(evt.TraceID):
 		return fmt.Errorf("%w: trace_id %q", ErrInvalidEvent, evt.TraceID)
-	case evt.Usage != nil && evt.EventType != EventLLMCallCompleted:
-		return fmt.Errorf("%w: usage columns on %q (llm.call.completed only)",
+	case evt.Usage != nil && evt.EventType != EventLLMCallCompleted && evt.EventType != EventLLMCallDiscarded:
+		return fmt.Errorf("%w: usage columns on %q (llm.call.completed/discarded only)",
 			ErrInvalidEvent, evt.EventType)
 	}
 	// usage 组域约束镜像(engine 单点定义,双录两半边同规)。

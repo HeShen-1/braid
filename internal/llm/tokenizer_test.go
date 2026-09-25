@@ -275,7 +275,7 @@ func TestFirstCallOfflineExceptProvider(t *testing.T) {
 	cfg.BaseURL = srv.URL
 	cfg.APIKey = "sk-test"
 	cfg.PriceTable = mustTable(t, minPriceTable)
-	client, err := NewOpenAICompat(cfg)
+	client, err := NewOpenAICompat(cfg, nil)
 	if err != nil {
 		t.Fatalf("new client: %v", err)
 	}
