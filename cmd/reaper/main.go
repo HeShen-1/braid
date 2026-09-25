@@ -48,7 +48,8 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("reaper: open mysql: %w", err)
 	}
-	defer mysqlDB.Close() //nolint:errcheck // 主路径退出,关闭错误无处置义
+	db.ConfigurePool(mysqlDB) // D-t63 移交回收;T7.1 env 化换装点
+	defer mysqlDB.Close()     //nolint:errcheck // 主路径退出,关闭错误无处置义
 	if err := mysqlDB.PingContext(ctx); err != nil {
 		return fmt.Errorf("reaper: mysql ping: %w", err)
 	}

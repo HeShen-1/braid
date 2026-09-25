@@ -9,9 +9,10 @@
 //   - 其余 → 500(仅日志)。
 //
 // token 载体 = Bearer + 前端 sessionStorage(D-2026-09-24-t44-approval-web:
-// 中间件零改动、CSRF 免疫;CSP 收 XSS 面)。无登录审计:audit_log 是工作流
-// 事实域(T2.6 契约),登录事件流审计归 T6.4 告警面;无独立限流——bcrypt
-// ~100ms 即天然节流,基础设施层限流同归 T6.4。
+// 中间件零改动、CSRF 免疫;CSP 收 XSS 面)。登录审计 = login_audit 独立表
+// (0005,append-only 账号域事实,不混入工作流事实域 audit_log);限流/账号
+// 锁定 = loginDefenseGate(IP 固定窗口 + username 连败锁,429 同形双防枚举;
+// 旋钮 Config 化,DB 锚定升级归 P1)。
 package api
 
 import (
