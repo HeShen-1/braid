@@ -96,8 +96,8 @@ func (s *Server) Router() *gin.Engine {
 	s.registerWeb(r)
 
 	// 登录面(T4.4):authed 组外——凭据换 token(错误面/防枚举语义见
-	// login.go)。无独立限流:bcrypt ~100ms 即天然节流,基础设施层限流
-	// 归 T6.4。
+	// login.go)。限流/账号锁定/登录审计已随 T6.4 落地(loginDefenseGate +
+	// login_audit 表,旋钮见 Config;DB 锚定升级归 P1 停车场)。
 	r.POST("/api/v1/auth/login", s.login)
 
 	authed := r.Group("/api/v1", Authenticate(s.cfg.JWTSecret))

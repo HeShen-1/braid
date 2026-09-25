@@ -30,12 +30,13 @@ const maxActorQueryLen = 128
 // 长查询持 audit_log 共享 MDL 会与 janitor 分区 DDL 互锁——排他 MDL 等待
 // 期间阻塞全部 audit_log 写入(触发/审批热路径 + flush)。上界把最坏持锁
 // 窗口钉死(janitor lock_wait 5s 先行弃轮,下一小时 tick 重试);超时走
-// 500 面与 slog 观测。连接池无上界是既有缺口,归 T6.4 观测面收敛。
+// 500 面与 slog 观测。连接池上限:db.ConfigurePool 保守默认已先行
+// (D-t63 移交回收,2026-09-26),env 化换装归 T7.1。
 const auditQueryTimeout = 15 * time.Second
 
 // auditEventDTO 是审计行视图:payload 原样直嵌(已过脱敏钩子,pii_masked
-// 声明掩蔽事实);usage/cost 列组仅 llm.call.completed 携带(NULL=无用量
-// 语义)。ID 字符串化契约同 executionDTO(snowflake 超 2^53,IEEE754 消费方
+// 声明掩蔽事实);usage/cost 列组由 llm.call.completed 与 llm.call.discarded
+// 双词携带(NULL=无用量语义)。ID 字符串化契约同 executionDTO(snowflake 超 2^53,IEEE754 消费方
 // 静默折叠)。created_at 暴露落库滞后(异步面观测,D-t61 #7)。
 type auditEventDTO struct {
 	ID               string          `json:"id"`

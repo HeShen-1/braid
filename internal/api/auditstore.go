@@ -28,7 +28,7 @@ type AuditEvent struct {
 	ActorID     string
 	TraceID     *string
 	PIIMasked   bool
-	// usage/cost 冗余列组(llm.call.completed 专属;与 node_attempt 双录)。
+	// usage/cost 冗余列组(llm.call.completed|discarded 双词;与 node_attempt 双录)。
 	Model            *string
 	PromptTokens     *uint32
 	CompletionTokens *uint32

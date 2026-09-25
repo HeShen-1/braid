@@ -56,7 +56,7 @@ func Enqueue(ctx context.Context, q engine.DBTX, evt Event) error {
 	if evt.TraceID != "" {
 		trace = evt.TraceID
 	}
-	// usage 冗余列组(llm.call.completed 专属,validate 已闸):单一语句形态,
+	// usage 冗余列组(llm.call.completed|discarded 双词,validate 已闸):单一语句形态,
 	// NULL 经 any 归一(Billed=false ⇒ cost 两列 NULL,与 Append 同语义)。
 	var model, costArg, currencyArg any
 	var pt, ct, tt any

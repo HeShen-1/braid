@@ -67,7 +67,8 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("api: open mysql: %w", err)
 	}
-	defer dbh.Close() //nolint:errcheck // 主路径退出,关闭错误无处置义
+	db.ConfigurePool(dbh) // D-t63 移交回收;T7.1 env 化换装点
+	defer dbh.Close()     //nolint:errcheck // 主路径退出,关闭错误无处置义
 	if err := dbh.PingContext(ctx); err != nil {
 		return fmt.Errorf("api: mysql ping: %w", err)
 	}

@@ -164,7 +164,7 @@ var traceIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 // Event 是 audit_log 行的写入参数。ID 应用生成(snowflake,复用调用方生成器),
 // 零值被拒。NodeExecID/AttemptID/NodeID/TraceID 零值/空串 → NULL(P0 各事件的
 // 携带约定见 payload 结构注释)。Usage 非 nil 时落 usage/cost 冗余列组
-// (llm.call.completed 专属;engine.AttemptUsage 与 node_attempt 半边同源)。
+// (llm.call.completed|discarded 双词;engine.AttemptUsage 与 node_attempt 半边同源)。
 type Event struct {
 	ID          uint64
 	EventType   string
@@ -238,7 +238,7 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 		return fmt.Errorf("audit: read exec_date (exec %d): %w", evt.ExecutionID, err)
 	}
 	// [2] 落行:event_at = DB 端 NOW(3)。Usage 非 nil 时同语句落 usage/cost
-	// 冗余列组(llm.call.completed 专属形状;Billed=false ⇒ cost 两列 NULL,
+	// 冗余列组(llm.call.completed|discarded 双词形状;Billed=false ⇒ cost 两列 NULL,
 	// 与 node_attempt 半边成对 CHECK 同语义)。
 	if evt.Usage != nil {
 		var costArg, currencyArg any
