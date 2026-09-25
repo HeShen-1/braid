@@ -42,7 +42,12 @@ func newTestServerWithTrigger(t *testing.T, trig ExecutionTrigger, allowlist ...
 	if err != nil {
 		t.Fatalf("snowflake: %v", err)
 	}
-	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1}
+	// T6.4:登录防御旋钮放宽——共享 server 的既有用例(登录旅程/审批
+	// 面/e2e)同 IP 连续请求会撞默认 10/min 限流;防御行为本身由
+	// loginlimit_test / loginaudit_test 用独立紧旋钮 server 锚定。
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
+		LoginMaxFailures: 100000, LoginLockout: time.Minute}
 	// 白名单真源换 Registry(T3.2):allowlist 参数语义不变 = 注册同名工具。
 	stubs := make([]tools.Tool, 0, len(allowlist))
 	for _, name := range allowlist {
@@ -367,7 +372,12 @@ func newNoDBServer(t *testing.T) (*gin.Engine, string) {
 	if err != nil {
 		t.Fatalf("snowflake: %v", err)
 	}
-	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1}
+	// T6.4:登录防御旋钮放宽——共享 server 的既有用例(登录旅程/审批
+	// 面/e2e)同 IP 连续请求会撞默认 10/min 限流;防御行为本身由
+	// loginlimit_test / loginaudit_test 用独立紧旋钮 server 锚定。
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
+		LoginMaxFailures: 100000, LoginLockout: time.Minute}
 	gin.SetMode(gin.TestMode)
 	token, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAuthor})
 	if err != nil {

@@ -347,12 +347,15 @@ func TestFlushAllNoHeadOfLineStarvation(t *testing.T) {
 	}
 	stageEvent(t, d, healthy)
 
-	n, err := FlushAll(ctx, d, 3, 1000)
+	agg, err := FlushAll(ctx, d, 3, 1000)
 	if err != nil {
 		t.Fatalf("FlushAll: %v", err)
 	}
-	if n != 1 {
-		t.Fatalf("flushed = %d, want 1(健康行必须越过 ghost 队头)", n)
+	if agg.Flushed != 1 {
+		t.Fatalf("flushed = %d, want 1(健康行必须越过 ghost 队头)", agg.Flushed)
+	}
+	if agg.Batches < 1 || agg.Skipped < 3 {
+		t.Fatalf("aggregate = %+v, want batches>=1 skipped>=3", agg)
 	}
 	rows := flushAuditRows(t, d, execID)
 	if len(rows) != 1 || rows[0].id != healthy.ID {

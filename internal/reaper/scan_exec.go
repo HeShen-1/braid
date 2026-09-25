@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"braid/internal/engine"
+	"braid/internal/metrics"
 )
 
 // scanExecs 扫描④:执行级对账(索引 idx_exec_status_activity;status 等值
@@ -50,6 +51,7 @@ SELECT id FROM workflow_execution
 			return nil
 		}
 	}
+	r.mBacklog(metrics.ScanExecPending)
 	r.log.Warn("scan.backlog", "scanner", "pending_execs",
 		"hint", "candidates exceeded per-tick cap; retrying next tick")
 	return nil
@@ -130,6 +132,7 @@ SELECT id FROM workflow_execution
 			return nil
 		}
 	}
+	r.mBacklog(metrics.ScanExecStale)
 	r.log.Warn("scan.backlog", "scanner", "stale_running",
 		"hint", "candidates exceeded per-tick cap; retrying next tick")
 	return nil

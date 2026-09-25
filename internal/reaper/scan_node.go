@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"time"
+
+	"braid/internal/metrics"
 )
 
 // orphanQuiet 是扫描③的执行静默窗(常量,不设 env):避开 Complete 提交与
@@ -55,6 +57,7 @@ SELECT id, execution_id
 			return nil
 		}
 	}
+	r.mBacklog(metrics.ScanNodeDeadline)
 	r.log.Warn("scan.backlog", "scanner", "node_deadline",
 		"hint", "candidates exceeded per-tick cap; retrying next tick")
 	return nil
@@ -93,6 +96,7 @@ SELECT n.id, n.execution_id
 			return nil
 		}
 	}
+	r.mBacklog(metrics.ScanNodeOrphan)
 	r.log.Warn("scan.backlog", "scanner", "node_orphans",
 		"hint", "candidates exceeded per-tick cap; retrying next tick")
 	return nil

@@ -260,27 +260,45 @@ VALUES `+ph.String(), args...)
 	return res, nil
 }
 
+// FlushAllResult 是整轮搬运的可观测聚合(T6.4:reaper flush 观测面,
+// D-t61 的 AuditFlushInterval 无上界观测字源)。
+type FlushAllResult struct {
+	Batches  int // 完成批数(不含失败批)
+	Staged   int
+	Flushed  int
+	Inserted int64
+	Skipped  int
+	Replayed int
+}
+
 // FlushAll 循环搬运至排空或 roundCap 上限(单轮上限语义同 janitor 的
 // outboxRoundCap:有界 tick,余量下轮)。游标在轮内推进(毒行也推进)——
 // 全毒批不堵其后健康行;Staged < batch = 扫到队尾即终止。
-func FlushAll(ctx context.Context, db *sql.DB, batch, roundCap int) (int, error) {
+func FlushAll(ctx context.Context, db *sql.DB, batch, roundCap int) (FlushAllResult, error) {
+	var agg FlushAllResult
 	if batch < 1 || roundCap < 1 {
-		return 0, fmt.Errorf("audit: flush all batch %d / cap %d < 1", batch, roundCap)
+		return agg, fmt.Errorf("audit: flush all batch %d / cap %d < 1", batch, roundCap)
 	}
 	total := 0
 	var cursor uint64
 	for total < roundCap {
 		res, err := Flush(ctx, db, cursor, batch)
 		if err != nil {
-			return total, err
+			return agg, err
 		}
 		total += res.Flushed
+		agg.Batches++
+		agg.Staged += res.Staged
+		agg.Flushed += res.Flushed
+		agg.Inserted += res.Inserted
+		agg.Skipped += res.Skipped
+		agg.Replayed += res.Replayed
 		cursor = res.LastID
 		if res.Staged < batch {
-			return total, nil // 队尾(空批或尾批不满)
+			return agg, nil // 队尾(空批或尾批不满)
 		}
 	}
-	return total, nil
+	return agg, nil
 }
 
 // groupIDsByDate 把行按 exec_date 分组(对账/预过滤查询的 OR 串输入;

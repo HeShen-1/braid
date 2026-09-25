@@ -56,3 +56,22 @@ jobs:
       - uses: gitleaks/gitleaks-action@v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # T6.4:告警规则单测(promtool test rules = ROADMAP 验收面)。与三件套
+  # 正交:不触 Go 工具链;promtool 经官方镜像取用(与本地 promtool 3.7.2
+  # 同源),零 Secrets。
+  promtool:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7.0.1
+      # 镜像 ENTRYPOINT = /bin/prometheus:必须显式改指 promtool,否则
+      # 参数被 prometheus 主程序吞掉(rev4 HIGH,本地已复现)。
+      - name: promtool check rules
+        run: >
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/deploy/prometheus:/rules:ro"
+          prom/prometheus:v3.7.2 check rules /rules/alerts.yml
+      - name: promtool test rules
+        run: >
+          docker run --rm --entrypoint /bin/promtool -v "$PWD/deploy/prometheus:/rules:ro"
+          prom/prometheus:v3.7.2 test rules /rules/alerts_test.yml

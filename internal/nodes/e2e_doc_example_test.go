@@ -192,7 +192,7 @@ func newDocExampleEnv(t *testing.T, complianceVerdict string) *docExampleEnv {
 		t.Fatalf("price table: %v", err)
 	}
 	llmCfg.PriceTable = table
-	client, err := llm.NewOpenAICompat(llmCfg)
+	client, err := llm.NewOpenAICompat(llmCfg, nil)
 	if err != nil {
 		t.Fatalf("llm client: %v", err)
 	}
@@ -222,6 +222,10 @@ func newDocExampleEnv(t *testing.T, complianceVerdict string) *docExampleEnv {
 	gin.SetMode(gin.TestMode)
 	router := api.NewServer(api.Config{
 		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: 3, ResumeQueue: queue,
+		// T6.4:登录防御旋钮放宽(三用例多轮 login 同 IP;防御行为由
+		// api 包 loginlimit/loginaudit 用例锚定,本链不动)。
+		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
+		LoginMaxFailures: 100000, LoginLockout: time.Minute,
 	}, d, apiIDs, reg, apiSched, auth.BuiltinProvider{DB: d}).Router()
 
 	startE2ERelay(t, d, ctx)

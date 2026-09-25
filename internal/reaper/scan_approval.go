@@ -32,6 +32,7 @@ import (
 
 	"braid/internal/audit"
 	"braid/internal/engine"
+	"braid/internal/metrics"
 	"braid/internal/outbox"
 	"braid/internal/scheduler"
 )
@@ -97,6 +98,7 @@ SELECT id, execution_id
 			return nil
 		}
 	}
+	r.mBacklog(metrics.ScanApproval)
 	r.log.Warn("scan.backlog", "scanner", "approval_timeouts",
 		"hint", "candidates exceeded per-tick cap; retrying next tick")
 	return nil
@@ -137,6 +139,7 @@ SELECT n.id, n.execution_id
 			return nil
 		}
 	}
+	r.mBacklog(metrics.ScanApprovalOrphan)
 	r.log.Warn("scan.backlog", "scanner", "approval_orphans",
 		"hint", "candidates exceeded per-tick cap; retrying next tick")
 	return nil
@@ -214,6 +217,7 @@ SELECT node_id, status, version, attempts, worker_id, deadline_at, escalated_at,
 				}
 				return err
 			}
+			r.mNodeCancelled()
 			if err := r.auditRow(ctx, q, audit.EventNodeStateChanged, execID, nodeExecID, 0, nodeID,
 				audit.NodeStateChangedPayload{
 					From: string(nodeStatus), To: string(engine.NodeCancelled),
@@ -263,6 +267,7 @@ SELECT node_id, status, version, attempts, worker_id, deadline_at, escalated_at,
 			if _, err := engine.MarkNodeEscalated(ctx, q, nodeExecID, nodeVer); err != nil {
 				return err
 			}
+			r.mApprovalEscalated()
 			if err := r.auditRow(ctx, q, audit.EventApprovalEscalated, execID, nodeExecID, 0, nodeID,
 				audit.ApprovalEscalatedPayload{NodeID: nodeID, DeadlineAt: deadline.Time}); err != nil {
 				return err
@@ -284,6 +289,7 @@ SELECT node_id, status, version, attempts, worker_id, deadline_at, escalated_at,
 			if err != nil {
 				return err
 			}
+			r.mNodeFailed()
 			if err := r.auditRow(ctx, q, audit.EventNodeStateChanged, execID, nodeExecID, 0, nodeID,
 				audit.NodeStateChangedPayload{
 					From: string(nodeStatus), To: string(engine.NodeFailed),
@@ -373,6 +379,7 @@ SELECT COUNT(*) FROM outbox
 	if err := engine.TouchExecution(ctx, q, execID); err != nil {
 		return err
 	}
+	r.mRedispatched(metrics.TriggerApprovalRes)
 	r.log.Warn("approval.resume_redispatched",
 		"node_execution_id", nodeExecID, "execution_id", execID,
 		"task_id", taskID, "decision_id", decisionID,

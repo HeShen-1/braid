@@ -14,11 +14,13 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/gin-gonic/gin"
 	_ "github.com/go-sql-driver/mysql"
 
 	"braid/internal/api"
 	"braid/internal/auth"
 	"braid/internal/db"
+	"braid/internal/metrics"
 	"braid/internal/preflight"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
@@ -105,9 +107,19 @@ func run(ctx context.Context) error {
 	// 认证身份源真源(T5.3):内置 BuiltinProvider = 用户名口令 + bcrypt
 	// (默认);P1 凭证核验型插件(如 LDAP bind)在此换装,契约见
 	// internal/auth/identity.go。
+	// T6.4:Prometheus 指标面——与 /healthz 同端口同回环绑定(BRAID_API_ADDR
+	// 部署约定);登录防御计数(login_audit 0005 的指标半边)在此注册。
+	mset, mreg := metrics.NewSet()
+	apiSrv := api.NewServer(cfg, dbh, ids, toolReg, sched, auth.BuiltinProvider{DB: dbh})
+	apiSrv.LoginMetrics(mset.Login)
+	router := apiSrv.Router()
+	// /metrics 与 /healthz 同端口同回环绑定(BRAID_API_ADDR 部署约定)。
+	// 公开面部署注记:反向代理只应转发 /api/v1 与 /ui/,/metrics 与
+	// /healthz 留在内网(review advisory)。
+	router.GET("/metrics", gin.WrapH(metrics.Handler(mreg)))
 	srv := &http.Server{
 		Addr:              cfg.Addr,
-		Handler:           api.NewServer(cfg, dbh, ids, toolReg, sched, auth.BuiltinProvider{DB: dbh}).Router(),
+		Handler:           router,
 		ReadHeaderTimeout: readHeaderTimeout,
 		ReadTimeout:       readTimeout,
 		WriteTimeout:      writeTimeout,

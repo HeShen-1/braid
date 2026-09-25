@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"braid/internal/audit"
+	"braid/internal/metrics"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 )
@@ -24,6 +25,9 @@ type Deps struct {
 	IDs    *snowflake.Generator // 重派事件行 id(应用侧 Snowflake)
 	Locker Locker
 	Logger *slog.Logger
+	// Metrics 是观测面(T6.4):nil = 关闭(测试默认)。gauge 采集器也在
+	// 其上(collect.go 每 tick SQL 快照)。
+	Metrics *metrics.ReaperSet
 }
 
 // Reaper 是 reconciler 实例(无内部状态,字段在构造时定格)。
@@ -31,6 +35,7 @@ type Reaper struct {
 	deps Deps
 	cfg  Config
 	log  *slog.Logger
+	m    *metrics.ReaperSet
 }
 
 // New 构造 reaper;依赖缺损响亮报错(不静默空转)。Validate 归启动路径
@@ -43,7 +48,7 @@ func New(d Deps, cfg Config) (*Reaper, error) {
 	if log == nil {
 		log = slog.Default()
 	}
-	return &Reaper{deps: d, cfg: cfg, log: log}, nil
+	return &Reaper{deps: d, cfg: cfg, log: log, m: d.Metrics}, nil
 }
 
 // Run 阻塞运行直到 ctx 取消:janitor 独立 goroutine(分区 DDL 永不冻结扫描
@@ -119,10 +124,11 @@ func (r *Reaper) RunOnce(ctx context.Context) error {
 		name string
 		fn   func(context.Context) error
 	}{
-		{"scan_attempts", r.scanAttempts},   // ① attempt 判死 → reapAttempt
-		{"scan_nodes", r.scanNodes},         // ② deadline/分支B + ③ 孤儿 → reapAttempt
-		{"scan_execs", r.scanExecs},         // ④a PENDING 判死 + ④b 终态补判
-		{"scan_approvals", r.scanApprovals}, // ⑤ WAITING_APPROVAL 超时/孤儿(T4.3)
+		{"scan_attempts", r.scanAttempts},     // ① attempt 判死 → reapAttempt
+		{"scan_nodes", r.scanNodes},           // ② deadline/分支B + ③ 孤儿 → reapAttempt
+		{"scan_execs", r.scanExecs},           // ④a PENDING 判死 + ④b 终态补判
+		{"scan_approvals", r.scanApprovals},   // ⑤ WAITING_APPROVAL 超时/孤儿(T4.3)
+		{"collect_metrics", r.collectMetrics}, // T6.4 gauge 快照(只读,错误隔离同上)
 	}
 	var firstErr error
 	for _, j := range jobs {
@@ -134,6 +140,43 @@ func (r *Reaper) RunOnce(ctx context.Context) error {
 		}
 	}
 	return firstErr
+}
+
+// nil-safe 发射 helper(T6.4):Deps.Metrics nil = 观测关闭,发射点免判空。
+func (r *Reaper) mReaped(code string) {
+	if r.m != nil {
+		r.m.Reaped.WithLabelValues(code).Inc()
+	}
+}
+
+func (r *Reaper) mRedispatched(trigger string) {
+	if r.m != nil {
+		r.m.Redispatches.WithLabelValues(trigger).Inc()
+	}
+}
+
+func (r *Reaper) mNodeFailed() {
+	if r.m != nil {
+		r.m.NodeFailures.Inc()
+	}
+}
+
+func (r *Reaper) mNodeCancelled() {
+	if r.m != nil {
+		r.m.NodeCancellations.Inc()
+	}
+}
+
+func (r *Reaper) mApprovalEscalated() {
+	if r.m != nil {
+		r.m.ApprovalsEscalated.Inc()
+	}
+}
+
+func (r *Reaper) mBacklog(scan string) {
+	if r.m != nil {
+		r.m.ScanBacklog.WithLabelValues(scan).Inc()
+	}
 }
 
 // jittered 返回 ±20% 抖动后的间隔(去同步多实例扫描相位)。
@@ -150,12 +193,28 @@ const auditFlushRoundCap = 10000
 // flushOnce 搬运一轮暂存审计行(audit_pending → audit_log,T6.1 异步批量
 // 的消费半边)。毒行隔离与批量契约见 audit/flush.go;此处只驱动。
 func (r *Reaper) flushOnce(ctx context.Context) error {
-	n, err := audit.FlushAll(ctx, r.deps.DB, r.cfg.AuditFlushBatch, auditFlushRoundCap)
+	start := time.Now()
+	agg, err := audit.FlushAll(ctx, r.deps.DB, r.cfg.AuditFlushBatch, auditFlushRoundCap)
+	if r.m != nil {
+		// 计数语义(对抗审计 A6):成功批逐批计数;失败轮只记一次
+		// rollback(部分成功轮的已完成批已入 agg.Batches——被回滚,与
+		// 行计数的差值即回滚量,可观测)。毒行计数是「在场信号」语义:
+		// 毒行每 tick 重扫重计 = 告警持续,直到人工清理(登记 D-t64)。
+		if err != nil {
+			r.m.FlushBatches.WithLabelValues(metrics.FlushRollback).Inc()
+		} else {
+			r.m.FlushBatches.WithLabelValues(metrics.FlushOK).Add(float64(agg.Batches))
+		}
+		r.m.FlushRows.WithLabelValues(metrics.FlushKindFlushed).Add(float64(agg.Flushed))
+		r.m.FlushRows.WithLabelValues(metrics.FlushKindReplayed).Add(float64(agg.Replayed))
+		r.m.FlushPoison.Add(float64(agg.Skipped))
+		r.m.FlushDuration.Observe(time.Since(start).Seconds())
+	}
 	if err != nil {
 		return fmt.Errorf("reaper: audit flush: %w", err)
 	}
-	if n > 0 {
-		r.log.Info("audit.flushed", "rows", n)
+	if agg.Flushed > 0 {
+		r.log.Info("audit.flushed", "rows", agg.Flushed)
 	}
 	return nil
 }

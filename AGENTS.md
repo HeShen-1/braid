@@ -37,6 +37,7 @@
 ## 命令(有代码后更新此节)
 
 - 测试:`go test ./...`(集成测试需 t13 栈:`docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d`,MySQL 13306 / Redis 16379;不在时自动 skip)
+- 告警规则:`promtool check rules deploy/prometheus/alerts.yml && promtool test rules deploy/prometheus/alerts_test.yml`(T6.4;CI 第 4 job 同口径)
 - Lint:`golangci-lint run`
 - 本地栈:首次 `cp deploy/.env.example deploy/.env`;之后 `docker compose -f deploy/dev.docker-compose.yml up -d`(MySQL 3306 / Redis 队列 6379、缓存 6380 / Asynqmon 8080,均仅绑回环;重置数据 `down -v`)
 - 远端/issue:`git push` → draft PR(`gh pr create --draft`,描述带 `Closes #N`);执行队列 `gh issue list`

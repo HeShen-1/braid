@@ -16,6 +16,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"braid/internal/db"
+	"braid/internal/metrics"
 	"braid/internal/preflight"
 	"braid/internal/reaper"
 	"braid/internal/scheduler"
@@ -78,7 +79,16 @@ func run(ctx context.Context) error {
 	// 刻意相反):正确性结构性不依赖 Redis,拉起一个连不上 Redis 的 reaper
 	// 仍完全可用(leaderless 全跑),拒启反而制造「断 Redis 期间无人对账」
 	// 的停摆面——恰是验收要消灭的场景。不可达只 warn。
-	deps := reaper.Deps{DB: mysqlDB, Sched: sched, IDs: ids}
+	// T6.4:Prometheus 指标面(裁决计数 + flush 观测 + 周期 gauge 采集)。
+	// BRAID_METRICS_ADDR 空 = 不启;Deps.Metrics 与采集器同生命周期。
+	mset, mreg := metrics.NewSet()
+	if _, ok, err := metrics.Serve(ctx, os.Getenv("BRAID_METRICS_ADDR"), mreg); err != nil {
+		return fmt.Errorf("reaper: %w", err)
+	} else if ok {
+		slog.Info("metrics: serving", "addr", os.Getenv("BRAID_METRICS_ADDR"))
+	}
+
+	deps := reaper.Deps{DB: mysqlDB, Sched: sched, IDs: ids, Metrics: mset.Reaper}
 	if addr := os.Getenv("BRAID_REDIS_QUEUE_ADDR"); addr != "" {
 		// T7.3:队列 Redis 契约探测仅 warn(D-t25 fail-open 同族:锁实例破约
 		// 的失败模式 = 锁丢失退化为 leaderless,安全;拒启反制造停摆面)。

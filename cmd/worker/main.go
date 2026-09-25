@@ -22,6 +22,7 @@ import (
 	"braid/internal/auth"
 	"braid/internal/db"
 	"braid/internal/llm"
+	"braid/internal/metrics"
 	"braid/internal/nodes"
 	"braid/internal/notify"
 	"braid/internal/preflight"
@@ -137,13 +138,22 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: %w", err)
 	}
 
+	// T6.4:Prometheus 指标面。BRAID_METRICS_ADDR 空 = 不启(观测可选,
+	// 与内置工具「未配置即不注册」同姿势);registry 每进程新建。
+	mset, mreg := metrics.NewSet()
+	if _, ok, err := metrics.Serve(ctx, os.Getenv("BRAID_METRICS_ADDR"), mreg); err != nil {
+		return fmt.Errorf("worker: %w", err)
+	} else if ok {
+		slog.Info("metrics: serving", "addr", os.Getenv("BRAID_METRICS_ADDR"))
+	}
+
 	// T3.6 生产装配:llm 配置缺 URL/KEY/PRICE_TABLE 即启动失败(生产 worker
 	// 必须能调 LLM;组合预算上界在 Validate 内启动即败,HIGH① 拍板)。
 	llmCfg, err := llm.ConfigFromEnv(os.Getenv)
 	if err != nil {
 		return fmt.Errorf("worker: llm config: %w", err)
 	}
-	client, err := llm.NewOpenAICompat(llmCfg)
+	client, err := llm.NewOpenAICompat(llmCfg, mset.LLM)
 	if err != nil {
 		return fmt.Errorf("worker: llm client: %w", err)
 	}
@@ -159,7 +169,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("worker: snowflake: %w", err)
 	}
-	sched, err := scheduler.New(scheduler.Deps{DB: mysqlDB, IDs: ids, Logger: slog.Default()})
+	sched, err := scheduler.New(scheduler.Deps{DB: mysqlDB, IDs: ids, Logger: slog.Default(), Metrics: mset.LLM})
 	if err != nil {
 		return fmt.Errorf("worker: scheduler: %w", err)
 	}
@@ -169,6 +179,11 @@ func run(ctx context.Context) error {
 	notifier, err := buildNotifier(os.Getenv, mysqlDB, ids, cfg.WorkerID)
 	if err != nil {
 		return err
+	}
+	// SMTP 可用性作为指标暴露:通知丢失对账告警的静默闸(未配置时
+	// approval.notified 设计性缺席,缺失不告警,D-t45)。
+	if notifier != nil {
+		mset.Worker.SMTPConfigured.Set(1)
 	}
 
 	// T3.2/T3.5 工具运行时装配 + T5.2 执行时 RBAC 门:registry(内置
@@ -212,5 +227,6 @@ func run(ctx context.Context) error {
 		Sched:    sched,
 		Notifier: notifier,
 		Logger:   slog.Default(),
+		Metrics:  mset.Worker, // T6.4:notify 计数 + archived 探测(漏接 = 观测生产死代码)
 	}, cfg, asynq.RedisClientOpt{Addr: addr})
 }

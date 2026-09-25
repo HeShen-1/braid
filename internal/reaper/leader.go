@@ -22,6 +22,7 @@ type Locker interface {
 }
 
 // redisLocker 是 Locker 的 go-redis v9 实现。单段 Lua 保证「读-判-写」原子:
+//
 //	GET == nil(锁不存在)→ SET NX PX,返回持锁;
 //	GET == 本实例 token   → PEXPIRE 续期(v1 修复:不续期的裸 NX 会自锁到 TTL 耗尽);
 //	GET == 他人 token     → 0,本 tick skip。

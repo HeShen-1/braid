@@ -10,6 +10,8 @@ import (
 
 	_ "github.com/go-sql-driver/mysql"
 
+	"braid/internal/llm"
+	"braid/internal/metrics"
 	"braid/internal/snowflake"
 )
 
@@ -76,4 +78,30 @@ func TestBuildNotifier(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestMetricsVocabularyPinnedToLLM 锚定 llm 失败类/结局词面与 metrics
+// 词表常量的字面一致(T6.4):*metrics.LLMSet 隐式满足 llm.Observability,
+// 两侧字符串各自独立演进——漂移在这里红,不在告警规则里静默失配。
+func TestMetricsVocabularyPinnedToLLM(t *testing.T) {
+	pairs := []struct {
+		llmStr    string
+		metricStr string
+	}{
+		{llm.HTTPClass429, metrics.CodeRateLimited},
+		{llm.HTTPClass5xx, metrics.CodeServerError},
+		{llm.HTTPClass4xx, metrics.CodeClientError},
+		{llm.HTTPClassNetwork, metrics.CodeNetworkErr},
+		{llm.HTTPClassTimeout, metrics.CodeTimeout},
+		{llm.HTTPClassProtocol, metrics.CodeProtocolErr},
+		{llm.CallOutcomeSucceeded, metrics.CallSucceeded},
+		{llm.CallOutcomeFailed, metrics.CallFailed},
+	}
+	for _, p := range pairs {
+		if p.llmStr != p.metricStr {
+			t.Errorf("vocabulary drift: llm %q vs metrics %q", p.llmStr, p.metricStr)
+		}
+	}
+	// 隐式接口满足的编译期证明(装配面使用的同一事实)。
+	var _ llm.Observability = (*metrics.LLMSet)(nil)
 }

@@ -1,0 +1,214 @@
+package reaper
+
+import (
+	"context"
+	"database/sql"
+	"errors"
+	"time"
+
+	"braid/internal/metrics"
+)
+
+// notifyReconcileGrace 是 escalated-vs-notified 对账的宽限窗:覆盖 asynq
+// MaxRetry=1 重投 + relay 退避穷尽(~11.8min)+ SMTP 单次 Timeout。窗内
+// 缺 notified 行是正常在途,窗外才算丢失(D-t45 #1)。
+const notifyReconcileGrace = 15 * time.Minute
+
+// notifyReconcileCap 是对账候选的硬上限(防御性:gauge 采集是观测路径,
+// 不为病态行数付无界循环;触顶即少计,下轮照常)。
+const notifyReconcileCap = 500
+
+// collectMetrics 是每 tick 的 gauge 快照采集(T6.4): backlog/aging/
+// dead-letter/对账面全部 DB 真源快照。设计口径:
+//   - 只读普通 SELECT,无锁无事务(与扫描候选集同判——D-t25 #1);
+//   - 单 gauge 失败记日志继续,不拖垮其余(观测面错误隔离);
+//   - resume-stuck 谓词只取 scan ⑤a 的「已决票」半边(已升级未决票的
+//     deadline 是 Q9 刻意保留的,计入 = 把正常审批时延当滞留),外加
+//     活执行过滤(孤儿由 ⑤b cancel,不构成滞留信号);
+//   - escalated-vs-notified 从 escalated_at 驱动、NOT EXISTS 反查按
+//     exec_date 常量点查(audit_log 按执行日分区,行值日期无法整表裁剪,
+//     镜像 sender.go 去重查形态)。
+func (r *Reaper) collectMetrics(ctx context.Context) error {
+	if r.m == nil {
+		return nil
+	}
+	r.collectAuditPending(ctx)
+	r.collectOutbox(ctx)
+	r.collectApprovalBacklog(ctx)
+	r.collectStuckCandidates(ctx)
+	r.collectResumeStuck(ctx)
+	r.collectNotifyMissing(ctx)
+	return nil
+}
+
+func (r *Reaper) collectAuditPending(ctx context.Context) {
+	var rows int
+	var oldest float64
+	if err := r.deps.DB.QueryRowContext(ctx, `
+SELECT COUNT(*), IFNULL(TIMESTAMPDIFF(SECOND, MIN(created_at), NOW(3)), 0)
+  FROM audit_pending`).Scan(&rows, &oldest); err != nil && !errors.Is(err, sql.ErrNoRows) {
+		r.log.Warn("metrics.audit_pending", "err", err)
+		return
+	}
+	r.m.AuditPendingRows.Set(float64(rows))
+	r.m.AuditPendingOldest.Set(oldest)
+}
+
+func (r *Reaper) collectOutbox(ctx context.Context) {
+	rs, err := r.deps.DB.QueryContext(ctx, `
+SELECT status, COUNT(*), IFNULL(TIMESTAMPDIFF(SECOND, MIN(created_at), NOW(3)), 0)
+  FROM outbox WHERE status IN ('PENDING','DEAD') GROUP BY status`)
+	if err != nil {
+		r.log.Warn("metrics.outbox", "err", err)
+		return
+	}
+	defer func() { _ = rs.Close() }() //nolint:errcheck // 只读探测,关闭错误无处置义
+	counts := map[string][2]float64{}
+	for rs.Next() {
+		var status string
+		var rows int
+		var oldest float64
+		if err := rs.Scan(&status, &rows, &oldest); err != nil {
+			r.log.Warn("metrics.outbox scan", "err", err)
+			return
+		}
+		counts[status] = [2]float64{float64(rows), oldest}
+	}
+	if err := rs.Err(); err != nil {
+		r.log.Warn("metrics.outbox rows", "err", err)
+		return
+	}
+	for _, status := range []string{"PENDING", "DEAD"} {
+		label := metrics.OutboxPending
+		if status == "DEAD" {
+			label = metrics.OutboxDead
+		}
+		v := counts[status]
+		r.m.OutboxRows.WithLabelValues(label).Set(v[0])
+		r.m.OutboxOldest.WithLabelValues(label).Set(v[1])
+	}
+}
+
+func (r *Reaper) collectApprovalBacklog(ctx context.Context) {
+	var rows int
+	var oldest float64
+	if err := r.deps.DB.QueryRowContext(ctx, `
+SELECT COUNT(*), IFNULL(TIMESTAMPDIFF(SECOND, MIN(ne.status_changed_at), NOW(3)), 0)
+  FROM node_execution ne
+  JOIN workflow_execution we ON we.id = ne.execution_id
+ WHERE ne.status='WAITING_APPROVAL' AND we.status IN ('RUNNING','WAITING_APPROVAL')`).
+		Scan(&rows, &oldest); err != nil {
+		r.log.Warn("metrics.approval_backlog", "err", err)
+		return
+	}
+	r.m.ApprovalBacklog.Set(float64(rows))
+	r.m.ApprovalOldest.Set(oldest)
+}
+
+// collectStuckCandidates 报各扫描的候选存量(gauge),与处置计数(counter)
+// 互补:gauge 是水位,counter 是流量;「卡死节点」告警消费水位。
+func (r *Reaper) collectStuckCandidates(ctx context.Context) {
+	probe := func(scan, query string, grace time.Duration) {
+		var n int
+		if err := r.deps.DB.QueryRowContext(ctx, query, grace.Microseconds()).
+			Scan(&n); err != nil {
+			r.log.Warn("metrics.stuck_candidates", "scan", scan, "err", err)
+			return
+		}
+		r.m.StuckCandidates.WithLabelValues(scan).Set(float64(n))
+	}
+	probe(metrics.ScanAttempt, `
+SELECT COUNT(*) FROM node_attempt
+ WHERE status='RUNNING' AND heartbeat_at < NOW(3) - INTERVAL ? MICROSECOND`, r.cfg.DeadGrace)
+	probe(metrics.ScanNodeDeadline, `
+SELECT COUNT(*) FROM node_execution
+ WHERE status='EXECUTING' AND deadline_at < NOW(3) - INTERVAL ? MICROSECOND`, r.cfg.ScanInterval)
+	probe(metrics.ScanExecStale, `
+SELECT COUNT(*) FROM workflow_execution
+ WHERE status='RUNNING' AND last_activity_at < NOW(3) - INTERVAL ? MICROSECOND`, r.cfg.ExecStale)
+}
+
+func (r *Reaper) collectResumeStuck(ctx context.Context) {
+	var n int
+	// 谓词只取 ⑤a 的「已决票」半边(对抗审计 3/3):已升级未决票的
+	// deadline 是 Q9 刻意保留的(等人决定,永不自动通过),计入即把
+	// 正常审批时延当滞留——CRITICAL 告警常燃会淹没真滞留。已决票 +
+	// 超阈 = 续跑事件死的信号,与扫描 ⑤a 的修复路径同一人群。
+	if err := r.deps.DB.QueryRowContext(ctx, `
+SELECT COUNT(*)
+  FROM node_execution ne
+  JOIN workflow_execution we ON we.id = ne.execution_id
+ WHERE ne.status='WAITING_APPROVAL'
+   AND ne.deadline_at < NOW(3) - INTERVAL ? MICROSECOND
+   AND EXISTS(SELECT 1 FROM approval_decision d
+               WHERE d.node_execution_id = ne.id)
+   AND we.status IN ('RUNNING','WAITING_APPROVAL')`,
+		r.cfg.ScanInterval.Microseconds()).Scan(&n); err != nil {
+		r.log.Warn("metrics.resume_stuck", "err", err)
+		return
+	}
+	r.m.ResumeStuck.Set(float64(n))
+}
+
+// collectNotifyMissing 是 escalated-vs-notified 对账(D-t45 #1):升级意图
+// (escalated_at / approval.escalated 行)有、送达(approval.notified 行)
+// 缺且过宽限 = 通知丢失——relay 耗尽转 DEAD / worker archived 等成因的
+// 统一观测信号。SMTP 未配置时 notified 设计性缺席,由消费侧
+// braid_smtp_configured==1 门闸告警(D-t45 #3 假阳性防御)。
+func (r *Reaper) collectNotifyMissing(ctx context.Context) {
+	rs, err := r.deps.DB.QueryContext(ctx, `
+SELECT ne.id, we.id, DATE_FORMAT(we.created_at, '%Y-%m-%d')
+  FROM node_execution ne
+  JOIN workflow_execution we ON we.id = ne.execution_id
+ WHERE ne.escalated_at IS NOT NULL
+   AND ne.escalated_at < NOW(3) - INTERVAL ? MICROSECOND
+   AND we.status IN ('RUNNING','WAITING_APPROVAL')
+ LIMIT ?`, notifyReconcileGrace.Microseconds(), notifyReconcileCap)
+	if err != nil {
+		r.log.Warn("metrics.notify_missing candidates", "err", err)
+		return
+	}
+	type cand struct {
+		id       uint64
+		execID   uint64
+		execDate string
+	}
+	var cands []cand
+	for rs.Next() {
+		var c cand
+		var d sql.NullString // DATE 直出字符串,不经 driver loc 解析(D-t26-F1 同判)
+		if err := rs.Scan(&c.id, &c.execID, &d); err != nil {
+			_ = rs.Close() //nolint:errcheck // 探测失败路径,关闭错误无处置义
+			r.log.Warn("metrics.notify_missing scan", "err", err)
+			return
+		}
+		if !d.Valid {
+			continue
+		}
+		c.execDate = d.String
+		cands = append(cands, c)
+	}
+	_ = rs.Close() //nolint:errcheck // 同上
+
+	missing := 0
+	for _, c := range cands {
+		var one int
+		// exec_date 常量点查 = 分区裁剪锚(镜像 sender.go 去重查)。
+		// execution_id 谓词逐字镜像 sender 去重查:idx_audit_exec 最左前缀
+		// 的入口(rev3 HIGH:漏掉它 = exec_date 只裁分区,node_execution_id
+		// 无索引,每候选每 tick 全分区扫描——观测面在病理态自我放大)。
+		err := r.deps.DB.QueryRowContext(ctx, `
+SELECT 1 FROM audit_log
+ WHERE exec_date=? AND execution_id=? AND node_execution_id=? AND event_type='approval.notified'
+ LIMIT 1`, c.execDate, c.execID, c.id).Scan(&one)
+		if errors.Is(err, sql.ErrNoRows) {
+			missing++
+			continue
+		}
+		if err != nil {
+			r.log.Warn("metrics.notify_missing probe", "node_execution_id", c.id, "err", err)
+			return
+		}
+	}
+	r.m.ApprovalNotifyMissing.Set(float64(missing))
+}

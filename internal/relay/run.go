@@ -40,11 +40,15 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/hibiken/asynq"
+	"github.com/redis/go-redis/v9"
 
 	"braid/internal/engine"
+	"braid/internal/metrics"
 	"braid/internal/outbox"
 )
 
@@ -53,6 +57,15 @@ type Deps struct {
 	DB       *sql.DB
 	Enqueuer Enqueuer
 	Logger   *slog.Logger
+	// Metrics 是观测面(T6.4):nil = 关闭(测试默认)。投递计数 + 周期
+	// Redis 健康 gauge。
+	Metrics *metrics.RelaySet
+	// RDB 是队列 Redis 探测连接(INFO memory,内存水线告警字源);
+	// nil = 不采 Redis 健康面(实例级零键空间,同 preflight 判)。
+	RDB *redis.Client
+	// Inspector 是 asynq 队列深度探测面(pending+active+retry = 消费
+	// 债务);nil = 不采。观测专用,与投递路径无共享状态。
+	Inspector *asynq.Inspector
 }
 
 // Run 阻塞运行投递循环直到 ctx 取消。运行期一切错误都是轮次级的(MySQL 断连
@@ -70,6 +83,17 @@ func Run(ctx context.Context, d Deps, cfg Config) error {
 		log = slog.Default()
 	}
 	r := runner{deps: d, cfg: cfg, log: log, rnd: rand.New(rand.NewPCG(uint64(time.Now().UnixNano()), 0))}
+	if d.Metrics != nil && (d.RDB != nil || d.Inspector != nil) {
+		// 探测 goroutine 生命周期与 Run 绑定(rev4 advisory):Run 返回前
+		// 等它退出,cmd/relay 的 defer Close(Inspector/RDB)不与在飞探测
+		// 重叠——否则停机窗口可能出现「已关连接上的最后一次探测」。
+		probeDone := make(chan struct{})
+		go func() {
+			defer close(probeDone)
+			r.probeQueueRedis(ctx)
+		}()
+		defer func() { <-probeDone }()
+	}
 	log.Info("relay.started",
 		"idle_interval", cfg.IdleInterval, "enqueue_timeout", cfg.EnqueueTimeout,
 		"max_attempts", cfg.MaxAttempts, "backoff_base", cfg.BackoffBase,
@@ -152,10 +176,12 @@ SELECT id, event_type, task_id, queue, payload, deliver_attempts
 		switch {
 		case enqErr == nil:
 			r.log.Info("enqueue.ok", "outbox_id", row.ID, "task_id", row.TaskID, "queue", row.Queue)
+			r.mDeliver(metrics.DeliverDispatched)
 		case errors.Is(enqErr, asynq.ErrTaskIDConflict):
 			// 冲突收敛:任务已交到过(kill -9 后重投 / 多 relay / reconciler
 			// 重入队),幂等证据而非失败。
 			r.log.Info("enqueue.conflict", "outbox_id", row.ID, "task_id", row.TaskID)
+			r.mDeliver(metrics.DeliverConflict)
 		default:
 			// 停机中断判定用自家 ctx(ectx 派生自 ctx),不解读包后的 asynq 错误:
 			// 此刻行未获结局,不计尝试、不动行,空事务提交释放锁。
@@ -166,11 +192,13 @@ SELECT id, event_type, task_id, queue, payload, deliver_attempts
 			if row.Attempts+1 >= r.cfg.MaxAttempts {
 				r.log.Error("row.dead", "outbox_id", row.ID, "task_id", row.TaskID,
 					"event_type", row.EventType, "attempts", row.Attempts+1, "err", msg)
+				r.mDeliver(metrics.DeliverDead)
 				return outbox.MarkDead(ctx, q, row.ID, msg)
 			}
 			bo := r.backoff(row.Attempts + 1)
 			r.log.Warn("enqueue.fail", "outbox_id", row.ID, "task_id", row.TaskID,
 				"attempts", row.Attempts+1, "next_available_after", bo, "err", msg)
+			r.mDeliver(metrics.DeliverBackoff)
 			return outbox.RecordFailure(ctx, q, row.ID, msg, bo)
 		}
 		return outbox.MarkDispatched(ctx, q, row.ID)
@@ -206,5 +234,72 @@ func sleepCtx(ctx context.Context, d time.Duration) bool {
 		return false
 	case <-t.C:
 		return true
+	}
+}
+
+// mDeliver 是投递结果计数的 nil-safe 发射(T6.4)。
+func (r *runner) mDeliver(outcome string) {
+	if r.deps.Metrics != nil {
+		r.deps.Metrics.Deliveries.WithLabelValues(outcome).Inc()
+	}
+}
+
+// redisProbeInterval 是队列 Redis 健康探测周期(观测粒度,非运维旋钮)。
+const redisProbeInterval = 30 * time.Second
+
+// probeRedis 周期采 INFO memory:used/max 是内存水线告警字源(ARCHITECTURE
+// §2「队列实例水线告警」)。失败记日志继续(探测不可用 ≠ 投递不可用)。
+func (r *runner) probeQueueRedis(ctx context.Context) {
+	t := time.NewTicker(redisProbeInterval)
+	defer t.Stop()
+	probe := func() {
+		if r.deps.RDB != nil {
+			raw, err := r.deps.RDB.Info(ctx, "memory").Result()
+			if err != nil {
+				r.log.Warn("metrics.redis_info", "err", err)
+			} else {
+				var used, max int64
+				for _, line := range strings.Split(raw, "\n") {
+					line = strings.TrimSpace(line)
+					switch {
+					case strings.HasPrefix(line, "used_memory:"):
+						if v, err := strconv.ParseInt(strings.TrimPrefix(line, "used_memory:"), 10, 64); err == nil {
+							used = v
+						}
+					case strings.HasPrefix(line, "maxmemory:"):
+						if v, err := strconv.ParseInt(strings.TrimPrefix(line, "maxmemory:"), 10, 64); err == nil {
+							max = v
+						}
+					}
+				}
+				r.deps.Metrics.RedisMemoryUsed.Set(float64(used))
+				r.deps.Metrics.RedisMemoryMax.Set(float64(max))
+			}
+		}
+		if r.deps.Inspector != nil {
+			queues, err := r.deps.Inspector.Queues()
+			if err != nil {
+				r.log.Warn("metrics.asynq_queues", "err", err)
+			} else {
+				for _, q := range queues {
+					info, err := r.deps.Inspector.GetQueueInfo(q)
+					if err != nil {
+						r.log.Warn("metrics.asynq_queue", "queue", q, "err", err)
+						continue
+					}
+					r.deps.Metrics.QueueTasks.WithLabelValues(q).
+						Set(float64(info.Pending + info.Active + info.Retry))
+				}
+			}
+		}
+	}
+	probe()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+			probe()
+		}
 	}
 }

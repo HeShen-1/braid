@@ -18,7 +18,9 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -886,5 +888,158 @@ func TestCompleteDiscardedByReaper(t *testing.T) {
 	sink.mu.Unlock()
 	if !found {
 		t.Fatalf("缺 discarded_by_reaper warn(判死双执行观测信号),got %v", sink.events)
+	}
+}
+
+// discardCounter 是 MetricsSink 最小测试桩(T6.4)。
+type discardCounter struct{ n atomic.Int32 }
+
+func (c *discardCounter) IncLLMCallDiscarded() { c.n.Add(1) }
+
+// TestCompleteDiscardedEmitsLLMCallDiscardedAudit(T6.4,D-t36 §7 移交回收):
+// reaper 判 DEAD 后,迟到 SUCCEEDED 携 usage 被 Complete 让位丢弃——供应商
+// 已计费而台账双缺。断言:幂等 nil 照旧;llm.call.discarded 审计行同步直写
+// audit_log(usage/cost 冗余列逐字 = CompletionRequest.Usage;不经暂存);
+// node_attempt 的 DEAD 行 usage 列恒 NULL(丢弃零台账的事实本身);counter
+// 恰好一次。
+//
+// 变异自查(实现错 → 哪条红):
+//   - 发射点留在让位事务内(会被哨兵回滚)→ 行数断言红;
+//   - usage 白名单未扩 → Complete 报 ErrInvalidEvent 或发射失败日志;
+//   - 只发 counter 不发行 → 行断言红(已计费零台账仍不可见);
+//   - node_attempt 被 usage 终写 → DEAD 行 usage 断言红(伪造台账)。
+func TestCompleteDiscardedEmitsLLMCallDiscardedAudit(t *testing.T) {
+	s, d := newSched(t)
+	counter := &discardCounter{}
+	s.deps.Metrics = counter
+	_, execID := inst(t, s, d, chainDSL, `{"q":"hi"}`)
+	if err := s.Start(context.Background(), execID, "sched-test"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	a := waitNodeStatus(t, d, execID, "a", engine.NodeExecuting)
+	attemptA := seedAttempt(t, d, execID, a.id, 1)
+
+	if err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		if err := engine.CloseAttemptDead(context.Background(), q, attemptA, "heartbeat_lost", "stale"); err != nil {
+			return err
+		}
+		_, err := engine.RedispatchNode(context.Background(), q, a.id, a.version, engine.RedispatchInput{
+			WorkerID:   "reaper:test",
+			DeadlineAt: time.Now().Add(NodeTimeout("llm")),
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("reaper adjudication: %v", err)
+	}
+
+	usage := &engine.AttemptUsage{
+		Model: "glm-5.3", PromptTokens: 1200, CompletionTokens: 80, TotalTokens: 1280,
+		CostAmount: "0.002560", CostCurrency: "CNY", Billed: true,
+	}
+	if err := s.Complete(context.Background(), CompletionRequest{
+		ExecID: execID, NodeExecID: a.id, AttemptID: attemptA,
+		Status: engine.AttemptSucceed, Output: json.RawMessage(`{"text":"late"}`),
+		WorkerID: "sched-test", Usage: usage,
+	}); err != nil {
+		t.Fatalf("迟到 Complete(携 usage)应幂等 nil,got %v", err)
+	}
+
+	// 1) 审计行落地:恰一行、usage 列逐字、actor=worker、payload 携
+	// node_id 与 observed_attempt。
+	var (
+		gotModel                             string
+		gotPrompt, gotCompletion, gotTotal   uint32
+		gotCost, gotCurrency                 sql.NullString
+		gotEstimated                         bool
+		gotActorType, gotActorID, gotPayload string
+		rows                                 int
+	)
+	if err := d.QueryRow(`
+SELECT model, prompt_tokens, completion_tokens, total_tokens,
+       cost_amount, cost_currency, cost_estimated, actor_type, actor_id, payload
+  FROM audit_log WHERE execution_id=? AND attempt_id=? AND event_type='llm.call.discarded'`,
+		execID, attemptA).
+		Scan(&gotModel, &gotPrompt, &gotCompletion, &gotTotal,
+			&gotCost, &gotCurrency, &gotEstimated, &gotActorType, &gotActorID, &gotPayload); err != nil {
+		t.Fatalf("llm.call.discarded 行缺失(已计费零台账不可见): %v", err)
+	}
+	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log
+	  WHERE execution_id=? AND event_type='llm.call.discarded'`, execID).Scan(&rows); err != nil || rows != 1 {
+		t.Fatalf("discarded 行数 = %d(err %v), want 1", rows, err)
+	}
+	if gotModel != usage.Model || gotPrompt != usage.PromptTokens ||
+		gotCompletion != usage.CompletionTokens || gotTotal != usage.TotalTokens {
+		t.Errorf("usage 列漂移: model=%s %d/%d/%d", gotModel, gotPrompt, gotCompletion, gotTotal)
+	}
+	if !gotCost.Valid || gotCost.String != usage.CostAmount ||
+		!gotCurrency.Valid || gotCurrency.String != usage.CostCurrency {
+		t.Errorf("cost 列 = %v/%v, want %s/%s", gotCost, gotCurrency, usage.CostAmount, usage.CostCurrency)
+	}
+	if gotActorType != "worker" || gotActorID != "sched-test" {
+		t.Errorf("actor = %s/%s, want worker/sched-test", gotActorType, gotActorID)
+	}
+	if !strings.Contains(gotPayload, `"node_id": "a"`) ||
+		!strings.Contains(gotPayload, `"observed_attempt": "DEAD"`) {
+		t.Errorf("payload 缺锚字段: %s", gotPayload)
+	}
+
+	// 2) 台账半边保持零痕迹:DEAD attempt 行 usage 列恒 NULL(丢弃事实,
+	// 伪造台账会破坏对账语义)。
+	var attemptModel sql.NullString
+	if err := d.QueryRow(`SELECT model FROM node_attempt WHERE id=?`, attemptA).
+		Scan(&attemptModel); err != nil {
+		t.Fatalf("read attempt: %v", err)
+	}
+	if attemptModel.Valid {
+		t.Errorf("DEAD attempt 行被写入 usage 列 %q: 丢弃面被伪造台账", attemptModel.String)
+	}
+
+	// 3) 不经暂存(同步直写):audit_pending 零该事件。
+	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_pending
+	  WHERE execution_id=? AND event_type='llm.call.discarded'`, execID).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("audit_pending discarded 行 = %d(err %v), want 0", rows, err)
+	}
+
+	// 4) counter 恰好一次。
+	if got := counter.n.Load(); got != 1 {
+		t.Errorf("IncLLMCallDiscarded = %d, want 1", got)
+	}
+}
+
+// TestCompleteDiscardedNoUsageKeepsLegacyPath:迟到失败(或无 usage 成功)
+// 的让位丢弃维持旧行为——零审计行零 counter(warn 日志已有,无计费无
+// 台账缺口,不制造噪声)。
+func TestCompleteDiscardedNoUsageKeepsLegacyPath(t *testing.T) {
+	s, d := newSched(t)
+	counter := &discardCounter{}
+	s.deps.Metrics = counter
+	_, execID := inst(t, s, d, chainDSL, `{"q":"hi"}`)
+	if err := s.Start(context.Background(), execID, "sched-test"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	a := waitNodeStatus(t, d, execID, "a", engine.NodeExecuting)
+	attemptA := seedAttempt(t, d, execID, a.id, 1)
+	if err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		if err := engine.CloseAttemptDead(context.Background(), q, attemptA, "heartbeat_lost", "stale"); err != nil {
+			return err
+		}
+		_, err := engine.RedispatchNode(context.Background(), q, a.id, a.version, engine.RedispatchInput{
+			WorkerID:   "reaper:test",
+			DeadlineAt: time.Now().Add(NodeTimeout("llm")),
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("reaper adjudication: %v", err)
+	}
+	if err := complete(t, s, execID, a.id, attemptA, engine.AttemptFailed, nil); err != nil {
+		t.Fatalf("迟到失败 Complete 应幂等 nil,got %v", err)
+	}
+	var rows int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log
+	  WHERE execution_id=? AND event_type='llm.call.discarded'`, execID).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("无 usage 丢弃落 discarded 行 = %d(err %v), want 0", rows, err)
+	}
+	if got := counter.n.Load(); got != 0 {
+		t.Errorf("无 usage 丢弃 counter = %d, want 0", got)
 	}
 }

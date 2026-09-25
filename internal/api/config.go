@@ -9,6 +9,8 @@ import (
 	"net"
 	"regexp"
 	"strconv"
+	"strings"
+	"time"
 
 	"braid/internal/auth"
 	"braid/internal/snowflake"
@@ -28,6 +30,12 @@ const (
 	DefaultSnowflakeNode = 1
 	// DefaultResumeQueue 是审批续跑事件的默认队列(T4.2;见 Config.ResumeQueue)。
 	DefaultResumeQueue = "default"
+	// 登录防御默认值(T6.4,D-t44 §7-①):IP 固定窗口 10 次/分钟;
+	// 连续 5 次失败锁 15 分钟。旋钮化供部署收紧与测试注入短窗。
+	DefaultLoginRateLimit   = 10
+	DefaultLoginRateWindow  = time.Minute
+	DefaultLoginMaxFailures = 5
+	DefaultLoginLockout     = 15 * time.Minute
 )
 
 // queueNameRe 镜像 outbox 队列字符集(校验单点在 outbox.Append;此处启动
@@ -51,14 +59,31 @@ type Config struct {
 	// 同值,worker 默认消费);DDL §5 queue 列注释钦定「审批/续跑与重
 	// LLM 任务隔离」的独立队列在此换装(T7.1 配置体系迁居)。
 	ResumeQueue string
+	// LoginRateLimit / LoginRateWindow:登录 IP 固定窗口限流(T6.4)。
+	LoginRateLimit  int
+	LoginRateWindow time.Duration
+	// LoginMaxFailures / LoginLockout:username 连续失败锁定(T6.4);
+	// 锁定响应与限流同形 429(防枚举 oracle,见 loginlimit.go)。
+	LoginMaxFailures int
+	LoginLockout     time.Duration
+	// TrustedProxies 是受信代理 CIDR 列表(BRAID_API_TRUSTED_PROXIES,
+	// 逗号分隔;空 = 不信任任何代理 = ClientIP 恒 RemoteAddr,fail-closed
+	// 现状)。登录防御/审计以 ClientIP 为键:反代公开面必须把代理内网
+	// 段列进来,否则全部客户端折叠进代理单地址的同一 IP 窗口(rev2 HIGH:
+	// 平台级登录 DoS 面)。仅内网直连部署保持空即可。
+	TrustedProxies []string
 }
 
 // DefaultConfig 返回生产默认值(JWTSecret 故意留空:必须显式供给)。
 func DefaultConfig() Config {
 	return Config{
-		Addr:          DefaultAddr,
-		SnowflakeNode: DefaultSnowflakeNode,
-		ResumeQueue:   DefaultResumeQueue,
+		Addr:             DefaultAddr,
+		SnowflakeNode:    DefaultSnowflakeNode,
+		ResumeQueue:      DefaultResumeQueue,
+		LoginRateLimit:   DefaultLoginRateLimit,
+		LoginRateWindow:  DefaultLoginRateWindow,
+		LoginMaxFailures: DefaultLoginMaxFailures,
+		LoginLockout:     DefaultLoginLockout,
 	}
 }
 
@@ -75,6 +100,23 @@ func (c Config) Validate() error {
 	}
 	if !queueNameRe.MatchString(c.ResumeQueue) {
 		return fmt.Errorf("api: resume queue %q violates ^[a-z][a-z0-9_-]{0,63}$", c.ResumeQueue)
+	}
+	if c.LoginRateLimit < 1 {
+		return fmt.Errorf("api: login rate limit %d < 1", c.LoginRateLimit)
+	}
+	if c.LoginRateWindow <= 0 {
+		return fmt.Errorf("api: login rate window %s <= 0", c.LoginRateWindow)
+	}
+	if c.LoginMaxFailures < 1 {
+		return fmt.Errorf("api: login max failures %d < 1", c.LoginMaxFailures)
+	}
+	if c.LoginLockout <= 0 {
+		return fmt.Errorf("api: login lockout %s <= 0", c.LoginLockout)
+	}
+	for _, cidr := range c.TrustedProxies {
+		if _, _, err := net.ParseCIDR(cidr); err != nil {
+			return fmt.Errorf("api: trusted proxy %q: %w", cidr, err)
+		}
 	}
 	return nil
 }
@@ -100,6 +142,46 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	if v := getenv("BRAID_API_RESUME_QUEUE"); v != "" {
 		c.ResumeQueue = v
+	}
+	if raw := getenv("BRAID_API_LOGIN_RATE"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return c, fmt.Errorf("api: BRAID_API_LOGIN_RATE=%q: want int >= 1", raw)
+		}
+		c.LoginRateLimit = n
+	}
+	if raw := getenv("BRAID_API_LOGIN_WINDOW"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return c, fmt.Errorf("api: BRAID_API_LOGIN_WINDOW=%q: want duration > 0", raw)
+		}
+		c.LoginRateWindow = d
+	}
+	if raw := getenv("BRAID_API_LOGIN_MAX_FAILURES"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 {
+			return c, fmt.Errorf("api: BRAID_API_LOGIN_MAX_FAILURES=%q: want int >= 1", raw)
+		}
+		c.LoginMaxFailures = n
+	}
+	if raw := getenv("BRAID_API_LOGIN_LOCKOUT"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil || d <= 0 {
+			return c, fmt.Errorf("api: BRAID_API_LOGIN_LOCKOUT=%q: want duration > 0", raw)
+		}
+		c.LoginLockout = d
+	}
+	if raw := getenv("BRAID_API_TRUSTED_PROXIES"); raw != "" {
+		for _, cidr := range strings.Split(raw, ",") {
+			cidr = strings.TrimSpace(cidr)
+			if cidr == "" {
+				continue
+			}
+			if _, _, err := net.ParseCIDR(cidr); err != nil {
+				return c, fmt.Errorf("api: BRAID_API_TRUSTED_PROXIES=%q: bad CIDR %q", raw, cidr)
+			}
+			c.TrustedProxies = append(c.TrustedProxies, cidr)
+		}
 	}
 	// BRAID_TOOL_ALLOWLIST 已随 T3.2 退役:发布白名单真源 = tools.Registry
 	// 注册名(NewServer 注入;空 registry = 禁用一切工具,语义不变)。
