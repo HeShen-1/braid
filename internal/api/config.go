@@ -13,11 +13,12 @@ import (
 	"time"
 
 	"braid/internal/auth"
+	"braid/internal/db"
 	"braid/internal/snowflake"
 )
 
 // api 配置面(auth/relay/worker 同款四件套:Config + DefaultConfig +
-// Validate + ConfigFromEnv;字段名即未来配置键,T7.1 换装时原样搬)。
+// Validate + ConfigFromEnv;字段名即配置键面(T7.1 已换装收编))。
 // BRAID_API_* 区域;JWT 密钥与 auth 共用 BRAID_AUTH_JWT_SECRET(单部署
 // 单密钥,签发方 T5.2、验证方本包)。
 const (
@@ -25,8 +26,8 @@ const (
 	// 与 dev 栈 MySQL/Redis/Asynqmon 同一默认姿态。8081 避开 Asynqmon 8080。
 	DefaultAddr = "127.0.0.1:8081"
 	// DefaultSnowflakeNode 是 api 进程的雪花节点号默认值。显式配置面当前仅
-	// api=1、worker=2;relay 无雪花生成器,reaper 为 PID 派生(显式化归
-	// T7.1 配置体系)。
+	// api=1、worker=2;relay 无雪花生成器,reaper 缺省 PID 派生、可经
+	// BRAID_REAPER_SNOWFLAKE_NODE 显式配置(T7.1)。
 	DefaultSnowflakeNode = 1
 	// DefaultResumeQueue 是审批续跑事件的默认队列(T4.2;见 Config.ResumeQueue)。
 	DefaultResumeQueue = "default"
@@ -36,6 +37,14 @@ const (
 	DefaultLoginRateWindow  = time.Minute
 	DefaultLoginMaxFailures = 5
 	DefaultLoginLockout     = 15 * time.Minute
+
+	// http.Server 四超时默认值(原 cmd/api 期常量,T7.1 收编原值搬入):
+	// readHeader 封 slowloris;read/write 界住 1MiB DSL 请求体与响应;
+	// idle 界住 keep-alive 空闲连接(公开面下均为连接耗尽向量)。
+	DefaultReadHeaderTimeout = 10 * time.Second
+	DefaultReadTimeout       = 60 * time.Second
+	DefaultWriteTimeout      = 30 * time.Second
+	DefaultIdleTimeout       = 120 * time.Second
 )
 
 // queueNameRe 镜像 outbox 队列字符集(校验单点在 outbox.Append;此处启动
@@ -46,6 +55,9 @@ var queueNameRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 type Config struct {
 	// Addr HTTP 监听地址(host:port)。
 	Addr string
+	// MySQLDSN 连接串(BRAID_MYSQL_DSN;含凭证,不进日志/审计——铁律)。
+	// T7.1 收编 cmd 直读;必填断言在 cmd 读本字段(装配输入非旋钮)。
+	MySQLDSN string
 	// JWTSecret Bearer token 验证密钥,与 auth 签发侧共用;只经
 	// BRAID_AUTH_JWT_SECRET env 注入,无默认值(缺省启动即败),不进
 	// 代码/日志/审计(铁律)。
@@ -57,7 +69,7 @@ type Config struct {
 	// (T4.2)。必须在 worker ServeQueues 内,否则事件永挂 pending
 	// (outbox 包注释的已知边界)。缺省 "default"(与 scheduler.Deps.Queue
 	// 同值,worker 默认消费);DDL §5 queue 列注释钦定「审批/续跑与重
-	// LLM 任务隔离」的独立队列在此换装(T7.1 配置体系迁居)。
+	// LLM 任务隔离」的独立队列换装归后续配置化(P1 停车场)。
 	ResumeQueue string
 	// LoginRateLimit / LoginRateWindow:登录 IP 固定窗口限流(T6.4)。
 	LoginRateLimit  int
@@ -72,18 +84,32 @@ type Config struct {
 	// 段列进来,否则全部客户端折叠进代理单地址的同一 IP 窗口(rev2 HIGH:
 	// 平台级登录 DoS 面)。仅内网直连部署保持空即可。
 	TrustedProxies []string
+	// http.Server 四超时(BRAID_API_READ_HEADER_TIMEOUT / READ_TIMEOUT /
+	// WRITE_TIMEOUT / IDLE_TIMEOUT;T7.1 收编,原 cmd 常量语义原样)。
+	ReadHeaderTimeout time.Duration
+	ReadTimeout       time.Duration
+	WriteTimeout      time.Duration
+	IdleTimeout       time.Duration
+	// Pool 是 MySQL 连接池三值(T7.1,D-t63 移交回收):db.ParsePoolConfig
+	// 注入式解析 BRAID_DB_* 三键,施加点 cmd 的 db.ConfigurePool。
+	Pool db.PoolConfig
 }
 
 // DefaultConfig 返回生产默认值(JWTSecret 故意留空:必须显式供给)。
 func DefaultConfig() Config {
 	return Config{
-		Addr:             DefaultAddr,
-		SnowflakeNode:    DefaultSnowflakeNode,
-		ResumeQueue:      DefaultResumeQueue,
-		LoginRateLimit:   DefaultLoginRateLimit,
-		LoginRateWindow:  DefaultLoginRateWindow,
-		LoginMaxFailures: DefaultLoginMaxFailures,
-		LoginLockout:     DefaultLoginLockout,
+		Addr:              DefaultAddr,
+		SnowflakeNode:     DefaultSnowflakeNode,
+		ResumeQueue:       DefaultResumeQueue,
+		LoginRateLimit:    DefaultLoginRateLimit,
+		LoginRateWindow:   DefaultLoginRateWindow,
+		LoginMaxFailures:  DefaultLoginMaxFailures,
+		LoginLockout:      DefaultLoginLockout,
+		Pool:              db.DefaultPoolConfig(),
+		ReadHeaderTimeout: DefaultReadHeaderTimeout,
+		ReadTimeout:       DefaultReadTimeout,
+		WriteTimeout:      DefaultWriteTimeout,
+		IdleTimeout:       DefaultIdleTimeout,
 	}
 }
 
@@ -118,6 +144,12 @@ func (c Config) Validate() error {
 			return fmt.Errorf("api: trusted proxy %q: %w", cidr, err)
 		}
 	}
+	// 四超时下界 >0:任一为零/负 = 对应攻击面(慢速头部/无界请求体/空闲
+	// 连接)重开;上限不设(极端调优自有其部署理由)。
+	if c.ReadHeaderTimeout <= 0 || c.ReadTimeout <= 0 || c.WriteTimeout <= 0 || c.IdleTimeout <= 0 {
+		return fmt.Errorf("api: http timeouts must be > 0 (got header=%s read=%s write=%s idle=%s)",
+			c.ReadHeaderTimeout, c.ReadTimeout, c.WriteTimeout, c.IdleTimeout)
+	}
 	return nil
 }
 
@@ -127,6 +159,7 @@ func (c Config) Validate() error {
 func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	c := DefaultConfig()
 	c.JWTSecret = getenv("BRAID_AUTH_JWT_SECRET")
+	c.MySQLDSN = getenv("BRAID_MYSQL_DSN")
 	if v := getenv("BRAID_API_ADDR"); v != "" {
 		c.Addr = v
 	}
@@ -185,5 +218,34 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	// BRAID_TOOL_ALLOWLIST 已随 T3.2 退役:发布白名单真源 = tools.Registry
 	// 注册名(NewServer 注入;空 registry = 禁用一切工具,语义不变)。
+	pool, err := db.ParsePoolConfig(getenv)
+	if err != nil {
+		return c, err
+	}
+	c.Pool = pool
+	if c.ReadHeaderTimeout, err = envDuration(getenv, "BRAID_API_READ_HEADER_TIMEOUT", c.ReadHeaderTimeout); err != nil {
+		return c, err
+	}
+	if c.ReadTimeout, err = envDuration(getenv, "BRAID_API_READ_TIMEOUT", c.ReadTimeout); err != nil {
+		return c, err
+	}
+	if c.WriteTimeout, err = envDuration(getenv, "BRAID_API_WRITE_TIMEOUT", c.WriteTimeout); err != nil {
+		return c, err
+	}
+	if c.IdleTimeout, err = envDuration(getenv, "BRAID_API_IDLE_TIMEOUT", c.IdleTimeout); err != nil {
+		return c, err
+	}
 	return c, c.Validate()
+}
+
+func envDuration(getenv func(string) string, key string, def time.Duration) (time.Duration, error) {
+	raw := getenv(key)
+	if raw == "" {
+		return def, nil
+	}
+	d, err := time.ParseDuration(raw)
+	if err != nil {
+		return def, fmt.Errorf("api: %s=%q: %w", key, raw, err)
+	}
+	return d, nil
 }

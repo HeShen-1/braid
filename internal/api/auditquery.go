@@ -30,8 +30,9 @@ const maxActorQueryLen = 128
 // 长查询持 audit_log 共享 MDL 会与 janitor 分区 DDL 互锁——排他 MDL 等待
 // 期间阻塞全部 audit_log 写入(触发/审批热路径 + flush)。上界把最坏持锁
 // 窗口钉死(janitor lock_wait 5s 先行弃轮,下一小时 tick 重试);超时走
-// 500 面与 slog 观测。连接池上限:db.ConfigurePool 保守默认已先行
-// (D-t63 移交回收,2026-09-26),env 化换装归 T7.1。
+// 500 面与 slog 观测。连接池上限:三值已 env 化(BRAID_DB_MAX_OPEN /
+// MAX_IDLE / CONN_MAX_LIFETIME,T7.1 收口 D-t63 移交),施加点
+// db.ConfigurePool;饱和观测 braid_db_pool_* 指标面。
 const auditQueryTimeout = 15 * time.Second
 
 // auditEventDTO 是审计行视图:payload 原样直嵌(已过脱敏钩子,pii_masked

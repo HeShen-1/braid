@@ -2,8 +2,11 @@ package worker
 
 import (
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"braid/internal/db"
 )
 
 func TestConfigValidate(t *testing.T) {
@@ -73,6 +76,7 @@ func TestConfigFromEnv(t *testing.T) {
 				RetryDelay:        500 * time.Millisecond,
 				ShutdownTimeout:   10 * time.Second,
 				SnowflakeNode:     3,
+				Pool:              db.DefaultPoolConfig(),
 			},
 		},
 		{
@@ -121,4 +125,98 @@ func TestConfigFromEnv(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestConfigFromEnvPool:池三值经 worker 换装点的三态(缺省/覆盖/坏值;
+// T7.1,D-t63 移交回收)。施加行为锚在 internal/db/pool_test.go(黑盒)。
+func TestConfigFromEnvPool(t *testing.T) {
+	t.Run("empty env yields default pool", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(string) string { return "" })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.Pool != db.DefaultPoolConfig() {
+			t.Fatalf("pool = %+v, want defaults %+v", c.Pool, db.DefaultPoolConfig())
+		}
+	})
+	t.Run("override", func(t *testing.T) {
+		env := map[string]string{
+			"BRAID_DB_MAX_OPEN":          "12",
+			"BRAID_DB_MAX_IDLE":          "6",
+			"BRAID_DB_CONN_MAX_LIFETIME": "2m",
+		}
+		c, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		want := db.PoolConfig{MaxOpen: 12, MaxIdle: 6, ConnMaxLifetime: 2 * time.Minute}
+		if c.Pool != want {
+			t.Fatalf("pool = %+v, want %+v", c.Pool, want)
+		}
+	})
+	t.Run("bad value fails at startup", func(t *testing.T) {
+		env := map[string]string{"BRAID_DB_MAX_IDLE": "idle"}
+		_, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "BRAID_DB_MAX_IDLE") {
+			t.Fatalf("err = %v, want containing BRAID_DB_MAX_IDLE", err)
+		}
+	})
+}
+
+// TestConfigFromEnvInfra:装配输入收编(T7.1)——DSN/Redis 队列/指标地址
+// 进 Config(cmd 直读清零,必填断言留 cmd 读 cfg 字段);ToolTokenSecret
+// hex 解码(缺省 nil = 进程内随机,原 toolTokenKey 语义)。
+func TestConfigFromEnvInfra(t *testing.T) {
+	t.Run("infra fields parsed", func(t *testing.T) {
+		env := map[string]string{
+			"BRAID_MYSQL_DSN":        "u:p@tcp(127.0.0.1:3306)/w",
+			"BRAID_REDIS_QUEUE_ADDR": "127.0.0.1:6379",
+			"BRAID_METRICS_ADDR":     "127.0.0.1:9101",
+		}
+		c, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.MySQLDSN != env["BRAID_MYSQL_DSN"] || c.RedisQueueAddr != "127.0.0.1:6379" ||
+			c.MetricsAddr != "127.0.0.1:9101" {
+			t.Fatalf("infra = %q/%q/%q", c.MySQLDSN, c.RedisQueueAddr, c.MetricsAddr)
+		}
+		if c.ToolTokenSecret != nil {
+			t.Fatalf("tool token secret = %v, want nil (unset)", c.ToolTokenSecret)
+		}
+	})
+	t.Run("tool token secret empty yields nil", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(string) string { return "" })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.ToolTokenSecret != nil {
+			t.Fatalf("tool token secret = %v, want nil", c.ToolTokenSecret)
+		}
+	})
+	t.Run("tool token secret decoded", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(k string) string {
+			if k == "BRAID_TOOL_TOKEN_SECRET" {
+				return "0a0b"
+			}
+			return ""
+		})
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if string(c.ToolTokenSecret) != "\x0a\x0b" {
+			t.Fatalf("tool token secret = %x, want 0a0b", c.ToolTokenSecret)
+		}
+	})
+	t.Run("tool token secret bad hex rejected", func(t *testing.T) {
+		_, err := ConfigFromEnv(func(k string) string {
+			if k == "BRAID_TOOL_TOKEN_SECRET" {
+				return "zz"
+			}
+			return ""
+		})
+		if err == nil || !strings.Contains(err.Error(), "BRAID_TOOL_TOKEN_SECRET") {
+			t.Fatalf("err = %v, want containing BRAID_TOOL_TOKEN_SECRET", err)
+		}
+	})
 }

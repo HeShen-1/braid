@@ -186,7 +186,7 @@ func jittered(d time.Duration) time.Duration {
 }
 
 // auditFlushRoundCap 是单 tick 的搬运行数上限(有界 tick,余量下轮;
-// 同 janitor outboxRoundCap 语义)。搬运逻辑本体在 audit.FlushAll
+// 同 janitor janitorRoundCap 语义)。搬运逻辑本体在 audit.FlushAll
 // (internal/audit,单点供测试与多消费方复用)。
 const auditFlushRoundCap = 10000
 

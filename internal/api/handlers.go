@@ -19,7 +19,7 @@ import (
 // 节点数十级);超限即拒绝,不做流式解析(写面窄,无放大价值)。
 const maxDSLBody = 1 << 20 // 1 MiB
 
-// 分页参数域(值配置化归 T7.1;先以常量钉死契约面)。
+// 分页参数域(值配置化归后续,P1 停车场;先以常量钉死契约面)。
 const (
 	defaultPageLimit = 20
 	maxPageLimit     = 100

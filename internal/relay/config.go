@@ -5,9 +5,11 @@ import (
 	"math"
 	"strconv"
 	"time"
+
+	"braid/internal/db"
 )
 
-// Config 是 relay 的全部可调参数。默认值集中在此(T7.1 配置体系换装时原样搬);
+// Config 是 relay 的全部可调参数。默认值集中在此(T7.1 已换装收编);
 // ConfigFromEnv 是唯一环境解析点,字段名即未来配置键。
 type Config struct {
 	// IdleInterval 是空转(无可投行)时的轮询间隔。有行时连续排空,不睡眠。
@@ -26,6 +28,17 @@ type Config struct {
 	// Jitter 是退避抖动幅度(±比例),打散未来多 relay 同拍重试。固定 0.2,
 	// 不暴露 env(非运维旋钮)。
 	Jitter float64
+	// MySQLDSN 连接串(BRAID_MYSQL_DSN;含凭证,不进日志/审计)。T7.1 收编
+	// cmd 直读;必填断言在 cmd 读本字段(装配输入非旋钮)。
+	MySQLDSN string
+	// RedisQueueAddr 队列 Redis 地址(BRAID_REDIS_QUEUE_ADDR;必填断言在
+	// cmd 读本字段)。
+	RedisQueueAddr string
+	// MetricsAddr 指标面监听地址(BRAID_METRICS_ADDR;空 = 不启)。
+	MetricsAddr string
+	// Pool 是 MySQL 连接池三值(T7.1,D-t63 移交回收):db.ParsePoolConfig
+	// 注入式解析 BRAID_DB_* 三键,施加点 cmd 的 db.ConfigurePool。
+	Pool db.PoolConfig
 }
 
 // DefaultConfig 返回生产默认值。
@@ -38,6 +51,7 @@ func DefaultConfig() Config {
 		BackoffFactor:  4,
 		BackoffMax:     5 * time.Minute,
 		Jitter:         0.2,
+		Pool:           db.DefaultPoolConfig(),
 	}
 }
 
@@ -93,6 +107,12 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		return c, err
 	}
 	if c.BackoffMax, err = envDuration(getenv, "BRAID_RELAY_BACKOFF_MAX", c.BackoffMax); err != nil {
+		return c, err
+	}
+	c.MySQLDSN = getenv("BRAID_MYSQL_DSN")
+	c.RedisQueueAddr = getenv("BRAID_REDIS_QUEUE_ADDR")
+	c.MetricsAddr = getenv("BRAID_METRICS_ADDR")
+	if c.Pool, err = db.ParsePoolConfig(getenv); err != nil {
 		return c, err
 	}
 	return c, c.Validate()

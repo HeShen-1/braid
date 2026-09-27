@@ -33,7 +33,7 @@ import (
 )
 
 // Config 是 SMTP 通知的全部可调参数(relay/llm/config.go 同款四件套;字段名
-// 即配置键,T7.1 配置体系换装时原样搬)。Password 仅经 env 注入,不进代码/
+// 即配置键,T7.1 已换装收编)。Password 仅经 env 注入,不进代码/
 // 日志/审计(铁律)。Host 空 = 整组未配置(合法:worker 保留 T4.3 占位
 // log-only 降级面,dev 栈无 SMTP 可用);Host 非空则 From/NotifyTo/
 // ApprovalBaseURL 必填——半配置启动即败,优于静默半瘫。
@@ -60,7 +60,7 @@ type Config struct {
 	StartTLS bool
 	// TLSRootCAs 是 STARTTLS 的证书信任池注入面(程序化,非 env):私有 CA
 	// 中继部署时由装配方注入;nil = 系统信任池(默认)。env 文件路径形态
-	// (BRAID_SMTP_CA_FILE)归 T7.1 配置体系。
+	// (BRAID_SMTP_CA_FILE)归后续配置化(P1 停车场)。
 	TLSRootCAs *x509.CertPool
 	// Timeout 是单次发送全预算(拨号+握手+传输,单一段:拨号时长计入——
 	// 会话 deadline 从拨号前锚点起算,最坏墙钟 = Timeout)。

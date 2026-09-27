@@ -163,3 +163,115 @@ VALUES (?, 0, 'node.task_enqueue', ?, 'reap-test', '{}', ?, %s, %s)`, extra, ava
 		}
 	}
 }
+
+// seedLoginAudit:一行登录事件(event_at 相对 NOW 的偏移经 SQL 字面量表达,
+// 与库端 NOW(3) 同钟系;id 走 nextID 池)。
+func seedLoginAudit(t *testing.T, d *sql.DB, ageExpr string) uint64 {
+	t.Helper()
+	id := nextID(t)
+	if _, err := d.Exec(fmt.Sprintf(`
+INSERT INTO login_audit (id, event_type, username, client_ip, event_at)
+VALUES (?, 'login.failed', 'purge-test', '127.0.0.1', %s)`, ageExpr), id); err != nil {
+		t.Fatalf("seed login_audit: %v", err)
+	}
+	return id
+}
+
+func countLoginAudit(t *testing.T, d *sql.DB, id uint64) int {
+	t.Helper()
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM login_audit WHERE id=?`, id).Scan(&n); err != nil {
+		t.Fatalf("count login_audit %d: %v", id, err)
+	}
+	return n
+}
+
+// TestPurgeLoginAudit:超期删 / 保留期内留(migration 0005 登记的保留期
+// 接线,T7.1 落地)。retention=24h:testCfg 基线;25h 旧行删、23h 新行留。
+func TestPurgeLoginAudit(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	oldRow := seedLoginAudit(t, d, "NOW(3) - INTERVAL 25 HOUR")
+	nearRow := seedLoginAudit(t, d, "NOW(3) - INTERVAL 23 HOUR")
+
+	conn, err := d.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := r.purgeLoginAudit(context.Background(), conn); err != nil {
+		t.Fatalf("purgeLoginAudit: %v", err)
+	}
+	if countLoginAudit(t, d, oldRow) != 0 {
+		t.Fatal("超期 login_audit 应被清理")
+	}
+	if countLoginAudit(t, d, nearRow) != 1 {
+		t.Fatal("保留期内 login_audit 被误删")
+	}
+}
+
+// TestPurgeLoginAuditBatchConvergence:超单批常量(500)的存量在轮内
+// 批间连搬收敛清空(批上限不截断成多轮等待)。
+func TestPurgeLoginAuditBatchConvergence(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	const rows = loginAuditBatch + 10
+	var b strings.Builder
+	b.WriteString(`INSERT INTO login_audit (id, event_type, username, client_ip, event_at) VALUES `)
+	args := make([]any, 0, rows)
+	for i := 0; i < rows; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString("(?, 'login.failed', 'purge-batch', '127.0.0.1', NOW(3) - INTERVAL 25 HOUR)")
+		args = append(args, nextID(t))
+	}
+	if _, err := d.Exec(b.String(), args...); err != nil {
+		t.Fatalf("seed batch: %v", err)
+	}
+	conn, err := d.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := r.purgeLoginAudit(context.Background(), conn); err != nil {
+		t.Fatalf("purgeLoginAudit: %v", err)
+	}
+	var left int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM login_audit WHERE username='purge-batch'`).Scan(&left); err != nil {
+		t.Fatalf("count left: %v", err)
+	}
+	if left != 0 {
+		t.Fatalf("批量未收敛:%d 行残留(want 0,%d 行两批内清空)", left, rows)
+	}
+}
+
+// TestJanitorOnceIsolatesPurgeFailures:errors.Join 接线的行为锚——login_audit
+// 清理必败(表临时改名,1146 非 Transient)时:janitorOnce 返回含 login_audit
+// 的合并错误,且预埋的超期 outbox 行仍被清掉(隔离是双向的,删掉 Join 任一半
+// 或回退成单 return 都会红)。
+func TestJanitorOnceIsolatesPurgeFailures(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	id := nextID(t)
+	if _, err := d.Exec(`
+INSERT INTO outbox (id, execution_id, event_type, task_id, queue, payload, status, available_at, dispatched_at)
+VALUES (?, 0, 'node.task_enqueue', ?, 'reap-test', '{}', 'DISPATCHED',
+        NOW(3) - INTERVAL 8 DAY, NOW(3) - INTERVAL 8 DAY)`,
+		id, fmt.Sprintf("att:%d:1", id)); err != nil {
+		t.Fatalf("seed outbox: %v", err)
+	}
+	if _, err := d.Exec(`RENAME TABLE login_audit TO login_audit_x`); err != nil {
+		t.Fatalf("rename login_audit: %v", err)
+	}
+	t.Cleanup(func() { _, _ = d.Exec(`RENAME TABLE login_audit_x TO login_audit`) })
+	err := r.janitorOnce(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "purge login_audit") {
+		t.Fatalf("janitorOnce err = %v, want containing 'purge login_audit'", err)
+	}
+	var n int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM outbox WHERE id=?`, id).Scan(&n); err != nil {
+		t.Fatalf("count outbox: %v", err)
+	}
+	if n != 0 {
+		t.Fatal("outbox 清理被 login_audit 失败阻断(errors.Join 隔离回归)")
+	}
+}

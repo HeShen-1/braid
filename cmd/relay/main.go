@@ -39,16 +39,18 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	dsn := os.Getenv("BRAID_MYSQL_DSN")
-	if dsn == "" {
+	if cfg.MySQLDSN == "" { // T7.1 收编:cmd 直读 env 清零,断言读 cfg 字段
 		return errors.New("relay: BRAID_MYSQL_DSN is required")
 	}
-	mysqlDB, err := sql.Open("mysql", db.CanonicalDSN(dsn))
+	mysqlDB, err := sql.Open("mysql", db.CanonicalDSN(cfg.MySQLDSN))
 	if err != nil {
 		return fmt.Errorf("relay: open mysql: %w", err)
 	}
-	db.ConfigurePool(mysqlDB) // D-t63 移交回收;T7.1 env 化换装点
-	defer mysqlDB.Close()     //nolint:errcheck // 主路径退出,关闭错误无处置义
+	if err := db.ConfigurePool(mysqlDB, cfg.Pool); err != nil { // D-t63 移交回收;T7.1:三值经 BRAID_DB_* env 化
+		return fmt.Errorf("relay: %w", err)
+	}
+	slog.Info("db: pool", "max_open", cfg.Pool.MaxOpen, "max_idle", cfg.Pool.MaxIdle, "conn_max_lifetime", cfg.Pool.ConnMaxLifetime)
+	defer mysqlDB.Close() //nolint:errcheck // 主路径退出,关闭错误无处置义
 	if err := mysqlDB.PingContext(ctx); err != nil {
 		return fmt.Errorf("relay: mysql ping: %w", err)
 	}
@@ -65,7 +67,7 @@ func run(ctx context.Context) error {
 		slog.Warn("relay: audit partition watermark", "err", err)
 	}
 
-	addr := os.Getenv("BRAID_REDIS_QUEUE_ADDR")
+	addr := cfg.RedisQueueAddr
 	if addr == "" {
 		return errors.New("relay: BRAID_REDIS_QUEUE_ADDR is required")
 	}
@@ -88,11 +90,12 @@ func run(ctx context.Context) error {
 
 	// T6.4:指标面(投递计数 + Redis 内存水线;BRAID_METRICS_ADDR 空 = 不启)。
 	mset, mreg := metrics.NewSet()
-	if _, ok, err := metrics.Serve(ctx, os.Getenv("BRAID_METRICS_ADDR"), mreg); err != nil {
+	if _, ok, err := metrics.Serve(ctx, cfg.MetricsAddr, mreg); err != nil {
 		return fmt.Errorf("relay: %w", err)
 	} else if ok {
-		slog.Info("metrics: serving", "addr", os.Getenv("BRAID_METRICS_ADDR"))
+		slog.Info("metrics: serving", "addr", cfg.MetricsAddr)
 	}
+	go metrics.CollectDBPool(ctx, mysqlDB, mset.DBPool) // T7.1:池 gauge 30s 常量周期(braid_db_pool_*)
 
 	eq := relay.NewAsynqEnqueuer(asynq.RedisClientOpt{Addr: addr})
 	defer eq.Close() //nolint:errcheck // 同上

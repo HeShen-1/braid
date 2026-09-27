@@ -5,6 +5,7 @@ package main
 // sql.Open 惰性零连接(成功路径仅构造 Sender,不触网不触 DB)。
 
 import (
+	"context"
 	"database/sql"
 	"testing"
 
@@ -77,6 +78,15 @@ func TestBuildNotifier(t *testing.T) {
 				t.Fatalf("buildNotifier(%s) = nil, want sender", tc.name)
 			}
 		})
+	}
+}
+
+// TestRunRequiresDSN:启动即败路径锚(T7.1 cmd 直读 env 收编后,DSN 必填
+// 断言的新位置读 cfg.MySQLDSN):不触网不触 DB——断言在 sql.Open 前返回。
+func TestRunRequiresDSN(t *testing.T) {
+	t.Setenv("BRAID_MYSQL_DSN", "")
+	if err := run(context.Background()); err == nil {
+		t.Fatalf("missing DSN accepted")
 	}
 }
 

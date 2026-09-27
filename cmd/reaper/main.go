@@ -40,16 +40,18 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	dsn := os.Getenv("BRAID_MYSQL_DSN")
-	if dsn == "" {
+	if cfg.MySQLDSN == "" { // T7.1 收编:cmd 直读 env 清零,断言读 cfg 字段
 		return errors.New("reaper: BRAID_MYSQL_DSN is required")
 	}
-	mysqlDB, err := sql.Open("mysql", db.CanonicalDSN(dsn))
+	mysqlDB, err := sql.Open("mysql", db.CanonicalDSN(cfg.MySQLDSN))
 	if err != nil {
 		return fmt.Errorf("reaper: open mysql: %w", err)
 	}
-	db.ConfigurePool(mysqlDB) // D-t63 移交回收;T7.1 env 化换装点
-	defer mysqlDB.Close()     //nolint:errcheck // 主路径退出,关闭错误无处置义
+	if err := db.ConfigurePool(mysqlDB, cfg.Pool); err != nil { // D-t63 移交回收;T7.1:三值经 BRAID_DB_* env 化
+		return fmt.Errorf("reaper: %w", err)
+	}
+	slog.Info("db: pool", "max_open", cfg.Pool.MaxOpen, "max_idle", cfg.Pool.MaxIdle, "conn_max_lifetime", cfg.Pool.ConnMaxLifetime)
+	defer mysqlDB.Close() //nolint:errcheck // 主路径退出,关闭错误无处置义
 	if err := mysqlDB.PingContext(ctx); err != nil {
 		return fmt.Errorf("reaper: mysql ping: %w", err)
 	}
@@ -67,7 +69,7 @@ func run(ctx context.Context) error {
 		slog.Warn("reaper: audit partition watermark", "err", err)
 	}
 
-	ids, err := snowflake.New(uint16(os.Getpid() & 0x3ff))
+	ids, err := snowflake.New(cfg.SnowflakeNode) // T7.1 显式化(缺省 PID 派生在 ConfigFromEnv)
 	if err != nil {
 		return fmt.Errorf("reaper: snowflake: %w", err)
 	}
@@ -83,21 +85,22 @@ func run(ctx context.Context) error {
 	// T6.4:Prometheus 指标面(裁决计数 + flush 观测 + 周期 gauge 采集)。
 	// BRAID_METRICS_ADDR 空 = 不启;Deps.Metrics 与采集器同生命周期。
 	mset, mreg := metrics.NewSet()
-	if _, ok, err := metrics.Serve(ctx, os.Getenv("BRAID_METRICS_ADDR"), mreg); err != nil {
+	if _, ok, err := metrics.Serve(ctx, cfg.MetricsAddr, mreg); err != nil {
 		return fmt.Errorf("reaper: %w", err)
 	} else if ok {
-		slog.Info("metrics: serving", "addr", os.Getenv("BRAID_METRICS_ADDR"))
+		slog.Info("metrics: serving", "addr", cfg.MetricsAddr)
 	}
+	go metrics.CollectDBPool(ctx, mysqlDB, mset.DBPool) // T7.1:池 gauge 30s 常量周期(braid_db_pool_*)
 
 	deps := reaper.Deps{DB: mysqlDB, Sched: sched, IDs: ids, Metrics: mset.Reaper}
-	if addr := os.Getenv("BRAID_REDIS_QUEUE_ADDR"); addr != "" {
+	if cfg.RedisQueueAddr != "" {
 		// T7.3:队列 Redis 契约探测仅 warn(D-t25 fail-open 同族:锁实例破约
 		// 的失败模式 = 锁丢失退化为 leaderless,安全;拒启反制造停摆面)。
-		if err := preflight.CheckRedisQueue(ctx, addr); err != nil {
+		if err := preflight.CheckRedisQueue(ctx, cfg.RedisQueueAddr); err != nil {
 			slog.Warn("reaper: redis queue policy preflight", "err", err)
 		}
-		deps.Locker = reaper.RedisLocker(redis.NewClient(&redis.Options{Addr: addr}))
-		slog.Info("reaper: leader lock enabled", "addr", addr)
+		deps.Locker = reaper.RedisLocker(redis.NewClient(&redis.Options{Addr: cfg.RedisQueueAddr}))
+		slog.Info("reaper: leader lock enabled", "addr", cfg.RedisQueueAddr)
 	} else {
 		slog.Warn("reaper: BRAID_REDIS_QUEUE_ADDR unset; running leaderless")
 	}

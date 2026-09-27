@@ -28,9 +28,10 @@ const (
 	nodeBits = 10
 	seqBits  = 12
 
-	// MaxNodeID 是节点号上界(10bit)。P0 = compose 容器槽位静态配置
-	// (api=1/worker=2/relay=3/reaper=4,值表 T7.1 配置化);跨进程重号的
-	// 唯一症状是 outbox/业务表 PK 1062(写入事务中止 + 告警)。
+	// MaxNodeID 是节点号上界(10bit)。显式配置面 = api=1、worker=2;reaper
+	// 缺省 PID 派生、可经 BRAID_REAPER_SNOWFLAKE_NODE 显式化(T7.1);relay
+	// 无生成器。跨进程重号的唯一症状是 outbox/业务表 PK 1062(写入事务
+	// 中止 + 告警)。
 	MaxNodeID = 1<<nodeBits - 1 // 1023
 
 	maxSeq         = 1<<seqBits - 1 // 序列上界;同 ms 可产 4096 个(seq 0..4095)

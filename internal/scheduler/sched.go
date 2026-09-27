@@ -178,7 +178,7 @@ func New(d Deps) (*Scheduler, error) {
 }
 
 // NodeTimeout 返回 claim 时的 deadline 偏移(DDL:进入 EXECUTING 时 = now+按类型
-// 执行超时;T7.1 配置化的换装点)。branch 内联无驻留 → 零值(NULL deadline)。
+// 执行超时;配置化换装点归后续,P1 停车场)。branch 内联无驻留 → 零值(NULL deadline)。
 // 导出供 reaper 重挂/重派计算同一词表(单源,D-2026-09-22-t25-reaper-semantics)。
 var nodeTimeouts = map[string]time.Duration{
 	"llm":      30 * time.Minute,

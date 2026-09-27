@@ -3,6 +3,9 @@ package api
 import (
 	"strings"
 	"testing"
+	"time"
+
+	"braid/internal/db"
 )
 
 // testSecret 满足 auth.MinSecretLen 的低熵占位词组(纯词组无 hex/熵段,
@@ -112,5 +115,110 @@ func TestConfigValidateSecretBoundary(t *testing.T) {
 	c.JWTSecret = strings.Repeat("x", 32)
 	if err := c.Validate(); err != nil {
 		t.Fatalf("32-byte secret rejected: %v", err)
+	}
+}
+
+// TestConfigFromEnvPool:池三值经 api 换装点的三态(缺省/覆盖/坏值启动即败;
+// T7.1,D-t63 移交回收)。施加行为锚在 internal/db/pool_test.go(黑盒)。
+func TestConfigFromEnvPool(t *testing.T) {
+	t.Run("empty env yields default pool", func(t *testing.T) {
+		env := map[string]string{"BRAID_AUTH_JWT_SECRET": testSecret}
+		c, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.Pool != db.DefaultPoolConfig() {
+			t.Fatalf("pool = %+v, want defaults %+v", c.Pool, db.DefaultPoolConfig())
+		}
+	})
+	t.Run("override", func(t *testing.T) {
+		env := map[string]string{
+			"BRAID_AUTH_JWT_SECRET":      testSecret,
+			"BRAID_DB_MAX_OPEN":          "10",
+			"BRAID_DB_MAX_IDLE":          "4",
+			"BRAID_DB_CONN_MAX_LIFETIME": "90s",
+		}
+		c, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		want := db.PoolConfig{MaxOpen: 10, MaxIdle: 4, ConnMaxLifetime: 90 * time.Second}
+		if c.Pool != want {
+			t.Fatalf("pool = %+v, want %+v", c.Pool, want)
+		}
+	})
+	t.Run("bad value fails at startup", func(t *testing.T) {
+		env := map[string]string{
+			"BRAID_AUTH_JWT_SECRET": testSecret,
+			"BRAID_DB_MAX_OPEN":     "ten",
+		}
+		_, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "BRAID_DB_MAX_OPEN") {
+			t.Fatalf("err = %v, want containing BRAID_DB_MAX_OPEN", err)
+		}
+	})
+}
+
+// TestConfigFromEnvDSN:DSN 收编进 Config(T7.1;必填断言留 cmd 读 cfg
+// 字段——装配输入非旋钮,ConfigFromEnv 保持纯解析)。
+func TestConfigFromEnvDSN(t *testing.T) {
+	env := map[string]string{
+		"BRAID_AUTH_JWT_SECRET": testSecret,
+		"BRAID_MYSQL_DSN":       "u:p@tcp(127.0.0.1:3306)/a",
+	}
+	c, err := ConfigFromEnv(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if c.MySQLDSN != env["BRAID_MYSQL_DSN"] {
+		t.Fatalf("dsn = %q, want %q", c.MySQLDSN, env["BRAID_MYSQL_DSN"])
+	}
+}
+
+// TestConfigFromEnvTimeouts:http.Server 四超时经 api 换装点的三态(缺省
+// 逐值钉死 cmd 期常量——慢速攻击面口径不得随收编漂移;覆盖;坏值)。
+func TestConfigFromEnvTimeouts(t *testing.T) {
+	base := map[string]string{"BRAID_AUTH_JWT_SECRET": testSecret}
+	t.Run("empty env pins cmd-era constants", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(k string) string { return base[k] })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.ReadHeaderTimeout != 10*time.Second || c.ReadTimeout != 60*time.Second ||
+			c.WriteTimeout != 30*time.Second || c.IdleTimeout != 120*time.Second {
+			t.Fatalf("timeouts = %s/%s/%s/%s, want 10s/60s/30s/120s",
+				c.ReadHeaderTimeout, c.ReadTimeout, c.WriteTimeout, c.IdleTimeout)
+		}
+	})
+	t.Run("override all four", func(t *testing.T) {
+		env := map[string]string{
+			"BRAID_AUTH_JWT_SECRET":         testSecret,
+			"BRAID_API_READ_HEADER_TIMEOUT": "3s",
+			"BRAID_API_READ_TIMEOUT":        "45s",
+			"BRAID_API_WRITE_TIMEOUT":       "20s",
+			"BRAID_API_IDLE_TIMEOUT":        "90s",
+		}
+		c, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.ReadHeaderTimeout != 3*time.Second || c.ReadTimeout != 45*time.Second ||
+			c.WriteTimeout != 20*time.Second || c.IdleTimeout != 90*time.Second {
+			t.Fatalf("timeouts = %s/%s/%s/%s, want 3s/45s/20s/90s",
+				c.ReadHeaderTimeout, c.ReadTimeout, c.WriteTimeout, c.IdleTimeout)
+		}
+	})
+	for key, val := range map[string]string{
+		"BRAID_API_READ_HEADER_TIMEOUT": "0s",
+		"BRAID_API_READ_TIMEOUT":        "-5s",
+		"BRAID_API_WRITE_TIMEOUT":       "forever",
+		"BRAID_API_IDLE_TIMEOUT":        "0s",
+	} {
+		t.Run(key+" bad rejected", func(t *testing.T) {
+			env := map[string]string{"BRAID_AUTH_JWT_SECRET": testSecret, key: val}
+			if _, err := ConfigFromEnv(func(k string) string { return env[k] }); err == nil {
+				t.Fatalf("%s=%s accepted, want reject", key, val)
+			}
+		})
 	}
 }
