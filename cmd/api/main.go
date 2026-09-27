@@ -133,14 +133,7 @@ func run(ctx context.Context) error {
 	// 公开面部署注记:反向代理只应转发 /api/v1 与 /ui/,/metrics 与
 	// /healthz 留在内网(review advisory)。
 	router.GET("/metrics", gin.WrapH(metrics.Handler(mreg)))
-	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           router,
-		ReadHeaderTimeout: cfg.ReadHeaderTimeout, // T7.1 收编(原 cmd 常量,默认值原样)
-		ReadTimeout:       cfg.ReadTimeout,
-		WriteTimeout:      cfg.WriteTimeout,
-		IdleTimeout:       cfg.IdleTimeout,
-	}
+	srv := buildHTTPServer(cfg, router)
 	errCh := make(chan error, 1)
 	go func() {
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -155,5 +148,18 @@ func run(ctx context.Context) error {
 		shCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 		defer cancel()
 		return srv.Shutdown(shCtx)
+	}
+}
+
+// buildHTTPServer 把 cfg 四超时字段装配进 http.Server(#67-②:装配步纯函数
+// 化,表驱动单测锚定映射;config 三态锚在 internal/api/config_test.go)。
+func buildHTTPServer(cfg api.Config, h http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              cfg.Addr,
+		Handler:           h,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout, // T7.1 收编(原 cmd 常量,默认值原样)
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
 	}
 }
