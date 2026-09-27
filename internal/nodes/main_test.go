@@ -23,6 +23,13 @@ const nodesRedisBase = 3
 const nodesSchema = "braid_nodes_test"
 
 func TestMain(m *testing.M) {
+	// T8.1 worker-kill 注入子进程分支(真 worker,claim 后停车等 SIGKILL)。
+	// 必须在槽位组合之前判定:子进程继承父进程已组合的绝对 DB 号,重组合
+	// 会把绝对号再当槽位解析(reaper accChildMain 同款先例)。
+	if os.Getenv(faultChildEnv) == "1" {
+		faultChildMain()
+		return
+	}
 	// T2.7:BRAID_TEST_REDIS_DB 语义 = worktree 槽位,组合为绝对 DB 号
 	// (槽位×4 + nodes 基号)写回同名 env;非法槽位响亮退出。
 	redisDB, err := db.TestRedisDB(nodesRedisBase)
