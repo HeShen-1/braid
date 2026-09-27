@@ -25,6 +25,7 @@ import (
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 	"braid/internal/tools"
+	"braid/internal/tracing"
 )
 
 // readHeaderTimeout 封慢速头部攻击(slowloris)的硬上限;值配置化归 T7.1。
@@ -41,6 +42,9 @@ const (
 
 // shutdownGrace 是优雅停机窗:在途请求排空、新请求已由 Shutdown 拒绝。
 const shutdownGrace = 10 * time.Second
+
+// traceShutdownGrace 是 OTel batcher 排空预算(独立于 HTTP 停机窗)。
+const traceShutdownGrace = 2 * time.Second
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -111,8 +115,28 @@ func run(ctx context.Context) error {
 	// T6.4:Prometheus 指标面——与 /healthz 同端口同回环绑定(BRAID_API_ADDR
 	// 部署约定);登录防御计数(login_audit 0005 的指标半边)在此注册。
 	mset, mreg := metrics.NewSet()
+	// T6.2:OTel trace 贯穿——off = 丢弃导出器(span/trace id 照生成,审计列
+	// 不随观测开关退化);Tracer 显式注入组件,不注册 otel 全局(镜像 metrics
+	// 先例)。P0 装配面 = api + worker;D-2026-09-27-t62-otel-trace。
+	traceCfg := tracing.ConfigFromEnv(os.Getenv)
+	if err := traceCfg.Validate(); err != nil {
+		return fmt.Errorf("api: %w", err)
+	}
+	traceProv, err := tracing.NewProvider(tracing.Config{Exporter: traceCfg.Exporter, ServiceName: "braid-api"})
+	if err != nil {
+		return fmt.Errorf("api: %w", err)
+	}
+	defer func() {
+		shCtx, cancel := context.WithTimeout(context.Background(), traceShutdownGrace)
+		defer cancel()
+		if err := traceProv.Shutdown(shCtx); err != nil {
+			slog.Warn("api: trace provider shutdown", "err", err)
+		}
+	}()
+	slog.Info("api: tracing", "exporter", traceCfg.Exporter)
 	apiSrv := api.NewServer(cfg, dbh, ids, toolReg, sched, auth.BuiltinProvider{DB: dbh})
 	apiSrv.LoginMetrics(mset.Login)
+	apiSrv.Tracing(traceProv.Tracer("braid/api"))
 	router := apiSrv.Router()
 	// /metrics 与 /healthz 同端口同回环绑定(BRAID_API_ADDR 部署约定)。
 	// 公开面部署注记:反向代理只应转发 /api/v1 与 /ui/,/metrics 与

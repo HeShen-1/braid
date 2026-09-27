@@ -30,6 +30,7 @@ import (
 	"braid/internal/relay"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
+	"braid/internal/tracing"
 	"braid/internal/worker"
 )
 
@@ -413,10 +414,20 @@ func startE2EWorker(t *testing.T, d *sql.DB, ex worker.Executor, cfg worker.Conf
 	if err != nil {
 		t.Fatalf("worker scheduler: %v", err)
 	}
+	// T6.2 消费半边:payload trace_id extract 续链(off exporter = trace id
+	// 照生成零导出);provider 生命周期随测试。
+	traceProv, err := tracing.NewProvider(tracing.Config{Exporter: tracing.ExporterOff, ServiceName: "braid-worker-e2e"})
+	if err != nil {
+		t.Fatalf("trace provider: %v", err)
+	}
+	t.Cleanup(func() { _ = traceProv.Shutdown(context.Background()) })
 	wctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- worker.Run(wctx, worker.Deps{DB: d, IDs: ids, Executor: ex, Sched: sched}, cfg, redistest.MustOpt(t))
+		done <- worker.Run(wctx, worker.Deps{
+			DB: d, IDs: ids, Executor: ex, Sched: sched,
+			Tracer: traceProv.Tracer("braid/worker"),
+		}, cfg, redistest.MustOpt(t))
 	}()
 	t.Cleanup(func() {
 		cancel()

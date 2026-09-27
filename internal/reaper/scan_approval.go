@@ -334,13 +334,21 @@ SELECT node_id, status, version, attempts, worker_id, deadline_at, escalated_at,
 func (r *Reaper) redispatchResume(ctx context.Context, q engine.DBTX,
 	execID, nodeExecID uint64, nodeID string, attempts uint16, decisionID uint64) error {
 	taskID := fmt.Sprintf("resume:%d:%s:%d", execID, nodeID, attempts+1)
+	// 活闸与 trace 分置两个标量子查询(T6.2 review HIGH-1 修):live 只数
+	// 活行(PENDING + 未过期 DISPATCHED,DEAD 行是死信网的主场景而非活
+	// 证据——计入则重投永不发生,审批已决执行永卡 WAITING_APPROVAL);
+	// trace 自全状态 MAX 带出原行值(重投 = 原事件重放同一真相,决策请求
+	// trace Z 随行拷贝,续跑段链不因死信网换段;原行已被 7 天清理时
+	// 空 = 纯运维事件无段 trace)。
 	var live int
+	var origTrace sql.NullString
 	if err := q.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM outbox
- WHERE task_id=?
-   AND (status='PENDING'
-        OR (status='DISPATCHED' AND dispatched_at >= NOW(3) - INTERVAL ? MICROSECOND))`,
-		taskID, r.cfg.DispatchStale.Microseconds()).Scan(&live); err != nil {
+SELECT (SELECT COUNT(*) FROM outbox
+         WHERE task_id=?
+           AND (status='PENDING'
+                OR (status='DISPATCHED' AND dispatched_at >= NOW(3) - INTERVAL ? MICROSECOND))),
+       COALESCE((SELECT MAX(trace_id) FROM outbox WHERE task_id=?), '')`,
+		taskID, r.cfg.DispatchStale.Microseconds(), taskID).Scan(&live, &origTrace); err != nil {
 		return fmt.Errorf("reaper: resume live gate node %d: %w", nodeExecID, err)
 	}
 	if live > 0 {
@@ -352,6 +360,7 @@ SELECT COUNT(*) FROM outbox
 	raw, err := json.Marshal(scheduler.ResumePayload{
 		ExecutionID: execID, NodeExecutionID: nodeExecID,
 		DecisionID: decisionID, AttemptNo: attempts + 1,
+		TraceID: origTrace.String,
 	})
 	if err != nil {
 		return fmt.Errorf("reaper: marshal resume payload: %w", err)
@@ -361,7 +370,10 @@ SELECT COUNT(*) FROM outbox
 		return fmt.Errorf("reaper: gen event id: %w", err)
 	}
 	if err := outbox.Append(ctx, q, outbox.Event{
-		ID:          id,
+		ID: id,
+		// TraceID 显式拷原行值(T6.2:applyCtxTrace 显式优先语义;reaper
+		// tick ctx 无 span,不显式则丢段链)。
+		TraceID:     origTrace.String,
 		ExecutionID: execID,
 		EventType:   scheduler.EventTypeExecutionResume,
 		TaskID:      taskID,

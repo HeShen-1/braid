@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
+	"go.opentelemetry.io/otel/trace"
 
 	"braid/internal/engine"
 	"braid/internal/metrics"
@@ -138,6 +139,11 @@ type Deps struct {
 	// Metrics 是观测面(T6.4):nil = 关闭(测试默认)。notify 结果计数 +
 	// asynq archived 死信 gauge(探测 goroutine 随 Run 生命周期)。
 	Metrics *metrics.WorkerSet
+	// Tracer 是 OTel 消费半边(T6.2):nil = 关闭(测试默认,payload 内
+	// trace_id 不 extract,ctx 无 span,audit 落 NULL——与 api Tracing(nil)
+	// 同口径)。非 nil 时每任务起段根 span(remote parent = payload 携带的
+	// trace,续链不新开 trace;D-2026-09-27-t62-otel-trace)。
+	Tracer trace.Tracer
 }
 
 // Run 阻塞运行 worker 直到 ctx 取消(优雅停机受 cfg.ShutdownTimeout 界住,
@@ -178,6 +184,7 @@ func Run(ctx context.Context, d Deps, cfg Config, opt asynq.RedisClientOpt) erro
 		RetryDelayFunc:  func(n int, e error, t *asynq.Task) time.Duration { return cfg.RetryDelay },
 	})
 	mux := asynq.NewServeMux()
+	mux.Use(traceMiddleware(d.Tracer, log))
 	mux.HandleFunc(EventTypeNodeTask, h.handleNodeTask)
 	mux.HandleFunc(scheduler.EventTypeExecutionStart, h.handleExecStart)
 	mux.HandleFunc(scheduler.EventTypeExecutionResume, h.handleNodeResume)

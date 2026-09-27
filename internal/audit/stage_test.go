@@ -28,6 +28,7 @@ type stagedRow struct {
 	actorType   string
 	actorID     string
 	traceID     sql.NullString
+	linkedTrace sql.NullString
 	piiMasked   bool
 	model       sql.NullString
 	costAmount  sql.NullFloat64
@@ -39,7 +40,7 @@ func readStaged(t *testing.T, d *sql.DB, execID uint64) []stagedRow {
 	rows, err := d.Query(`
 SELECT id, DATE_FORMAT(event_at, '%Y-%m-%dT%H:%i:%s'), event_type, execution_id,
        node_execution_id, node_id, attempt_id, actor_type, actor_id, trace_id,
-       pii_masked, model, cost_amount, payload
+       linked_trace_id, pii_masked, model, cost_amount, payload
   FROM audit_pending WHERE execution_id=? ORDER BY id`, execID)
 	if err != nil {
 		t.Fatalf("read staged: %v", err)
@@ -50,7 +51,7 @@ SELECT id, DATE_FORMAT(event_at, '%Y-%m-%dT%H:%i:%s'), event_type, execution_id,
 		var r stagedRow
 		if err := rows.Scan(&r.id, &r.eventAt, &r.eventType, &r.executionID,
 			&r.nodeExecID, &r.nodeID, &r.attemptID, &r.actorType, &r.actorID,
-			&r.traceID, &r.piiMasked, &r.model, &r.costAmount, &r.payload); err != nil {
+			&r.traceID, &r.linkedTrace, &r.piiMasked, &r.model, &r.costAmount, &r.payload); err != nil {
 			t.Fatalf("scan staged: %v", err)
 		}
 		out = append(out, r)

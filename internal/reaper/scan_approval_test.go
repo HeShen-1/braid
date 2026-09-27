@@ -343,6 +343,55 @@ func TestApprovalDecidedLiveEventDefers(t *testing.T) {
 	}
 }
 
+// TestApprovalDecidedDeadEventRedispatchesWithTrace:死信网主场景(review
+// HIGH-1 回归锚):原行 DEAD(投递穷尽)≠ 活证据——重投必须发生(计入
+// live 则审批已决执行永卡 WAITING_APPROVAL);且 T6.2 trace 随行拷贝:
+// 重投行 payload.trace_id 与列值都 == 原行 Z(段链不因死信网换段)。
+func TestApprovalDecidedDeadEventRedispatchesWithTrace(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	s := seedApproval(t, d, "RUNNING", 5*time.Minute, "escalate", false)
+	decID := seedDecision(t, d, s, "APPROVED")
+	const z = "4bf92f3577b34da6a3ce929d0e0e4736"
+	payload, err := json.Marshal(scheduler.ResumePayload{
+		ExecutionID: s.execID, NodeExecutionID: s.nodeExecID,
+		DecisionID: decID, AttemptNo: 2, TraceID: z,
+	})
+	if err != nil {
+		t.Fatalf("marshal resume payload: %v", err)
+	}
+	taskID := fmt.Sprintf("resume:%d:boss:2", s.execID)
+	if _, err := d.Exec(`INSERT INTO outbox
+	  (id, execution_id, event_type, task_id, queue, payload, status, trace_id, available_at)
+	  VALUES (?, ?, 'execution.resume', ?, 'reap-test', ?, 'DEAD', ?, NOW(3))`,
+		nextID(t), s.execID, taskID, payload, z); err != nil {
+		t.Fatalf("seed dead resume event: %v", err)
+	}
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	rows := fetchOutbox(t, d, s.execID, "execution.resume")
+	if len(rows) != 2 {
+		t.Fatalf("resume 行数 = %d, want 2(DEAD 是重投主场景,不是活证据)", len(rows))
+	}
+	var rp scheduler.ResumePayload
+	if err := json.Unmarshal(rows[1].payload, &rp); err != nil {
+		t.Fatalf("redispatch payload: %v", err)
+	}
+	if rp.TraceID != z {
+		t.Fatalf("重投 payload trace_id = %q, want 原行 %q(段链不换)", rp.TraceID, z)
+	}
+	var colTrace sql.NullString
+	if err := d.QueryRow(
+		`SELECT trace_id FROM outbox WHERE task_id=? AND status='PENDING'`, taskID).
+		Scan(&colTrace); err != nil {
+		t.Fatalf("read redispatched row trace column: %v", err)
+	}
+	if colTrace.String != z {
+		t.Fatalf("重投行 trace 列 = %v, want %q(列/payload 同值双写)", colTrace, z)
+	}
+}
+
 // TestApprovalOrphanUnderTerminalWfCancelled:wf 已终态(fail-fast 遗留)→
 // 平台裁决 CANCELLED(镜像扫描③),即使已决票也不重投(cancel 优先于
 // resume 死信网——终态执行的续跑是永久 no-op)。deadline 未来证明孤儿

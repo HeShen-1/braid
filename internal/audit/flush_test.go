@@ -34,7 +34,8 @@ func flushAuditRows(t *testing.T, d *sql.DB, execIDs ...uint64) []auditRow {
 	}
 	rows, err := d.Query(`
 SELECT id, exec_date, event_type, execution_id, node_execution_id, node_id,
-       attempt_id, actor_type, actor_id, trace_id, payload, prev_hash, pii_masked
+       attempt_id, actor_type, actor_id, trace_id, linked_trace_id, payload,
+       prev_hash, pii_masked
   FROM audit_log WHERE execution_id IN (`+ph+`) ORDER BY id`, args...)
 	if err != nil {
 		t.Fatalf("read audit: %v", err)
@@ -44,7 +45,7 @@ SELECT id, exec_date, event_type, execution_id, node_execution_id, node_id,
 	for rows.Next() {
 		var r auditRow
 		if err := rows.Scan(&r.id, &r.execDate, &r.eventType, &r.executionID, &r.nodeExecID,
-			&r.nodeID, &r.attemptID, &r.actorType, &r.actorID, &r.traceID,
+			&r.nodeID, &r.attemptID, &r.actorType, &r.actorID, &r.traceID, &r.linkedTrace,
 			&r.payload, &r.prevHash, &r.piiMasked); err != nil {
 			t.Fatalf("scan audit: %v", err)
 		}
@@ -54,6 +55,43 @@ SELECT id, exec_date, event_type, execution_id, node_execution_id, node_id,
 		t.Fatalf("audit rows: %v", err)
 	}
 	return out
+}
+
+// T6.2:trace/linked 两列随暂存行搬运落 audit_log(Enqueue→flush 全管道)。
+func TestFlushCarriesTraceColumns(t *testing.T) {
+	d := sqltest.MustOpenAt(t, testSchema)
+	execID := seedExec(t, d)
+	stageEvent(t, d, Event{
+		ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: execID,
+		NodeID: "n1", ActorType: ActorWorker, ActorID: "w1",
+		TraceID: "0123456789abcdef0123456789abcdef",
+	})
+	stageEvent(t, d, Event{
+		ID: nextID(t), EventType: EventApprovalDecisionDenied, ExecutionID: execID,
+		NodeID: "n2", ActorType: ActorWorker, ActorID: "w1",
+		LinkedTraceID: "fedcba9876543210fedcba9876543210",
+	})
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID) })
+
+	if _, err := FlushAll(context.Background(), d, 10, 100); err != nil {
+		t.Fatalf("FlushAll: %v", err)
+	}
+	rows := flushAuditRows(t, d, execID)
+	if len(rows) != 2 {
+		t.Fatalf("rows = %d, want 2", len(rows))
+	}
+	if rows[0].traceID.String != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("row1 trace_id = %v, want staged value", rows[0].traceID)
+	}
+	if rows[0].linkedTrace.Valid {
+		t.Fatalf("row1 linked = %v, want NULL", rows[0].linkedTrace)
+	}
+	if rows[1].linkedTrace.String != "fedcba9876543210fedcba9876543210" {
+		t.Fatalf("row2 linked_trace_id = %v, want staged value", rows[1].linkedTrace)
+	}
+	if rows[1].traceID.Valid {
+		t.Fatalf("row2 trace_id = %v, want NULL", rows[1].traceID)
+	}
 }
 
 // stageEvent 便捷落暂存(独立事务;Enqueue 已有同存亡测试)。

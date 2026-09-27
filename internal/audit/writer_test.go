@@ -14,6 +14,8 @@ import (
 	"sync"
 	"testing"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"braid/internal/db/sqltest"
 	"braid/internal/engine"
 	"braid/internal/snowflake"
@@ -73,6 +75,11 @@ func TestValidateRejectsInvalidEvents(t *testing.T) {
 		{"node id too long", func(e *Event) { e.NodeID = fmt.Sprintf("%65s", "x") }},
 		{"trace id not hex", func(e *Event) { e.TraceID = "XYZ" }},
 		{"trace id wrong length", func(e *Event) { e.TraceID = "0123456789abcdef0123456789abcde" }},
+		{"linked trace id not hex", func(e *Event) { e.LinkedTraceID = "NOTHEX" }},
+		{"linked trace id wrong length", func(e *Event) { e.LinkedTraceID = "0123456789abcdef0123456789abcde" }},
+		{"linked on non-approval event", func(e *Event) {
+			e.LinkedTraceID = "0123456789abcdef0123456789abcdef" // 词表闸:段首双词之外拒绝
+		}},
 		{"payload not json", func(e *Event) { e.Payload = json.RawMessage(`{`) }},
 		{"payload invalid utf-8", func(e *Event) {
 			// json.Valid 只查语法:字符串内 0xFF 字节合法过检,但 MySQL 会原样
@@ -107,6 +114,16 @@ func TestValidateRejectsInvalidEvents(t *testing.T) {
 	evt.TraceID = "0123456789abcdef0123456789abcdef"
 	if err := validate(evt); err != nil {
 		t.Fatalf("validate(valid trace) = %v, want nil", err)
+	}
+	// linked_trace_id 同域(审批链段首双词单点携带,T6.2;词表闸见上表)。
+	evt.LinkedTraceID = "fedcba9876543210fedcba9876543210"
+	evt.EventType = EventApprovalDecided
+	if err := validate(evt); err != nil {
+		t.Fatalf("validate(approval.decided with linked) = %v, want nil", err)
+	}
+	evt.EventType = EventApprovalDecisionDenied
+	if err := validate(evt); err != nil {
+		t.Fatalf("validate(approval.decision_denied with linked) = %v, want nil", err)
 	}
 }
 
@@ -155,6 +172,7 @@ type auditRow struct {
 	actorType   string
 	actorID     string
 	traceID     sql.NullString
+	linkedTrace sql.NullString
 	payload     []byte
 	prevHash    string
 	piiMasked   bool
@@ -164,7 +182,8 @@ func readAudit(t *testing.T, d *sql.DB, execID uint64) []auditRow {
 	t.Helper()
 	rows, err := d.Query(`
 SELECT id, exec_date, event_type, execution_id, node_execution_id, node_id,
-       attempt_id, actor_type, actor_id, trace_id, payload, prev_hash, pii_masked
+       attempt_id, actor_type, actor_id, trace_id, linked_trace_id, payload,
+       prev_hash, pii_masked
   FROM audit_log WHERE execution_id=? ORDER BY id`, execID)
 	if err != nil {
 		t.Fatalf("read audit: %v", err)
@@ -174,7 +193,7 @@ SELECT id, exec_date, event_type, execution_id, node_execution_id, node_id,
 	for rows.Next() {
 		var r auditRow
 		if err := rows.Scan(&r.id, &r.execDate, &r.eventType, &r.executionID, &r.nodeExecID,
-			&r.nodeID, &r.attemptID, &r.actorType, &r.actorID, &r.traceID,
+			&r.nodeID, &r.attemptID, &r.actorType, &r.actorID, &r.traceID, &r.linkedTrace,
 			&r.payload, &r.prevHash, &r.piiMasked); err != nil {
 			t.Fatalf("scan audit: %v", err)
 		}
@@ -184,6 +203,76 @@ SELECT id, exec_date, event_type, execution_id, node_execution_id, node_id,
 		t.Fatalf("audit rows: %v", err)
 	}
 	return out
+}
+
+// traceCtx 构造携带给定 trace id 的 ctx(仅 otel/trace API,零 SDK 依赖;
+// 生产路径 = tracing 包的 span 注入,同值语义)。
+func traceCtx(t *testing.T, hexID string) context.Context {
+	t.Helper()
+	tid, err := trace.TraceIDFromHex(hexID)
+	if err != nil {
+		t.Fatalf("trace id from hex: %v", err)
+	}
+	sid, _ := trace.SpanIDFromHex("0af7651916cd43dd")
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: tid, SpanID: sid, TraceFlags: trace.FlagsSampled,
+	})
+	return trace.ContextWithSpanContext(context.Background(), sc)
+}
+
+// T6.2 双通道:ctx 自动提取(生产主路径,十发射点零改动)+ 显式值优先
+// (测试注入位);linked 段首单点显式携带。
+func TestAppendTraceFromContextAndLinked(t *testing.T) {
+	d := sqltest.MustOpenAt(t, testSchema)
+	execID := seedExec(t, d)
+
+	// ctx 提取臂:evt 零 TraceID,ctx span context 落列;linked 同行落列
+	//(词表闸 ⇒ linked 组合用段首词,与生产决策行同形)。
+	id1 := nextID(t)
+	if err := Append(traceCtx(t, "4bf92f3577b34da6a3ce929d0e0e4736"), d, Event{
+		ID: id1, EventType: EventApprovalDecided, ExecutionID: execID,
+		NodeID: "n1", ActorType: ActorUser, ActorID: "u1",
+		LinkedTraceID: "fedcba9876543210fedcba9876543210",
+	}); err != nil {
+		t.Fatalf("Append(ctx trace): %v", err)
+	}
+	// 显式优先臂:ctx 带 X、evt 带 Y → 落 Y(注入位契约)。
+	id2 := nextID(t)
+	if err := Append(traceCtx(t, "4bf92f3577b34da6a3ce929d0e0e4736"), d, Event{
+		ID: id2, EventType: EventNodeStateChanged, ExecutionID: execID,
+		NodeID: "n2", ActorType: ActorWorker, ActorID: "w1",
+		TraceID: "0123456789abcdef0123456789abcdef",
+	}); err != nil {
+		t.Fatalf("Append(explicit trace): %v", err)
+	}
+	// 纯 background ctx 臂:无 span context → trace NULL(行为不变锚)。
+	id3 := nextID(t)
+	if err := Append(context.Background(), d, Event{
+		ID: id3, EventType: EventNodeStateChanged, ExecutionID: execID,
+		NodeID: "n3", ActorType: ActorWorker, ActorID: "w1",
+	}); err != nil {
+		t.Fatalf("Append(no trace): %v", err)
+	}
+
+	rows := readAudit(t, d, execID)
+	if len(rows) != 3 {
+		t.Fatalf("audit rows = %d, want 3", len(rows))
+	}
+	if rows[0].traceID.String != "4bf92f3577b34da6a3ce929d0e0e4736" || !rows[0].traceID.Valid {
+		t.Fatalf("row1 trace_id = %v, want ctx trace", rows[0].traceID)
+	}
+	if rows[0].linkedTrace.String != "fedcba9876543210fedcba9876543210" || !rows[0].linkedTrace.Valid {
+		t.Fatalf("row1 linked_trace_id = %v, want explicit linked", rows[0].linkedTrace)
+	}
+	if rows[1].traceID.String != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("row2 trace_id = %v, want explicit value to win", rows[1].traceID)
+	}
+	if rows[1].linkedTrace.Valid {
+		t.Fatalf("row2 linked_trace_id = %v, want NULL", rows[1].linkedTrace)
+	}
+	if rows[2].traceID.Valid {
+		t.Fatalf("row3 trace_id = %v, want NULL (no span ctx, behavior preserved)", rows[2].traceID)
+	}
 }
 
 func TestAppendMaterializesRow(t *testing.T) {
@@ -230,9 +319,11 @@ func TestAppendMaterializesRow(t *testing.T) {
 	if r.actorType != ActorWorker || r.actorID != "w1" {
 		t.Fatalf("actor = %s/%s", r.actorType, r.actorID)
 	}
-	// P0 默认列:trace 占位 NULL、未启链 prev_hash=''、未脱敏 0。
-	if r.traceID.Valid || r.prevHash != "" || r.piiMasked {
-		t.Fatalf("P0 defaults violated: trace=%v prev_hash=%q pii=%v", r.traceID, r.prevHash, r.piiMasked)
+	// P0 默认列:trace/linked 占位 NULL、未启链 prev_hash=''、未脱敏 0
+	// (background ctx 无 span context,行为不变锚)。
+	if r.traceID.Valid || r.linkedTrace.Valid || r.prevHash != "" || r.piiMasked {
+		t.Fatalf("P0 defaults violated: trace=%v linked=%v prev_hash=%q pii=%v",
+			r.traceID, r.linkedTrace, r.prevHash, r.piiMasked)
 	}
 	var got NodeStateChangedPayload
 	if err := json.Unmarshal(r.payload, &got); err != nil {

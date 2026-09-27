@@ -43,7 +43,7 @@ func TestConfigValidateBounds(t *testing.T) {
 		{"audit_flush_interval_floor", func(c *Config) { c.AuditFlushInterval = 99 * time.Millisecond }, false},
 		{"audit_flush_interval_ok", func(c *Config) { c.AuditFlushInterval = 100 * time.Millisecond }, true},
 		{"audit_flush_batch_zero", func(c *Config) { c.AuditFlushBatch = 0 }, false},
-		{"audit_flush_batch_over", func(c *Config) { c.AuditFlushBatch = 3201 }, false},
+		{"audit_flush_batch_over", func(c *Config) { c.AuditFlushBatch = 3101 }, false},
 		{"janitor_floor", func(c *Config) { c.JanitorInterval = 4 * time.Minute }, false},
 		{"outbox_batch_zero", func(c *Config) { c.OutboxBatch = 0 }, false},
 		{"outbox_batch_over", func(c *Config) { c.OutboxBatch = 10001 }, false},

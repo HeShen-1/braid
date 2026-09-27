@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/trace"
 
 	"braid/internal/audit"
 	"braid/internal/auth"
@@ -205,10 +206,14 @@ func (s *Server) decideApproval(c *gin.Context) {
 			return ErrNotWaiting
 		}
 		// 执行终态守卫(fail-fast 兄弟/取消竞速:迟到决定不产生新语义,
-		// worker 侧 resumeOnce 终态守卫是权威镜像)。
+		// worker 侧 resumeOnce 终态守卫是权威镜像)。trace_id 同语句读出:
+		// 决策行的 linked_trace_id 段首单点落值(T6.2,审批请求 trace Z
+		// 链指回执行主链 root X——D-2026-09-27-t62-otel-trace)。
 		var wfStatus string
+		var rootTrace sql.NullString
 		if err := tx.QueryRowContext(c.Request.Context(),
-			`SELECT status FROM workflow_execution WHERE id=?`, execID).Scan(&wfStatus); err != nil {
+			`SELECT status, trace_id FROM workflow_execution WHERE id=?`, execID).
+			Scan(&wfStatus, &rootTrace); err != nil {
 			return fmt.Errorf("api: read execution status %d: %w", execID, err)
 		}
 		if engine.WorkflowState(wfStatus).Terminal() {
@@ -229,7 +234,7 @@ func (s *Server) decideApproval(c *gin.Context) {
 		}
 		// 迁移零(node 不动:WAITING_APPROVAL 的状态权威在 worker 续跑事务);
 		// 审计 + outbox 同事务(D-t26 调用方契约;outbox 词表 resume 四段式)。
-		if err := s.appendApprovalAudit(c.Request.Context(), tx, execID, node.NodeExecID, nodeID, actor, face, snap.Mode); err != nil {
+		if err := s.appendApprovalAudit(c.Request.Context(), tx, execID, node.NodeExecID, nodeID, actor, face, snap.Mode, rootTrace.String); err != nil {
 			return err
 		}
 		if err := s.appendResumeEvent(c.Request.Context(), tx, execID, node.NodeExecID, nodeID, node.Attempts+1, decisionID); err != nil {
@@ -371,8 +376,11 @@ type approvalDetailDTO struct {
 
 // appendApprovalAudit 落 approval.decided 审计行(决定事务内;actor=user/
 // 决定者;node_id 携目标节点;attempt 恒 NULL——决定先于续跑 attempt 创建)。
+// linkedTrace 是执行主链 root trace(workflow_execution.trace_id):审批链
+// 段首行单点落 linked_trace_id(T6.2)——本行 trace_id = 决策请求 trace Z
+// (ctx 自动提取),Z 链头部一行指回 X,两链由此串联。
 func (s *Server) appendApprovalAudit(ctx context.Context, tx DBTX,
-	execID, nodeExecID uint64, nodeID, actor, face, mode string) error {
+	execID, nodeExecID uint64, nodeID, actor, face, mode, linkedTrace string) error {
 	auditID, err := s.ids.Next()
 	if err != nil {
 		return fmt.Errorf("api: gen audit id: %w", err)
@@ -386,7 +394,8 @@ func (s *Server) appendApprovalAudit(ctx context.Context, tx DBTX,
 	return audit.Append(ctx, tx, audit.Event{
 		ID: auditID, EventType: audit.EventApprovalDecided,
 		ExecutionID: execID, NodeExecID: nodeExecID, NodeID: nodeID,
-		ActorType: audit.ActorUser, ActorID: actor, Payload: raw,
+		ActorType: audit.ActorUser, ActorID: actor,
+		LinkedTraceID: linkedTrace, Payload: raw,
 	})
 }
 
@@ -422,6 +431,16 @@ func (s *Server) writeDecisionDeniedAudit(c *gin.Context, execID uint64, nodeID,
 	case nodeType != "approval":
 		return // 非 approval 节点(有快照的 llm 等):不留痕
 	}
+	// linked = 执行主链 root trace(T6.2,与 decided 行同款段首落值——
+	// 拒绝尝试与决定同是「审批请求作用于执行」的关联行);留痕分支才
+	// 点查(拒绝面低频,一次 PK 点查;缺 trace 旧执行 → NULL 合法)。
+	var linkedTrace sql.NullString
+	if err := s.dbh.QueryRowContext(c.Request.Context(),
+		`SELECT trace_id FROM workflow_execution WHERE id=?`, execID).
+		Scan(&linkedTrace); err != nil {
+		slog.Error("api: anchor approval.decision_denied trace", "err", err, "execution_id", execID)
+		return // best-effort 面:瞬态故障跳过但零遥测不可接受(同上)
+	}
 	auditID, err := s.ids.Next()
 	if err != nil {
 		slog.Error("api: audit id gen for approval.decision_denied", "err", err, "execution_id", execID)
@@ -438,7 +457,8 @@ func (s *Server) writeDecisionDeniedAudit(c *gin.Context, execID uint64, nodeID,
 		return audit.Append(c.Request.Context(), tx, audit.Event{
 			ID: auditID, EventType: audit.EventApprovalDecisionDenied,
 			ExecutionID: execID, NodeExecID: nodeExecID, NodeID: nodeID,
-			ActorType: audit.ActorUser, ActorID: actor, Payload: raw,
+			ActorType: audit.ActorUser, ActorID: actor,
+			LinkedTraceID: linkedTrace.String, Payload: raw,
 		})
 	})
 	if err != nil {
@@ -450,9 +470,15 @@ func (s *Server) writeDecisionDeniedAudit(c *gin.Context, execID uint64, nodeID,
 // 四段式词表,attempt 段 = 续跑将创建的 attempt 号——锁行读出的确定性值)。
 func (s *Server) appendResumeEvent(ctx context.Context, tx DBTX,
 	execID, nodeExecID uint64, nodeID string, attempt uint16, decisionID uint64) error {
+	// TraceID = 决策请求 trace Z(T6.2 段首新链:worker 消费侧 extract 续
+	// span,续跑段行 trace_id=Z;主链 X 经决策行 linked_trace_id 串联)。
+	var segTrace string
+	if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
+		segTrace = sc.TraceID().String()
+	}
 	raw, err := json.Marshal(scheduler.ResumePayload{
 		ExecutionID: execID, NodeExecutionID: nodeExecID,
-		DecisionID: decisionID, AttemptNo: attempt,
+		DecisionID: decisionID, AttemptNo: attempt, TraceID: segTrace,
 	})
 	if err != nil {
 		return fmt.Errorf("api: marshal execution.resume payload: %w", err)

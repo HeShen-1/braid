@@ -6,6 +6,7 @@ import (
 	"reflect"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/trace"
 
 	"braid/internal/auth"
 	"braid/internal/metrics"
@@ -36,6 +37,11 @@ type Server struct {
 	idp auth.IdentityProvider
 	// loginLimiter 登录防御层(T6.4,进程内存;构造于 NewServer)。
 	loginLimiter *loginLimiter
+	// tracer 是 OTel root span 面(T6.2;cmd/api 装配,测试默认 nil =
+	// 不起 span,请求 ctx 无 trace id,audit 落 NULL——镜像 loginMetrics
+	// 注入姿势)。span 边界 = authed 组每请求;trace id 是 audit 行与
+	// outbox 行的传播载体(D-2026-09-27-t62-otel-trace)。
+	tracer trace.Tracer
 	// loginMetrics 是登录指标面(T6.4;nil = 观测关闭——测试默认,
 	// cmd/api 装配注入)。
 	loginMetrics *metrics.LoginSet
@@ -73,6 +79,26 @@ func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry, trig
 // LoginMetrics 注入登录指标面(T6.4;cmd/api 装配,测试默认 nil)。
 func (s *Server) LoginMetrics(m *metrics.LoginSet) { s.loginMetrics = m }
 
+// Tracing 注入 OTel tracer 面(T6.2;cmd/api 装配,测试默认 nil)。
+func (s *Server) Tracing(t trace.Tracer) { s.tracer = t }
+
+// traceSpan 给 authed 组每请求起 root span(T6.2):trace id 随 request
+// ctx 注入,触发/决策两路生产点据此落 audit 行与 outbox 行(经 ctx 自动
+// 提取);Tracing(nil) 时零侵入(测试路径 trace 恒 NULL,DDL 注释的
+// 「内部测试路径允许 NULL」口径)。
+func (s *Server) traceSpan() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if s.tracer == nil {
+			c.Next()
+			return
+		}
+		ctx, span := s.tracer.Start(c.Request.Context(), "api "+c.FullPath())
+		c.Request = c.Request.WithContext(ctx)
+		c.Next()
+		span.End()
+	}
+}
+
 // Router 注册全部路由。角色面:写(author|admin)与读(任意有效 token)
 // 在路由声明,中间件形态见 middleware.go(T5.2 换装点)。草稿走独立
 // /api/v1/drafts 前缀:gin 路由树不允许同层 static 与 param 混挂
@@ -100,7 +126,7 @@ func (s *Server) Router() *gin.Engine {
 	// login_audit 表,旋钮见 Config;DB 锚定升级归 P1 停车场)。
 	r.POST("/api/v1/auth/login", s.login)
 
-	authed := r.Group("/api/v1", Authenticate(s.cfg.JWTSecret))
+	authed := r.Group("/api/v1", s.traceSpan(), Authenticate(s.cfg.JWTSecret))
 	v1 := authed
 	v1.POST("/definitions", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.createDefinition)
 	v1.GET("/definitions", s.listDefinitions)
