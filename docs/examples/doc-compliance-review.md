@@ -31,8 +31,10 @@ human_review ◀── summary ◀────(主线)              report_revis
    `approval_rejected` 终败并触发 fail-fast(下游不推进,执行 FAILED,无
    outputs)——这是引擎现义(`internal/scheduler/resume.go` failApprovalNode)。
    「驳回后走修订回路」属 P1 停车场(回滚/断点续跑族),示例不伪造该语义。
-3. **trace 维度暂缺**。审计链按 `execution_id` 串联完整(事件序列见下文);
-   `trace_id` 恒为 NULL,不伪造——OTel 贯穿属 T6.2(依赖 T6.1),合入后补验。
+3. **trace 已贯穿(T6.2)**。审计行 `trace_id` = 触发请求 root trace(全主链
+   一致);审批决定事务起段链 Z(decided 行 `trace_id`=Z、`linked_trace_id`
+   =root,是两链唯一交点);T6.3 查询端点支持 `?trace_id=` 按链取行。
+   已知例外:reaper 进程行与 notify 链见 D-t62 已知边界。
 
 > **DSL 作者注意**:llm 节点只要声明了 `outputs`,引擎就要求模型回复是
 > JSON 对象(键名与声明一致)——散文回复会让节点以 `bad_llm_output`
@@ -122,7 +124,8 @@ SELECT id, event_type, node_id, actor_type, actor_id
   FROM audit_log WHERE execution_id = ? ORDER BY id;
 ```
 
-`trace_id` 全链 NULL(T6.2 前不伪造);执行详情的 `audit.trace_id` 同口径。
+`trace_id` = root trace 全链一致;审批 decided 行 `trace_id`=段链 Z 且
+`linked_trace_id`=root(T6.2 落地;reaper/notify 例外见 D-t62 已知边界)。
 
 可见性滞后(T6.1 异步批量):表中高频四类(`node.state_changed` /
 `branch.evaluated` / `llm.call.completed` / `tool.call.completed`)先同事务
@@ -135,7 +138,8 @@ SELECT id, event_type, node_id, actor_type, actor_id
 `internal/nodes/e2e_doc_example_test.go` 三用例(t13 栈不可达自动 skip):
 
 - **ApproveProducesReport**:主线全链(定义经 API 提交+发布 → 触发 → 页面
-  同源序列批准 → SUCCEEDED),审计链全序逐行断言 + trace 恒 NULL + 文件
+  同源序列批准 → SUCCEEDED),审计链全序逐行断言 + trace 一致性三件套
+  (root 全链一致 / 审批 linked 段链 / 按 trace 查询面)+ 文件
   内容真实流到 LLM 桩;
 - **ComplianceFailRoutesToRevision**:branch default 边 + 主线级联 SKIPPED
   + `outputs.revision` 物化;

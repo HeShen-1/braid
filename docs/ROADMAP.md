@@ -72,10 +72,10 @@
 
 ## M8 验收(约 1 周)
 
-- [ ] T8.1 CI 故障注入套件:worker 中途 kill / Redis 断连 / 审批 enqueue 失败 / 双投递 / reaper 于 flush 中途 kill 后的 audit_pending 重放与暂存行×状态迁移原子性(T6.1 新崩溃面,2026-09-25 增补)— L — 依赖 M2-M6 — 验收:全部注入下扫描间隔×3 内达终态,CI 绿
+- [ ] T8.1 CI 故障注入套件:worker 中途 kill / Redis 断连 / 审批 enqueue 失败 / 双投递 / reaper 于 flush 中途 kill 后的 audit_pending 重放与暂存行×状态迁移原子性(T6.1 新崩溃面,2026-09-25 增补);**trace 连续性对账维度(T6.2 增补,2026-09-27)**:注入下重放/重投/暂存搬运的行 trace 不换段、与主链一致(既有锚可复用:scan_approval_test 重投带原行 trace、flush_test 两 trace 列全管道搬运)— L — 依赖 M2-M6 — 验收:全部注入下扫描间隔×3 内达终态,CI 绿
 - [x] T8.2 端到端示例:经 API 触发,文件路径输入 → file_read → LLM 解析 → 合规审查 → 摘要 → 人工审批(Web 页)→ 报告 — M — 依赖 T5.5、T3.5、T4.4 — 验收:全程审计链完整(trace 串联) — ✅ 2026-09-24:docs/examples/ 首个示例(DSL+样例输入+走链文档)+ nodes e2e 三用例真链守护(定义经 API 发布、审批走页面同源序列);branch 挂合规结论、修订独立尾(SKIPPED 级联剪枝下菱形汇聚=假成功陷阱);trace 维度按 issue #51 降级口径以 execution 串联交付,trace_id 恒 NULL 断言待 T6.2 翻转;决策 D-2026-09-24-t82-example-topology
 - [ ] T8.3 README(架构图、快速上手、故障注入演示)— M — 依赖 T8.1 — 验收:新环境按 README 30 分钟内跑通示例
 
 ## P1 停车场(不排期,防遗忘)
 
-画布(React Flow 候选,DSL 已留元数据)、并行节点、回滚/断点续跑 UI、容器沙箱 + egress 默认拒绝代理、MCP 双向、审计哈希链、会签、OIDC/LDAP 插件、IM 审批卡片、工具包签名、Helm、SaaS 多租户、完整 taint 追踪、db_query 内置工具(只读账号/参数化/凭证作用域)、PII 脱敏放开评估(D-t61 #5:当前词表无自由文本 ⇒ P0 净效果零掩蔽,放开自由文本 payload 前评估)、按 approver 扇出投递(D-t45 #2:现 BRAID_SMTP_NOTIFY_TO 固定收件,用户资料面出现 email 列后换)、token 绑定等 auth 纵深(D-t44 §7-⑦)、登录内存防御的 DB 锚定(D-t64:P1 多副本部署时升级)、审计查询 keyset 分页(D-t63 #5:OFFSET 漂移,完整导出场景前收敛)、审计读面收紧 + tool.call.denied 账号态字段暴露重议(D-t63 #5:**多租户或外部读者出现前必须重议**——含安全触发条件,与在册 SaaS 多租户耦合)、username 定向锁定 DoS 纵深评估(D-t64:连败锁的账号域耗尽面)、Redispatches{attempt_failed} trigger 词表发射(D-t64 留位:常量已定义、全仓仅 reaper 发 approval_resume/reaped 两值,scheduler Complete 重试路径观测缺口)。
+画布(React Flow 候选,DSL 已留元数据)、并行节点、回滚/断点续跑 UI、容器沙箱 + egress 默认拒绝代理、MCP 双向、审计哈希链、会签、OIDC/LDAP 插件、IM 审批卡片、工具包签名、Helm、SaaS 多租户、完整 taint 追踪、db_query 内置工具(只读账号/参数化/凭证作用域)、PII 脱敏放开评估(D-t61 #5:当前词表无自由文本 ⇒ P0 净效果零掩蔽,放开自由文本 payload 前评估)、按 approver 扇出投递(D-t45 #2:现 BRAID_SMTP_NOTIFY_TO 固定收件,用户资料面出现 email 列后换)、token 绑定等 auth 纵深(D-t44 §7-⑦)、登录内存防御的 DB 锚定(D-t64:P1 多副本部署时升级)、审计查询 keyset 分页(D-t63 #5:OFFSET 漂移,完整导出场景前收敛)、审计读面收紧 + tool.call.denied 账号态字段暴露重议(D-t63 #5:**多租户或外部读者出现前必须重议**——含安全触发条件,与在册 SaaS 多租户耦合)、username 定向锁定 DoS 纵深评估(D-t64:连败锁的账号域耗尽面)、Redispatches{attempt_failed} trigger 词表发射(D-t64 留位:常量已定义、全仓仅 reaper 发 approval_resume/reaped 两值,scheduler Complete 重试路径观测缺口)、OTel P1 增强(D-t62:Jaeger exporter(P0 仅 stdout/off)、W3C traceparent 外发注入、relay/reaper 进程 span(现两进程 trace 零观测)、任务协议携真 span id(现 payload trace 可伪造,内部信任边界设计接受)、notify 消费侧 middleware 短路(孤儿链口径见 D-t62 2026-09-27 修订注))。
