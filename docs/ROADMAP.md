@@ -72,7 +72,7 @@
 
 ## M8 验收(约 1 周)
 
-- [ ] T8.1 CI 故障注入套件:worker 中途 kill / Redis 断连 / 审批 enqueue 失败 / 双投递 / reaper 于 flush 中途 kill 后的 audit_pending 重放与暂存行×状态迁移原子性(T6.1 新崩溃面,2026-09-25 增补);**trace 连续性对账维度(T6.2 增补,2026-09-27)**:注入下重放/重投/暂存搬运的行 trace 不换段、与主链一致(既有锚可复用:scan_approval_test 重投带原行 trace、flush_test 两 trace 列全管道搬运)— L — 依赖 M2-M6 — 验收:全部注入下扫描间隔×3 内达终态,CI 绿
+- [x] T8.1 CI 故障注入套件:worker 中途 kill / Redis 断连 / 审批 enqueue 失败 / 双投递 / reaper 于 flush 中途 kill 后的 audit_pending 重放与暂存行×状态迁移原子性(T6.1 新崩溃面,2026-09-25 增补);**trace 连续性对账维度(T6.2 增补,2026-09-27)**:注入下重放/重投/暂存搬运的行 trace 不换段、与主链一致(既有锚可复用:scan_approval_test 重投带原行 trace、flush_test 两 trace 列全管道搬运)— L — 依赖 M2-M6 — 验收:全部注入下扫描间隔×3 内达终态,CI 绿 — ✅ 2026-09-27:五臂全落既有包(nodes=worker-kill e2e[API 触发 root X→子进程 claim 停车 SIGKILL→reaper 判死重派携 X→接管 SUCCEEDED]+审批 enqueue 失败[API 全链 root X/段 Z/linked 单点三面断言]、relay=真 client 死端口断连→恢复恰一次+双投递 trace 保真、reaper=flush 排水中 SIGKILL→恢复恰一次+双 trace 列三形态逐行对账);实现小改 reaper 重派拷原行 trace(redispatchResume 同式 MAX 子查询,重放不换段——D-t81 DP1);CI = ci.yml services 双容器原端口(13306/16379,测试代码零 env)+ BRAID_TEST_REQUIRE_STACK=1 skip→Fatalf 假绿闸;SLA 口径 = T2.5 公式(压缩 grace 1s/scan 200ms,验收臂 2.3-3.9s 实测);决策全文 D-2026-09-27-t81-ci-fault-injection
 - [x] T8.2 端到端示例:经 API 触发,文件路径输入 → file_read → LLM 解析 → 合规审查 → 摘要 → 人工审批(Web 页)→ 报告 — M — 依赖 T5.5、T3.5、T4.4 — 验收:全程审计链完整(trace 串联) — ✅ 2026-09-24:docs/examples/ 首个示例(DSL+样例输入+走链文档)+ nodes e2e 三用例真链守护(定义经 API 发布、审批走页面同源序列);branch 挂合规结论、修订独立尾(SKIPPED 级联剪枝下菱形汇聚=假成功陷阱);trace 维度按 issue #51 降级口径以 execution 串联交付,trace_id 恒 NULL 断言待 T6.2 翻转;决策 D-2026-09-24-t82-example-topology
 - [ ] T8.3 README(架构图、快速上手、故障注入演示)— M — 依赖 T8.1 — 验收:新环境按 README 30 分钟内跑通示例
 
