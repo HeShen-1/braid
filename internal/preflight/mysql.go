@@ -4,8 +4,11 @@
 //
 //   - CheckSchemaVersion(迁移版本比对):四入口全硬拒——旧 schema 上跑任何
 //     组件都是未定义行为。
-//   - CheckAuditAppendOnly(业务账号对 audit_log 无 UPDATE/DELETE):四入口
-//     全硬拒——append-only 铁律的部署层断言(DDL §append-only)。
+//   - CheckAuditAppendOnly(业务账号对 audit_log/login_audit 无 UPDATE/
+//     DELETE;T7.4 扩面纳 login_audit,D-t64 ①):四入口全硬拒——append-only
+//     铁律的部署层断言(DDL §append-only)。唯一豁免 = reaper 传入
+//     AllowLoginAuditDelete(janitor purgeLoginAudit 保留期清理的表级
+//     DELETE;audit_log 面与 UPDATE 面恒拒,授权矩阵 deploy/README.md §5)。
 //   - CheckAuditPartitions(audit_log 分区水位覆盖当日):api/worker 硬拒
 //     (审计写方:分区不覆盖当日则 INSERT 全部 1526);relay(零审计写)与
 //     reaper(水位自愈者,janitor 首 tick 即补)仅 warn——对它们硬拒会造出
@@ -111,15 +114,30 @@ func partitionVerdict(maxBound, today time.Time) error {
 	return nil
 }
 
+// CheckAuditAppendOnly 断言形态常量(第三参;T7.4,D-t64 ①)。
+//
+// 断言表集 = {audit_log, login_audit}:UPDATE 恒拒;DELETE 在 audit_log
+// 面恒拒。唯一豁免 = AllowLoginAuditDelete(reaper:janitor purgeLoginAudit
+// 保留期清理的表级 DELETE,授权矩阵 deploy/README.md §5)——且仅适用于
+// 只覆盖 login_audit 的授权对象;schema 级授权(覆盖 audit_log)在任何
+// 形态下都拒,强制表级精确授权。
+const (
+	// AppendOnlyStrict 是默认形态(api/worker/relay):两表 UPDATE/DELETE 全拒。
+	AppendOnlyStrict = false
+	// AllowLoginAuditDelete 是 reaper 形态:仅放行 login_audit 表级 DELETE。
+	AllowLoginAuditDelete = true
+)
+
 // CheckAuditAppendOnly 断言当前连接账号(业务账号 = 各入口 BRAID_MYSQL_DSN
-// 的登录者)对 audit_log 无 UPDATE/DELETE 权限。授权平面分两层处理
-// (empirical:MySQL 8 在 I_S 把 GRANT ALL 展开成逐项权限行,没有
-// "ALL PRIVILEGES" 字面量,「管理账号豁免」只能按平面实现):
+// 的登录者)对 audit_log/login_audit 无 UPDATE/DELETE 权限(T7.4 扩面纳
+// login_audit——0005 建表后其 append-only 契约无启动期强制,D-t64 ①)。
+// 授权平面分两层处理(empirical:MySQL 8 在 I_S 把 GRANT ALL 展开成逐项
+// 权限行,没有 "ALL PRIVILEGES" 字面量,「管理账号豁免」只能按平面实现):
 //
 //   - 管理平面 = USER_PRIVILEGES(全局 *.*):UPDATE/DELETE 仅 warn 不拒。
 //     root/运维账号在此(dev/test 栈即 root,硬拒 = 开发栈直接拒启);对
 //     全局权限账号逐表强制 append-only 不可实施,归属运维。
-//   - 业务平面 = 覆盖 audit_log 的全部授权对象,UPDATE/DELETE 硬拒:
+//   - 业务平面 = 覆盖任一受保护表的全部授权对象,UPDATE/DELETE 硬拒:
 //     schema 级(SCHEMA_PRIVILEGES)、表级(TABLE_PRIVILEGES)、列级
 //     (COLUMN_PRIVILEGES——列级只有 UPDATE 面向违约,MySQL 无列级 DELETE)。
 //     db/table 级 GRANT 的对象名支持 %/_ 通配(mysql.db 存原始模式,I_S
@@ -129,9 +147,10 @@ func partitionVerdict(maxBound, today time.Time) error {
 //     展开落业务平面 = 违约配置照拒。
 //
 // 已知边界:MySQL 8 角色授予不经这四表展开;部署契约是直接授权(与 DDL
-// 注释同口径)。relay/reaper 自身的写权限(outbox UPDATE/DELETE、
-// audit_log ALTER)不在本断言面——按组件的授权方案归 T7.4。
-func CheckAuditAppendOnly(ctx context.Context, dbh *sql.DB) error {
+// 注释同口径)。relay/reaper 自身的其他写权限(outbox UPDATE/DELETE、
+// audit_log ALTER、audit_pending SELECT/DELETE)不在本断言面——按组件
+// 授权方案见 deploy/README.md §5 与 deploy/UPGRADE.md(T7.4 定稿)。
+func CheckAuditAppendOnly(ctx context.Context, dbh *sql.DB, allowLoginAuditDelete bool) error {
 	var acct, schema string
 	if err := dbh.QueryRowContext(ctx, `SELECT CURRENT_USER(), DATABASE()`).Scan(&acct, &schema); err != nil {
 		return fmt.Errorf("preflight: read current user: %w", err)
@@ -148,35 +167,41 @@ SELECT PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE GRANTEE = ?`
 			"account", acct)
 	}
 
-	// 业务平面:覆盖 audit_log 的授权对象聚合(schema/表/列三平面,通配
-	// 模式判定见 likeMatch;三平面共用 collectPlanes 扫描循环)。
+	// 业务平面:覆盖任一受保护表的授权对象聚合(schema/表/列三平面,通配
+	// 模式判定见 likeMatch;三平面共用 collectPlanes 扫描循环)。对象进
+	// planes 的前提 = 覆盖 audit_log 或 login_audit 之一;coversAuditLog
+	// 记录是否覆盖 audit_log(DELETE 豁免的适用性判据)。
 	planes := map[string]*grantPlane{}
-	add := func(on, priv string) {
+	add := func(on string, coversAuditLog bool, priv string) {
 		p := planes[on]
 		if p == nil {
-			p = &grantPlane{on: on}
+			p = &grantPlane{on: on, coversAuditLog: coversAuditLog}
 			planes[on] = p
 		}
+		p.coversAuditLog = p.coversAuditLog || coversAuditLog
 		p.set(priv)
 	}
-	// schema 级。
+	// schema 级:库模式覆盖本库 ⇒ 覆盖 audit_log(豁免永不适用)。
 	if err := collectPlanes(ctx, dbh, acct, grantee, `
 SELECT TABLE_SCHEMA, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.SCHEMA_PRIVILEGES`, func(row []string) error {
 		if row[0] != schema && !likeMatch(row[0], schema) {
 			return nil
 		}
-		add(tick(row[0])+".*", row[1])
+		add(tick(row[0])+".*", true, row[1])
 		return nil
 	}); err != nil {
 		return err
 	}
-	// 表级。
+	// 表级(具名对象只覆盖自己;通配对象按 coversAuditLog 保守归边——
+	// 覆盖 audit_log 的通配如 `%audit%` 记 coversAuditLog,豁免不适用)。
 	if err := collectPlanes(ctx, dbh, acct, grantee, `
 SELECT TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.TABLE_PRIVILEGES`, func(row []string) error {
-		if !coversObject(row[0], schema, row[1], "audit_log") {
-			return nil
+		switch {
+		case coversObject(row[0], schema, row[1], protectedTableAudit):
+			add(tick(row[0])+"."+tick(row[1]), true, row[2])
+		case coversObject(row[0], schema, row[1], protectedTableLogin):
+			add(tick(row[0])+"."+tick(row[1]), false, row[2])
 		}
-		add(tick(row[0])+"."+tick(row[1]), row[2])
 		return nil
 	}); err != nil {
 		return err
@@ -184,15 +209,24 @@ SELECT TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.TABLE_PR
 	// 列级(只 UPDATE 面向违约;按对象聚合列名,REVOKE 需带列清单)。
 	if err := collectPlanes(ctx, dbh, acct, grantee, `
 SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.COLUMN_PRIVILEGES`, func(row []string) error {
-		if row[3] != "UPDATE" || !coversObject(row[0], schema, row[1], "audit_log") {
+		if row[3] != "UPDATE" {
+			return nil
+		}
+		var coversAuditLog bool
+		switch {
+		case coversObject(row[0], schema, row[1], protectedTableAudit):
+			coversAuditLog = true
+		case coversObject(row[0], schema, row[1], protectedTableLogin):
+		default:
 			return nil
 		}
 		on := tick(row[0]) + "." + tick(row[1])
 		p := planes[on]
 		if p == nil {
-			p = &grantPlane{on: on}
+			p = &grantPlane{on: on, coversAuditLog: coversAuditLog}
 			planes[on] = p
 		}
+		p.coversAuditLog = p.coversAuditLog || coversAuditLog
 		p.colUpd = append(p.colUpd, row[2])
 		return nil
 	}); err != nil {
@@ -210,7 +244,7 @@ SELECT TABLE_SCHEMA, TABLE_NAME, COLUMN_NAME, PRIVILEGE_TYPE FROM INFORMATION_SC
 		sort.Strings(p.colUpd)
 		ordered = append(ordered, *p)
 	}
-	return appendOnlyVerdict(acct, granteeSQL(acct), ordered)
+	return appendOnlyVerdict(acct, granteeSQL(acct), allowLoginAuditDelete, ordered)
 }
 
 // grantPlane 是一个授权对象(可带通配)上的违约权限聚合:REVOKE 修复提示
@@ -221,7 +255,17 @@ type grantPlane struct {
 	update bool
 	delete bool
 	colUpd []string // 列级 UPDATE 的列名(仅列级面)
+	// coversAuditLog:对象覆盖 audit_log ⇒ DELETE 豁免(login_audit 保留期
+	// 清理)不适用。对象进 planes 的前提 = 覆盖任一受保护表,false 即
+	// 只覆盖 login_audit(豁免判定面,T7.4)。
+	coversAuditLog bool
 }
+
+// 受保护表集(append-only 断言面;T7.4 扩面纳 login_audit,D-t64 ①)。
+const (
+	protectedTableAudit = "audit_log"
+	protectedTableLogin = "login_audit"
+)
 
 func (p *grantPlane) set(priv string) {
 	switch priv {
@@ -355,15 +399,17 @@ func likeMatch(pattern, s string) bool {
 // appendOnlyVerdict 是业务平面权限断言的纯判定(表驱动单测锚):逐授权对象
 // 点名违约权限,REVOKE 提示与授权对象严格对齐(通配模式授的权收在同一
 // 模式上——REVOKE ON braid.* 不撤销 ON `braid%`.* 的授权;列级 UPDATE 需
-// 带列清单;提示必须是可直接执行的合法 SQL,对抗审计 F7)。
-func appendOnlyVerdict(acct, grantee string, planes []grantPlane) error {
+// 带列清单;提示必须是可直接执行的合法 SQL,对抗审计 F7)。DELETE 豁免
+// (allowLoginAuditDelete)只放行「仅覆盖 login_audit」的对象——覆盖
+// audit_log 的对象(schema 级、跨表通配)恒拒,强制 reaper 表级精确授权。
+func appendOnlyVerdict(acct, grantee string, allowLoginAuditDelete bool, planes []grantPlane) error {
 	var msgs, stmts []string
 	for _, pl := range planes {
 		var privs []string
 		if pl.update {
 			privs = append(privs, "UPDATE")
 		}
-		if pl.delete {
+		if pl.delete && (pl.coversAuditLog || !allowLoginAuditDelete) {
 			privs = append(privs, "DELETE")
 		}
 		if len(privs) == 0 && len(pl.colUpd) == 0 {
@@ -382,10 +428,12 @@ func appendOnlyVerdict(acct, grantee string, planes []grantPlane) error {
 	if len(msgs) == 0 {
 		return nil
 	}
-	// 提示尾注限定 audit_log 面:relay/reaper 自身的写权限(outbox UPDATE/
-	// DELETE、audit_log ALTER)是另一套按组件授权,混进本提示会误导运维
-	// 过度收权(对抗审计 F8);授权方案归 T7.4。
-	return fmt.Errorf("preflight: account %s holds %s covering audit_log (append-only iron law violated); fix: %s (audit_log-facing business grants: INSERT,SELECT only; other components' own write grants are provisioned separately — see T7.4)",
+	// 提示尾注限定两表面:reaper 的 login_audit DELETE 是预配的保留期清理
+	// 授权(表级);relay/reaper 的其他写权限(outbox UPDATE/DELETE、
+	// audit_log ALTER、audit_pending SELECT/DELETE)是另一套按组件授权,
+	// 混进本提示会误导运维过度收权(对抗审计 F8);方案见 deploy/README.md
+	// §5 与 deploy/UPGRADE.md(T7.4 定稿)。
+	return fmt.Errorf("preflight: account %s holds %s covering audit_log/login_audit (append-only iron law violated); fix: %s (audit_log/login_audit-facing business grants: INSERT,SELECT only; reaper's table-level login_audit DELETE is the provisioned retention purge; other components' own write grants are provisioned separately — deploy/README.md §5)",
 		acct, strings.Join(msgs, ", "), strings.Join(stmts, "; "))
 }
 

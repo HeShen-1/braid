@@ -71,7 +71,7 @@ func run(ctx context.Context) error {
 	// 错误自带修复提示,经 main 的 fatal 口径输出(slog.Error + Exit(1))。
 	if err := errors.Join(
 		preflight.CheckSchemaVersion(ctx, dbh),
-		preflight.CheckAuditAppendOnly(ctx, dbh),
+		preflight.CheckAuditAppendOnly(ctx, dbh, preflight.AppendOnlyStrict),
 		preflight.CheckAuditPartitions(ctx, dbh),
 	); err != nil {
 		return fmt.Errorf("api: %w", err)

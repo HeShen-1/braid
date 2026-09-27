@@ -61,7 +61,9 @@ func run(ctx context.Context) error {
 	// 分区 → 永远起不来」的死锁。
 	if err := errors.Join(
 		preflight.CheckSchemaVersion(ctx, mysqlDB),
-		preflight.CheckAuditAppendOnly(ctx, mysqlDB),
+		// AllowLoginAuditDelete:janitor purgeLoginAudit 保留期清理的表级
+		// DELETE 豁免(audit_log 面仍全拒;授权矩阵 deploy/README.md §5)。
+		preflight.CheckAuditAppendOnly(ctx, mysqlDB, preflight.AllowLoginAuditDelete),
 	); err != nil {
 		return fmt.Errorf("reaper: %w", err)
 	}
