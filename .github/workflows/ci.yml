@@ -1,8 +1,10 @@
 # 零密钥 CI(D-2026-09-22-git-native-collab 实施顺序第②步)。
 # 三件套 = go vet + golangci-lint + go test ./...(与本地验收口径一致);
-# 不配置任何 GitHub Secrets,模型调用一律不出本机。集成测试依赖
-# MySQL/Redis 验证栈(braid-t13),栈不可达时经 sqltest/redistest 探活
-# 自动 t.Skipf,CI 只承载可无栈运行的单测面。
+# 不配置任何 GitHub Secrets,模型调用一律不出本机。
+# T8.1:test job 经 services 起 MySQL/Redis 验证栈(同 t13 契约端口
+# 13306/16379,栈定义与 deploy/migrate-test.docker-compose.yml 双向互指,
+# 改一处必须同步另一处)+ BRAID_TEST_REQUIRE_STACK=1 把 sqltest/redistest
+# 的静默 skip 翻成响亮失败——「CI 绿」= 集成/故障注入测试真跑过。
 # gitleaks 作业执行铁律「密钥不进 git 历史」的 PR 级增量扫描。
 name: ci
 
@@ -31,9 +33,42 @@ jobs:
         with:
           version: v2.13.2
 
+  # T8.1 services 化:端口对齐 testenv 默认值(13306/16379)⇒ 测试代码
+  # 零 env 覆盖。已知偏差:services 无法传 redis CMD 尾参(noeviction 与
+  # AOF no 本就是镜像默认,RDB 默认开但写 tmpfs 不落盘;maxmemory 不设,
+  # 单 job 独占无逐出风险)——评估记录见 docs/DECISIONS.md D-2026-09-27-t81。
+  # health-gate:容器不 healthy 则 job 直接失败,替代「撞上初始化中的
+  # MySQL → 探活失败 → 全量 skip → 假绿」。tmpfs 压缩 MySQL 首次初始化。
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 20 # 注入套件 eventually 等待 + 慢 runner 余量(原 15)
+    env:
+      BRAID_TEST_REQUIRE_STACK: "1" # skip → Fatalf:CI 绿 = 集成测试真跑
+    services:
+      mysql:
+        image: mysql:8.0
+        ports:
+          - 13306:3306
+        env:
+          # 占位凭证,与仓内 compose 同值(本地一次性验证容器口径,非真实凭证)
+          MYSQL_ROOT_PASSWORD: braid_dev_root
+          MYSQL_DATABASE: braid
+        options: >-
+          --health-cmd "mysqladmin ping -h127.0.0.1 -uroot -pbraid_dev_root"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 30
+          --tmpfs /var/lib/mysql
+      redis-queue:
+        image: redis:7.4
+        ports:
+          - 16379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 30
+          --tmpfs /data
     steps:
       - uses: actions/checkout@v7.0.1
       - uses: actions/setup-go@v7.0.0

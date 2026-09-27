@@ -2,6 +2,7 @@ package preflight
 
 import (
 	"context"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -67,6 +68,11 @@ func TestCheckRedisQueueT13RedPath(t *testing.T) {
 	defer cancel()
 	if err := c.Ping(ctx).Err(); err != nil {
 		_ = c.Close()
+		// REQUIRE_STACK=1(CI)时栈不可达 = Fatalf 而非 Skipf(redistest.
+		// MustOpt 同口径,T8.1 审计 MEDIUM 修)。
+		if os.Getenv("BRAID_TEST_REQUIRE_STACK") == "1" {
+			t.Fatalf("braid-t13-redis-queue 不可达(REQUIRE_STACK=1,栈必达断言): %v", err)
+		}
 		t.Skipf("braid-t13-redis-queue 不可达,先起验证容器: %v", err)
 	}
 	_ = c.Close()

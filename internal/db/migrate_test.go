@@ -2,6 +2,7 @@ package db
 
 import (
 	"database/sql"
+	"os"
 	"testing"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -16,6 +17,18 @@ import (
 // worktree 互不互踩;server 级 DSN 与 sqltest 共用 BRAID_TEST_MYSQL_DSN 口。
 var testBaseDSN = TestServerDSN() + TestSchema("braid")
 
+// skipOrFatalStack:栈不可达时按环境分流——本地默认 Skipf,CI
+// (BRAID_TEST_REQUIRE_STACK=1)Fatalf(sqltest.MustOpenAt 同口径;本包不
+// import sqltest 防循环,T8.1 审计 MEDIUM 修——「CI 绿 = 集成测试真跑」
+// 的覆盖缺口)。
+func skipOrFatalStack(t *testing.T, what string, err error) {
+	t.Helper()
+	if os.Getenv("BRAID_TEST_REQUIRE_STACK") == "1" {
+		t.Fatalf("%s 不可达(REQUIRE_STACK=1,栈必达断言): %v", what, err)
+	}
+	t.Skipf("%s 不可达,先起验证容器: %v", what, err)
+}
+
 // ensureTestSchema 懒建本包独立 schema:本包 DSN 直连带库名,库不存在时
 // Ping 即「Unknown database」→ 会被误判成栈不可达而全量 skip(sqltest 的
 // initSchema 在消费包,此处不 import 它防循环)。
@@ -27,7 +40,7 @@ func ensureTestSchema(t *testing.T) {
 	}
 	defer func() { _ = admin.Close() }()
 	if err := admin.Ping(); err != nil {
-		t.Skipf("braid-t13-mysql 不可达,先起验证容器: %v", err)
+		skipOrFatalStack(t, "braid-t13-mysql", err)
 	}
 	if _, err := admin.Exec(
 		`CREATE DATABASE IF NOT EXISTS ` + TestSchema("braid") +
@@ -44,7 +57,7 @@ func mustSQL(t *testing.T) *sql.DB {
 		t.Skipf("mysql driver: %v", err)
 	}
 	if err := d.Ping(); err != nil {
-		t.Skipf("braid-t13-mysql 不可达,先起验证容器: %v", err)
+		skipOrFatalStack(t, "braid-t13-mysql", err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	return d

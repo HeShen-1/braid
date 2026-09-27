@@ -55,11 +55,16 @@ func Opt() asynq.RedisClientOpt {
 }
 
 // MustOpt 探活测试 Redis 并返回连接选项;不可达 → t.Skipf(附起栈命令)。
+// BRAID_TEST_REQUIRE_STACK=1(CI)时栈不可达 = Fatalf 而非 Skipf:静默
+// skip 会把「没跑」伪装成「绿」(T8.1)。
 func MustOpt(t TB) asynq.RedisClientOpt {
 	t.Helper()
 	insp := asynq.NewInspector(Opt())
 	if _, err := insp.Queues(); err != nil { // Queues 即 ping(一次真实往返)
 		_ = insp.Close()
+		if os.Getenv("BRAID_TEST_REQUIRE_STACK") == "1" {
+			t.Fatalf("braid-t13-redis-queue 不可达(REQUIRE_STACK=1,栈必达断言): %v", err)
+		}
 		t.Skipf("braid-t13-redis-queue 不可达,先起验证容器: %v", err)
 	}
 	_ = insp.Close()
