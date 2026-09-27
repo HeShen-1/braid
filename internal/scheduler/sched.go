@@ -42,11 +42,13 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand/v2"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"go.opentelemetry.io/otel/trace"
 
 	"braid/internal/audit"
 	"braid/internal/engine"
@@ -76,11 +78,18 @@ type NodeTaskPayload struct {
 	ExecutionID     uint64 `json:"execution_id"`
 	NodeExecutionID uint64 `json:"node_execution_id"`
 	AttemptNo       uint16 `json:"attempt_no"`
+	// TraceID 随事件交给 worker 续 OTel 链(T6.2 跨进程传播:payload 自描述
+	// 携带,relay 直投不感知;worker middleware extract 注入 ctx 续 span)。
+	// omitempty:无 trace 上下文的发射面(测试路径)键缺席 = 消费侧零注入。
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 // ExecStartPayload 是 execution.start 事件的自描述体。
 type ExecStartPayload struct {
 	ExecutionID uint64 `json:"execution_id"`
+	// TraceID = 触发请求 root trace(InstantiateParams.TraceID 直传,
+	// workflow_execution.trace_id 同值单源;T6.2)。
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 // ResumePayload 是 execution.resume 事件的自描述体(outbox 契约:仅 id 引用;
@@ -92,6 +101,9 @@ type ResumePayload struct {
 	NodeExecutionID uint64 `json:"node_execution_id"`
 	DecisionID      uint64 `json:"decision_id"`
 	AttemptNo       uint16 `json:"attempt_no"`
+	// TraceID = 决策请求 trace(段首新链 Z;挂起前主链 X 经决策行
+	// linked_trace_id 串联——T6.2 trace link;reaper 死信网重投拷原行值)。
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 // ApprovalNotifyPayload 是 approval.notify 事件的自描述体(T4.3 起有发射点:
@@ -104,6 +116,10 @@ type ApprovalNotifyPayload struct {
 	ExecutionID     uint64 `json:"execution_id"`
 	NodeExecutionID uint64 `json:"node_execution_id"`
 	Reason          string `json:"reason"`
+	// TraceID:T6.2 边界——notify 链 P0 无段 trace(发射面 reaper tick 无
+	// span 上下文,approval.notified 行 trace NULL),D-t62 登记;P1 若
+	// 回读 root 续链在此扩。
+	TraceID string `json:"trace_id,omitempty"`
 }
 
 // approval.notify 的成因码词表(发射点 reaper 与消费面 worker 词表闸同源,
@@ -312,7 +328,11 @@ type InstantiateParams struct {
 	Input        json.RawMessage // 零输入 → {}
 	TriggeredBy  string          // 必填(审计事实源,T2.6)
 	TriggerType  string          // 空 → "API"(DDL ENUM 词表)
-	TraceID      string          // 可空(T6.2 前占位不伪造)
+	// TraceID = 触发请求 root trace(T6.2 起必填,api 触发路径应用层强制;
+	// 空串 → NULL,内部测试路径允许——0001:76 注释口径)。非空必须 32 hex
+	// 小写(落 workflow_execution.trace_id,与 audit/outbox 的 traceIDRe
+	// 同式三处互指)。
+	TraceID string
 	// IdempotencyKey 是触发幂等键的落库值(T4.2 兑现 D-t55 §5;api 侧已完成
 	// 主体+定义二维作用域哈希,此处只透传落列)。空 → NULL(不去重,现状);
 	// 撞 uk_exec_idem → ErrConflict(调用方读原行做重放响应)。
@@ -341,6 +361,11 @@ func (s *Scheduler) Instantiate(ctx context.Context, p InstantiateParams) (uint6
 	execID, err := s.deps.IDs.Next()
 	if err != nil {
 		return 0, fmt.Errorf("scheduler: gen execution id: %w", err)
+	}
+	// trace 域闸(review LOW:与 audit/outbox 先例同式,≤32 非法字符不静默
+	// 落列;空放行 = 内部测试路径)。
+	if p.TraceID != "" && !traceIDRe.MatchString(p.TraceID) {
+		return 0, fmt.Errorf("scheduler: instantiate trace_id %q", p.TraceID)
 	}
 	input := p.Input
 	if len(input) == 0 {
@@ -404,7 +429,7 @@ VALUES (?,?,?,?,'PENDING',?,1)`,
 			}
 		}
 		return s.appendEvent(ctx, q, execID, EventTypeExecutionStart,
-			fmt.Sprintf("exec:%d", execID), ExecStartPayload{ExecutionID: execID})
+			fmt.Sprintf("exec:%d", execID), ExecStartPayload{ExecutionID: execID, TraceID: p.TraceID})
 	})
 	if err != nil {
 		return 0, err
@@ -1091,8 +1116,25 @@ func (st *execState) failExecution(code, msg string) error {
 func (st *execState) appendNodeTask(row *nodeRow) error {
 	return st.s.appendEvent(st.ctx, st.q, st.execID, EventTypeNodeTask,
 		fmt.Sprintf("att:%d:%d", row.id, row.attempts),
-		NodeTaskPayload{ExecutionID: st.execID, NodeExecutionID: row.id, AttemptNo: row.attempts})
+		NodeTaskPayload{
+			ExecutionID: st.execID, NodeExecutionID: row.id, AttemptNo: row.attempts,
+			TraceID: traceIDFromCtx(st.ctx),
+		})
 }
+
+// traceIDFromCtx 提取当段活跃 trace id(T6.2 跨进程传播:发射点把 ctx 的
+// trace 塞进 payload,worker 消费侧 extract 续链;空 = 无 trace 上下文,
+// payload 键缺席)。scheduler 事务由 worker/api 进程调用,ctx 即当段链。
+func traceIDFromCtx(ctx context.Context) string {
+	if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
+		return sc.TraceID().String()
+	}
+	return ""
+}
+
+// traceIDRe 与 internal/audit/writer.go、internal/outbox/append.go 的同式
+// 定义三处互指(32 hex 小写 = W3C trace id;W3C 头形态归 P1)。
+var traceIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
 // auditRow 落一条审计行(T2.6 契约:每次状态迁移/调度裁决同事务必有审计行,
 // D-2026-09-23-t26-audit-events)。ID 复用调度器雪花生成器;actor = 本事务

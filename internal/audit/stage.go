@@ -32,6 +32,7 @@ import (
 // 错误分类同 Append:ErrInvalidEvent(调用方 bug,不触 DB);其余 %w 包装
 // 上抛,Transient 判定归调用方。
 func Enqueue(ctx context.Context, q engine.DBTX, evt Event) error {
+	applyCtxTrace(ctx, &evt)
 	if len(evt.Payload) == 0 {
 		evt.Payload = json.RawMessage(`{}`) // DDL:无正文事件存 {}
 	}
@@ -42,7 +43,7 @@ func Enqueue(ctx context.Context, q engine.DBTX, evt Event) error {
 	if err != nil {
 		return err
 	}
-	var nodeExecID, attemptID, trace any
+	var nodeExecID, attemptID, trace, linked any
 	if evt.NodeExecID != 0 {
 		nodeExecID = evt.NodeExecID
 	}
@@ -55,6 +56,9 @@ func Enqueue(ctx context.Context, q engine.DBTX, evt Event) error {
 	}
 	if evt.TraceID != "" {
 		trace = evt.TraceID
+	}
+	if evt.LinkedTraceID != "" {
+		linked = evt.LinkedTraceID
 	}
 	// usage 冗余列组(llm.call.completed|discarded 双词,validate 已闸):单一语句形态,
 	// NULL 经 any 归一(Billed=false ⇒ cost 两列 NULL,与 Append 同语义)。
@@ -70,13 +74,14 @@ func Enqueue(ctx context.Context, q engine.DBTX, evt Event) error {
 	_, err = q.ExecContext(ctx, `
 INSERT INTO audit_pending
   (id, event_at, event_type, execution_id, node_execution_id, node_id,
-   attempt_id, actor_type, actor_id, trace_id, pii_masked, payload,
+   attempt_id, actor_type, actor_id, trace_id, linked_trace_id, pii_masked,
+   payload,
    model, prompt_tokens, completion_tokens, total_tokens,
    cost_amount, cost_currency, cost_estimated)
-VALUES (?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+VALUES (?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		evt.ID, evt.EventType, evt.ExecutionID,
 		nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace,
-		piiMasked, payload,
+		linked, piiMasked, payload,
 		model, pt, ct, tt, costArg, currencyArg, usageEstimated(evt.Usage))
 	if err != nil {
 		return fmt.Errorf("audit: enqueue %d (%s): %w", evt.ID, evt.EventType, err)

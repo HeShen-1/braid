@@ -29,6 +29,8 @@ import (
 	"regexp"
 	"unicode/utf8"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"braid/internal/engine"
 )
 
@@ -90,6 +92,7 @@ type Event struct {
 // 重试),1062(PK 撞 = 生成器缺陷,通常是跨进程雪花重号)不映射 ErrConflict
 // (那会诱发 T2.5 式重决策循环),告警归 T6.4。
 func Append(ctx context.Context, q engine.DBTX, evt Event) error {
+	applyCtxTrace(ctx, &evt)
 	if evt.Queue == "" {
 		evt.Queue = "default" // 规范化必须发生在 validate 之外:validate 按值收参
 	}
@@ -110,6 +113,19 @@ VALUES (?,?,?,?,?,?,'PENDING',0,NOW(3),?)`,
 		return fmt.Errorf("outbox: append %d (task %s): %w", evt.ID, evt.TaskID, err)
 	}
 	return nil
+}
+
+// applyCtxTrace 在 TraceID 未显式设置时从 ctx 的 span context 提取(T6.2
+// 跨进程传播的发射半边:全部发射面——scheduler.appendEvent / api 决策 /
+// reaper——经此单点携带;显式非空值优先,reaper 死信网重投即以此覆盖
+// 拷贝原行值)。列值与 payload 内 trace_id 字段同值双写:列供对账/诊断,
+// payload 供 worker 消费侧 extract(relay 直投不感知)。
+func applyCtxTrace(ctx context.Context, evt *Event) {
+	if evt.TraceID == "" {
+		if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
+			evt.TraceID = sc.TraceID().String()
+		}
+	}
 }
 
 func validate(evt Event) error {

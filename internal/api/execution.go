@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/trace"
 
 	"braid/internal/audit"
 	"braid/internal/engine"
@@ -179,8 +180,14 @@ func (s *Server) triggerExecution(c *gin.Context) {
 	if idemKey != "" {
 		scoped = scopedIdempotencyKey(actorFrom(c), def.Name, idemKey)
 	}
-	// TriggerType 显式 "API"(与审计 payload 同值单源);TraceID 留空:
-	// T6.2 前占位不伪造(DDL 注释契约)。
+	// TriggerType 显式 "API"(与审计 payload 同值单源);TraceID = root
+	// trace(T6.2:traceSpan middleware 注入 request ctx,应用层强制落
+	// workflow_execution.trace_id——DDL 注释口径;Tracing(nil) 测试路径
+	// 无 span → 空串 → NULL,「内部测试路径允许 NULL」同注释)。
+	var rootTrace string
+	if sc := trace.SpanContextFromContext(c.Request.Context()); sc.HasTraceID() {
+		rootTrace = sc.TraceID().String()
+	}
 	actor := actorFrom(c)
 	execID, err := s.trig.Instantiate(c.Request.Context(), scheduler.InstantiateParams{
 		DefinitionID:   def.ID,
@@ -188,6 +195,7 @@ func (s *Server) triggerExecution(c *gin.Context) {
 		TriggeredBy:    actor,
 		TriggerType:    triggerTypeAPI,
 		IdempotencyKey: scoped,
+		TraceID:        rootTrace,
 	})
 	if err != nil {
 		switch {

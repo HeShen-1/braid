@@ -41,9 +41,10 @@ import (
 )
 
 // flushColsPerRow 是 INSERT 每行占位符数。batch 上界由 prepared statement
-// 占位符预算推出:MySQL 上限 65535,20×3200 = 64000 留余量(reaper
-// Validate 同步收口;COUNT/DELETE 语句各 2/1 占位符每行,远低)。
-const flushColsPerRow = 20
+// 占位符预算推出:MySQL 上限 65535,21×3100 = 65100 留余量(T6.2 加
+// linked_trace_id 列后 20→21,3200 会超限;reaper Validate 同步收口;
+// COUNT/DELETE 语句各 2/1 占位符每行,远低)。
+const flushColsPerRow = 21
 
 // FlushResult 是单批搬运的可观测快照(reaper 循环聚合计数/测试断言)。
 type FlushResult struct {
@@ -69,6 +70,7 @@ type flushRow struct {
 	actorType   string
 	actorID     string
 	traceID     sql.NullString
+	linkedTrace sql.NullString
 	piiMasked   bool
 	model       sql.NullString
 	promptTok   sql.NullInt64
@@ -83,12 +85,12 @@ type flushRow struct {
 const flushSelect = `
 SELECT id, CAST(event_at AS CHAR), event_type, execution_id,
        node_execution_id, node_id, attempt_id, actor_type, actor_id, trace_id,
-       pii_masked, model, prompt_tokens, completion_tokens, total_tokens,
-       cost_amount, cost_currency, cost_estimated, payload
+       linked_trace_id, pii_masked, model, prompt_tokens, completion_tokens,
+       total_tokens, cost_amount, cost_currency, cost_estimated, payload
   FROM audit_pending`
 
-// linked_trace_id 有意不在搬运面:T6.2 前恒 NULL;T6.2 接线时
-// Enqueue/Append/flush 三处同步加列(0004 已建列防漏)。
+// linked_trace_id 已随 T6.2 接线进搬运面(Enqueue/Append/flush 三处同步
+// 加列,0004 建列防漏的兑现;D-2026-09-27-t62-otel-trace)。
 
 // Flush 搬运 afterID 之后的一批暂存审计行到 audit_log(单批语义:LIMIT batch,
 // 余量留驻,调用方 FlushAll 循环翻页至排空)。afterID=0 即从队头。步骤:
@@ -115,7 +117,7 @@ func Flush(ctx context.Context, db *sql.DB, afterID uint64, batch int) (FlushRes
 			var r flushRow
 			if err := rows.Scan(&r.id, &r.eventAt, &r.eventType, &r.executionID,
 				&r.nodeExecID, &r.nodeID, &r.attemptID, &r.actorType, &r.actorID,
-				&r.traceID, &r.piiMasked, &r.model, &r.promptTok, &r.complTok,
+				&r.traceID, &r.linkedTrace, &r.piiMasked, &r.model, &r.promptTok, &r.complTok,
 				&r.totalTok, &r.costAmount, &r.costCurr, &r.costEst, &r.payload); err != nil {
 				return fmt.Errorf("audit: flush scan: %w", err)
 			}
@@ -210,18 +212,19 @@ func Flush(ctx context.Context, db *sql.DB, afterID uint64, batch int) (FlushRes
 			if i > 0 {
 				ph.WriteByte(',')
 			}
-			ph.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			ph.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 			args = append(args,
 				r.id, execDates[r.executionID], r.eventAt, r.eventType, r.executionID,
 				r.nodeExecID, r.nodeID, r.attemptID, r.actorType, r.actorID, r.traceID,
-				r.piiMasked, r.payload,
+				r.linkedTrace, r.piiMasked, r.payload,
 				r.model, r.promptTok, r.complTok, r.totalTok, r.costAmount, r.costCurr,
 				r.costEst)
 		}
 		execRes, err := tx.ExecContext(ctx, `
 INSERT INTO audit_log
   (id, exec_date, event_at, event_type, execution_id, node_execution_id,
-   node_id, attempt_id, actor_type, actor_id, trace_id, pii_masked, payload,
+   node_id, attempt_id, actor_type, actor_id, trace_id, linked_trace_id,
+   pii_masked, payload,
    model, prompt_tokens, completion_tokens, total_tokens,
    cost_amount, cost_currency, cost_estimated)
 VALUES `+ph.String(), args...)

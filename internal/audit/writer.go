@@ -16,8 +16,10 @@
 // 铁律:本包对 audit_log 只发 INSERT;业务账号仅 INSERT/SELECT 授权由部署层
 // 承担(T7.3 安装自检断言)。payload 只含 id/码/枚举,密钥永不入内。
 //
-// P0 未启用(走 DDL 默认):trace_id(NULL 占位,T6.2 前不伪造)、
-// prev_hash/row_hash(”/NULL,未启链期)。pii_masked 已随 T6.1 脱敏钩子
+// P0 未启用(走 DDL 默认):prev_hash/row_hash(”/NULL,未启链期)。
+// trace_id/linked_trace_id 已随 T6.2 OTel 贯穿接线:TraceID 从 ctx span
+// context 自动提取(applyCtxTrace,显式值优先),LinkedTraceID 由审批链
+// 段首行单点显式携带。pii_masked 已随 T6.1 脱敏钩子
 // 接线(SanitizePayload 掩蔽标志;现有词表无自由文本 ⇒ 恒 0,见
 // sanitize.go)。usage/cost 冗余列已随 T3.1 llm.call.completed 启用
 // (Event.Usage,与 node_attempt 双录;其余事件类型仍不携带)。
@@ -34,6 +36,8 @@ import (
 	"fmt"
 	"regexp"
 	"unicode/utf8"
+
+	"go.opentelemetry.io/otel/trace"
 
 	"braid/internal/engine"
 )
@@ -175,8 +179,22 @@ type Event struct {
 	ActorType   string
 	ActorID     string
 	TraceID     string
-	Payload     json.RawMessage
-	Usage       *engine.AttemptUsage
+	// LinkedTraceID 落 linked_trace_id:审批链段首行单点携带(决策行指向
+	// 执行主链 root trace,D-2026-09-27-t62-otel-trace);其余事件零值 → NULL。
+	LinkedTraceID string
+	Payload       json.RawMessage
+	Usage         *engine.AttemptUsage
+}
+
+// applyCtxTrace 在 TraceID 未显式设置时从 ctx 的 span context 提取(T6.2):
+// 生产调用方传请求/任务 ctx 即自动携带,十处发射点零改动;显式非空值优先
+// (测试注入位)。LinkedTraceID 不走 ctx——段首单点显式赋值,见 Event 注释。
+func applyCtxTrace(ctx context.Context, evt *Event) {
+	if evt.TraceID == "" {
+		if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
+			evt.TraceID = sc.TraceID().String()
+		}
+	}
 }
 
 // Append 在调用方事务内直写一条审计行(典型形状见 engine/dbtx.go 注释:
@@ -192,13 +210,14 @@ type Event struct {
 // 缺行 = 数据缺陷,[1] ErrNoRows);其余 %w 包装上抛,Transient 判定归调用方
 // (与 outbox 同规)。
 func Append(ctx context.Context, q engine.DBTX, evt Event) error {
+	applyCtxTrace(ctx, &evt)
 	if len(evt.Payload) == 0 {
 		evt.Payload = json.RawMessage(`{}`) // DDL:无正文事件存 {}
 	}
 	if err := validate(evt); err != nil {
 		return err
 	}
-	var nodeExecID, attemptID, trace any
+	var nodeExecID, attemptID, trace, linked any
 	if evt.NodeExecID != 0 {
 		nodeExecID = evt.NodeExecID
 	}
@@ -213,6 +232,9 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 	}
 	if evt.TraceID != "" {
 		trace = evt.TraceID
+	}
+	if evt.LinkedTraceID != "" {
+		linked = evt.LinkedTraceID
 	}
 	// PII 脱敏钩子(T6.1):先于落库(校验前置不触 DB 契约的延续),
 	// 「原始永不入 payload」;未掩蔽时字节原样(零成本路径)。同步/异步
@@ -248,23 +270,25 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 		_, err = q.ExecContext(ctx, `
 INSERT INTO audit_log
   (id, exec_date, event_at, event_type, execution_id, node_execution_id,
-   node_id, attempt_id, actor_type, actor_id, trace_id, pii_masked, payload,
+   node_id, attempt_id, actor_type, actor_id, trace_id, linked_trace_id,
+   pii_masked, payload,
    model, prompt_tokens, completion_tokens, total_tokens,
    cost_amount, cost_currency, cost_estimated)
-VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?)`,
 			evt.ID, execDate, evt.EventType, evt.ExecutionID,
-			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, piiMasked, payload,
+			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, linked, piiMasked, payload,
 			evt.Usage.Model, evt.Usage.PromptTokens, evt.Usage.CompletionTokens,
 			evt.Usage.TotalTokens, costArg, currencyArg, evt.Usage.Estimated)
 	} else {
 		_, err = q.ExecContext(ctx, `
 INSERT INTO audit_log
   (id, exec_date, event_at, event_type, execution_id, node_execution_id,
-   node_id, attempt_id, actor_type, actor_id, trace_id, pii_masked, payload)
-VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+   node_id, attempt_id, actor_type, actor_id, trace_id, linked_trace_id,
+   pii_masked, payload)
+VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			evt.ID, execDate, evt.EventType, evt.ExecutionID,
-			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, piiMasked, payload)
+			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, linked, piiMasked, payload)
 	}
 	if err != nil {
 		return fmt.Errorf("audit: append %d (%s): %w", evt.ID, evt.EventType, err)
@@ -288,6 +312,14 @@ func validate(evt Event) error {
 		return fmt.Errorf("%w: node_id %q too long", ErrInvalidEvent, evt.NodeID)
 	case evt.TraceID != "" && !traceIDRe.MatchString(evt.TraceID):
 		return fmt.Errorf("%w: trace_id %q", ErrInvalidEvent, evt.TraceID)
+	case evt.LinkedTraceID != "" && !traceIDRe.MatchString(evt.LinkedTraceID):
+		return fmt.Errorf("%w: linked_trace_id %q", ErrInvalidEvent, evt.LinkedTraceID)
+	// linked 词表闸(「段首单点」查询语义的机器可检半边,review LOW):
+	// 段首双词之外的事件携带 linked = 调用方 bug,静默落列会稀释按链
+	// 串联的查询语义——fail-closed 同词表哲学。
+	case evt.LinkedTraceID != "" && evt.EventType != EventApprovalDecided && evt.EventType != EventApprovalDecisionDenied:
+		return fmt.Errorf("%w: linked_trace_id on %q (approval.decided/decision_denied only)",
+			ErrInvalidEvent, evt.EventType)
 	case evt.Usage != nil && evt.EventType != EventLLMCallCompleted && evt.EventType != EventLLMCallDiscarded:
 		return fmt.Errorf("%w: usage columns on %q (llm.call.completed/discarded only)",
 			ErrInvalidEvent, evt.EventType)

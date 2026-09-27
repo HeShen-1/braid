@@ -15,6 +15,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/hibiken/asynq"
@@ -29,8 +30,12 @@ import (
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 	"braid/internal/tools"
+	"braid/internal/tracing"
 	"braid/internal/worker"
 )
+
+// traceShutdownGrace 是 OTel batcher 排空预算(独立停机窗)。
+const traceShutdownGrace = 2 * time.Second
 
 // toolTokenKey 读 BRAID_TOOL_TOKEN_SECRET(hex,可缺省):显式供给 = 跨
 // 进程校验预留(P1 工具回调平台);缺省 nil = 进程内随机(tools 包内生成)。
@@ -148,6 +153,26 @@ func run(ctx context.Context) error {
 		slog.Info("metrics: serving", "addr", os.Getenv("BRAID_METRICS_ADDR"))
 	}
 
+	// T6.2:OTel trace 贯穿——off = 丢弃导出器(trace id 照生成,审计列不随
+	// 观测开关退化);消费侧 asynq middleware 从 payload extract 续链。
+	// D-2026-09-27-t62-otel-trace。
+	traceCfg := tracing.ConfigFromEnv(os.Getenv)
+	if err := traceCfg.Validate(); err != nil {
+		return fmt.Errorf("worker: %w", err)
+	}
+	traceProv, err := tracing.NewProvider(tracing.Config{Exporter: traceCfg.Exporter, ServiceName: "braid-worker"})
+	if err != nil {
+		return fmt.Errorf("worker: %w", err)
+	}
+	defer func() {
+		shCtx, cancel := context.WithTimeout(context.Background(), traceShutdownGrace)
+		defer cancel()
+		if err := traceProv.Shutdown(shCtx); err != nil {
+			slog.Warn("worker: trace provider shutdown", "err", err)
+		}
+	}()
+	slog.Info("worker: tracing", "exporter", traceCfg.Exporter)
+
 	// T3.6 生产装配:llm 配置缺 URL/KEY/PRICE_TABLE 即启动失败(生产 worker
 	// 必须能调 LLM;组合预算上界在 Validate 内启动即败,HIGH① 拍板)。
 	llmCfg, err := llm.ConfigFromEnv(os.Getenv)
@@ -229,5 +254,6 @@ func run(ctx context.Context) error {
 		Notifier: notifier,
 		Logger:   slog.Default(),
 		Metrics:  mset.Worker, // T6.4:notify 计数 + archived 探测(漏接 = 观测生产死代码)
+		Tracer:   traceProv.Tracer("braid/worker"), // T6.2:消费半边 payload extract 续链
 	}, cfg, asynq.RedisClientOpt{Addr: addr})
 }

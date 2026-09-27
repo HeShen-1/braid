@@ -18,7 +18,9 @@ package nodes
 // 审计验收(issue #51 降级口径):按 execution_id 串联全序断言完整事件链
 // (ORDER BY id:雪花序=落行序);execution.triggered 行与首个节点事件的
 // 写入方是两个进程(api 二段事务 vs worker),全序比较排除该行、单独断言
-// 形状,避免跨进程竞态敏化。trace_id 恒 NULL 不伪造(T6.2 落地后补验)。
+// 形状,避免跨进程竞态敏化。trace 一致性(T6.2 兑现,原 NULL 断言已翻转):
+// execution.trace_id = 触发请求 root trace,审计行全链与之同值;审批段
+// decided 行起换链 Z 并经 linked_trace_id 指回 root(assertDocTrace*)。
 // 页面形态拍板 = API 模拟:审批走 Web 页同源 HTTP 序列(login → 待办 →
 // 详情 → POST decision;webjourney_test.go 已证与内嵌页等价)。
 // 定义提交与发布走真 API 面(POST /definitions + publish):发布点经
@@ -52,6 +54,7 @@ import (
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 	"braid/internal/tools"
+	"braid/internal/tracing"
 	"braid/internal/worker"
 )
 
@@ -220,13 +223,23 @@ func newDocExampleEnv(t *testing.T, complianceVerdict string) *docExampleEnv {
 		t.Fatalf("api scheduler: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
-	router := api.NewServer(api.Config{
+	// T6.2:api root trace 面(off exporter = trace id 照生成零导出);
+	// 触发请求 root trace 经 InstantiateParams 落 workflow_execution.trace_id,
+	// 审计行/任务 payload 全链据此串联(断言见 assertDocTrace*)。
+	traceProv, err := tracing.NewProvider(tracing.Config{Exporter: tracing.ExporterOff, ServiceName: "braid-api-e2e"})
+	if err != nil {
+		t.Fatalf("trace provider: %v", err)
+	}
+	t.Cleanup(func() { _ = traceProv.Shutdown(context.Background()) })
+	apiSrv := api.NewServer(api.Config{
 		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: 3, ResumeQueue: queue,
 		// T6.4:登录防御旋钮放宽(三用例多轮 login 同 IP;防御行为由
 		// api 包 loginlimit/loginaudit 用例锚定,本链不动)。
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 100000, LoginLockout: time.Minute,
-	}, d, apiIDs, reg, apiSched, auth.BuiltinProvider{DB: d}).Router()
+	}, d, apiIDs, reg, apiSched, auth.BuiltinProvider{DB: d})
+	apiSrv.Tracing(traceProv.Tracer("braid/api"))
+	router := apiSrv.Router()
 
 	startE2ERelay(t, d, ctx)
 	workerCfg := worker.DefaultConfig()
@@ -365,8 +378,8 @@ func TestE2EDocExampleApproveProducesReport(t *testing.T) {
 		t.Fatalf("outputs.revision = %v, want 显式 null(pass 路径独立尾被剪枝)", outputs["revision"])
 	}
 	auditPtr, _ := out["audit"].(map[string]any)
-	if auditPtr["trace_id"] != nil {
-		t.Fatalf("audit.trace_id = %v, want null(T6.2 前不伪造)", auditPtr["trace_id"])
+	if s, _ := auditPtr["trace_id"].(string); s == "" {
+		t.Fatalf("audit.trace_id = %v, want root trace(T6.2 起非空;一致性由 DB 面钉死)", auditPtr["trace_id"])
 	}
 	if s, _ := auditPtr["exec_date"].(string); s == "" {
 		t.Fatalf("audit.exec_date = %v, want 非空(分区定位键)", auditPtr["exec_date"])
@@ -401,7 +414,8 @@ func TestE2EDocExampleApproveProducesReport(t *testing.T) {
 		{audit.EventNodeStateChanged, "report"},
 	})
 	assertDocTriggeredRow(t, env.d, execID)
-	assertDocTraceNeverForged(t, env.d, execID)
+	assertDocTraceApprovalLinked(t, env.d, execID)
+	assertDocTraceQueryFace(t, env, execID)
 
 	// 数据面:文件内容真实流到 LLM(parse 的 user 块含样例标记);4 次 llm
 	// 调用(parse/compliance/summary/report——revision 被剪枝零调用)。
@@ -463,7 +477,7 @@ func TestE2EDocExampleComplianceFailRoutesToRevision(t *testing.T) {
 		{audit.EventNodeStateChanged, "report_revision"},
 	})
 	assertDocTriggeredRow(t, env.d, execID)
-	assertDocTraceNeverForged(t, env.d, execID)
+	assertDocTraceRootConsistent(t, env.d, execID)
 
 	if got := env.stub.count(); got != 3 {
 		t.Fatalf("llm stub calls = %d, want 3(parse/compliance/revision)", got)
@@ -532,7 +546,7 @@ func TestE2EDocExampleApprovalRejectFailsFast(t *testing.T) {
 		{audit.EventNodeStateChanged, "human_review"}, // →FAILED(approval_rejected)
 	})
 	assertDocTriggeredRow(t, env.d, execID)
-	assertDocTraceNeverForged(t, env.d, execID)
+	assertDocTraceApprovalLinked(t, env.d, execID)
 
 	if got := env.stub.count(); got != 3 {
 		t.Fatalf("llm stub calls = %d, want 3(parse/compliance/summary)", got)
@@ -616,17 +630,141 @@ func assertDocTriggeredRow(t *testing.T, d *sql.DB, execID uint64) {
 	}
 }
 
-// assertDocTraceNeverForged:全链 trace_id 恒 NULL(T6.2 前不伪造,降级口径
-// 的机器可检半边;T6.2 合入后本断言翻转为一致性断言)。
-func assertDocTraceNeverForged(t *testing.T, d *sql.DB, execID uint64) {
+// assertDocTraceRootConsistent:T6.2 一致性断言(assertDocTraceNeverForged 的
+// 翻转,D-t82 #4 降级口径兑现):execution.trace_id 非空(触发路径应用层
+// 强制,0001:76 注释契约)+ 全链 audit 行 trace_id == root(「本次 trace
+// 一致」,含跨进程 triggered 行)+ linked 恒 NULL(单链无跨 trace 关联)。
+func assertDocTraceRootConsistent(t *testing.T, d *sql.DB, execID uint64) {
 	t.Helper()
-	var n int
-	if err := d.QueryRow(
-		`SELECT COUNT(*) FROM audit_log WHERE execution_id=? AND trace_id IS NOT NULL`, execID).Scan(&n); err != nil {
-		t.Fatalf("count forged trace: %v", err)
+	flushStagedAudit(t, d) // 高频四类在暂存面,落库后才可比对
+	root := docExecRootTrace(t, d, execID)
+	var bad, linked int
+	if err := d.QueryRow(`
+SELECT SUM(trace_id IS NULL OR trace_id <> ?), SUM(linked_trace_id IS NOT NULL)
+  FROM audit_log WHERE execution_id=?`, root, execID).Scan(&bad, &linked); err != nil {
+		t.Fatalf("audit trace consistency: %v", err)
 	}
-	if n != 0 {
-		t.Fatalf("rows with non-NULL trace_id = %d, want 0(T6.2 前不伪造)", n)
+	if bad != 0 || linked != 0 {
+		t.Fatalf("trace mismatch: %d rows off-root, %d linked rows, want 0/0 (root=%s)", bad, linked, root)
+	}
+}
+
+// assertDocTraceApprovalLinked:审批链形态(T6.2 trace link 验收):decided
+// 行起段新链 Z(决策请求 trace,≠ root),linked 指回执行主链 root;decided
+// 之前全行 trace=root(含 triggered),decided 起(含 resume 迁移与下游)
+// 全行 trace=Z、linked 仅 decided 行非空。
+func assertDocTraceApprovalLinked(t *testing.T, d *sql.DB, execID uint64) {
+	t.Helper()
+	flushStagedAudit(t, d)
+	root := docExecRootTrace(t, d, execID)
+	rows, err := d.Query(`
+SELECT event_type, trace_id, linked_trace_id FROM audit_log
+ WHERE execution_id=? ORDER BY id`, execID)
+	if err != nil {
+		t.Fatalf("read audit trace chain: %v", err)
+	}
+	defer func() { _ = rows.Close() }()
+	type traceRow struct {
+		eventType string
+		trace     sql.NullString
+		linked    sql.NullString
+	}
+	var chain []traceRow
+	for rows.Next() {
+		var r traceRow
+		if err := rows.Scan(&r.eventType, &r.trace, &r.linked); err != nil {
+			t.Fatalf("scan trace chain: %v", err)
+		}
+		chain = append(chain, r)
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("trace chain rows: %v", err)
+	}
+	decidedAt := -1
+	var seg string
+	for i, r := range chain {
+		if r.eventType == audit.EventApprovalDecided {
+			decidedAt = i
+			seg = r.trace.String
+			break
+		}
+	}
+	if decidedAt < 0 {
+		t.Fatal("approval.decided row missing from audit chain")
+	}
+	for i, r := range chain {
+		switch {
+		case i < decidedAt:
+			if r.trace.String != root {
+				t.Fatalf("pre-decision row %d (%s) trace=%v, want root %s", i, r.eventType, r.trace, root)
+			}
+		case i == decidedAt:
+			if r.trace.String == root || !r.trace.Valid {
+				t.Fatalf("decided row trace=%v, want a fresh segment trace != root", r.trace)
+			}
+			if r.linked.String != root {
+				t.Fatalf("decided row linked=%v, want root %s (trace link)", r.linked, root)
+			}
+		default:
+			if r.trace.String != seg {
+				t.Fatalf("post-decision row %d (%s) trace=%v, want segment %s", i, r.eventType, r.trace, seg)
+			}
+			if r.linked.Valid {
+				t.Fatalf("post-decision row %d (%s) linked=%v, want NULL (segment linked once at its head)", i, r.eventType, r.linked)
+			}
+		}
+	}
+}
+
+// docExecRootTrace 读执行 root trace(触发请求 trace 的锚;非空断言 = 触发
+// 路径应用层强制的机器可检半边)。
+func docExecRootTrace(t *testing.T, d *sql.DB, execID uint64) string {
+	t.Helper()
+	var root sql.NullString
+	if err := d.QueryRow(`SELECT trace_id FROM workflow_execution WHERE id=?`, execID).Scan(&root); err != nil {
+		t.Fatalf("read execution trace_id: %v", err)
+	}
+	if !root.Valid || root.String == "" {
+		t.Fatalf("execution %d trace_id empty: API trigger path must carry root trace", execID)
+	}
+	return root.String
+}
+
+// assertDocTraceQueryFace:T6.3 端点 trace 维度激活验证(填 trace 即活):
+// root 维度回挂起前链;审批段 Z 维度至少回 decided 行。
+func assertDocTraceQueryFace(t *testing.T, env *docExampleEnv, execID uint64) {
+	t.Helper()
+	root := docExecRootTrace(t, env.d, execID)
+	var seg sql.NullString
+	if err := env.d.QueryRow(`
+SELECT trace_id FROM audit_log WHERE execution_id=? AND event_type=?`,
+		execID, audit.EventApprovalDecided).Scan(&seg); err != nil {
+		t.Fatalf("read decided row trace: %v", err)
+	}
+	tok := docLogin(t, env.router, docExampleAuthor)
+	for _, tc := range []struct {
+		trace string
+		min   int
+	}{
+		{root, 2},                               // 挂起前链(节点事件 + triggered)
+		{seg.String, 1},                         // 段链(decided 行起)
+		{"ffffffffffffffffffffffffffffffff", 0}, // 不存在的 trace 零行
+	} {
+		code, out := doDocJSON(t, env.router, http.MethodGet,
+			"/api/v1/audit?trace_id="+tc.trace, tok, nil)
+		if code != http.StatusOK {
+			t.Fatalf("GET /audit?trace_id=%s = %d %v, want 200", tc.trace, code, out)
+		}
+		items, _ := out["items"].([]any)
+		if len(items) < tc.min {
+			t.Fatalf("trace query %s returned %d items, want >= %d", tc.trace, len(items), tc.min)
+		}
+		for _, it := range items {
+			m, _ := it.(map[string]any)
+			if got, _ := m["trace_id"].(string); got != tc.trace {
+				t.Fatalf("trace query %s returned row with trace_id %v", tc.trace, m["trace_id"])
+			}
+		}
 	}
 }
 
