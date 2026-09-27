@@ -200,7 +200,7 @@ curl -s $API/executions/$EXEC -H "Authorization: Bearer $TOKEN"
 审计对账(高频四类事件经 reaper 搬运,默认 ≤1s 滞后;`execution.triggered` / `approval.*` 同步直写):
 
 ```sql
-SELECT id, event_type, node_id, actor_id, trace_id FROM audit_log
+SELECT id, event_type, node_id, actor_id, trace_id, linked_trace_id FROM audit_log
   WHERE execution_id = ? ORDER BY id;   -- trace_id 全链一致;审批 decided 行 trace=段链 Z、linked_trace_id=root
 ```
 
