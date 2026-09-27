@@ -148,6 +148,14 @@ func TestAppendOnlyVerdict(t *testing.T) {
 			planes:  []grantPlane{{on: "`sch`.`login_audit`", colUpd: []string{"username"}}},
 			wantSub: []string{"REVOKE UPDATE (username) ON `sch`.`login_audit`"},
 		},
+		{
+			// 同上,豁免形态(对抗审计补臂:豁免只有 DELETE,列级 UPDATE
+			// 在 AllowLoginAuditDelete 下同样拒)。
+			name:    "column update on login_audit rejected even under exemption",
+			exempt:  true,
+			planes:  []grantPlane{{on: "`sch`.`login_audit`", colUpd: []string{"username"}}},
+			wantSub: []string{"REVOKE UPDATE (username) ON `sch`.`login_audit`"},
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

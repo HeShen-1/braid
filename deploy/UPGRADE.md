@@ -22,21 +22,28 @@
 2. 备份:数据卷快照或 mysqldump 全库(审计铁律:audit_log 只增,备份含全库)
 3. 迁移:golang-migrate up(命令见下)
 4. 起组件:docker compose -f deploy/prod.docker-compose.yml up -d
-5. 验证:api /healthz 200;四组件启动日志无 preflight 红;指标面正常
+5. 验证:api /healthz 200(docker exec braid-prod-api wget -qO-
+   http://127.0.0.1:8081/healthz);四组件启动日志无 preflight 红;指标面正常
 ```
+
+**取舍记录(容器级 healthcheck)**:交付栈只给 mysql/redis 配容器级
+healthcheck(compose 依赖条件需要);braid 组件不配——存活面 = /healthz +
+metrics exposition 由外部监控探(镜像内 busybox wget 亦可人工探,
+`docker exec <容器> wget -qO- http://127.0.0.1:9090/metrics`)。
 
 迁移命令(交付栈内经 compose 内网;`multiStatements=true` 是 golang-migrate
 执行单文件多语句迁移的前提,缺它 0001 直接红):
 
 ```sh
-docker compose -f deploy/prod.docker-compose.yml run --rm migrate
+docker compose -f deploy/prod.docker-compose.yml run --rm migrate   # 默认 command ["up"]
 # 等价的手工形态:
 migrate -path internal/db/migrations \
   -database "mysql://root:<pwd>@tcp(<host>:3306)/braid?multiStatements=true" up
 ```
 
-compose 的 `migrate` one-shot 服务已挂上述命令(`deploy/prod.docker-compose.yml`),
-组件服务以 `depends_on: condition: service_completed_successfully` 排在其后:
+compose 的 `migrate` one-shot 服务已参数化(entrypoint 透传 command):
+`run --rm migrate force N` 即 dirty 恢复形态(§4)。组件服务以
+`depends_on: condition: service_completed_successfully` 排在其后:
 `up -d` 即按「迁移完成 → 组件启动」的顺序收敛。
 
 ## 2. N-1 兼容窗口
@@ -65,20 +72,23 @@ compose 的 `migrate` one-shot 服务已挂上述命令(`deploy/prod.docker-comp
 **矩阵**(四账号 × 全表最小授权)与设计说明见 `deploy/README.md §5`;
 **可执行语句真源 = `deploy/grants.sh`**。三条路径:
 
-- **首装**(交付栈数据卷首次初始化):`prod.docker-compose.yml` 的 mysql
-  服务把 grants.sh 挂进 `/docker-entrypoint-initdb.d` 自动执行,零手工。
-- **已有数据卷的升级**(交付栈从旧版升级、或自管部署):以 root 手工执行
-  grants.sh 同源语句:
+- **首装**(交付栈):`prod.docker-compose.yml` 的 **grants one-shot 服务**
+  在 migrate 完成后自动执行(表级 GRANT 要求表在场,不能挂 mysql 的
+  initdb.d——那跑在迁移之前,1146;§6 演练教训 1)。重新 `up -d` 会幂等
+  重跑,零手工。
+- **已有数据卷的升级**(交付栈从旧版升级、或自管部署):
 
   ```sh
-  docker exec -i braid-prod-mysql sh -c 'cd /docker-entrypoint-initdb.d && sh grants.sh' < /dev/null
-  # 或脱离 compose:sh deploy/grants.sh(读 deploy/.env 同名环境变量)
+  docker compose -f deploy/prod.docker-compose.yml run --rm grants
+  # 脱离 compose 的自管部署:sh deploy/grants.sh(需在环境里提供
+  # MYSQL_ROOT_PASSWORD / MYSQL_HOST 及四账号密码;语句幂等)
   ```
 
   语句幂等(`CREATE USER IF NOT EXISTS` + `GRANT` 重跑 no-op);版本升级
   带来新写面时(如 T7.4 的 login_audit),重新执行即完成增量扩权。
 - **改密**:`ALTER USER 'braid_api'@'%' IDENTIFIED BY '<new>';` 后同步改
   `deploy/.env` 并滚动重启对应组件(IF NOT EXISTS 形态建账号不重设密码)。
+  密码字符集限 `[A-Za-z0-9._~@+%-]`(grants.sh 的 SQL/shell 字面量安全闸)。
 
 **验证**:组件启动即自检——`preflight.CheckAuditAppendOnly` 对授权违约
 (schema 级 DELETE、业务账号 UPDATE/DELETE)拒启并给出可执行的 REVOKE
@@ -114,8 +124,12 @@ ALTER 是唯一例外。恢复分两臂:
 #   SHOW CREATE TABLE node_execution;        # uk_node_id_exec 在?
 #   SELECT COUNT(*) FROM information_schema.tables
 #    WHERE table_schema=DATABASE() AND table_name='approval_decision';
-migrate ... force N
-migrate ... up
+# 交付栈(migrate one-shot 参数化,command 覆盖即 force 形态):
+docker compose -f deploy/prod.docker-compose.yml run --rm migrate force N
+docker compose -f deploy/prod.docker-compose.yml run --rm migrate   # = up
+# 自管部署的手工等价:
+migrate -path internal/db/migrations \
+  -database "mysql://root:<pwd>@tcp(<host>:3306)/braid?multiStatements=true" force N
 ```
 
 **臂 B:版本 N 部分应用(有对象缺失)**:

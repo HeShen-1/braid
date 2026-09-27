@@ -87,20 +87,25 @@ login_audit 写入被登录限流钳制(默认 10/min/IP),量级天然有界。�
 
 四组件账号 × 全表最小授权。**同源声明**:矩阵 = 2026-09-27 对
 `internal/*` 非测试 SQL 语句集的逐包 survey(组件装配链 → 语句 → 权限,
-交叉审计核验);**可执行真源 = `deploy/grants.sh`**(交付栈 MySQL 数据卷
-首次初始化自动执行),手工路径(已有卷/扩权/改密)见 `deploy/UPGRADE.md
-§3`。代码新增 SQL 写面时本表与 grants.sh 必须同步修。
+交叉审计核验);**可执行真源 = `deploy/grants.sh`**(交付栈 grants
+one-shot 于迁移后自动执行),手工路径(已有卷/扩权/改密)见
+`deploy/UPGRADE.md §3`。代码新增 SQL 写面时本表与 grants.sh 必须同步修。
+**口径修正(6 视角审计)**:按**调用链可达**而非 import 可达核权——
+scheduler.Instantiate 只被 api 调用、outbox 状态迁移原语只在 relay、
+audit 暂存发射只在 worker 路径;初版矩阵按包归属多授 7 cell
+(worker/reaper 的 execution/node INSERT、reaper 的 node_attempt INSERT /
+outbox UPDATE / audit_pending INSERT)已全部收回。
 
 | 表 | api | worker | relay | reaper |
 |----|-----|--------|-------|--------|
 | workflow_definition | SELECT,INSERT,UPDATE | SELECT | — | SELECT |
-| workflow_execution | SELECT,INSERT | SELECT,INSERT,UPDATE | — | SELECT,INSERT,UPDATE |
-| node_execution | SELECT,INSERT | SELECT,INSERT,UPDATE | — | SELECT,INSERT,UPDATE |
-| node_attempt | — | SELECT,INSERT,UPDATE | — | SELECT,INSERT,UPDATE |
+| workflow_execution | SELECT,INSERT | SELECT,UPDATE | — | SELECT,UPDATE |
+| node_execution | SELECT,INSERT | SELECT,UPDATE | — | SELECT,UPDATE |
+| node_attempt | — | SELECT,INSERT,UPDATE | — | SELECT,UPDATE |
 | approval_decision | SELECT,INSERT | SELECT | — | SELECT |
-| outbox | INSERT | INSERT | SELECT,UPDATE | SELECT,INSERT,UPDATE,DELETE |
+| outbox | INSERT | INSERT | SELECT,UPDATE | SELECT,INSERT,DELETE |
 | audit_log | SELECT,INSERT | SELECT,INSERT | — | SELECT,INSERT,ALTER,DROP |
-| audit_pending | — | INSERT | — | SELECT,INSERT,DELETE |
+| audit_pending | — | INSERT | — | SELECT,DELETE |
 | login_audit | INSERT | — | — | SELECT,DELETE |
 | users / user_role | SELECT | SELECT | — | — |
 | schema_migrations | SELECT | SELECT | SELECT | SELECT |
