@@ -59,7 +59,7 @@ func run(ctx context.Context) error {
 	// 破约仅 warn(不该把投递链 brick 在审计水位上)。
 	if err := errors.Join(
 		preflight.CheckSchemaVersion(ctx, mysqlDB),
-		preflight.CheckAuditAppendOnly(ctx, mysqlDB),
+		preflight.CheckAuditAppendOnly(ctx, mysqlDB, preflight.AppendOnlyStrict),
 	); err != nil {
 		return fmt.Errorf("relay: %w", err)
 	}

@@ -1,0 +1,212 @@
+# braid 交付栈(T7.4 定稿):生产交付形态。与 dev.docker-compose.yml 的差异:
+#  - 组件四服务(api/worker/relay/reaper)+ migrate/grants one-shot 在栈内;
+#    镜像经根 Dockerfile 多阶段构建(alpine runtime,四二进制一镜像)
+#  - 仅 compose 内网通信,零宿主端口绑定(运维面 docker exec / 反代另接)
+#  - MySQL 按组件账号授权(./grants.sh 于迁移后建账号;矩阵 deploy/README.md §5)
+#  - 不含 Asynqmon / Prometheus / redis-cache:Asynqmon 无认证 UI 不进生产;
+#    监控栈由运维侧另接(指标 exposition 见 README §6);cache 实例 P0 零
+#    消费者(代码无 BRAID_REDIS_CACHE_ADDR),不建空服务
+# 用法:
+#   cp deploy/.env.example deploy/.env   # 补「交付栈」段四账号密码与业务键
+#   docker compose -f deploy/prod.docker-compose.yml build
+#   docker compose -f deploy/prod.docker-compose.yml up -d
+# 升级序 / 账号扩权 / dirty 恢复 / outbox DEAD 重置:deploy/UPGRADE.md
+name: braid-prod
+
+x-braid-image: &braid-image
+  # 四服务共用一次构建;build 段只需在镜像缺席时触发(compose 不重复 build)
+  build:
+    context: ..
+    dockerfile: Dockerfile
+
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: braid-prod-mysql
+    environment:
+      MYSQL_DATABASE: braid # 库名非凭证,钉死保证 DSN 确定性(同 dev 栈)
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD 未设}
+      # 不挂 env_file 全量灌注:业务密钥(LLM/JWT/SMTP)不进 mysql 容器
+      # (最小暴露,对抗审计收口)。
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      # -h127.0.0.1 强制 TCP(T8.1 审计修,同 dev 栈/ci.yml):初始化期
+      # entrypoint 的临时 server --skip-networking 仅应答 socket ping,
+      # 不带 -h 会在真 server 监听 TCP 前即判 healthy(首启竞态)。
+      test: ["CMD-SHELL", "mysqladmin ping -h127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\""]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped # 基础设施与组件同存活面:宿主重启后栈自愈
+    # 零宿主端口:组件经内网 mysql:3306;运维经 docker exec 或临时 publish
+    # 组件账号授权不挂 initdb.d:表级 GRANT 要求表在场,initdb 跑在迁移
+    # 之前(1146)——由下方 grants one-shot 在 migrate 之后执行。
+
+  redis-queue:
+    # 队列实例(Asynq 载体):契约同 dev 栈——noeviction 硬要求(逐出会静默
+    # 丢任务)+ AOF everysec(~1s 丢失窗;任务真相源在 MySQL)。T7.3
+    # preflight 在 relay/worker 侧硬拒破约,栈契约与自检互锁。P0 内网互信
+    # 模型:无 requirepass(compose 网络边界即信任边界;跨网络暴露前须加
+    # 认证,P1 登记)。
+    image: redis:7.4
+    container_name: braid-prod-redis-queue
+    command:
+      - redis-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - redis-queue-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
+
+  migrate:
+    # one-shot 迁移器(golang-migrate CLI,README §1 口径):默认推进到最新
+    # (command: ["up"];重复 up = ErrNoChange no-op)。multiStatements 是
+    # 单文件多语句迁移前提。参数化:docker compose run --rm migrate force N
+    # 覆盖 command 即得 dirty 恢复形态(UPGRADE.md §4)。
+    # 组件服务 depends_on 本服务 service_completed_successfully:
+    # up -d 即按「迁移完成 → 组件启动」收敛(升级序 UPGRADE.md §1)。
+    image: migrate/migrate:v4.18.2
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ../internal/db/migrations:/migrations:ro
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD 未设(deploy/.env 交付栈段)}
+    entrypoint:
+      - sh
+      - -c
+      - exec migrate -path /migrations -database "mysql://root:$${MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/braid?multiStatements=true" "$$@"
+      - migrate # sh -c 的 $0;$@ 由 command 提供(默认 ["up"])
+    command: ["up"]
+    restart: "no"
+
+  grants:
+    # one-shot 授权器:迁移完成后建四组件账号并授最小面(README §5 矩阵,
+    # 语句真源 ./grants.sh)。幂等——升级带来新写面时重新执行即完成扩权。
+    image: mysql:8.0
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./grants.sh:/grants.sh:ro
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD 未设(deploy/.env 交付栈段)}
+      BRAID_DB_API_PASSWORD: ${BRAID_DB_API_PASSWORD:?BRAID_DB_API_PASSWORD 未设}
+      BRAID_DB_WORKER_PASSWORD: ${BRAID_DB_WORKER_PASSWORD:?BRAID_DB_WORKER_PASSWORD 未设}
+      BRAID_DB_RELAY_PASSWORD: ${BRAID_DB_RELAY_PASSWORD:?BRAID_DB_RELAY_PASSWORD 未设}
+      BRAID_DB_REAPER_PASSWORD: ${BRAID_DB_REAPER_PASSWORD:?BRAID_DB_REAPER_PASSWORD 未设}
+    entrypoint: ["sh", "/grants.sh"]
+    restart: "no"
+
+  api:
+    <<: *braid-image
+    image: braid:prod
+    container_name: braid-prod-api
+    entrypoint: ["/usr/local/bin/api"]
+    environment:
+      # 组件账号 DSN(README §5 授权矩阵;preflight append-only 断言启动即查)
+      BRAID_MYSQL_DSN: braid_api:${BRAID_DB_API_PASSWORD:?BRAID_DB_API_PASSWORD 未设}@tcp(mysql:3306)/braid
+      BRAID_API_ADDR: 0.0.0.0:8081 # 容器内网绑定;宿主零暴露,公开面经反代
+      BRAID_API_SNOWFLAKE_NODE: "1" # 显式:容器 PID 无意义,撞号 = PK 1062
+      BRAID_API_RESUME_QUEUE: default
+      BRAID_AUTH_JWT_SECRET: ${BRAID_AUTH_JWT_SECRET:?BRAID_AUTH_JWT_SECRET 未设}
+      # 工具面(可选;空 = 相应工具不注册,发布引用即拒):
+      BRAID_HTTP_ENDPOINTS: ${BRAID_HTTP_ENDPOINTS:-}
+      BRAID_FILEREAD_DIRS: ${BRAID_FILEREAD_DIRS:-}
+      # 反代部署必配(限流键防代理折叠,见 .env.example api 段);直连留空:
+      BRAID_API_TRUSTED_PROXIES: ${BRAID_API_TRUSTED_PROXIES:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      grants:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+  worker:
+    <<: *braid-image
+    image: braid:prod
+    container_name: braid-prod-worker
+    entrypoint: ["/usr/local/bin/worker"]
+    environment:
+      BRAID_MYSQL_DSN: braid_worker:${BRAID_DB_WORKER_PASSWORD:?BRAID_DB_WORKER_PASSWORD 未设}@tcp(mysql:3306)/braid
+      BRAID_REDIS_QUEUE_ADDR: redis-queue:6379
+      BRAID_WORKER_SNOWFLAKE_NODE: "2"
+      BRAID_WORKER_QUEUES: default:1 # 须含 BRAID_API_RESUME_QUEUE 指定队列,否则续跑永挂
+      BRAID_METRICS_ADDR: 0.0.0.0:9090
+      BRAID_TOOL_TOKEN_SECRET: ${BRAID_TOOL_TOKEN_SECRET:-}
+      # llm 组(生产装配必需,缺 URL/KEY/PRICE_TABLE 启动即败):
+      BRAID_LLM_BASE_URL: ${BRAID_LLM_BASE_URL:?BRAID_LLM_BASE_URL 未设}
+      BRAID_LLM_API_KEY: ${BRAID_LLM_API_KEY:?BRAID_LLM_API_KEY 未设}
+      BRAID_LLM_PRICE_TABLE: ${BRAID_LLM_PRICE_TABLE:?BRAID_LLM_PRICE_TABLE 未设}
+      # smtp 组(可选;未配置 = 审批通知降级 log-only;半配置启动即败):
+      BRAID_SMTP_HOST: ${BRAID_SMTP_HOST:-}
+      BRAID_SMTP_PORT: ${BRAID_SMTP_PORT:-587}
+      BRAID_SMTP_USERNAME: ${BRAID_SMTP_USERNAME:-}
+      BRAID_SMTP_PASSWORD: ${BRAID_SMTP_PASSWORD:-}
+      BRAID_SMTP_FROM: ${BRAID_SMTP_FROM:-}
+      BRAID_SMTP_NOTIFY_TO: ${BRAID_SMTP_NOTIFY_TO:-}
+      BRAID_SMTP_STARTTLS: ${BRAID_SMTP_STARTTLS:-true}
+      BRAID_APPROVAL_BASE_URL: ${BRAID_APPROVAL_BASE_URL:-}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      grants:
+        condition: service_completed_successfully
+      redis-queue:
+        condition: service_healthy
+    restart: unless-stopped
+
+  relay:
+    <<: *braid-image
+    image: braid:prod
+    container_name: braid-prod-relay
+    entrypoint: ["/usr/local/bin/relay"]
+    environment:
+      BRAID_MYSQL_DSN: braid_relay:${BRAID_DB_RELAY_PASSWORD:?BRAID_DB_RELAY_PASSWORD 未设}@tcp(mysql:3306)/braid
+      BRAID_REDIS_QUEUE_ADDR: redis-queue:6379
+      BRAID_METRICS_ADDR: 0.0.0.0:9090
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      grants:
+        condition: service_completed_successfully
+      redis-queue:
+        condition: service_healthy
+    restart: unless-stopped
+
+  reaper:
+    <<: *braid-image
+    image: braid:prod
+    container_name: braid-prod-reaper
+    entrypoint: ["/usr/local/bin/reaper"]
+    environment:
+      BRAID_MYSQL_DSN: braid_reaper:${BRAID_DB_REAPER_PASSWORD:?BRAID_DB_REAPER_PASSWORD 未设}@tcp(mysql:3306)/braid
+      BRAID_REDIS_QUEUE_ADDR: redis-queue:6379 # 可选(leaderless);缺省同形态
+      BRAID_REAPER_SNOWFLAKE_NODE: "3" # 显式:容器 PID 恒 1,缺省派生必撞 api=1
+      BRAID_METRICS_ADDR: 0.0.0.0:9090
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      grants:
+        condition: service_completed_successfully
+      redis-queue:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mysql-data:
+  redis-queue-data:

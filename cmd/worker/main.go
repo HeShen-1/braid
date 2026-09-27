@@ -104,7 +104,7 @@ func run(ctx context.Context) error {
 	// 自检 = 下方 PrebuildTokenizers(T7.2 接线,D-t72 #4 复用不重复)。
 	if err := errors.Join(
 		preflight.CheckSchemaVersion(ctx, mysqlDB),
-		preflight.CheckAuditAppendOnly(ctx, mysqlDB),
+		preflight.CheckAuditAppendOnly(ctx, mysqlDB, preflight.AppendOnlyStrict),
 		preflight.CheckAuditPartitions(ctx, mysqlDB),
 	); err != nil {
 		return fmt.Errorf("worker: %w", err)

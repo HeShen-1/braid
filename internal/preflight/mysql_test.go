@@ -60,37 +60,78 @@ func TestPartitionVerdict(t *testing.T) {
 func TestAppendOnlyVerdict(t *testing.T) {
 	tests := []struct {
 		name    string
+		exempt  bool // AllowLoginAuditDelete(reaper 保留期清理豁免形态)
 		planes  []grantPlane
 		wantSub []string
 	}{
 		{name: "no planes at all"},
 		{
-			name:   "read-only planes invisible",
-			planes: []grantPlane{{on: "`sch`.*"}, {on: "`sch`.`audit_log`"}},
+			name: "read-only planes invisible",
+			planes: []grantPlane{
+				{on: "`sch`.*", coversAuditLog: true},
+				{on: "`sch`.`audit_log`", coversAuditLog: true},
+				{on: "`sch`.`login_audit`"},
+			},
 		},
 		{
 			name:    "schema update rejected",
-			planes:  []grantPlane{{on: "`sch`.*", update: true}},
+			planes:  []grantPlane{{on: "`sch`.*", update: true, coversAuditLog: true}},
 			wantSub: []string{"UPDATE on `sch`.*", "REVOKE UPDATE ON `sch`.* FROM 'app'@'%'", "append-only"},
 		},
 		{
 			name:    "table delete rejected",
-			planes:  []grantPlane{{on: "`sch`.`audit_log`", delete: true}},
+			planes:  []grantPlane{{on: "`sch`.`audit_log`", delete: true, coversAuditLog: true}},
+			wantSub: []string{"DELETE on `sch`.`audit_log`", "REVOKE DELETE ON `sch`.`audit_log` FROM 'app'@'%'"},
+		},
+		// ---- login_audit 扩面臂(T7.4,D-t64 ①):coversAuditLog=false 即
+		// 对象仅覆盖 login_audit,DELETE 的豁免判定面。----
+		{
+			name:    "login_audit delete rejected strict",
+			planes:  []grantPlane{{on: "`sch`.`login_audit`", delete: true}},
+			wantSub: []string{"DELETE on `sch`.`login_audit`", "REVOKE DELETE ON `sch`.`login_audit` FROM 'app'@'%'"},
+		},
+		{
+			// reaper 形态:janitor purgeLoginAudit 的表级 DELETE 豁免
+			// (授权矩阵 deploy/README.md §5;api 形态仍拒)。
+			name:   "login_audit delete passes under exemption",
+			exempt: true,
+			planes: []grantPlane{{on: "`sch`.`login_audit`", delete: true}},
+		},
+		{
+			// 豁免只放行 DELETE:改历史行(UPDATE)在任何组件、任何一张
+			// 受保护表上都违约。
+			name:    "login_audit update rejected even under exemption",
+			exempt:  true,
+			planes:  []grantPlane{{on: "`sch`.`login_audit`", update: true}},
+			wantSub: []string{"UPDATE on `sch`.`login_audit`", "REVOKE UPDATE ON `sch`.`login_audit` FROM 'app'@'%'"},
+		},
+		{
+			// schema 级授权覆盖 audit_log ⇒ 豁免不适用:reaper 的
+			// login_audit DELETE 必须表级精确授权,schema 级照拒。
+			name:    "schema delete rejected even under exemption",
+			exempt:  true,
+			planes:  []grantPlane{{on: "`sch`.*", delete: true, coversAuditLog: true}},
+			wantSub: []string{"DELETE on `sch`.*", "REVOKE DELETE ON `sch`.* FROM 'app'@'%'"},
+		},
+		{
+			name:    "audit_log delete rejected even under exemption",
+			exempt:  true,
+			planes:  []grantPlane{{on: "`sch`.`audit_log`", delete: true, coversAuditLog: true}},
 			wantSub: []string{"DELETE on `sch`.`audit_log`", "REVOKE DELETE ON `sch`.`audit_log` FROM 'app'@'%'"},
 		},
 		{
 			// GRANT ALL ON sch.* 的展开落业务平面 = 违约配置,拒;同对象
 			// 双权限合成一条合法 REVOKE(对抗审计 F7:单语句混 ON 子句 = 1064)。
 			name:    "schema ALL expansion grouped into one statement",
-			planes:  []grantPlane{{on: "`sch`.*", update: true, delete: true}},
+			planes:  []grantPlane{{on: "`sch`.*", update: true, delete: true, coversAuditLog: true}},
 			wantSub: []string{"UPDATE/DELETE on `sch`.*", "REVOKE UPDATE, DELETE ON `sch`.* FROM 'app'@'%'"},
 		},
 		{
 			// 多对象 = 多条语句,分号分隔,各自合法。
 			name: "multi-plane statements stay separately executable",
 			planes: []grantPlane{
-				{on: "`sch`.*", update: true, delete: true},
-				{on: "`sch%`.`audit_log`", delete: true},
+				{on: "`sch`.*", update: true, delete: true, coversAuditLog: true},
+				{on: "`sch%`.`audit_log`", delete: true, coversAuditLog: true},
 			},
 			wantSub: []string{
 				"REVOKE UPDATE, DELETE ON `sch`.* FROM 'app'@'%'; REVOKE DELETE ON `sch%`.`audit_log` FROM 'app'@'%'",
@@ -98,13 +139,27 @@ func TestAppendOnlyVerdict(t *testing.T) {
 		},
 		{
 			name:    "column update carries column list",
-			planes:  []grantPlane{{on: "`sch`.`audit_log`", colUpd: []string{"payload", "id"}}},
+			planes:  []grantPlane{{on: "`sch`.`audit_log`", colUpd: []string{"payload", "id"}, coversAuditLog: true}},
 			wantSub: []string{"UPDATE(payload,id) on `sch`.`audit_log`", "REVOKE UPDATE (payload, id) ON `sch`.`audit_log` FROM 'app'@'%'"},
+		},
+		{
+			// 列级 UPDATE 打在 login_audit 上同样违约(豁免只有 DELETE 面)。
+			name:    "column update on login_audit rejected",
+			planes:  []grantPlane{{on: "`sch`.`login_audit`", colUpd: []string{"username"}}},
+			wantSub: []string{"REVOKE UPDATE (username) ON `sch`.`login_audit`"},
+		},
+		{
+			// 同上,豁免形态(对抗审计补臂:豁免只有 DELETE,列级 UPDATE
+			// 在 AllowLoginAuditDelete 下同样拒)。
+			name:    "column update on login_audit rejected even under exemption",
+			exempt:  true,
+			planes:  []grantPlane{{on: "`sch`.`login_audit`", colUpd: []string{"username"}}},
+			wantSub: []string{"REVOKE UPDATE (username) ON `sch`.`login_audit`"},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			err := appendOnlyVerdict("app@%", "'app'@'%'", tt.planes)
+			err := appendOnlyVerdict("app@%", "'app'@'%'", tt.exempt, tt.planes)
 			assertSubstrings(t, err, tt.wantSub)
 		})
 	}
@@ -223,8 +278,12 @@ func TestMySQLChecksGreenOnMigratedSchema(t *testing.T) {
 	if err := CheckSchemaVersion(ctx, dbh); err != nil {
 		t.Fatalf("CheckSchemaVersion: %v", err)
 	}
-	if err := CheckAuditAppendOnly(ctx, dbh); err != nil {
-		t.Fatalf("CheckAuditAppendOnly: %v", err)
+	if err := CheckAuditAppendOnly(ctx, dbh, AppendOnlyStrict); err != nil {
+		t.Fatalf("CheckAuditAppendOnly(strict): %v", err)
+	}
+	// 豁免形态同账号也应过(root 落管理平面;豁免只影响 login_audit DELETE 判定)。
+	if err := CheckAuditAppendOnly(ctx, dbh, AllowLoginAuditDelete); err != nil {
+		t.Fatalf("CheckAuditAppendOnly(exempt): %v", err)
 	}
 	if err := CheckAuditPartitions(ctx, dbh); err != nil {
 		t.Fatalf("CheckAuditPartitions: %v", err)
@@ -363,10 +422,11 @@ func TestAuditAppendOnlyEnforcement(t *testing.T) {
 	t.Cleanup(func() { _ = limited.Close() })
 
 	steps := []struct {
-		name     string
-		setup    []string
-		wantSub  []string // 空 = 期望通过
-		execHint bool     // 把提示里的 REVOKE 原样执行并断言随后判定通过
+		name       string
+		setup      []string
+		wantStrict []string // AppendOnlyStrict 期望;空 = 通过
+		wantExempt []string // AllowLoginAuditDelete 期望;空 = 通过
+		execHint   bool     // 把提示里的 REVOKE 原样执行并断言随后判定通过
 	}{
 		{
 			// 管理平面:全局 UPDATE 只 warn(判定过),dev/test root 同形态。
@@ -378,9 +438,10 @@ func TestAuditAppendOnlyEnforcement(t *testing.T) {
 			setup: []string{fmt.Sprintf("REVOKE SELECT, UPDATE ON *.* FROM '%s'@'%%'", user)},
 		},
 		{
-			name:    "schema UPDATE rejected",
-			setup:   []string{fmt.Sprintf("GRANT UPDATE ON %s.* TO '%s'@'%%'", schema, user)},
-			wantSub: []string{fmt.Sprintf("REVOKE UPDATE ON `%s`.* FROM '%s'@'%%'", schema, user)},
+			name:       "schema UPDATE rejected",
+			setup:      []string{fmt.Sprintf("GRANT UPDATE ON %s.* TO '%s'@'%%'", schema, user)},
+			wantStrict: []string{fmt.Sprintf("REVOKE UPDATE ON `%s`.* FROM '%s'@'%%'", schema, user)},
+			wantExempt: []string{fmt.Sprintf("REVOKE UPDATE ON `%s`.* FROM '%s'@'%%'", schema, user)},
 		},
 		{
 			name:  "schema revoked passes",
@@ -389,28 +450,67 @@ func TestAuditAppendOnlyEnforcement(t *testing.T) {
 		{
 			// 对抗审计 F2:通配模式授权(`%` 覆盖本库)不能被精确等值漏掉;
 			// REVOKE 必须收在同一模式上(收在实名上不撤销模式授权)。
-			name:    "wildcard schema pattern rejected",
-			setup:   []string{fmt.Sprintf("GRANT UPDATE ON `%s%%`.* TO '%s'@'%%'", schema, user)},
-			wantSub: []string{"REVOKE UPDATE ON `" + schema + "%`.* FROM '" + user + "'@'%'"},
+			name:       "wildcard schema pattern rejected",
+			setup:      []string{fmt.Sprintf("GRANT UPDATE ON `%s%%`.* TO '%s'@'%%'", schema, user)},
+			wantStrict: []string{"REVOKE UPDATE ON `" + schema + "%`.* FROM '" + user + "'@'%'"},
+			wantExempt: []string{"REVOKE UPDATE ON `" + schema + "%`.* FROM '" + user + "'@'%'"},
 		},
 		{
 			name:  "wildcard revoked on the pattern passes",
 			setup: []string{fmt.Sprintf("REVOKE UPDATE ON `%s%%`.* FROM '%s'@'%%'", schema, user)},
 		},
 		{
-			name:    "table DELETE on audit_log rejected",
-			setup:   []string{fmt.Sprintf("GRANT DELETE ON %s.audit_log TO '%s'@'%%'", schema, user)},
-			wantSub: []string{"REVOKE DELETE ON `" + schema + "`.`audit_log` FROM '" + user + "'@'%'"},
+			name:       "table DELETE on audit_log rejected",
+			setup:      []string{fmt.Sprintf("GRANT DELETE ON %s.audit_log TO '%s'@'%%'", schema, user)},
+			wantStrict: []string{"REVOKE DELETE ON `" + schema + "`.`audit_log` FROM '" + user + "'@'%'"},
+			wantExempt: []string{"REVOKE DELETE ON `" + schema + "`.`audit_log` FROM '" + user + "'@'%'"},
 		},
 		{
 			name:  "table revoked passes",
 			setup: []string{fmt.Sprintf("REVOKE DELETE ON %s.audit_log FROM '%s'@'%%'", schema, user)},
 		},
+		// ---- login_audit 扩面臂(T7.4,D-t64 ①)。----
+		{
+			// api/worker/relay 形态(strict):login_audit 的业务授权只有
+			// INSERT/SELECT,DELETE 违约拒启;同授权态下 reaper 豁免形态
+			// (wantExempt 空 = 通过)双验一步完成。
+			name:       "table DELETE on login_audit rejected strict, passes exempt",
+			setup:      []string{fmt.Sprintf("GRANT DELETE ON %s.login_audit TO '%s'@'%%'", schema, user)},
+			wantStrict: []string{"REVOKE DELETE ON `" + schema + "`.`login_audit` FROM '" + user + "'@'%'"},
+		},
+		{
+			name:  "login_audit table DELETE revoked passes",
+			setup: []string{fmt.Sprintf("REVOKE DELETE ON %s.login_audit FROM '%s'@'%%'", schema, user)},
+		},
+		{
+			// UPDATE 面无豁免:改历史行在任何形态都违约。
+			name:       "table UPDATE on login_audit rejected both forms",
+			setup:      []string{fmt.Sprintf("GRANT UPDATE ON %s.login_audit TO '%s'@'%%'", schema, user)},
+			wantStrict: []string{"REVOKE UPDATE ON `" + schema + "`.`login_audit` FROM '" + user + "'@'%'"},
+			wantExempt: []string{"REVOKE UPDATE ON `" + schema + "`.`login_audit` FROM '" + user + "'@'%'"},
+		},
+		{
+			name:  "login_audit UPDATE revoked passes",
+			setup: []string{fmt.Sprintf("REVOKE UPDATE ON %s.login_audit FROM '%s'@'%%'", schema, user)},
+		},
+		{
+			// schema 级 DELETE 覆盖 audit_log ⇒ 豁免形态照拒:reaper 的
+			// login_audit DELETE 必须表级精确授权(issue #70 按组件授权)。
+			name:       "schema DELETE rejected even under exemption",
+			setup:      []string{fmt.Sprintf("GRANT DELETE ON %s.* TO '%s'@'%%'", schema, user)},
+			wantStrict: []string{"REVOKE DELETE ON `" + schema + "`.* FROM '" + user + "'@'%'"},
+			wantExempt: []string{"REVOKE DELETE ON `" + schema + "`.* FROM '" + user + "'@'%'"},
+		},
+		{
+			name:  "schema DELETE revoked passes",
+			setup: []string{fmt.Sprintf("REVOKE DELETE ON %s.* FROM '%s'@'%%'", schema, user)},
+		},
 		{
 			// 对抗审计 F3/F4:列级 UPDATE 只落 COLUMN_PRIVILEGES。
-			name:    "column UPDATE on audit_log rejected",
-			setup:   []string{fmt.Sprintf("GRANT UPDATE (payload, id) ON %s.audit_log TO '%s'@'%%'", schema, user)},
-			wantSub: []string{"REVOKE UPDATE (id, payload) ON `" + schema + "`.`audit_log` FROM '" + user + "'@'%'"},
+			name:       "column UPDATE on audit_log rejected",
+			setup:      []string{fmt.Sprintf("GRANT UPDATE (payload, id) ON %s.audit_log TO '%s'@'%%'", schema, user)},
+			wantStrict: []string{"REVOKE UPDATE (id, payload) ON `" + schema + "`.`audit_log` FROM '" + user + "'@'%'"},
+			wantExempt: []string{"REVOKE UPDATE (id, payload) ON `" + schema + "`.`audit_log` FROM '" + user + "'@'%'"},
 		},
 		{
 			name:  "column revoked passes",
@@ -426,8 +526,9 @@ func TestAuditAppendOnlyEnforcement(t *testing.T) {
 				fmt.Sprintf("GRANT SELECT, INSERT ON %s.* TO '%s'@'%%'", schema, user),
 				fmt.Sprintf("GRANT ALL ON %s.* TO '%s'@'%%'", schema, user),
 			},
-			wantSub:  []string{"REVOKE UPDATE, DELETE ON `" + schema + "`.* FROM '" + user + "'@'%'"},
-			execHint: true,
+			wantStrict: []string{"REVOKE UPDATE, DELETE ON `" + schema + "`.* FROM '" + user + "'@'%'"},
+			wantExempt: []string{"REVOKE UPDATE, DELETE ON `" + schema + "`.* FROM '" + user + "'@'%'"},
+			execHint:   true,
 		},
 	}
 	for _, st := range steps {
@@ -435,12 +536,16 @@ func TestAuditAppendOnlyEnforcement(t *testing.T) {
 			for _, q := range st.setup {
 				mustExec(q)
 			}
-			err := CheckAuditAppendOnly(ctx, limited)
-			assertSubstrings(t, err, st.wantSub)
-			if st.execHint && err != nil {
+			assertSubstrings(t, CheckAuditAppendOnly(ctx, limited, AppendOnlyStrict), st.wantStrict)
+			assertSubstrings(t, CheckAuditAppendOnly(ctx, limited, AllowLoginAuditDelete), st.wantExempt)
+			if st.execHint {
+				err := CheckAuditAppendOnly(ctx, limited, AppendOnlyStrict)
+				if err == nil {
+					t.Fatal("execHint step: strict form unexpectedly passed")
+				}
 				hint := err.Error()
 				i := strings.Index(hint, "fix: ")
-				j := strings.Index(hint, " (audit_log-facing")
+				j := strings.Index(hint, " (audit_log/login_audit-facing")
 				if i < 0 || j <= i {
 					t.Fatalf("cannot locate fix hint in: %v", err)
 				}
@@ -449,7 +554,7 @@ func TestAuditAppendOnlyEnforcement(t *testing.T) {
 						t.Fatalf("hinted REVOKE not executable: %q: %v", stmt, xerr)
 					}
 				}
-				if aerr := CheckAuditAppendOnly(ctx, limited); aerr != nil {
+				if aerr := CheckAuditAppendOnly(ctx, limited, AppendOnlyStrict); aerr != nil {
 					t.Fatalf("after executing hinted REVOKEs, check should pass: %v", aerr)
 				}
 			}
