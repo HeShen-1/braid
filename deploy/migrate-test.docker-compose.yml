@@ -14,7 +14,10 @@ services:
       MYSQL_ROOT_PASSWORD: braid_dev_root
       MYSQL_DATABASE: braid
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-uroot", "-pbraid_dev_root"]
+      # -h127.0.0.1 强制 TCP(T8.1 审计 LOW 修,与 ci.yml services 同步):
+      # 初始化期 entrypoint 起的临时 server --skip-networking 仅应答 socket
+      # ping,不带 -h 会在真 server 监听 TCP 前即判 healthy。
+      test: ["CMD", "mysqladmin", "ping", "-h127.0.0.1", "-uroot", "-pbraid_dev_root"]
       interval: 3s
       timeout: 3s
       retries: 30
