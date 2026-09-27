@@ -83,27 +83,52 @@ login_audit 写入被登录限流钳制(默认 10/min/IP),量级天然有界。�
 压测(整请求 60s 对固定 JSON API 是宽余量,不是冗余)。优雅停机窗
 (10s)与 OTel 排空窗(2s)是停机常量,非旋钮。
 
-## 5. 账号授权矩阵(生产账号分离)
+## 5. 账号授权矩阵(生产账号分离,T7.4 定稿)
 
-审计/账号域表的表级最小授权(T7.4 交付完整方案,本表先声明契约;与
-0001/0004/0005 迁移头注释同源):
+四组件账号 × 全表最小授权。**同源声明**:矩阵 = 2026-09-27 对
+`internal/*` 非测试 SQL 语句集的逐包 survey(组件装配链 → 语句 → 权限,
+交叉审计核验);**可执行真源 = `deploy/grants.sh`**(交付栈 MySQL 数据卷
+首次初始化自动执行),手工路径(已有卷/扩权/改密)见 `deploy/UPGRADE.md
+§3`。代码新增 SQL 写面时本表与 grants.sh 必须同步修。
 
-| 账号 | audit_log | audit_pending | login_audit | outbox |
-|------|-----------|---------------|-------------|--------|
-| api | INSERT / SELECT | INSERT | INSERT / SELECT | INSERT |
-| worker | INSERT / SELECT | INSERT | — | INSERT |
-| relay | — | — | — | SELECT / UPDATE |
-| reaper | INSERT / SELECT / ALTER | SELECT / DELETE | **DELETE**(T7.1 新写面) | INSERT / SELECT / DELETE |
+| 表 | api | worker | relay | reaper |
+|----|-----|--------|-------|--------|
+| workflow_definition | SELECT,INSERT,UPDATE | SELECT | — | SELECT |
+| workflow_execution | SELECT,INSERT | SELECT,INSERT,UPDATE | — | SELECT,INSERT,UPDATE |
+| node_execution | SELECT,INSERT | SELECT,INSERT,UPDATE | — | SELECT,INSERT,UPDATE |
+| node_attempt | — | SELECT,INSERT,UPDATE | — | SELECT,INSERT,UPDATE |
+| approval_decision | SELECT,INSERT | SELECT | — | SELECT |
+| outbox | INSERT | INSERT | SELECT,UPDATE | SELECT,INSERT,UPDATE,DELETE |
+| audit_log | SELECT,INSERT | SELECT,INSERT | — | SELECT,INSERT,ALTER,DROP |
+| audit_pending | — | INSERT | — | SELECT,INSERT,DELETE |
+| login_audit | INSERT | — | — | SELECT,DELETE |
+| users / user_role | SELECT | SELECT | — | — |
+| schema_migrations | SELECT | SELECT | SELECT | SELECT |
 
-- reaper 对 audit_log 的 ALTER 是分区水位作业专属(ADD/DROP PARTITION);
-  其 INSERT/SELECT 来自 T6.1 搬运(暂存行批量 INSERT 进 audit_log + COUNT
-  对账回读,internal/audit/flush.go)。业务账号(api/worker)对 audit_log
-  仅 INSERT/SELECT 是 append-only 铁律,T7.3 preflight 启动断言(schema 级
-  DELETE 会被 CheckAuditAppendOnly 拒启)。
-- login_audit 的 reaper DELETE 授权是本配额表新增契约(0005 迁移注释
-  登记);漏授权的症状 = janitor 每轮报错重试(不 brick,错误隔离)。
-- 业务对账面(workflow_execution / node_* 等)的 reaper 授权以
-  internal/reaper 语句集为准,随 T7.4 定稿。
+- **append-only 铁律与启动断言**:api/worker 对 audit_log 仅
+  INSERT/SELECT;login_audit 业务面(api)仅 INSERT。`preflight.
+  CheckAuditAppendOnly`(T7.4 扩面纳 login_audit)在四入口启动断言
+  UPDATE/DELETE 违约即拒启;唯一豁免 = reaper 对 login_audit 的表级
+  DELETE(保留期清理)。schema 级授权(`GRANT ... ON braid.*`)覆盖
+  audit_log,豁免形态照拒——组件写权限必须表级精确授予。
+- **audit_log 的 ALTER+DROP(reaper 专属)**:分区水位作业(ADD/DROP
+  PARTITION)——MySQL 对 `DROP PARTITION` 要求 ALTER+DROP 双权限,缺
+  DROP 则 janitor 回收路径 1142(T7.4 交叉审计发现,原表漏 DROP)。DROP
+  权限不触发 preflight 断言(断言面是 UPDATE/DELETE,DROP 是独立权限)。
+- **UPDATE/DELETE 的谓词列需要 SELECT**(MySQL 权限规则,T7.4 升级演练
+  实证):一切带 WHERE 的写语句,其条件列对账号须有 SELECT——矩阵中
+  reaper 对 login_audit 的 SELECT 即服务保留期 DELETE 的 `event_at` 谓词
+  (无 SELECT 则 purge 报 1143)。
+- **空格 = 无权限是设计而非遗漏**:relay 对 audit_log 零权限(零审计写);
+  api 不触 audit_pending(api 审计全走同步 `audit.Append` 直写 audit_log,
+  暂存面只 worker/reaper——T7.4 修正原表误列的 api INSERT);api 对
+  login_audit 仅 INSERT(查询面 P1)。
+- **无需显式授权的面**:preflight 的 INFORMATION_SCHEMA 探测(I_S 按
+  账号既有权限过滤可见行)、`SELECT CURRENT_USER()/DATABASE()`、
+  `SELECT NOW(3)` 等会话级语句。
+- 漏授权的症状:组件启动 preflight 红(版本/权限断言)或运行期 1142
+  响亮报错(如 janitor 缺 login_audit DELETE → 每轮重试,错误隔离不
+  brick)。
 
 ## 6. 指标 exposition 端口
 

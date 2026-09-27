@@ -1,0 +1,9 @@
+# 构建上下文瘦身 + 凭证面隔离(T7.4):.env/.testenv 永不进 build context
+# (密钥不进镜像层是铁律;gitleaks 同口径)。
+.git
+.worktrees
+.handoff
+deploy/.env
+**/.testenv
+docs
+*.md
