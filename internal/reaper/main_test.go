@@ -37,6 +37,12 @@ func TestMain(m *testing.M) {
 		accChildMain()
 		return
 	}
+	if os.Getenv(flushChildEnv) == "1" {
+		// T8.1 flush-kill 子进程:同款绝对号直用契约(flush 臂纯 MySQL,
+		// 不触 Redis,分支形式与 acc 子进程对齐)。
+		flushChildMain()
+		return
+	}
 	redisDB, err := db.TestRedisDB(reaperRedisBase)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)

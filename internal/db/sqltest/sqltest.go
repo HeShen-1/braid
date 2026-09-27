@@ -12,6 +12,7 @@ package sqltest
 import (
 	"database/sql"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,10 +39,15 @@ func MustOpen(t TB) *sql.DB {
 
 // MustOpenAt 是 MustOpen 的多 schema 形态(relay 等需要包级隔离的测试用);
 // schema 参数是 base 名,实际库名由 db.TestSchema 拼 worktree 后缀。
+// BRAID_TEST_REQUIRE_STACK=1(CI)时栈不可达 = Fatalf 而非 Skipf:CI 的
+// services 栈必达,静默 skip 会把「没跑」伪装成「绿」(T8.1)。
 func MustOpenAt(t TB, schema string) *sql.DB {
 	t.Helper()
 	d, err := OpenAt(schema)
 	if err != nil {
+		if os.Getenv("BRAID_TEST_REQUIRE_STACK") == "1" {
+			t.Fatalf("braid-t13-mysql 不可达(REQUIRE_STACK=1,栈必达断言): %v", err)
+		}
 		t.Skipf("braid-t13-mysql 不可达,先起验证容器: %v", err)
 	}
 	t.Cleanup(func() { _ = d.Close() })

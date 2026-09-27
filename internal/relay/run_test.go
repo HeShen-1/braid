@@ -349,13 +349,18 @@ SELECT COUNT(*) FROM outbox WHERE execution_id=? AND task_id=? AND status='DISPA
 
 // TestTwoRelaysNoDuplicateDelivery:双 relay 并发扫描 M 行,总投递次数恰 = M
 // (选择→标记原子 ⇒ 稳态零重复入队)。咬住变异:非原子 claim+mark(先标记后
-// 崩溃/无锁扫描 ⇒ 重复投递)。
+// 崩溃/无锁扫描 ⇒ 重复投递)。T8.1 增补 trace 维度:行 trace 列不因双 relay
+// 竞争投递变值(重投不改行内容)。
 func TestTwoRelaysNoDuplicateDelivery(t *testing.T) {
 	f := newRFixture(t)
 	queue := "q" + fmt.Sprint(newID())
 	const m = 8
+	seeds := make(map[uint64]string, m)
 	for range m {
-		f.row(queue)
+		id, _ := f.row(queue)
+		z := fmt.Sprintf("%032x", id) // 行内唯一合法 32-hex(fixture 种子特权补列)
+		mustExec(t, f.db, `UPDATE outbox SET trace_id=? WHERE id=?`, z, id)
+		seeds[id] = z
 	}
 	stub := &stubEnq{} // 共享计数(互斥保护)
 	cfg := testCfg()
@@ -379,6 +384,26 @@ func TestTwoRelaysNoDuplicateDelivery(t *testing.T) {
 	wg.Wait()
 	if n := stub.count(); n != m {
 		t.Fatalf("total enqueues = %d, want exactly %d (duplicate delivery)", n, m)
+	}
+	// T8.1:双 relay 竞争收敛后 trace 列保真。
+	q, err := f.db.QueryContext(context.Background(),
+		`SELECT id, trace_id FROM outbox WHERE execution_id=?`, f.execID)
+	if err != nil {
+		t.Fatalf("query rows: %v", err)
+	}
+	defer func() { _ = q.Close() }()
+	for q.Next() {
+		var id uint64
+		var trace sql.NullString
+		if err := q.Scan(&id, &trace); err != nil {
+			t.Fatalf("scan row: %v", err)
+		}
+		if !trace.Valid || trace.String != seeds[id] {
+			t.Fatalf("row %d trace = %v, want %q(双投递不得改值)", id, trace, seeds[id])
+		}
+	}
+	if err := q.Err(); err != nil {
+		t.Fatalf("rows iter: %v", err)
 	}
 }
 

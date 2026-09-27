@@ -399,11 +399,22 @@ SELECT COUNT(*) FROM outbox
 }
 
 // appendRedispatchEvent 落重派事件(与 scheduler.appendNodeTask 同构;
-// reaper 自带雪花 ID,不 import scheduler 私有面)。
+// reaper 自带雪花 ID,不 import scheduler 私有面)。原行 trace 自全状态
+// MAX 带出(redispatchResume 同式,T8.1:重放 = 原事件同一真相,重执行段
+// 不换主链;本节点无任何带 trace 原行时空 = 零注入,不伪造段链)。LIKE
+// 前缀含 ':' 定界符,与活闸同式;本行尚未 INSERT,MAX 不含自身。
 func (r *Reaper) appendRedispatchEvent(ctx context.Context, q engine.DBTX,
 	execID, nodeExecID uint64, attemptNo uint16) error {
+	var origTrace sql.NullString
+	if err := q.QueryRowContext(ctx,
+		`SELECT COALESCE((SELECT MAX(trace_id) FROM outbox
+		                  WHERE task_id LIKE CONCAT('att:', ?, ':%')), '')`,
+		nodeExecID).Scan(&origTrace); err != nil {
+		return fmt.Errorf("reaper: redispatch trace node %d: %w", nodeExecID, err)
+	}
 	raw, err := json.Marshal(scheduler.NodeTaskPayload{
 		ExecutionID: execID, NodeExecutionID: nodeExecID, AttemptNo: attemptNo,
+		TraceID: origTrace.String,
 	})
 	if err != nil {
 		return fmt.Errorf("reaper: marshal redispatch payload: %w", err)
@@ -413,7 +424,10 @@ func (r *Reaper) appendRedispatchEvent(ctx context.Context, q engine.DBTX,
 		return fmt.Errorf("reaper: gen event id: %w", err)
 	}
 	return outbox.Append(ctx, q, outbox.Event{
-		ID:          id,
+		ID: id,
+		// TraceID 显式拷原行值(同 redispatchResume:applyCtxTrace 显式优先;
+		// reaper tick ctx 无 span,不显式则重执行段换新链)。
+		TraceID:     origTrace.String,
 		ExecutionID: execID,
 		EventType:   scheduler.EventTypeNodeTask,
 		TaskID:      fmt.Sprintf("att:%d:%d", nodeExecID, attemptNo),

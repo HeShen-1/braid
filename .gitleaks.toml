@@ -1,10 +1,27 @@
 # gitleaks 项目配置(CI gitleaks 作业自动拾取)。
 #
+# [extend] useDefault(T8.1 审计 HIGH 修,2026-09-27):gitleaks CLI 发现本
+# 文件后将其作为**整体** config——自定义 config 替换而非合并默认规则,缺
+# extend 则规则集为空、作业零检出空转(自 T3.2 起)。显式继承默认规则集,
+# allowlist 才有意义。
+#
 # allowlist 理由(2026-09-23,T3.2):internal/tools/command.go 的 sandboxEnv
 # 是沙箱 env 构造点,恒以「env 键名字面量 + 运行时变量」拼接形态出现
 # (BRAID_TOOL_TOKEN=<运行时签发值>),generic-api-key 规则对标识符形态
 # 必然误报;该文件不可能出现字面密钥(密钥铁律:不进代码)。真实泄漏面
 # (deploy/.env 等)不受本条影响——路径级 allowlist 只开此一处。
-[allowlist]
+[extend]
+useDefault = true
+
+[[allowlists]]
 description = "sandbox env builder concatenates runtime variables, not literal secrets"
 paths = ['internal/tools/command\.go$']
+
+# tiktoken 词表 SHA-256 钉死值(T7.2 离线 loader,tokenizer.go:37-38)是
+# 校验和不是密钥;generic-api-key 对「键名 + 64hex」形态误报。regexTarget
+# = match 使 regex 命中整行(默认只对捕获的 secret 值 = 纯 hex,无从区分
+# 是哪个常量),只放行这两个词表锚(默认规则开启后首扫实证,2026-09-27)。
+[[allowlists]]
+description = "tiktoken vocab SHA-256 pins are checksums, not secrets"
+regexTarget = "match"
+regexes = ['cl100k_base\.tiktoken', 'o200k_base\.tiktoken']
