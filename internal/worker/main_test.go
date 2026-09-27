@@ -266,6 +266,19 @@ func startWorkerOnQueueOpt(t *testing.T, d *sql.DB, ex Executor, cfg Config, que
 	if err != nil {
 		t.Fatalf("scheduler: %v", err)
 	}
+	// 队列测试级自清理(#67-①):固定 task ID 字面量(notify:/resume: 用例)
+	// × asynq archived 长存,跨运行隔离此前全押在 redistest 首探活 FlushDB;
+	// 本清理把粒度收到单测试,LIFO 上排所有持有者之后(测试自建 client/insp
+	// 的 Close 更晚注册更先执行,下方 cancel 等待 Run 返回次之),删除时队列
+	// 已无持有者。失败响亮(下次运行必撞 task ID conflict),队列不存在即无
+	// 残留,静默达意。
+	t.Cleanup(func() {
+		insp := asynq.NewInspector(opt)
+		if err := insp.DeleteQueue(queue, true); err != nil && !errors.Is(err, asynq.ErrQueueNotFound) {
+			t.Errorf("delete test queue %s: %v", queue, err)
+		}
+		_ = insp.Close()
+	})
 	wctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
