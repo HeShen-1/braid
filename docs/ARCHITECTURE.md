@@ -52,7 +52,7 @@
 
 - **状态迁移 = MySQL 条件更新 CAS**:`UPDATE node_execution SET status=EXECUTING, version=version+1 WHERE id=? AND status=PENDING AND version=?`;Redis 锁仅留给 reconciler 选主。
 - **outbox + relay + reconciler**(P0 硬性验收,非优化项):节点状态变更与"待入队事件"同事务写 outbox,独立 relay 投递 Asynq,成功才标记;reconciler 周期扫描 QUEUED/RUNNING 超时且无活动执行者的 execution,幂等重入队或显式标 FAILED。此通道同时是回滚与断点续跑的依赖。
-- **审批续跑用确定性 TaskID**:`resume:<execution_id>:<node_id>`,Asynq `ErrTaskIDConflict` 天然幂等去重。
+- **审批续跑用确定性 TaskID**:`resume:<execution_id>:<node_id>:<attempt_no>`(四段式定稿见 0003 迁移;原三段式在 (exec,node) 二次续跑时撞 TaskID,是已修豁口),Asynq `ErrTaskIDConflict` 天然幂等去重。
 - 节点执行 = Asynq 短任务,超时按节点类型可配;attempt 级记录(幂等键),重复执行可对账。
 - 每节点落库时存**输入快照**(回滚/断点续跑的地基)。
 

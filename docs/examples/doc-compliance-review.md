@@ -49,8 +49,9 @@ human_review ◀── summary ◀────(主线)              report_revis
 # 1) 基础设施(compose 只起 MySQL/Redis/Asynqmon;业务进程在 host 跑)
 cp deploy/.env.example deploy/.env   # 首次
 # 编辑 deploy/.env,至少打开:
-#   BRAID_MYSQL_DSN / BRAID_AUTH_JWT_SECRET / BRAID_TOOL_TOKEN_SECRET
+#   BRAID_MYSQL_DSN / BRAID_REDIS_QUEUE_ADDR / BRAID_AUTH_JWT_SECRET
 #   BRAID_LLM_BASE_URL / BRAID_LLM_API_KEY(OpenAI 兼容端点)
+#   (BRAID_TOOL_TOKEN_SECRET 可选:缺省 = 进程内随机,P0 同进程校验自洽)
 #   BRAID_FILEREAD_DIRS=["/abs/path/to/braid/docs/examples"]   # file_read 白名单
 docker compose -f deploy/dev.docker-compose.yml up -d
 
