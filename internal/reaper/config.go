@@ -14,9 +14,12 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+
+	"braid/internal/db"
+	"braid/internal/snowflake"
 )
 
-// Config 是 reaper 的全部可调参数。默认值集中在此(T7.1 配置体系换装时原样搬);
+// Config 是 reaper 的全部可调参数。默认值集中在此(T7.1 已换装收编);
 // ConfigFromEnv 是唯一环境解析点。
 type Config struct {
 	// ScanInterval 是扫描周期(tick)。派生常量:deadline skew margin = 本值
@@ -38,6 +41,10 @@ type Config struct {
 	// AuditRetention 是 audit_log 分区保留期(DROP 边界;保留期语义 ≥ retention,
 	// 被活执行钉住的分区本轮跳过)。
 	AuditRetention time.Duration
+	// LoginAuditRetention 是 login_audit 事件保留期(janitor event_at 批量
+	// DELETE 边界;migration 0005 登记的接线,T7.1 落地)。量级被登录限流
+	// 钳制,镜像 AuditRetention 的 90d 默认与 ≥24h 下限。
+	LoginAuditRetention time.Duration
 	// AuditFlushInterval 是暂存审计行(audit_pending → audit_log,T6.1 异步
 	// 批量)的搬运 tick。上限语义 = 审计行可见性滞后上界(T6.3 查询面按
 	// 此口径读 audit_log);leaderless 重叠下并发搬运收敛(1062 回滚 +
@@ -55,22 +62,41 @@ type Config struct {
 	// ID 是 reaper 实例标识(选主 token 前缀 + RedispatchNode 归因)。
 	// "reaper:"+ID 落 node_execution.worker_id(VARCHAR(64)),故 ≤57。
 	ID string
+	// SnowflakeNode 是 reaper 雪花节点号(BRAID_REAPER_SNOWFLAKE_NODE,
+	// T7.1 显式化):未设 → PID 派生(镜像 ID 的 hostname 兜底模式,原
+	// cmd 逻辑收编);域校验在 snowflake.New(与 api/worker 同规)。碰撞面
+	// = reaper 仅产 outbox 事件行 id,与 api/worker 重号症状 = 业务表
+	// PK 1062。
+	SnowflakeNode uint16
+	// MySQLDSN 连接串(BRAID_MYSQL_DSN;含凭证,不进日志/审计)。T7.1 收编
+	// cmd 直读;必填断言在 cmd 读本字段(装配输入非旋钮)。
+	MySQLDSN string
+	// RedisQueueAddr 队列 Redis 地址(BRAID_REDIS_QUEUE_ADDR;可选——空 =
+	// leaderless fail-open,选主锁缺席,正确性结构性不依赖,见 D-t25)。
+	RedisQueueAddr string
+	// MetricsAddr 指标面监听地址(BRAID_METRICS_ADDR;空 = 不启)。
+	MetricsAddr string
+	// Pool 是 MySQL 连接池三值(T7.1,D-t63 移交回收):db.ParsePoolConfig
+	// 注入式解析 BRAID_DB_* 三键,施加点 cmd 的 db.ConfigurePool。
+	Pool db.PoolConfig
 }
 
 // DefaultConfig 返回生产默认值。
 func DefaultConfig() Config {
 	return Config{
-		ScanInterval:       30 * time.Second,
-		DeadGrace:          45 * time.Second,
-		ExecStale:          2 * time.Minute,
-		PendingTTL:         30 * time.Minute,
-		DispatchStale:      30 * time.Minute,
-		AuditRetention:     2160 * time.Hour, // 90d
-		AuditFlushInterval: time.Second,
-		AuditFlushBatch:    500,
-		JanitorInterval:    time.Hour,
-		OutboxBatch:        500,
-		Queue:              "default",
+		ScanInterval:        30 * time.Second,
+		DeadGrace:           45 * time.Second,
+		ExecStale:           2 * time.Minute,
+		PendingTTL:          30 * time.Minute,
+		DispatchStale:       30 * time.Minute,
+		AuditRetention:      2160 * time.Hour, // 90d
+		LoginAuditRetention: 2160 * time.Hour, // 90d(镜像 AuditRetention)
+		AuditFlushInterval:  time.Second,
+		AuditFlushBatch:     500,
+		JanitorInterval:     time.Hour,
+		OutboxBatch:         500,
+		Queue:               "default",
+		Pool:                db.DefaultPoolConfig(),
 	}
 }
 
@@ -94,6 +120,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("reaper: dispatch stale %s < 10m", c.DispatchStale)
 	case c.AuditRetention < 24*time.Hour:
 		return fmt.Errorf("reaper: audit retention %s < 24h", c.AuditRetention)
+	case c.LoginAuditRetention < 24*time.Hour:
+		return fmt.Errorf("reaper: login audit retention %s < 24h", c.LoginAuditRetention)
 	// 100ms 硬下限:搬运是周期收敛作业,亚百毫秒 tick 只剩 DB 空转开销。
 	case c.AuditFlushInterval < 100*time.Millisecond:
 		return fmt.Errorf("reaper: audit flush interval %s < 100ms", c.AuditFlushInterval)
@@ -137,6 +165,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if c.AuditRetention, err = envDuration(getenv, "BRAID_REAPER_AUDIT_RETENTION", c.AuditRetention); err != nil {
 		return c, err
 	}
+	if c.LoginAuditRetention, err = envDuration(getenv, "BRAID_REAPER_LOGIN_AUDIT_RETENTION", c.LoginAuditRetention); err != nil {
+		return c, err
+	}
 	if c.AuditFlushInterval, err = envDuration(getenv, "BRAID_REAPER_AUDIT_FLUSH_INTERVAL", c.AuditFlushInterval); err != nil {
 		return c, err
 	}
@@ -159,6 +190,24 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		} else {
 			c.ID = fmt.Sprintf("reaper-%d", os.Getpid())
 		}
+	}
+	if raw := getenv("BRAID_REAPER_SNOWFLAKE_NODE"); raw != "" {
+		n, serr := strconv.Atoi(raw)
+		// 越界在转换前拒绝(镜像 api 的 uint16 截断防护:65536 mod 2^16 = 0
+		// 会静默折叠回合法节点域,重号症状只剩 PK 1062,不可诊断)。
+		if serr != nil || n < 0 || n > int(snowflake.MaxNodeID) {
+			return c, fmt.Errorf("reaper: BRAID_REAPER_SNOWFLAKE_NODE=%q: want 0..%d", raw, snowflake.MaxNodeID)
+		}
+		c.SnowflakeNode = uint16(n)
+	} else {
+		// 缺省 PID 派生(原 cmd 逻辑收编;MaxNodeID 同上分支——nodeBits 变更不分叉)
+		c.SnowflakeNode = uint16(os.Getpid() & snowflake.MaxNodeID)
+	}
+	c.MySQLDSN = getenv("BRAID_MYSQL_DSN")
+	c.RedisQueueAddr = getenv("BRAID_REDIS_QUEUE_ADDR")
+	c.MetricsAddr = getenv("BRAID_METRICS_ADDR")
+	if c.Pool, err = db.ParsePoolConfig(getenv); err != nil {
+		return c, err
 	}
 	if err := c.Validate(); err != nil {
 		return c, err

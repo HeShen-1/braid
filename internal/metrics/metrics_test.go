@@ -45,6 +45,11 @@ var metricNames = map[string]dto.MetricType{
 	"braid_redis_memory_max_bytes":              dto.MetricType_GAUGE,
 	"braid_asynq_queue_tasks":                   dto.MetricType_GAUGE,
 	"braid_login_attempts_total":                dto.MetricType_COUNTER,
+	"braid_db_pool_open_connections":            dto.MetricType_GAUGE,
+	"braid_db_pool_in_use_connections":          dto.MetricType_GAUGE,
+	"braid_db_pool_idle_connections":            dto.MetricType_GAUGE,
+	"braid_db_pool_max_open_connections":        dto.MetricType_GAUGE,
+	"braid_db_pool_wait_total":                  dto.MetricType_COUNTER,
 }
 
 func gatherMetricTypes(t *testing.T, reg *prometheus.Registry) map[string]dto.MetricType {

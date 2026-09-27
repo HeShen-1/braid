@@ -27,7 +27,7 @@ const fallbackKey = "fallback"
 // priceRe:非负、≤9 位整数 + ≤6 位小数(micro 换算后恒在 int64 域内)。
 var priceRe = regexp.MustCompile(`^\d{1,9}(\.\d{1,6})?$`)
 
-// currencyRe:ISO-4217 形状(3 大写字母;完整代码表校验归 T7.1 配置体系)。
+// currencyRe:ISO-4217 形状(3 大写字母;完整代码表校验归后续配置化,P1 停车场)。
 var currencyRe = regexp.MustCompile(`^[A-Z]{3}$`)
 
 // modelPrice 是解析后的整数定点单价(micro 货币单位 / 百万 token)。
@@ -36,7 +36,7 @@ type modelPrice struct {
 	currency      string
 }
 
-// PriceTable 是供应商单价表(JSON-in-env 配置,拍板 ③;T7.1 配置体系迁居)。
+// PriceTable 是供应商单价表(JSON-in-env 配置,拍板 ③;迁居归后续配置化,P1 停车场)。
 type PriceTable struct {
 	models   map[string]modelPrice
 	fallback *modelPrice

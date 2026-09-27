@@ -11,7 +11,7 @@ import (
 )
 
 // llm 配置面(relay/config.go 同款四件套:Config + DefaultConfig + Validate +
-// ConfigFromEnv;字段名即未来配置键,T7.1 配置体系换装时原样搬)。密钥先例
+// ConfigFromEnv;字段名即未来配置键,T7.1 已换装收编)。密钥先例
 // 对齐 auth:BRAID_LLM_API_KEY 仅经 env 注入,无默认,缺省即 Validate 失败;
 // 不进代码/日志/审计(铁律)。
 type Config struct {

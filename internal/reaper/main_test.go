@@ -57,6 +57,7 @@ func TestMain(m *testing.M) {
 		_, _ = d.Exec(`DELETE FROM audit_log`)
 		_, _ = d.Exec(`DELETE FROM outbox`)
 		_, _ = d.Exec(`DELETE FROM audit_pending`) // T6.1 暂存面(全清 schema 级助手)
+		_, _ = d.Exec(`DELETE FROM login_audit`)   // T7.1 保留期清理面(清扫卫生对称)
 		_, _ = d.Exec(`DELETE FROM node_attempt`)
 		_, _ = d.Exec(`DELETE FROM node_execution`)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE triggered_by='reap-seed'`)
@@ -195,16 +196,17 @@ func seedExecRow(t *testing.T, d *sql.DB, status string, stale time.Duration) (u
 // testCfg 返回测试压缩配置(毫秒级;Validate 故意不跑——启动路径专用)。
 func testCfg() Config {
 	return Config{
-		ScanInterval:    50 * time.Millisecond,
-		DeadGrace:       200 * time.Millisecond,
-		ExecStale:       200 * time.Millisecond,
-		PendingTTL:      time.Minute,
-		DispatchStale:   time.Minute,
-		AuditRetention:  24 * time.Hour,
-		JanitorInterval: time.Hour,
-		OutboxBatch:     100,
-		Queue:           "reap-test",
-		ID:              "test-reaper",
+		ScanInterval:        50 * time.Millisecond,
+		DeadGrace:           200 * time.Millisecond,
+		ExecStale:           200 * time.Millisecond,
+		PendingTTL:          time.Minute,
+		DispatchStale:       time.Minute,
+		AuditRetention:      24 * time.Hour,
+		LoginAuditRetention: 24 * time.Hour,
+		JanitorInterval:     time.Hour,
+		OutboxBatch:         100,
+		Queue:               "reap-test",
+		ID:                  "test-reaper",
 	}
 }
 

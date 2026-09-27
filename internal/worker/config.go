@@ -1,16 +1,18 @@
 package worker
 
 import (
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"braid/internal/db"
 	"braid/internal/snowflake"
 )
 
-// Config 是 worker 的全部可调参数(默认值集中在此,T7.1 配置体系换装时原样搬;
+// Config 是 worker 的全部可调参数(默认值集中在此,T7.1 已换装收编;
 // ConfigFromEnv 是唯一环境解析点,字段名即未来配置键——与 relay.Config 同规)。
 type Config struct {
 	// Concurrency 是 asynq 并发处理数(同时 active 的任务上限)。
@@ -33,10 +35,25 @@ type Config struct {
 	ShutdownTimeout time.Duration
 	// SnowflakeNode 是本进程雪花节点号(attempt 行 id 应用侧生成)。显式
 	// 配置面当前仅 api=1、worker=2 两个常驻进程;relay 无雪花生成器,reaper
-	// 为 PID 派生(cmd/reaper,理论可与 1/2 撞号,碰撞面 = reaper 仅产 outbox
-	// 事件行 id;显式化归 T7.1 配置体系)。跨进程重号唯一症状是业务表 PK 1062;
-	// 域校验在 snowflake.New(与 api 同规)。
+	// 缺省 PID 派生、可经 BRAID_REAPER_SNOWFLAKE_NODE 显式配置(T7.1)——
+	// 理论可与 1/2 撞号,碰撞面 = reaper 仅产 outbox 事件行 id。跨进程重号
+	// 唯一症状是业务表 PK 1062;域校验在 snowflake.New(与 api 同规)。
 	SnowflakeNode uint16
+	// MySQLDSN 连接串(BRAID_MYSQL_DSN;含凭证,不进日志/审计)。T7.1 收编
+	// cmd 直读;必填断言在 cmd 读本字段(装配输入非旋钮)。
+	MySQLDSN string
+	// RedisQueueAddr 队列 Redis 地址(BRAID_REDIS_QUEUE_ADDR;必填断言在
+	// cmd 读本字段)。
+	RedisQueueAddr string
+	// MetricsAddr 指标面监听地址(BRAID_METRICS_ADDR;空 = 不启)。
+	MetricsAddr string
+	// ToolTokenSecret 是工具 scoped token 的跨进程校验密钥
+	// (BRAID_TOOL_TOKEN_SECRET,hex;缺省 nil = 进程内随机,重启即轮换
+	// ——P0 校验点在同进程调用门,自洽)。不进日志/审计(铁律)。
+	ToolTokenSecret []byte
+	// Pool 是 MySQL 连接池三值(T7.1,D-t63 移交回收):db.ParsePoolConfig
+	// 注入式解析 BRAID_DB_* 三键,施加点 cmd 的 db.ConfigurePool。
+	Pool db.PoolConfig
 }
 
 // DefaultConfig 返回生产默认值。
@@ -49,6 +66,7 @@ func DefaultConfig() Config {
 		RetryDelay:        5 * time.Second,
 		ShutdownTimeout:   30 * time.Second,
 		SnowflakeNode:     2,
+		Pool:              db.DefaultPoolConfig(),
 	}
 }
 
@@ -99,6 +117,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		return c, err
 	}
 	c.WorkerID = getenv("BRAID_WORKER_ID")
+	c.MySQLDSN = getenv("BRAID_MYSQL_DSN")
+	c.RedisQueueAddr = getenv("BRAID_REDIS_QUEUE_ADDR")
+	c.MetricsAddr = getenv("BRAID_METRICS_ADDR")
 	if c.HeartbeatInterval, err = envDuration(getenv, "BRAID_WORKER_HEARTBEAT_INTERVAL", c.HeartbeatInterval); err != nil {
 		return c, err
 	}
@@ -114,6 +135,17 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 			return c, fmt.Errorf("worker: BRAID_WORKER_SNOWFLAKE_NODE=%q: want 0..%d", raw, snowflake.MaxNodeID)
 		}
 		c.SnowflakeNode = uint16(n)
+	}
+	if raw := getenv("BRAID_TOOL_TOKEN_SECRET"); raw != "" {
+		key, derr := hex.DecodeString(raw)
+		if derr != nil {
+			// 不回显原始值(密钥素材不进日志/审计——铁律;错误经 fatal 落启动日志)
+			return c, fmt.Errorf("worker: BRAID_TOOL_TOKEN_SECRET: want hex: %w", derr)
+		}
+		c.ToolTokenSecret = key
+	}
+	if c.Pool, err = db.ParsePoolConfig(getenv); err != nil {
+		return c, err
 	}
 	return c, c.Validate()
 }

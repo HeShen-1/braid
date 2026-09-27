@@ -28,18 +28,6 @@ import (
 	"braid/internal/tracing"
 )
 
-// readHeaderTimeout 封慢速头部攻击(slowloris)的硬上限;值配置化归 T7.1。
-const readHeaderTimeout = 10 * time.Second
-
-// 读写/空闲超时:ReadHeaderTimeout 只封头部相,1MiB DSL 请求体与空闲
-// keep-alive 连接仍无界——公开面(BRAID_API_ADDR 显式放开)下是连接
-// 耗尽向量。固定 JSON API,整请求 60s 足够宽。值配置化归 T7.1。
-const (
-	readTimeout  = 60 * time.Second
-	writeTimeout = 30 * time.Second
-	idleTimeout  = 120 * time.Second
-)
-
 // shutdownGrace 是优雅停机窗:在途请求排空、新请求已由 Shutdown 拒绝。
 const shutdownGrace = 10 * time.Second
 
@@ -63,16 +51,18 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	dsn := os.Getenv("BRAID_MYSQL_DSN")
-	if dsn == "" {
+	if cfg.MySQLDSN == "" { // T7.1 收编:cmd 直读 env 清零,断言读 cfg 字段
 		return errors.New("api: BRAID_MYSQL_DSN is required")
 	}
-	dbh, err := sql.Open("mysql", db.CanonicalDSN(dsn))
+	dbh, err := sql.Open("mysql", db.CanonicalDSN(cfg.MySQLDSN))
 	if err != nil {
 		return fmt.Errorf("api: open mysql: %w", err)
 	}
-	db.ConfigurePool(dbh) // D-t63 移交回收;T7.1 env 化换装点
-	defer dbh.Close()     //nolint:errcheck // 主路径退出,关闭错误无处置义
+	if err := db.ConfigurePool(dbh, cfg.Pool); err != nil { // D-t63 移交回收;T7.1:三值经 BRAID_DB_* env 化
+		return fmt.Errorf("api: %w", err)
+	}
+	slog.Info("db: pool", "max_open", cfg.Pool.MaxOpen, "max_idle", cfg.Pool.MaxIdle, "conn_max_lifetime", cfg.Pool.ConnMaxLifetime)
+	defer dbh.Close() //nolint:errcheck // 主路径退出,关闭错误无处置义
 	if err := dbh.PingContext(ctx); err != nil {
 		return fmt.Errorf("api: mysql ping: %w", err)
 	}
@@ -115,6 +105,7 @@ func run(ctx context.Context) error {
 	// T6.4:Prometheus 指标面——与 /healthz 同端口同回环绑定(BRAID_API_ADDR
 	// 部署约定);登录防御计数(login_audit 0005 的指标半边)在此注册。
 	mset, mreg := metrics.NewSet()
+	go metrics.CollectDBPool(ctx, dbh, mset.DBPool) // T7.1:池 gauge 30s 常量周期(braid_db_pool_*)
 	// T6.2:OTel trace 贯穿——off = 丢弃导出器(span/trace id 照生成,审计列
 	// 不随观测开关退化);Tracer 显式注入组件,不注册 otel 全局(镜像 metrics
 	// 先例)。P0 装配面 = api + worker;D-2026-09-27-t62-otel-trace。
@@ -145,10 +136,10 @@ func run(ctx context.Context) error {
 	srv := &http.Server{
 		Addr:              cfg.Addr,
 		Handler:           router,
-		ReadHeaderTimeout: readHeaderTimeout,
-		ReadTimeout:       readTimeout,
-		WriteTimeout:      writeTimeout,
-		IdleTimeout:       idleTimeout,
+		ReadHeaderTimeout: cfg.ReadHeaderTimeout, // T7.1 收编(原 cmd 常量,默认值原样)
+		ReadTimeout:       cfg.ReadTimeout,
+		WriteTimeout:      cfg.WriteTimeout,
+		IdleTimeout:       cfg.IdleTimeout,
 	}
 	errCh := make(chan error, 1)
 	go func() {

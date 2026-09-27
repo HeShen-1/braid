@@ -4,8 +4,13 @@ package reaper
 // 变异自查:硬校验丢了 error 返回 → cross_fail 红;下限丢了 → validate 红。
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
+
+	"braid/internal/db"
+	"braid/internal/snowflake"
 )
 
 func TestDefaultConfig(t *testing.T) {
@@ -15,6 +20,9 @@ func TestDefaultConfig(t *testing.T) {
 	}
 	if c.AuditRetention != 2160*time.Hour {
 		t.Fatalf("retention = %s, want 90d", c.AuditRetention)
+	}
+	if c.LoginAuditRetention != 2160*time.Hour {
+		t.Fatalf("login audit retention = %s, want 90d(镜像 AuditRetention)", c.LoginAuditRetention)
 	}
 	if c.AuditFlushInterval != time.Second || c.AuditFlushBatch != 500 {
 		t.Fatalf("audit flush defaults = %s/%d, want 1s/500", c.AuditFlushInterval, c.AuditFlushBatch)
@@ -45,6 +53,8 @@ func TestConfigValidateBounds(t *testing.T) {
 		{"audit_flush_batch_zero", func(c *Config) { c.AuditFlushBatch = 0 }, false},
 		{"audit_flush_batch_over", func(c *Config) { c.AuditFlushBatch = 3101 }, false},
 		{"janitor_floor", func(c *Config) { c.JanitorInterval = 4 * time.Minute }, false},
+		{"login_retention_floor", func(c *Config) { c.LoginAuditRetention = 23 * time.Hour }, false},
+		{"login_retention_ok", func(c *Config) { c.LoginAuditRetention = 24 * time.Hour }, true},
 		{"outbox_batch_zero", func(c *Config) { c.OutboxBatch = 0 }, false},
 		{"outbox_batch_over", func(c *Config) { c.OutboxBatch = 10001 }, false},
 		{"queue_bad_charset", func(c *Config) { c.Queue = "Q1" }, false},
@@ -123,5 +133,107 @@ func TestConfigFromEnvParses(t *testing.T) {
 	}
 	if c2.AuditFlushInterval != 5*time.Second || c2.AuditFlushBatch != 250 {
 		t.Fatalf("flush env = %s/%d, want 5s/250", c2.AuditFlushInterval, c2.AuditFlushBatch)
+	}
+	c3, err := ConfigFromEnv(func(k string) string {
+		if k == "BRAID_REAPER_LOGIN_AUDIT_RETENTION" {
+			return "48h"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("login retention env: %v", err)
+	}
+	if c3.LoginAuditRetention != 48*time.Hour {
+		t.Fatalf("login retention env = %s, want 48h", c3.LoginAuditRetention)
+	}
+}
+
+// TestConfigFromEnvPool:池三值经 reaper 换装点的三态(缺省/覆盖/坏值;
+// T7.1,D-t63 移交回收)。施加行为锚在 internal/db/pool_test.go(黑盒)。
+func TestConfigFromEnvPool(t *testing.T) {
+	t.Run("empty env yields default pool", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(string) string { return "" })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.Pool != db.DefaultPoolConfig() {
+			t.Fatalf("pool = %+v, want defaults %+v", c.Pool, db.DefaultPoolConfig())
+		}
+	})
+	t.Run("override", func(t *testing.T) {
+		env := map[string]string{
+			"BRAID_DB_MAX_OPEN":          "6",
+			"BRAID_DB_MAX_IDLE":          "3",
+			"BRAID_DB_CONN_MAX_LIFETIME": "4m",
+		}
+		c, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		want := db.PoolConfig{MaxOpen: 6, MaxIdle: 3, ConnMaxLifetime: 4 * time.Minute}
+		if c.Pool != want {
+			t.Fatalf("pool = %+v, want %+v", c.Pool, want)
+		}
+	})
+	t.Run("bad value fails at startup", func(t *testing.T) {
+		env := map[string]string{"BRAID_DB_MAX_OPEN": "many"}
+		_, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "BRAID_DB_MAX_OPEN") {
+			t.Fatalf("err = %v, want containing BRAID_DB_MAX_OPEN", err)
+		}
+	})
+}
+
+// TestConfigFromEnvInfra:装配输入收编(T7.1)——DSN/Redis 队列(可选 =
+// leaderless)/指标地址 + 雪花节点显式化(缺省 PID 派生,原 cmd 逻辑)。
+func TestConfigFromEnvInfra(t *testing.T) {
+	env := map[string]string{
+		"BRAID_MYSQL_DSN":        "u:p@tcp(127.0.0.1:3306)/p",
+		"BRAID_REDIS_QUEUE_ADDR": "127.0.0.1:6379",
+		"BRAID_METRICS_ADDR":     "127.0.0.1:9103",
+	}
+	c, err := ConfigFromEnv(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if c.MySQLDSN != env["BRAID_MYSQL_DSN"] || c.RedisQueueAddr != "127.0.0.1:6379" ||
+		c.MetricsAddr != "127.0.0.1:9103" {
+		t.Fatalf("infra = %q/%q/%q", c.MySQLDSN, c.RedisQueueAddr, c.MetricsAddr)
+	}
+	t.Run("snowflake unset derives pid", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(string) string { return "" })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if want := uint16(os.Getpid() & snowflake.MaxNodeID); c.SnowflakeNode != want {
+			t.Fatalf("snowflake node = %d, want pid-derived %d", c.SnowflakeNode, want)
+		}
+	})
+	t.Run("snowflake explicit", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(k string) string {
+			if k == "BRAID_REAPER_SNOWFLAKE_NODE" {
+				return "5"
+			}
+			return ""
+		})
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.SnowflakeNode != 5 {
+			t.Fatalf("snowflake node = %d, want 5", c.SnowflakeNode)
+		}
+	})
+	for raw := range map[string]bool{"1024": true, "65536": true, "-1": true, "x": true} {
+		t.Run("snowflake rejects "+raw, func(t *testing.T) {
+			_, err := ConfigFromEnv(func(k string) string {
+				if k == "BRAID_REAPER_SNOWFLAKE_NODE" {
+					return raw
+				}
+				return ""
+			})
+			if err == nil || !strings.Contains(err.Error(), "BRAID_REAPER_SNOWFLAKE_NODE") {
+				t.Fatalf("err = %v, want containing BRAID_REAPER_SNOWFLAKE_NODE", err)
+			}
+		})
 	}
 }

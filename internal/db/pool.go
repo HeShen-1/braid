@@ -2,28 +2,91 @@ package db
 
 import (
 	"database/sql"
+	"fmt"
+	"strconv"
 	"time"
 )
 
-// ConfigurePool 对业务入口的 *sql.DB 施加保守默认池上限。
+// PoolConfig 是业务入口的 MySQL 连接池三值(T7.1 env 化,D-t63 移交回收:
+// 2026-09-26 的保守硬编码默认在此升级为可配置,值语义原样)。
 //
-// 背景(D-t63 移交,2026-09-26 回收):四入口(api/relay/worker/reaper)
-// 此前 sql.Open 后不设上限,而 T6.3 上线了无分区谓词的 trace/actor 15s
-// 重查询,并发下无上界连接池可被耗尽。本函数是临时保守默认;T7.1 配置
-// 体系将三值 env 化(BRAID_DB_MAX_OPEN / MAX_IDLE / CONN_MAX_LIFETIME),
-// 换装点即四处调用位。
-//
-// 取值口径:MaxOpen=25 与 dev compose 单 MySQL 实例的默认 max_connections
-// (151)错峰容纳四入口(4×25=100 < 151,留运维余量);Lifetime=5min 消化
-// MySQL wait_timeout 与 LB 轮转下的陈旧连接;Idle=MaxOpen 使突发后不缩池
-// 抖动(低流量部署可由 T7.1 调低)。
-const (
-	maxIdleConns    = 25
-	connMaxLifetime = 5 * time.Minute
-)
+// 取值口径(DefaultPoolConfig):MaxOpen=25 与 dev compose 单 MySQL 实例的
+// 默认 max_connections(151)错峰容纳四入口(4×25=100 < 151,留运维余量);
+// Lifetime=5min 消化 MySQL wait_timeout 与 LB 轮转下的陈旧连接;Idle=MaxOpen
+// 使突发后不缩池抖动(低流量部署可经 BRAID_DB_MAX_IDLE 调低)。容量口径
+// 全表见 deploy/README.md 配额表。
+type PoolConfig struct {
+	MaxOpen         int
+	MaxIdle         int
+	ConnMaxLifetime time.Duration
+}
 
-func ConfigurePool(dbh *sql.DB) {
-	dbh.SetMaxOpenConns(25)
-	dbh.SetMaxIdleConns(maxIdleConns)
-	dbh.SetConnMaxLifetime(connMaxLifetime)
+// DefaultPoolConfig 返回保守默认(250726d 定稿原值)。
+func DefaultPoolConfig() PoolConfig {
+	return PoolConfig{
+		MaxOpen:         25,
+		MaxIdle:         25,
+		ConnMaxLifetime: 5 * time.Minute,
+	}
+}
+
+// Validate 报告池值矛盾(启动即败,不进运行期):MaxOpen≥1;0≤MaxIdle≤
+// MaxOpen(idle 超过 open 只会闲置收紧上限语义);ConnMaxLifetime>0(零/负
+// 即关闭生命周期管理,回归 D-t63 修复前的陈旧连接面)。
+func (c PoolConfig) Validate() error {
+	switch {
+	case c.MaxOpen < 1:
+		return fmt.Errorf("db: pool max open %d < 1", c.MaxOpen)
+	case c.MaxIdle < 0:
+		return fmt.Errorf("db: pool max idle %d < 0", c.MaxIdle)
+	case c.MaxIdle > c.MaxOpen:
+		return fmt.Errorf("db: pool max idle %d > max open %d", c.MaxIdle, c.MaxOpen)
+	case c.ConnMaxLifetime <= 0:
+		return fmt.Errorf("db: pool conn max lifetime %s <= 0", c.ConnMaxLifetime)
+	}
+	return nil
+}
+
+// ParsePoolConfig 从 getenv 读三键(BRAID_DB_MAX_OPEN / BRAID_DB_MAX_IDLE /
+// BRAID_DB_CONN_MAX_LIFETIME;未设取默认,坏值启动即败)。getenv 注入
+// os.Getenv;四入口 ConfigFromEnv 是唯一集中解析点(换装点纪律,注入式
+// 同 llm/notify/tracing 先例),构造末尾过 Validate。
+func ParsePoolConfig(getenv func(string) string) (PoolConfig, error) {
+	c := DefaultPoolConfig()
+	if raw := getenv("BRAID_DB_MAX_OPEN"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return c, fmt.Errorf("db: BRAID_DB_MAX_OPEN=%q: want int >= 1", raw)
+		}
+		c.MaxOpen = n
+	}
+	if raw := getenv("BRAID_DB_MAX_IDLE"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil {
+			return c, fmt.Errorf("db: BRAID_DB_MAX_IDLE=%q: want int in [0, max open]", raw)
+		}
+		c.MaxIdle = n
+	}
+	if raw := getenv("BRAID_DB_CONN_MAX_LIFETIME"); raw != "" {
+		d, err := time.ParseDuration(raw)
+		if err != nil {
+			return c, fmt.Errorf("db: BRAID_DB_CONN_MAX_LIFETIME=%q: want duration > 0", raw)
+		}
+		c.ConnMaxLifetime = d
+	}
+	return c, c.Validate()
+}
+
+// ConfigurePool 对业务入口的 *sql.DB 施加池三值——四入口(cmd/api|worker|
+// relay|reaper)唯一施加点,值经各自 Config.Pool 注入。施加前过 Validate:
+// 零值 MaxOpen 会 SetMaxOpenConns(0) = 无上限(恰是 D-t63 修掉的回归面),
+// 在施加点结构性挡住跳过 ParsePoolConfig 的手搓字面量调用方。
+func ConfigurePool(dbh *sql.DB, cfg PoolConfig) error {
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
+	dbh.SetMaxOpenConns(cfg.MaxOpen)
+	dbh.SetMaxIdleConns(cfg.MaxIdle)
+	dbh.SetConnMaxLifetime(cfg.ConnMaxLifetime)
+	return nil
 }

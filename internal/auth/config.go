@@ -9,8 +9,8 @@ import (
 )
 
 // auth 配置面(relay/config.go 同款四件套:Config + DefaultConfig +
-// Validate + ConfigFromEnv;字段名即未来配置键,T7.1 配置体系换装时
-// 原样搬)。auth 是首个 BRAID_AUTH_* 区域用例。
+// Validate + ConfigFromEnv;字段名即配置键面,T7.1 已换装收编)。
+// auth 是首个 BRAID_AUTH_* 区域用例。
 const (
 	// DefaultTokenTTL token 有效期默认值。
 	DefaultTokenTTL = 24 * time.Hour

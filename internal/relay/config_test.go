@@ -2,8 +2,11 @@ package relay
 
 import (
 	"math/rand/v2"
+	"strings"
 	"testing"
 	"time"
+
+	"braid/internal/db"
 )
 
 func TestDefaultConfigValid(t *testing.T) {
@@ -44,6 +47,7 @@ func TestConfigFromEnv(t *testing.T) {
 			BackoffFactor:  2.5,
 			BackoffMax:     30 * time.Second,
 			Jitter:         0.2,
+			Pool:           db.DefaultPoolConfig(),
 		}
 		if c != want {
 			t.Fatalf("got %+v want %+v", c, want)
@@ -70,6 +74,69 @@ func TestConfigFromEnv(t *testing.T) {
 			}); err == nil {
 				t.Fatalf("%s=%s accepted, want reject", tc.key, tc.val)
 			}
+		}
+	})
+}
+
+// TestConfigFromEnvPool:池三值经 relay 换装点的三态(缺省/覆盖/坏值;
+// T7.1,D-t63 移交回收)。施加行为锚在 internal/db/pool_test.go(黑盒)。
+func TestConfigFromEnvPool(t *testing.T) {
+	t.Run("empty env yields default pool", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(string) string { return "" })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.Pool != db.DefaultPoolConfig() {
+			t.Fatalf("pool = %+v, want defaults %+v", c.Pool, db.DefaultPoolConfig())
+		}
+	})
+	t.Run("override", func(t *testing.T) {
+		env := map[string]string{
+			"BRAID_DB_MAX_OPEN":          "8",
+			"BRAID_DB_MAX_IDLE":          "2",
+			"BRAID_DB_CONN_MAX_LIFETIME": "3m",
+		}
+		c, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		want := db.PoolConfig{MaxOpen: 8, MaxIdle: 2, ConnMaxLifetime: 3 * time.Minute}
+		if c.Pool != want {
+			t.Fatalf("pool = %+v, want %+v", c.Pool, want)
+		}
+	})
+	t.Run("bad value fails at startup", func(t *testing.T) {
+		env := map[string]string{"BRAID_DB_CONN_MAX_LIFETIME": "forever"}
+		_, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "BRAID_DB_CONN_MAX_LIFETIME") {
+			t.Fatalf("err = %v, want containing BRAID_DB_CONN_MAX_LIFETIME", err)
+		}
+	})
+}
+
+// TestConfigFromEnvInfra:装配输入收编(T7.1)——DSN/Redis 队列/指标地址
+// 进 Config(cmd 直读清零;必填断言留 cmd 读 cfg 字段)。
+func TestConfigFromEnvInfra(t *testing.T) {
+	env := map[string]string{
+		"BRAID_MYSQL_DSN":        "u:p@tcp(127.0.0.1:3306)/r",
+		"BRAID_REDIS_QUEUE_ADDR": "127.0.0.1:6379",
+		"BRAID_METRICS_ADDR":     "127.0.0.1:9102",
+	}
+	c, err := ConfigFromEnv(func(k string) string { return env[k] })
+	if err != nil {
+		t.Fatalf("ConfigFromEnv: %v", err)
+	}
+	if c.MySQLDSN != env["BRAID_MYSQL_DSN"] || c.RedisQueueAddr != "127.0.0.1:6379" ||
+		c.MetricsAddr != "127.0.0.1:9102" {
+		t.Fatalf("infra = %q/%q/%q", c.MySQLDSN, c.RedisQueueAddr, c.MetricsAddr)
+	}
+	t.Run("unset yields empty (optional at config layer)", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(string) string { return "" })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.MySQLDSN != "" || c.RedisQueueAddr != "" || c.MetricsAddr != "" {
+			t.Fatalf("unset infra = %q/%q/%q, want empty", c.MySQLDSN, c.RedisQueueAddr, c.MetricsAddr)
 		}
 	})
 }

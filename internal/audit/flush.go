@@ -275,7 +275,7 @@ type FlushAllResult struct {
 }
 
 // FlushAll 循环搬运至排空或 roundCap 上限(单轮上限语义同 janitor 的
-// outboxRoundCap:有界 tick,余量下轮)。游标在轮内推进(毒行也推进)——
+// janitorRoundCap:有界 tick,余量下轮)。游标在轮内推进(毒行也推进)——
 // 全毒批不堵其后健康行;Staged < batch = 扫到队尾即终止。
 func FlushAll(ctx context.Context, db *sql.DB, batch, roundCap int) (FlushAllResult, error) {
 	var agg FlushAllResult

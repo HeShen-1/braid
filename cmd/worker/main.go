@@ -8,7 +8,6 @@ package main
 import (
 	"context"
 	"database/sql"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -36,20 +35,6 @@ import (
 
 // traceShutdownGrace 是 OTel batcher 排空预算(独立停机窗)。
 const traceShutdownGrace = 2 * time.Second
-
-// toolTokenKey 读 BRAID_TOOL_TOKEN_SECRET(hex,可缺省):显式供给 = 跨
-// 进程校验预留(P1 工具回调平台);缺省 nil = 进程内随机(tools 包内生成)。
-func toolTokenKey(getenv func(string) string) ([]byte, error) {
-	raw := getenv("BRAID_TOOL_TOKEN_SECRET")
-	if raw == "" {
-		return nil, nil
-	}
-	key, err := hex.DecodeString(raw)
-	if err != nil {
-		return nil, fmt.Errorf("worker: BRAID_TOOL_TOKEN_SECRET: want hex: %w", err)
-	}
-	return key, nil
-}
 
 // buildNotifier 是 T4.5 SMTP 通知装配的决策面(抽函数 = 装配分支可测,
 // cmd/worker/main_test.go):整组缺省(BRAID_SMTP_HOST 空)→ nil(worker
@@ -99,16 +84,18 @@ func run(ctx context.Context) error {
 			return err
 		}
 	}
-	dsn := os.Getenv("BRAID_MYSQL_DSN")
-	if dsn == "" {
+	if cfg.MySQLDSN == "" { // T7.1 收编:cmd 直读 env 清零,断言读 cfg 字段
 		return errors.New("worker: BRAID_MYSQL_DSN is required")
 	}
-	mysqlDB, err := sql.Open("mysql", db.CanonicalDSN(dsn))
+	mysqlDB, err := sql.Open("mysql", db.CanonicalDSN(cfg.MySQLDSN))
 	if err != nil {
 		return fmt.Errorf("worker: open mysql: %w", err)
 	}
-	db.ConfigurePool(mysqlDB) // D-t63 移交回收;T7.1 env 化换装点
-	defer mysqlDB.Close()     //nolint:errcheck // 主路径退出,关闭错误无处置义
+	if err := db.ConfigurePool(mysqlDB, cfg.Pool); err != nil { // D-t63 移交回收;T7.1:三值经 BRAID_DB_* env 化
+		return fmt.Errorf("worker: %w", err)
+	}
+	slog.Info("db: pool", "max_open", cfg.Pool.MaxOpen, "max_idle", cfg.Pool.MaxIdle, "conn_max_lifetime", cfg.Pool.ConnMaxLifetime)
+	defer mysqlDB.Close() //nolint:errcheck // 主路径退出,关闭错误无处置义
 	if err := mysqlDB.PingContext(ctx); err != nil {
 		return fmt.Errorf("worker: mysql ping: %w", err)
 	}
@@ -123,7 +110,7 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: %w", err)
 	}
 
-	addr := os.Getenv("BRAID_REDIS_QUEUE_ADDR")
+	addr := cfg.RedisQueueAddr
 	if addr == "" {
 		return errors.New("worker: BRAID_REDIS_QUEUE_ADDR is required")
 	}
@@ -147,11 +134,12 @@ func run(ctx context.Context) error {
 	// T6.4:Prometheus 指标面。BRAID_METRICS_ADDR 空 = 不启(观测可选,
 	// 与内置工具「未配置即不注册」同姿势);registry 每进程新建。
 	mset, mreg := metrics.NewSet()
-	if _, ok, err := metrics.Serve(ctx, os.Getenv("BRAID_METRICS_ADDR"), mreg); err != nil {
+	if _, ok, err := metrics.Serve(ctx, cfg.MetricsAddr, mreg); err != nil {
 		return fmt.Errorf("worker: %w", err)
 	} else if ok {
-		slog.Info("metrics: serving", "addr", os.Getenv("BRAID_METRICS_ADDR"))
+		slog.Info("metrics: serving", "addr", cfg.MetricsAddr)
 	}
+	go metrics.CollectDBPool(ctx, mysqlDB, mset.DBPool) // T7.1:池 gauge 30s 常量周期(braid_db_pool_*)
 
 	// T6.2:OTel trace 贯穿——off = 丢弃导出器(trace id 照生成,审计列不随
 	// 观测开关退化);消费侧 asynq middleware 从 payload extract 续链。
@@ -228,10 +216,7 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("worker: tool registry: %w", err)
 	}
-	toolKey, err := toolTokenKey(os.Getenv)
-	if err != nil {
-		return err
-	}
+	toolKey := cfg.ToolTokenSecret // T7.1 收编:hex 解析进 worker.ConfigFromEnv
 	toolExec := &nodes.ToolExecutor{
 		Runner: tools.NewLocalRunner(
 			toolReg,
@@ -253,7 +238,7 @@ func run(ctx context.Context) error {
 		Sched:    sched,
 		Notifier: notifier,
 		Logger:   slog.Default(),
-		Metrics:  mset.Worker, // T6.4:notify 计数 + archived 探测(漏接 = 观测生产死代码)
+		Metrics:  mset.Worker,                      // T6.4:notify 计数 + archived 探测(漏接 = 观测生产死代码)
 		Tracer:   traceProv.Tracer("braid/worker"), // T6.2:消费半边 payload extract 续链
 	}, cfg, asynq.RedisClientOpt{Addr: addr})
 }

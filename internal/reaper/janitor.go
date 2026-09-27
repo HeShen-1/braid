@@ -19,13 +19,15 @@ const outboxRetention = 7 * 24 * time.Hour
 
 // janitor 单 tick 的行/分区上限(量控;批间 100ms 让出复制/缓冲池水位)。
 const (
-	outboxRoundCap   = 10000
+	janitorRoundCap  = 10000 // 单清理作业的单轮行上限(outbox 与 login_audit 各自独立计;软上限——判定在整批 DELETE 后,至多超出一批)
+	loginAuditBatch  = 500   // login_audit 单批 DELETE 上限(量级被限流钳制,不设旋钮)
 	janitorBatchGap  = 100 * time.Millisecond
 	ddlLockWaitSecs  = 5
 	partitionHorizon = 7 // 预建天数:保持 ≥7 天未来分区(验收口径)
 )
 
-// janitorLoop 独立 goroutine:audit_log 分区水位 + outbox DISPATCHED 清理。
+// janitorLoop 独立 goroutine:audit_log 分区水位 + outbox DISPATCHED 清理 +
+// login_audit 保留期清理(T7.1 接线,migration 0005 登记)。
 // 与扫描循环隔离(攻击 8/12 吸收):分区 DDL 的 MDL 等待被 lock_wait_timeout
 // 封顶,超时弃轮,永不冻结扫描 tick。
 func (r *Reaper) janitorLoop(ctx context.Context) {
@@ -46,9 +48,10 @@ func (r *Reaper) janitorLoop(ctx context.Context) {
 	}
 }
 
-// janitorOnce 一轮维护:专用连接 + 会话级 MDL 等待封顶;分区作业与 outbox
-// 清理错误隔离(前者失败只记日志,不阻断后者)。DDL 全程 autocommit
-// (SET SESSION 后每条 ALTER 独立提交),不持行锁、不走 Transient 重试。
+// janitorOnce 一轮维护:专用连接 + 会话级 MDL 等待封顶;分区作业与 outbox/
+// login_audit 清理错误隔离(前者失败只记日志,不阻断清理)。DDL 全程
+// autocommit(SET SESSION 后每条 ALTER 独立提交),不持行锁、不走 Transient
+// 重试。
 func (r *Reaper) janitorOnce(ctx context.Context) error {
 	conn, err := r.deps.DB.Conn(ctx)
 	if err != nil {
@@ -62,7 +65,7 @@ func (r *Reaper) janitorOnce(ctx context.Context) error {
 	if err := r.ensurePartitions(ctx, conn); err != nil {
 		r.log.Error("janitor.partitions_failed", "err", err)
 	}
-	return r.purgeOutbox(ctx, conn)
+	return errors.Join(r.purgeOutbox(ctx, conn), r.purgeLoginAudit(ctx, conn))
 }
 
 // partitionRow 是 INFORMATION_SCHEMA 水位行。
@@ -210,7 +213,7 @@ DELETE FROM outbox
 		}
 		n, _ := res.RowsAffected()
 		total += int(n)
-		if n < int64(r.cfg.OutboxBatch) || total >= outboxRoundCap {
+		if n < int64(r.cfg.OutboxBatch) || total >= janitorRoundCap {
 			break
 		}
 		select {
@@ -221,6 +224,42 @@ DELETE FROM outbox
 	}
 	if total > 0 {
 		r.log.Info("outbox.purged", "rows", total)
+	}
+	return nil
+}
+
+// purgeLoginAudit 批删超保留期的 login_audit 行(migration 0005 登记的
+// 保留期接线,T7.1 落地)。谓词沿 idx_login_audit_event_at;单批上限 =
+// loginAuditBatch 常量(量级被登录限流钳制,不新增旋钮);Transient 容忍
+// 与轮上限语义同 purgeOutbox。授权契约:reaper 账号对 login_audit 持
+// DELETE(api 账号仍 INSERT/SELECT only;deploy/README.md 授权矩阵)。
+func (r *Reaper) purgeLoginAudit(ctx context.Context, conn *sql.Conn) error {
+	total := 0
+	for {
+		res, err := conn.ExecContext(ctx, `
+DELETE FROM login_audit
+ WHERE event_at < NOW(3) - INTERVAL ? MICROSECOND
+ LIMIT ?`,
+			r.cfg.LoginAuditRetention.Microseconds(), loginAuditBatch)
+		if err != nil {
+			if engine.Transient(err) {
+				return nil // 下轮再清:清理是收敛性作业,不重试单轮
+			}
+			return fmt.Errorf("reaper: purge login_audit: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+		if n < int64(loginAuditBatch) || total >= janitorRoundCap {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(janitorBatchGap):
+		}
+	}
+	if total > 0 {
+		r.log.Info("login_audit.purged", "rows", total)
 	}
 	return nil
 }

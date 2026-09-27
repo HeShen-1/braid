@@ -168,6 +168,7 @@ type Set struct {
 	Worker *WorkerSet
 	Relay  *RelaySet
 	Login  *LoginSet
+	DBPool *DBPoolSet
 }
 
 // NewSet builds a Set registered into a fresh Registry and returns both.
@@ -311,6 +312,28 @@ func NewSet() (*Set, *prometheus.Registry) {
 				Name: "braid_login_attempts_total",
 				Help: "Login attempts by result; durable twin in login_audit (migration 0005).",
 			}, []string{"result"}),
+		},
+		DBPool: &DBPoolSet{
+			OpenConnections: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_db_pool_open_connections",
+				Help: "Open MySQL pool connections (database/sql DBStats), sampled every 30s per entrypoint.",
+			}),
+			InUse: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_db_pool_in_use_connections",
+				Help: "In-use MySQL pool connections; sustained in_use == max_open means the pool is saturated.",
+			}),
+			Idle: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_db_pool_idle_connections",
+				Help: "Idle MySQL pool connections (database/sql DBStats).",
+			}),
+			MaxOpen: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_db_pool_max_open_connections",
+				Help: "Effective BRAID_DB_MAX_OPEN per entrypoint (config visibility gauge).",
+			}),
+			WaitTotal: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_db_pool_wait_total",
+				Help: "Cumulative pool acquisitions that waited for a free connection (DBStats WaitCount); growth = saturated, raise BRAID_DB_MAX_OPEN within the MySQL max_connections budget (deploy/README.md).",
+			}),
 		},
 	}
 	return s, reg
