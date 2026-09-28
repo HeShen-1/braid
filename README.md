@@ -168,7 +168,7 @@ go run ./cmd/worker   # 终端 3:节点执行(连 LLM 端点)
 go run ./cmd/reaper   # 终端 4(必启):审计搬运 + 判死重派 + 审批超时扫描
 # 一键替代(无需四终端;交互式调试仍可手动起):
 #   deploy/dev-up.sh    # 起四进程;日志按启动时间戳归档 log/<ts>/<组件>.log,
-#                       # log/latest 软链指向本次,自动保留最近 5 次(防双实例)
+#                       # log/latest 软链指向本次,历史全部保留(防双实例)
 #   deploy/dev-down.sh  # TERM→宽限→KILL 三段停;日志保留
 ```
 
