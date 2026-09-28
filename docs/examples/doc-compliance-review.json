@@ -1,142 +1,273 @@
 {
-  "dsl": "1.0",
-  "name": "doc-compliance-review",
-  "description": "文档读取 → 解析 → 合规审查 → 分流 → 摘要 → 人工审批 → 报告(合规不过时改道修订建议,不进人审)",
-  "metadata": {
-    "canvas": {
-      "nodes": {
-        "read_doc": { "position": { "x": 40, "y": 120 } },
-        "parse": { "position": { "x": 260, "y": 120 } },
-        "compliance": { "position": { "x": 480, "y": 120 } },
-        "gate": { "position": { "x": 700, "y": 120 } },
-        "summary": { "position": { "x": 920, "y": 60 } },
-        "human_review": { "position": { "x": 1140, "y": 60 } },
-        "report": { "position": { "x": 1360, "y": 60 } },
-        "report_revision": { "position": { "x": 920, "y": 220 } }
-      },
-      "viewport": { "x": 0, "y": 0, "zoom": 0.8 }
+ "dsl": "1.0",
+ "name": "doc-compliance-review",
+ "description": "文档读取 → 解析 → 合规审查 → 分流 → 摘要 → 人工审批 → 报告(合规不过时改道修订建议,不进人审)",
+ "metadata": {
+  "canvas": {
+   "nodes": {
+    "read_doc": {
+     "position": {
+      "x": 40,
+      "y": 120
+     }
+    },
+    "parse": {
+     "position": {
+      "x": 260,
+      "y": 120
+     }
+    },
+    "compliance": {
+     "position": {
+      "x": 480,
+      "y": 120
+     }
+    },
+    "gate": {
+     "position": {
+      "x": 700,
+      "y": 120
+     }
+    },
+    "summary": {
+     "position": {
+      "x": 920,
+      "y": 60
+     }
+    },
+    "human_review": {
+     "position": {
+      "x": 1140,
+      "y": 60
+     }
+    },
+    "report": {
+     "position": {
+      "x": 1360,
+      "y": 60
+     }
+    },
+    "report_revision": {
+     "position": {
+      "x": 920,
+      "y": 220
+     }
     }
-  },
-  "inputs": [
-    { "name": "doc_path", "type": "string", "required": true, "description": "待审查文档的绝对路径,须位于 file_read 白名单目录内" }
-  ],
-  "nodes": [
-    {
-      "id": "read_doc",
-      "type": "tool",
-      "title": "读取文档",
-      "tool": "file_read",
-      "inputs": { "path": "{{inputs.doc_path}}" },
-      "outputs": { "content": "string" },
-      "retry": { "max_attempts": 3 }
-    },
-    {
-      "id": "parse",
-      "type": "llm",
-      "title": "文档解析",
-      "model": "glm-5.3",
-      "prompt": {
-        "system": "你是严谨的文档解析助手。",
-        "template": "解析下述文档,提取关键事实与结构。",
-        "user_data": [{ "name": "document", "ref": "{{nodes.read_doc.output.content}}" }]
-      },
-      "response_format": "json",
-      "outputs": { "facts": "array", "kind": "string" },
-      "retry": { "max_attempts": 2 }
-    },
-    {
-      "id": "compliance",
-      "type": "llm",
-      "title": "合规审查",
-      "model": "glm-5.3",
-      "prompt": {
-        "system": "你是合规审查员,依据公司制度给出结论。",
-        "template": "对以下事实执行合规审查,输出 verdict(pass|warn|fail)与理由。",
-        "user_data": [{ "name": "facts", "ref": "{{nodes.parse.output.facts}}" }]
-      },
-      "response_format": "json",
-      "outputs": { "verdict": "string", "reason": "string" }
-    },
-    {
-      "id": "gate",
-      "type": "branch",
-      "title": "按合规结论分流",
-      "cases": [
-        { "when": { "left": "{{nodes.compliance.output.verdict}}", "op": "eq", "right": "pass" }, "next": "summary" }
-      ],
-      "default": "report_revision"
-    },
-    {
-      "id": "report_revision",
-      "type": "llm",
-      "title": "修订建议",
-      "model": "glm-5.3",
-      "prompt": {
-        "template": "合规未通过。基于以下事实与审查理由生成对原文档的修订建议,以 JSON 对象返回,键 text 为修订建议正文。",
-        "user_data": [
-          { "name": "facts", "ref": "{{nodes.parse.output.facts}}" },
-          { "name": "reason", "ref": "{{nodes.compliance.output.reason}}" }
-        ]
-      },
-      "response_format": "json",
-      "outputs": { "text": "string" }
-    },
-    {
-      "id": "summary",
-      "type": "llm",
-      "title": "摘要生成",
-      "model": "glm-5.3",
-      "max_tokens": 2048,
-      "temperature": 0.2,
-      "prompt": {
-        "template": "基于以下审查结论与理由生成 200 字摘要,以 JSON 对象返回,键 text 为摘要正文。",
-        "user_data": [
-          { "name": "verdict", "ref": "{{nodes.compliance.output.verdict}}" },
-          { "name": "reason", "ref": "{{nodes.compliance.output.reason}}" }
-        ]
-      },
-      "response_format": "json",
-      "outputs": { "text": "string" }
-    },
-    {
-      "id": "human_review",
-      "type": "approval",
-      "title": "人工审核",
-      "approvers": ["alice", "bob"],
-      "mode": "any",
-      "timeout_hours": 72,
-      "on_timeout": "escalate",
-      "instructions": "请审核摘要与合规结论;驳回请填写理由。",
-      "outputs": { "decision": "string", "comment": "string" }
-    },
-    {
-      "id": "report",
-      "type": "llm",
-      "title": "最终报告",
-      "model": "glm-5.3",
-      "prompt": {
-        "system": "你是报告撰写者。",
-        "template": "汇总以下摘要与审批结论生成最终报告,以 JSON 对象返回,键 text 为报告正文。",
-        "user_data": [
-          { "name": "summary", "ref": "{{nodes.summary.output.text}}" },
-          { "name": "decision", "ref": "{{nodes.human_review.output.decision}}" }
-        ]
-      },
-      "response_format": "json",
-      "outputs": { "text": "string" }
-    }
-  ],
-  "edges": [
-    { "from": "read_doc", "to": "parse" },
-    { "from": "parse", "to": "compliance" },
-    { "from": "compliance", "to": "gate" },
-    { "from": "gate", "to": "summary" },
-    { "from": "gate", "to": "report_revision" },
-    { "from": "summary", "to": "human_review" },
-    { "from": "human_review", "to": "report" }
-  ],
-  "outputs": {
-    "report": "{{nodes.report.output.text}}",
-    "revision": "{{nodes.report_revision.output.text}}"
+   },
+   "viewport": {
+    "x": 0,
+    "y": 0,
+    "zoom": 0.8
+   }
   }
+ },
+ "inputs": [
+  {
+   "name": "doc_path",
+   "type": "string",
+   "required": true,
+   "description": "待审查文档的绝对路径,须位于 file_read 白名单目录内"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "read_doc",
+   "type": "tool",
+   "title": "读取文档",
+   "tool": "file_read",
+   "inputs": {
+    "path": "{{inputs.doc_path}}"
+   },
+   "outputs": {
+    "content": "string"
+   },
+   "retry": {
+    "max_attempts": 3
+   }
+  },
+  {
+   "id": "parse",
+   "type": "llm",
+   "title": "文档解析",
+   "model": "glm-5.3",
+   "prompt": {
+    "system": "你是严谨的文档解析助手。",
+    "template": "解析下述文档,提取关键事实与结构。以 JSON 对象返回:键 facts 为关键事实数组(字符串数组,每项一条事实);键 kind 为文档类型(字符串,如 invoice/contract/report)。仅输出该 JSON 对象。",
+    "user_data": [
+     {
+      "name": "document",
+      "ref": "{{nodes.read_doc.output.content}}"
+     }
+    ]
+   },
+   "response_format": "json",
+   "outputs": {
+    "facts": "array",
+    "kind": "string"
+   },
+   "retry": {
+    "max_attempts": 2
+   }
+  },
+  {
+   "id": "compliance",
+   "type": "llm",
+   "title": "合规审查",
+   "model": "glm-5.3",
+   "prompt": {
+    "system": "你是合规审查员,依据公司制度给出结论。",
+    "template": "对以下事实执行合规审查。以 JSON 对象返回:键 verdict 为结论(字符串,取值仅 pass/warn/fail 之一);键 reason 为审查理由正文。仅输出该 JSON 对象。",
+    "user_data": [
+     {
+      "name": "facts",
+      "ref": "{{nodes.parse.output.facts}}"
+     }
+    ]
+   },
+   "response_format": "json",
+   "outputs": {
+    "verdict": "string",
+    "reason": "string"
+   }
+  },
+  {
+   "id": "gate",
+   "type": "branch",
+   "title": "按合规结论分流",
+   "cases": [
+    {
+     "when": {
+      "left": "{{nodes.compliance.output.verdict}}",
+      "op": "eq",
+      "right": "pass"
+     },
+     "next": "summary"
+    }
+   ],
+   "default": "report_revision"
+  },
+  {
+   "id": "report_revision",
+   "type": "llm",
+   "title": "修订建议",
+   "model": "glm-5.3",
+   "prompt": {
+    "template": "合规未通过。基于以下事实与审查理由生成对原文档的修订建议,以 JSON 对象返回,键 text 为修订建议正文。",
+    "user_data": [
+     {
+      "name": "facts",
+      "ref": "{{nodes.parse.output.facts}}"
+     },
+     {
+      "name": "reason",
+      "ref": "{{nodes.compliance.output.reason}}"
+     }
+    ]
+   },
+   "response_format": "json",
+   "outputs": {
+    "text": "string"
+   }
+  },
+  {
+   "id": "summary",
+   "type": "llm",
+   "title": "摘要生成",
+   "model": "glm-5.3",
+   "max_tokens": 2048,
+   "temperature": 0.2,
+   "prompt": {
+    "template": "基于以下审查结论与理由生成 200 字摘要,以 JSON 对象返回,键 text 为摘要正文。",
+    "user_data": [
+     {
+      "name": "verdict",
+      "ref": "{{nodes.compliance.output.verdict}}"
+     },
+     {
+      "name": "reason",
+      "ref": "{{nodes.compliance.output.reason}}"
+     }
+    ]
+   },
+   "response_format": "json",
+   "outputs": {
+    "text": "string"
+   }
+  },
+  {
+   "id": "human_review",
+   "type": "approval",
+   "title": "人工审核",
+   "approvers": [
+    "alice",
+    "bob"
+   ],
+   "mode": "any",
+   "timeout_hours": 72,
+   "on_timeout": "escalate",
+   "instructions": "请审核摘要与合规结论;驳回请填写理由。",
+   "outputs": {
+    "decision": "string",
+    "comment": "string"
+   }
+  },
+  {
+   "id": "report",
+   "type": "llm",
+   "title": "最终报告",
+   "model": "glm-5.3",
+   "prompt": {
+    "system": "你是报告撰写者。",
+    "template": "汇总以下摘要与审批结论生成最终报告,以 JSON 对象返回,键 text 为报告正文。",
+    "user_data": [
+     {
+      "name": "summary",
+      "ref": "{{nodes.summary.output.text}}"
+     },
+     {
+      "name": "decision",
+      "ref": "{{nodes.human_review.output.decision}}"
+     }
+    ]
+   },
+   "response_format": "json",
+   "outputs": {
+    "text": "string"
+   }
+  }
+ ],
+ "edges": [
+  {
+   "from": "read_doc",
+   "to": "parse"
+  },
+  {
+   "from": "parse",
+   "to": "compliance"
+  },
+  {
+   "from": "compliance",
+   "to": "gate"
+  },
+  {
+   "from": "gate",
+   "to": "summary"
+  },
+  {
+   "from": "gate",
+   "to": "report_revision"
+  },
+  {
+   "from": "summary",
+   "to": "human_review"
+  },
+  {
+   "from": "human_review",
+   "to": "report"
+  }
+ ],
+ "outputs": {
+  "report": "{{nodes.report.output.text}}",
+  "revision": "{{nodes.report_revision.output.text}}"
+ }
 }
