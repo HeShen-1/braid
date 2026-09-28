@@ -138,7 +138,7 @@ until docker exec braid-dev-mysql mysqladmin ping -uroot -pbraid_dev_root --sile
 go install -tags 'mysql' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.20.1
 migrate -path internal/db/migrations \
   -database "mysql://root:braid_dev_root@tcp(127.0.0.1:3306)/braid?loc=UTC&parseTime=true&multiStatements=true&time_zone=%27%2B00%3A00%27" up
-# 重复执行是 no-op;dirty 恢复 runbook 见 docs/ROADMAP.md T7.4
+# 重复执行是 no-op;dirty 恢复 runbook 见 docs/ROADMAP-P0.md T7.4(P0 归档)
 
 # ④ 建号(P0 无 CLI 建号入口;示例 DSL 审批名单 = alice / bob,账号名必须一致。
 #    口令经容器内环境变量取用(env_file 注入),不落宿主命令行参数;
@@ -277,5 +277,6 @@ go test ./internal/reaper -run 'FlushKillMidDrain' -v -count=1
 | [docs/examples/](docs/examples/) | 端到端示例:DSL、样例输入、走链文档、审计事件序表 |
 | [deploy/README.md](deploy/README.md) | 部署配额与容量:连接池公式、Redis 契约、保留期、账号授权矩阵 |
 | [deploy/.env.example](deploy/.env.example) | env 旋钮单源(逐键注释) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 里程碑与任务验收记录 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 路线图(P1 活文档,M9-M14) |
+| [docs/ROADMAP-P0.md](docs/ROADMAP-P0.md) | P0 交付归档(38 任务全量注记) |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 全部实现级决策条目(D-<date>-<slug>) |
