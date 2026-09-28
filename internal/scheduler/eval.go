@@ -19,13 +19,21 @@ import (
 // JSON 数值保真:解码一律 UseNumber(json.Number 原文往返),避免 float64
 // 大整数精度失真。
 
-// refEnv 是纯引用的解析环境:工作流输入 + 节点输出(node_id → output 对象)。
+// refEnv 是纯引用的解析环境:工作流输入 + 节点输出(node_id → output 对象)+
+// parallel 实例的 item 绑定(T9.1,仅实例快照求值语境经 withItem 注入)。
 // SKIPPED 节点天然不在 outputs 里(无 output)——工作流级 outputs 引用被剪枝臂
 // 时解析为 null(validate 豁免其祖先约束,合法场景);节点快照求值语境下未命中
 // 则是错误(调用方决定语义)。
 type refEnv struct {
 	input   map[string]any
 	outputs map[string]map[string]any
+	item    any  // 当前实例元素(UseNumber 解码;可为 JSON null)
+	hasItem bool // 绑定存在性:元素 null 与「无绑定」语义分立
+}
+
+// withItem 派生带元素绑定的环境(不可变共享:input/outputs 只读复用)。
+func (e *refEnv) withItem(elem any) *refEnv {
+	return &refEnv{input: e.input, outputs: e.outputs, item: elem, hasItem: true}
 }
 
 // newRefEnv 构造解析环境。wfInput 为空按 {} 处理;outputs 的 nil/非对象值
@@ -53,7 +61,8 @@ func newRefEnv(wfInput json.RawMessage, outputs map[string]json.RawMessage) (*re
 	return e, nil
 }
 
-// resolve 解析结构化引用;ok=false = 未命中(声明外输入/未知节点/字段缺失)。
+// resolve 解析结构化引用;ok=false = 未命中(声明外输入/未知节点/字段缺失/
+// item 引用出现在无绑定语境)。
 func (e *refEnv) resolve(r dsl.Ref) (any, bool) {
 	switch r.Kind {
 	case "input":
@@ -63,6 +72,19 @@ func (e *refEnv) resolve(r dsl.Ref) (any, bool) {
 		m := e.outputs[r.Name]
 		if m == nil {
 			return nil, false
+		}
+		v, ok := m[r.Field]
+		return v, ok
+	case "item":
+		if !e.hasItem {
+			return nil, false
+		}
+		if r.Field == "" {
+			return e.item, true // 元素可为 null:绑定存在即命中
+		}
+		m, ok := e.item.(map[string]any)
+		if !ok {
+			return nil, false // 非对象元素的字段引用 = 未命中
 		}
 		v, ok := m[r.Field]
 		return v, ok

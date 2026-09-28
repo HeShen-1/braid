@@ -198,7 +198,7 @@ func (s *Scheduler) resumeOnce(ctx context.Context, req ResumeRequest,
 		n.attempts++
 		n.workerID = sql.NullString{String: req.WorkerID, Valid: true}
 
-		st := newExecState(s, ctx, q, req.ExecID, wf, g, rows, req.WorkerID)
+		st := newExecState(s, ctx, q, req.ExecID, wf, g, rows, req.WorkerID, wfInput)
 		if err := st.stageRow(audit.EventNodeStateChanged, n, 0, audit.NodeStateChangedPayload{
 			From: string(engine.NodeWaitingApproval), To: string(engine.NodeExecuting),
 			NodeID: n.nodeID, Version: newVer, AttemptNo: n.attempts, WorkerID: req.WorkerID,

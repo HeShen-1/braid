@@ -185,7 +185,16 @@ var nodeTimeouts = map[string]time.Duration{
 	"tool":     10 * time.Minute,
 	"approval": 72 * time.Hour,
 	"branch":   0,
+	// parallel 控制行无驻留:收敛与末实例收口同事务(全行锁在手),无窗口;
+	// 实例行各自带 body 类型超时,T2.5 扫描谓词照常覆盖(deadline=NULL 不进扫描,
+	// branch 同款先例)。见 D-2026-09-28-t91 理由节。
+	"parallel": 0,
 }
+
+// MaxParallelInstances 是 fan-out 实例数平台上限(T9.1,D-2026-09-28-t91):
+// 超限 Instantiate 拒绝(错误码 parallel_fanout_limit)。DB 侧
+// chk_node_instance(0006)同值镜像——schema/应用常量 → CHECK 的 0001 哲学。
+const MaxParallelInstances = 1000
 
 func NodeTimeout(nodeType string) time.Duration {
 	if d, ok := nodeTimeouts[nodeType]; ok {
@@ -267,9 +276,10 @@ func (s *Scheduler) loadExecution(ctx context.Context, id uint64) (*executionRow
 func (s *Scheduler) NodeDefinition(ctx context.Context, nodeExecID uint64) (*dsl.Node, error) {
 	var nodeID string
 	var execID uint64
+	var instanceNo uint16
 	err := s.deps.DB.QueryRowContext(ctx,
-		`SELECT node_id, execution_id FROM node_execution WHERE id=?`, nodeExecID).
-		Scan(&nodeID, &execID)
+		`SELECT node_id, execution_id, instance_no FROM node_execution WHERE id=?`, nodeExecID).
+		Scan(&nodeID, &execID, &instanceNo)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: node_execution %d", engine.ErrNotFound, nodeExecID)
 	}
@@ -290,6 +300,11 @@ func (s *Scheduler) NodeDefinition(ctx context.Context, nodeExecID uint64) (*dsl
 	}
 	for i := range wf.Nodes {
 		if wf.Nodes[i].ID == nodeID {
+			// T9.1 实例行执行 body(实例 type = body 类型,worker 零改动的
+			// 定义缝:实例行解析到 body 模板,快照形状与普通节点一致)。
+			if instanceNo > 0 && wf.Nodes[i].Parallel != nil {
+				return &wf.Nodes[i].Parallel.Body, nil
+			}
 			return &wf.Nodes[i], nil
 		}
 	}
@@ -377,6 +392,12 @@ func (s *Scheduler) Instantiate(ctx context.Context, p InstantiateParams) (uint6
 	if err := json.Unmarshal(input, &inputShape); err != nil {
 		return 0, fmt.Errorf("scheduler: workflow input must be a JSON object: %w", err)
 	}
+	// T9.1:parallel 节点在事务外先验展开(拒绝时 execution 行与事件零残留,
+	// api 侧干净 4xx)。
+	fanouts, err := planFanouts(g, inputShape)
+	if err != nil {
+		return 0, err
+	}
 	triggerType := p.TriggerType
 	if triggerType == "" {
 		triggerType = "API"
@@ -409,6 +430,12 @@ VALUES (?,?,?,?,?, 'PENDING', ?, ?, ?, ?, ?)`,
 		}
 		for _, nodeID := range sortedNodes(g.nodes) {
 			n := g.nodes[nodeID]
+			if n.Parallel != nil {
+				if err := insertParallelRows(ctx, q, s.deps.IDs, execID, nodeID, n, fanouts[nodeID]); err != nil {
+					return err
+				}
+				continue
+			}
 			rowID, err := s.deps.IDs.Next()
 			if err != nil {
 				return fmt.Errorf("scheduler: gen node id: %w", err)
@@ -422,8 +449,8 @@ VALUES (?,?,?,?,?, 'PENDING', ?, ?, ?, ?, ?)`,
 			}
 			if _, err := q.ExecContext(ctx, `
 INSERT INTO node_execution
-  (id, execution_id, node_id, type, status, max_attempts, version)
-VALUES (?,?,?,?,'PENDING',?,1)`,
+  (id, execution_id, node_id, instance_no, type, status, max_attempts, version)
+VALUES (?,?,?,0,?,'PENDING',?,1)`,
 				rowID, execID, nodeID, n.Type, maxAttempts); err != nil {
 				return fmt.Errorf("scheduler: insert node %s: %w", nodeID, err)
 			}
@@ -437,6 +464,91 @@ VALUES (?,?,?,?,'PENDING',?,1)`,
 	s.log.Info("execution.instantiated",
 		"execution_id", execID, "definition_id", p.DefinitionID, "nodes", len(g.nodes))
 	return execID, nil
+}
+
+// planFanouts 解析全部 parallel 节点的 foreach 展开(T9.1):node_id → 元素集
+// (输入序)。在 Instantiate 事务外调用——foreach 不可解析(非数组/缺输入/超
+// 上限)即拒绝,execution 行与事件零残留。
+func planFanouts(g *dag, shape map[string]json.RawMessage) (map[string][]json.RawMessage, error) {
+	var fanouts map[string][]json.RawMessage
+	for _, nodeID := range sortedNodes(g.nodes) {
+		n := g.nodes[nodeID]
+		if n.Parallel == nil {
+			continue
+		}
+		elems, err := resolveForeach(n.Parallel, shape)
+		if err != nil {
+			return nil, fmt.Errorf("scheduler: parallel node %s: %w", nodeID, err)
+		}
+		if fanouts == nil {
+			fanouts = make(map[string][]json.RawMessage, 1)
+		}
+		fanouts[nodeID] = elems
+	}
+	return fanouts, nil
+}
+
+// resolveForeach 把 foreach 纯引用解析为元素集(输入序)。元素按原文
+// (json.RawMessage)逐段截取,派发时经 item 绑定进 refEnv——此处零解码,
+// 数值保真归 env 侧(UseNumber)。
+func resolveForeach(p *dsl.ParallelNode, shape map[string]json.RawMessage) ([]json.RawMessage, error) {
+	r, ok := dsl.ParsePureRef(p.Foreach)
+	if !ok || r.Kind != "input" {
+		return nil, fmt.Errorf("foreach %s is not a pure {{inputs.<name>}} reference", p.Foreach)
+	}
+	raw, ok := shape[r.Name]
+	if !ok || len(raw) == 0 || string(raw) == "null" {
+		return nil, fmt.Errorf("foreach input %q absent at trigger time", r.Name)
+	}
+	var elems []json.RawMessage
+	if err := json.Unmarshal(raw, &elems); err != nil {
+		return nil, fmt.Errorf("foreach ref %s must resolve to a JSON array: %w", r.Text, err)
+	}
+	if len(elems) > MaxParallelInstances {
+		return nil, fmt.Errorf("parallel_fanout_limit: foreach yields %d elements, max %d",
+			len(elems), MaxParallelInstances)
+	}
+	return elems, nil
+}
+
+// insertParallelRows 落 parallel 节点行集:控制行(instance 0,type parallel,
+// gather 锚与 {{nodes.<id>.output.*}} 引用面;无 attempt → max_attempts 1)+
+// N 实例行(instance 1..N 输入序,body 类型 + body retry 快照;worker 视角
+// = 普通节点行,TaskID/幂等键词表 att:<row>:<attempt> 天然唯一)。
+func insertParallelRows(ctx context.Context, q engine.DBTX, ids *snowflake.Generator,
+	execID uint64, nodeID string, n *dsl.Node, elems []json.RawMessage) error {
+	rowID, err := ids.Next()
+	if err != nil {
+		return fmt.Errorf("scheduler: gen node id: %w", err)
+	}
+	if _, err := q.ExecContext(ctx, `
+INSERT INTO node_execution
+  (id, execution_id, node_id, instance_no, type, status, max_attempts, version)
+VALUES (?,?,?,0,'parallel','PENDING',1,1)`,
+		rowID, execID, nodeID); err != nil {
+		return fmt.Errorf("scheduler: insert node %s controller: %w", nodeID, err)
+	}
+	maxAttempts := 1
+	if n.Parallel.Body.Retry != nil {
+		maxAttempts = n.Parallel.Body.Retry.MaxAttempts
+	}
+	if maxAttempts < 1 || maxAttempts > 10 {
+		return fmt.Errorf("scheduler: node %s body max_attempts %d out of [1,10]", nodeID, maxAttempts)
+	}
+	for i := range elems {
+		instID, err := ids.Next()
+		if err != nil {
+			return fmt.Errorf("scheduler: gen node id: %w", err)
+		}
+		if _, err := q.ExecContext(ctx, `
+INSERT INTO node_execution
+  (id, execution_id, node_id, instance_no, type, status, max_attempts, version)
+VALUES (?,?,?,?,?,'PENDING',?,1)`,
+			instID, execID, nodeID, i+1, n.Parallel.Body.Type, maxAttempts); err != nil {
+			return fmt.Errorf("scheduler: insert node %s instance %d: %w", nodeID, i+1, err)
+		}
+	}
+	return nil
 }
 
 // Start 处理 execution.start:PENDING→RUNNING 并派发入口节点。
@@ -474,7 +586,7 @@ func (s *Scheduler) Start(ctx context.Context, execID uint64, workerID string) e
 		if err != nil {
 			return err
 		}
-		st := newExecState(s, ctx, q, execID, wf, g, rows, workerID)
+		st := newExecState(s, ctx, q, execID, wf, g, rows, workerID, exec.input)
 		if err := st.buildEnv(exec.input); err != nil {
 			return err
 		}
@@ -633,7 +745,7 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 			return err
 		}
 
-		st := newExecState(s, ctx, q, req.ExecID, wf, g, rows, req.WorkerID)
+		st := newExecState(s, ctx, q, req.ExecID, wf, g, rows, req.WorkerID, wfInput)
 
 		// 3a. LLM 台账审计行(T3.1 双录 audit 半边):usage/cost 列已随
 		// CloseAttempt 终写落 node_attempt,这里同事务发 llm.call.completed
@@ -669,6 +781,7 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 			if err := st.stageRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
 				From: string(engine.NodeExecuting), To: string(engine.NodeSucceeded),
 				NodeID: n.nodeID, Version: newVer, AttemptNo: n.attempts, WorkerID: n.workerID.String,
+				InstanceNo: n.instanceNo,
 			}); err != nil {
 				return err
 			}
@@ -676,6 +789,14 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 			n.version = newVer
 			n.output = sql.NullString{String: string(req.Output), Valid: len(req.Output) > 0}
 			if termGuard {
+				break
+			}
+			if n.instanceNo > 0 {
+				// T9.1 实例行:输出不进引用面(引用面 = 控制行 results);汇聚
+				// 收口在控制器 output 落定后自会重建 env 并推进后继。
+				if err := st.gatherCheck(n.nodeID); err != nil {
+					return err
+				}
 				break
 			}
 			// env 必须在节点收口之后构建:后继引用本节点 output。
@@ -703,6 +824,7 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 				n.workerID = sql.NullString{String: req.WorkerID, Valid: true}
 				if err := st.auditRow(audit.EventNodeRedispatched, n, 0, audit.NodeRedispatchedPayload{
 					NodeID: n.nodeID, AttemptNo: n.attempts, Trigger: audit.TriggerAttemptFailed,
+					InstanceNo: n.instanceNo,
 				}); err != nil {
 					return err
 				}
@@ -724,11 +846,28 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 				if err := st.stageRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
 					From: string(engine.NodeExecuting), To: string(engine.NodeFailed),
 					NodeID: n.nodeID, Version: failVer, Code: code,
-					AttemptNo: n.attempts, WorkerID: n.workerID.String,
+					AttemptNo: n.attempts, WorkerID: n.workerID.String, InstanceNo: n.instanceNo,
 				}); err != nil {
 					return err
 				}
 				n.status = engine.NodeFailed
+				if n.instanceNo > 0 {
+					// T9.1 实例终败:fail_fast → 控制器即败(在飞兄弟自然跑完,
+					// 既有全局语义);wait_all → 收齐再判(未收齐 = no-op,执行
+					// 继续等剩余实例)。
+					if effectiveOnFailure(st.dag.nodes[n.nodeID].Parallel) == "wait_all" {
+						if err := st.gatherCheck(n.nodeID); err != nil {
+							return err
+						}
+						break
+					}
+					ctrl := st.rows.byNodeID[n.nodeID]
+					if err := st.failParallelController(ctrl, n.nodeID,
+						fmt.Sprintf("instance %d failed: %s: %s", n.instanceNo, code, req.Msg)); err != nil {
+						return err
+					}
+					break
+				}
 				if err := st.failExecution("node_failed",
 					fmt.Sprintf("node %s failed: %s: %s", n.nodeID, code, req.Msg)); err != nil {
 					return err
@@ -776,11 +915,12 @@ func (s *Scheduler) FinishIfDone(ctx context.Context, execID uint64) error {
 // (Conflict 良性)。fail-fast 路径已在 Complete 事务内收口 FAILED,此处跳过。
 func (s *Scheduler) finishIfDone(ctx context.Context, execID uint64, wf *dsl.Workflow, wfInput json.RawMessage) error {
 	type nodeOut struct {
-		nodeID string
-		output sql.NullString
+		nodeID     string
+		instanceNo uint16
+		output     sql.NullString
 	}
 	outRows, err := s.deps.DB.QueryContext(ctx,
-		`SELECT node_id, status, output FROM node_execution WHERE execution_id=?`, execID)
+		`SELECT node_id, instance_no, status, output FROM node_execution WHERE execution_id=?`, execID)
 	if err != nil {
 		return fmt.Errorf("scheduler: finish check %d: %w", execID, err)
 	}
@@ -788,19 +928,18 @@ func (s *Scheduler) finishIfDone(ctx context.Context, execID uint64, wf *dsl.Wor
 	var succeeded []nodeOut
 	nonTerminal, failed := 0, 0
 	for outRows.Next() {
-		var nodeID string
+		var r nodeOut
 		var status engine.NodeState
-		var output sql.NullString
-		if err := outRows.Scan(&nodeID, &status, &output); err != nil {
+		if err := outRows.Scan(&r.nodeID, &r.instanceNo, &status, &r.output); err != nil {
 			return fmt.Errorf("scheduler: finish scan %d: %w", execID, err)
 		}
 		switch {
 		case status == engine.NodeSucceeded:
-			succeeded = append(succeeded, nodeOut{nodeID: nodeID, output: output})
+			succeeded = append(succeeded, r)
 		case status == engine.NodeFailed:
 			failed++
 		case !status.Terminal():
-			nonTerminal++ // PENDING/EXECUTING/WAITING_APPROVAL
+			nonTerminal++ // PENDING/EXECUTING/WAITING_APPROVAL(含实例行)
 		} // SKIPPED/CANCELLED:终态,不阻塞 SUCCEEDED 判定
 	}
 	if err := outRows.Err(); err != nil {
@@ -809,9 +948,11 @@ func (s *Scheduler) finishIfDone(ctx context.Context, execID uint64, wf *dsl.Wor
 	if nonTerminal > 0 || failed > 0 {
 		return nil
 	}
+	// 引用面只取控制行(instance 0):parallel 实例输出经控制行 results 汇聚,
+	// 不可按 node_id 直引(键碰撞 = 实例覆盖控制器)。
 	outputs := make(map[string]json.RawMessage, len(succeeded))
 	for _, r := range succeeded {
-		if r.output.Valid {
+		if r.instanceNo == 0 && r.output.Valid {
 			outputs[r.nodeID] = json.RawMessage(r.output.String)
 		}
 	}
@@ -837,6 +978,7 @@ func (s *Scheduler) finishIfDone(ctx context.Context, execID uint64, wf *dsl.Wor
 type nodeRow struct {
 	id          uint64
 	nodeID      string
+	instanceNo  uint16 // T9.1:控制行/单实例节点恒 0;parallel 实例行 1..N(输入序)
 	version     uint32
 	status      engine.NodeState
 	nodeType    string
@@ -846,41 +988,83 @@ type nodeRow struct {
 	output      sql.NullString
 }
 
-// lockedRows 是全行集的两个索引。
+// lockedRows 是全行集的索引:byNodeID 恒指控制行(parallel 后继的前驱判定
+// 面、{{nodes.<id>.output.*}} 引用面);instances 是 parallel 实例行集
+// (1..N 输入序;非 parallel 节点无条目)。
 type lockedRows struct {
-	byNodeID map[string]*nodeRow
-	byID     map[uint64]*nodeRow
+	byNodeID  map[string]*nodeRow
+	instances map[string][]*nodeRow
+	byID      map[uint64]*nodeRow
 }
 
-// lockAllRows 按 node_id 升序逐行 FOR UPDATE 锁全执行行集(当前读)。逐行而非
-// 单语句多行:engine.DBTX 契约最小面只有 QueryRowContext,零 API 改动;锁序
-// 与 uk_node_exec(execution_id, node_id) 索引序一致。批量形态留待 DBTX 演进
-// (dbtx.go「以新小接口嵌入扩展」注记)。行集与拓扑不一致(缺行)是数据缺陷,
-// 响亮报错;DB 有而 DSL 无的行不锁不判(遗留行,归对账)。
+// lockAllRows 按 (node_id, instance_no) 升序逐键 FOR UPDATE 锁全执行行集
+// (当前读;键序 = uk_node_exec 三列索引序,T9.1)。同 node_id 多行经
+// engine.RowsDBTX 多行面枚举(DBTX「以新小接口嵌入扩展」注记的兑现;事务
+// 实现恒满足,断言失败 = 传入了非数据库实现)。行集与拓扑不一致(缺行/
+// 实例号断档/首行非控制行)是数据缺陷,响亮报错;DB 有而 DSL 无的行不锁
+// 不判(遗留行,归对账)。
 func lockAllRows(ctx context.Context, q engine.DBTX, execID uint64, g *dag) (*lockedRows, error) {
+	rq, ok := q.(engine.RowsDBTX)
+	if !ok {
+		return nil, fmt.Errorf("scheduler: DBTX lacks the multi-row facet (engine.RowsDBTX)")
+	}
 	ids := sortedNodes(g.nodes)
 	rows := &lockedRows{
-		byNodeID: make(map[string]*nodeRow, len(ids)),
-		byID:     make(map[uint64]*nodeRow, len(ids)),
+		byNodeID:  make(map[string]*nodeRow, len(ids)),
+		instances: make(map[string][]*nodeRow),
+		byID:      make(map[uint64]*nodeRow, len(ids)),
 	}
 	for _, nodeID := range ids {
-		var r nodeRow
-		err := q.QueryRowContext(ctx, `
-SELECT id, node_id, version, status, type, attempts, max_attempts, worker_id, output
-  FROM node_execution WHERE execution_id=? AND node_id=? FOR UPDATE`,
-			execID, nodeID).Scan(&r.id, &r.nodeID, &r.version, &r.status, &r.nodeType,
-			&r.attempts, &r.maxAttempts, &r.workerID, &r.output)
-		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("scheduler: node %q has no row in execution %d (definition/rows drift)", nodeID, execID)
-		}
+		rs, err := rq.QueryContext(ctx, `
+SELECT id, node_id, instance_no, version, status, type, attempts, max_attempts, worker_id, output
+  FROM node_execution WHERE execution_id=? AND node_id=?
+  ORDER BY instance_no FOR UPDATE`, execID, nodeID)
 		if err != nil {
 			return nil, fmt.Errorf("scheduler: lock node %q (exec %d): %w", nodeID, execID, err)
 		}
-		if r.nodeID != nodeID {
-			return nil, fmt.Errorf("scheduler: node %q locked wrong row %q", nodeID, r.nodeID)
+		first := true
+		var insts []*nodeRow
+		for rs.Next() {
+			var r nodeRow
+			if err := rs.Scan(&r.id, &r.nodeID, &r.instanceNo, &r.version, &r.status, &r.nodeType,
+				&r.attempts, &r.maxAttempts, &r.workerID, &r.output); err != nil {
+				_ = rs.Close()
+				return nil, fmt.Errorf("scheduler: lock scan node %q: %w", nodeID, err)
+			}
+			if r.nodeID != nodeID {
+				_ = rs.Close()
+				return nil, fmt.Errorf("scheduler: node %q locked wrong row %q", nodeID, r.nodeID)
+			}
+			if first {
+				if r.instanceNo != 0 {
+					_ = rs.Close()
+					return nil, fmt.Errorf("scheduler: node %q first row instance %d, want controller 0", nodeID, r.instanceNo)
+				}
+				rows.byNodeID[nodeID] = &r
+				rows.byID[r.id] = &r
+				first = false
+				continue
+			}
+			if want := uint16(len(insts) + 1); r.instanceNo != want {
+				_ = rs.Close()
+				return nil, fmt.Errorf("scheduler: node %q instance gap: got %d, want %d", nodeID, r.instanceNo, want)
+			}
+			insts = append(insts, &r)
+			rows.byID[r.id] = &r
 		}
-		rows.byNodeID[nodeID] = &r
-		rows.byID[r.id] = &r
+		if err := rs.Err(); err != nil {
+			_ = rs.Close()
+			return nil, fmt.Errorf("scheduler: lock rows node %q: %w", nodeID, err)
+		}
+		if err := rs.Close(); err != nil {
+			return nil, fmt.Errorf("scheduler: close lock cursor node %q: %w", nodeID, err)
+		}
+		if first {
+			return nil, fmt.Errorf("scheduler: node %q has no row in execution %d (definition/rows drift)", nodeID, execID)
+		}
+		if len(insts) > 0 {
+			rows.instances[nodeID] = insts
+		}
 	}
 	return rows, nil
 }
@@ -895,13 +1079,17 @@ type execState struct {
 	dag      *dag
 	rows     *lockedRows
 	env      *refEnv
-	workerID string // 派发方归因(完成方 worker)
-	failed   bool   // fail-fast 已触发,停止一切派发
+	workerID string          // 派发方归因(完成方 worker)
+	failed   bool            // fail-fast 已触发,停止一切派发
+	wfInput  json.RawMessage // 触发输入原文(T9.1:convergeParallel 重建 env 的根)
 }
 
 func newExecState(s *Scheduler, ctx context.Context, q engine.DBTX, execID uint64,
-	wf *dsl.Workflow, g *dag, rows *lockedRows, workerID string) *execState {
-	return &execState{s: s, ctx: ctx, q: q, execID: execID, wf: wf, dag: g, rows: rows, workerID: workerID}
+	wf *dsl.Workflow, g *dag, rows *lockedRows, workerID string, wfInput json.RawMessage) *execState {
+	// wfInput 经签名强制传入(对抗审计 HIGH① 修:resume 入口曾漏赋值,空数组
+	// parallel 经 convergeParallel 重建 env 时丢工作流输入):构造点漏带 = 编译红。
+	return &execState{s: s, ctx: ctx, q: q, execID: execID, wf: wf, dag: g,
+		rows: rows, workerID: workerID, wfInput: wfInput}
 }
 
 // buildEnv 从工作流输入与当前 SUCCEEDED 行的 output 构建求值环境。
@@ -981,6 +1169,8 @@ func (st *execState) advance(candidates []string) error {
 }
 
 // skipOne 剪枝一个 PENDING 节点并递归传播其后续(任一前驱 SKIPPED 的传递闭包)。
+// parallel 控制行剪枝时实例行同剪枝(行集一致性:否则实例滞留 PENDING 阻塞
+// finishIfDone 的全终态判定)。
 func (st *execState) skipOne(row *nodeRow) error {
 	newVer, err := engine.SkipNode(st.ctx, st.q, row.id, row.version)
 	if err != nil {
@@ -988,23 +1178,43 @@ func (st *execState) skipOne(row *nodeRow) error {
 	}
 	if err := st.stageRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
 		From: string(engine.NodePending), To: string(engine.NodeSkipped),
-		NodeID: row.nodeID, Version: newVer,
+		NodeID: row.nodeID, Version: newVer, InstanceNo: row.instanceNo,
 	}); err != nil {
 		return err
 	}
 	row.status = engine.NodeSkipped
 	row.version = newVer
+	for _, inst := range st.rows.instances[row.nodeID] {
+		if inst.status != engine.NodePending {
+			continue
+		}
+		iver, err := engine.SkipNode(st.ctx, st.q, inst.id, inst.version)
+		if err != nil {
+			return err
+		}
+		if err := st.stageRow(audit.EventNodeStateChanged, inst, 0, audit.NodeStateChangedPayload{
+			From: string(engine.NodePending), To: string(engine.NodeSkipped),
+			NodeID: inst.nodeID, Version: iver, InstanceNo: inst.instanceNo,
+		}); err != nil {
+			return err
+		}
+		inst.status = engine.NodeSkipped
+		inst.version = iver
+	}
 	st.s.log.Info("node.skipped", "execution_id", st.execID, "node_id", row.nodeID)
 	return st.advance(st.dag.succs[row.nodeID])
 }
 
-// dispatchOne 派发一个就绪节点:branch 内联(dispatchBranch);其余求值快照 →
-// Claim → outbox att 事件。求值失败 = 执行级 input_eval 失败(节点留 PENDING,
-// 定义/数据级缺陷的落点)。
+// dispatchOne 派发一个就绪节点:branch 内联(dispatchBranch);parallel 展开
+// fan-out(dispatchParallel);其余求值快照 → Claim → outbox att 事件。求值
+// 失败 = 执行级 input_eval 失败(节点留 PENDING,定义/数据级缺陷的落点)。
 func (st *execState) dispatchOne(row *nodeRow) error {
 	n := st.dag.nodes[row.nodeID]
 	if n.Branch != nil {
 		return st.dispatchBranch(row, n.Branch)
+	}
+	if n.Parallel != nil {
+		return st.dispatchParallel(row, n)
 	}
 	snap, err := buildSnapshot(n, st.env)
 	if err != nil {
@@ -1111,6 +1321,284 @@ func (st *execState) failExecution(code, msg string) error {
 	st.s.log.Warn("execution.failed_fast",
 		"execution_id", st.execID, "code", code, "msg", msg)
 	return nil
+}
+
+// ---- T9.1 parallel:fan-out 派发与 gather 收敛(D-2026-09-28-t91) ----
+
+// parallelControllerSnapshot 是 parallel 控制行 input_snapshot 的形状契约
+// (展开事实的复现面:foreach 引用原文 + 实例数;无引用求值)。
+type parallelControllerSnapshot struct {
+	Foreach string `json:"foreach"`
+	Count   int    `json:"count"`
+}
+
+// effectiveOnFailure 返回 parallel 节点生效的 on_failure(空 = fail_fast;
+// DSL 值域两枚举,schema 已拦,此处钉生效缺省——approval effectiveApprovalSpec
+// 同款「schema default 生效值在物化点补齐」约定)。
+func effectiveOnFailure(p *dsl.ParallelNode) string {
+	if p.OnFailure == "wait_all" {
+		return "wait_all"
+	}
+	return "fail_fast"
+}
+
+// parallelElements 在派发位解析 foreach 元素集(输入不可变,与 Instantiate
+// 先验同源;元素 = env.input 的 UseNumber 解码值,数值保真)。
+func (st *execState) parallelElements(n *dsl.Node) ([]any, error) {
+	r, ok := dsl.ParsePureRef(n.Parallel.Foreach)
+	if !ok || r.Kind != "input" {
+		return nil, fmt.Errorf("foreach %s is not a pure input reference", n.Parallel.Foreach)
+	}
+	v, ok := st.env.resolve(r)
+	if !ok {
+		return nil, fmt.Errorf("foreach input %q unresolved", r.Name)
+	}
+	elems, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("foreach ref %s must resolve to a JSON array", r.Text)
+	}
+	return elems, nil
+}
+
+// dispatchParallel 内联展开 fan-out:先全量求值实例快照(纯内存;任一失败 =
+// input_eval,零派发残留——与普通节点/branch「求值在 claim 之前」契约同款,
+// 对抗审计 MEDIUM 修),再控制行 claim(deadline NULL,无驻留,branch 同款
+// 先例;收敛与末实例收口同事务 ⇒ 无「全终态但控制器卡 EXECUTING」窗口)→
+// 实例行逐个 claim + att 事件(多事件同事务 = 真并发派发)。空数组 = 空集
+// 汇聚:控制行同事务直接 SUCCEEDED(results=[]),等价 branch 的 claim→succeed
+// 内联。
+func (st *execState) dispatchParallel(row *nodeRow, n *dsl.Node) error {
+	p := n.Parallel
+	elems, err := st.parallelElements(n)
+	if err != nil {
+		return st.failExecution("input_eval", fmt.Sprintf("node %s: %v", row.nodeID, err))
+	}
+	insts := st.rows.instances[row.nodeID]
+	if len(insts) != len(elems) {
+		return fmt.Errorf("scheduler: node %q has %d instance rows but foreach yields %d (definition/rows drift)",
+			row.nodeID, len(insts), len(elems))
+	}
+	snaps := make([]json.RawMessage, len(elems))
+	for i := range elems {
+		snap, err := buildSnapshot(&p.Body, st.env.withItem(elems[i]))
+		if err != nil {
+			// 快照求值全部先于任何 claim:失败时控制器/实例恒 PENDING、零
+			// att 事件(半程 fan-out 会空烧供应商调用——input_eval 契约)。
+			return st.failExecution("input_eval",
+				fmt.Sprintf("node %s instance %d: %v", row.nodeID, i+1, err))
+		}
+		snaps[i] = snap
+	}
+	snap, err := json.Marshal(parallelControllerSnapshot{Foreach: p.Foreach, Count: len(elems)})
+	if err != nil {
+		return fmt.Errorf("scheduler: marshal controller snapshot node %s: %w", row.nodeID, err)
+	}
+	ver, err := engine.ClaimNode(st.ctx, st.q, row.id, row.version, engine.ClaimInput{
+		WorkerID:      st.workerID,
+		InputSnapshot: snap,
+		// 控制行无驻留:零值 deadline → NULL,不进任何超时扫描。
+	})
+	if err != nil {
+		return err
+	}
+	if err := st.stageRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
+		From: string(engine.NodePending), To: string(engine.NodeExecuting),
+		NodeID: row.nodeID, Version: ver, WorkerID: st.workerID, InstanceNo: row.instanceNo,
+	}); err != nil {
+		return err
+	}
+	row.version = ver
+	row.status = engine.NodeExecuting
+	row.workerID = sql.NullString{String: st.workerID, Valid: true}
+	if len(insts) == 0 {
+		return st.convergeParallel(row, n)
+	}
+	for i, inst := range insts {
+		iver, err := engine.ClaimNode(st.ctx, st.q, inst.id, inst.version, engine.ClaimInput{
+			WorkerID:      st.workerID,
+			InputSnapshot: snaps[i],
+			DeadlineAt:    time.Now().Add(NodeTimeout(inst.nodeType)),
+		})
+		if err != nil {
+			return err
+		}
+		if err := st.stageRow(audit.EventNodeStateChanged, inst, 0, audit.NodeStateChangedPayload{
+			From: string(engine.NodePending), To: string(engine.NodeExecuting),
+			NodeID: inst.nodeID, Version: iver, AttemptNo: inst.attempts + 1, WorkerID: st.workerID,
+			InstanceNo: inst.instanceNo,
+		}); err != nil {
+			return err
+		}
+		inst.version = iver
+		inst.status = engine.NodeExecuting
+		inst.attempts++
+		inst.workerID = sql.NullString{String: st.workerID, Valid: true}
+		if err := st.appendNodeTask(inst); err != nil {
+			return err
+		}
+	}
+	st.s.log.Info("parallel.fanout",
+		"execution_id", st.execID, "node_id", row.nodeID, "instances", len(insts))
+	return nil
+}
+
+// convergeParallel 汇聚成功收口:控制行 output = {"results":[实例输出…]}
+// (instance_no 序 = foreach 输入序,与完成顺序无关——ROADMAP「确定性排序」);
+// 控制器 output 落定后重建 env(后继引用 results)再推进。仅全部实例
+// SUCCEEDED(或零实例)时调用。
+func (st *execState) convergeParallel(row *nodeRow, n *dsl.Node) error {
+	insts := st.rows.instances[row.nodeID]
+	results := make([]any, 0, len(insts))
+	for _, inst := range insts {
+		var v any
+		if inst.output.Valid && inst.output.String != "" {
+			if err := unmarshalUseNumber([]byte(inst.output.String), &v); err != nil {
+				return fmt.Errorf("scheduler: node %s instance %d output decode: %w",
+					row.nodeID, inst.instanceNo, err)
+			}
+		} else {
+			v = nil // 无输出实例汇聚为 null(键保留,materializeOutputs 同哲学)
+		}
+		results = append(results, v)
+	}
+	out, err := json.Marshal(map[string]any{"results": results})
+	if err != nil {
+		return fmt.Errorf("scheduler: marshal gather output node %s: %w", row.nodeID, err)
+	}
+	ver, err := engine.SucceedNode(st.ctx, st.q, row.id, row.version, row.workerID.String, out)
+	if err != nil {
+		return err
+	}
+	if err := st.stageRow(audit.EventNodeStateChanged, row, 0, audit.NodeStateChangedPayload{
+		From: string(engine.NodeExecuting), To: string(engine.NodeSucceeded),
+		NodeID: row.nodeID, Version: ver, WorkerID: row.workerID.String, InstanceNo: row.instanceNo,
+	}); err != nil {
+		return err
+	}
+	row.version = ver
+	row.status = engine.NodeSucceeded
+	row.output = sql.NullString{String: string(out), Valid: true}
+	st.s.log.Info("parallel.gathered",
+		"execution_id", st.execID, "node_id", row.nodeID, "instances", len(results))
+	// env 必须在控制器 output 落定之后重建:后继引用 {{nodes.<id>.output.results}}。
+	if err := st.buildEnv(st.wfInput); err != nil {
+		return err
+	}
+	return st.advanceFrom(row.nodeID)
+}
+
+// gatherCheck 实例行终态后的汇聚判定:全部实例终态时——全 SUCCEEDED →
+// convergeParallel;含非 SUCCEEDED 终态(wait_all 收齐含败;fail_fast 的
+// 单败路径不经此)→ 控制器 FAILED + 执行终败。未收齐 = no-op(wait_all 的
+// 中间态;fail_fast 下不可能到达——单败即收敛)。
+func (st *execState) gatherCheck(nodeID string) error {
+	ctrl := st.rows.byNodeID[nodeID]
+	if ctrl == nil || ctrl.nodeType != "parallel" {
+		return nil // 非 parallel(防御;调用面已按 instanceNo 分流)
+	}
+	insts := st.rows.instances[nodeID]
+	for _, inst := range insts {
+		if !inst.status.Terminal() {
+			return nil
+		}
+	}
+	n := st.dag.nodes[nodeID]
+	for _, inst := range insts {
+		if inst.status != engine.NodeSucceeded {
+			return st.failParallelController(ctrl, nodeID,
+				fmt.Sprintf("instance %d terminal state %s", inst.instanceNo, inst.status))
+		}
+	}
+	return st.convergeParallel(ctrl, n)
+}
+
+// failParallelController 汇聚失败收口:控制行 FAILED(行级 error_code 细分
+// parallel_instance_failed,T6.4 聚合维度)+ fail-fast 执行终态。fail_fast 的
+// 单实例终败路径与 wait_all 的收齐含败路径共用。
+func (st *execState) failParallelController(ctrl *nodeRow, nodeID, detail string) error {
+	ver, err := engine.FailNode(st.ctx, st.q, ctrl.id, ctrl.version, ctrl.workerID.String,
+		"parallel_instance_failed", detail)
+	if err != nil {
+		return err
+	}
+	if err := st.stageRow(audit.EventNodeStateChanged, ctrl, 0, audit.NodeStateChangedPayload{
+		From: string(engine.NodeExecuting), To: string(engine.NodeFailed),
+		NodeID: nodeID, Version: ver, Code: "parallel_instance_failed",
+		WorkerID: ctrl.workerID.String, InstanceNo: ctrl.instanceNo,
+	}); err != nil {
+		return err
+	}
+	ctrl.version = ver
+	ctrl.status = engine.NodeFailed
+	return st.failExecution("node_failed",
+		fmt.Sprintf("node %s failed: parallel instances failed (%s)", nodeID, detail))
+}
+
+// ReapInstanceExhausted 是 reaper 侧实例耗尽的节点级收口(T9.1,对抗审计
+// HIGH② 修):reaper 事务已收口 attempt(DEAD)后,实例行的终败决策与控制器
+// 收敛走本入口——与 completeOnce 实例终败分支完全同款语义(fail_fast →
+// 控制器 FAILED + fail-fast;wait_all → 收齐再判),锁序 = lockAllRows 全行
+// ((node_id, instance_no)),与 Complete 全序一致。幂等:全锁下实例行已非
+// EXECUTING 或预算未耗尽(他方 Complete 先到)→ no-op,归其原路径。
+func (s *Scheduler) ReapInstanceExhausted(ctx context.Context, execID, nodeExecID uint64, workerID string) error {
+	exec, err := s.loadExecution(ctx, execID)
+	if err != nil {
+		return err
+	}
+	wf, g, err := s.loadWorkflow(ctx, exec.definitionID)
+	if err != nil {
+		return err
+	}
+	return engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		rows, err := lockAllRows(ctx, q, execID, g)
+		if err != nil {
+			return err
+		}
+		n := rows.byID[nodeExecID]
+		if n == nil {
+			return fmt.Errorf("%w: node_execution %d not in execution %d",
+				engine.ErrNotFound, nodeExecID, execID)
+		}
+		if n.instanceNo == 0 || n.status != engine.NodeExecuting || int(n.attempts) < int(n.maxAttempts) {
+			return nil // 非耗尽实例行:他方已收口/预算仍在,归原路径
+		}
+		// 终态守卫(快照读,completeOnce termGuard 同式):终态执行内迟到
+		// 实例不再推进控制器。
+		var wfStatus engine.WorkflowState
+		if err := q.QueryRowContext(ctx,
+			`SELECT status FROM workflow_execution WHERE id=?`, execID).Scan(&wfStatus); err != nil {
+			return fmt.Errorf("scheduler: read execution status %d: %w", execID, err)
+		}
+		if wfStatus.Terminal() {
+			return nil
+		}
+		st := newExecState(s, ctx, q, execID, wf, g, rows, workerID, exec.input)
+		code := "attempts_exhausted"
+		failVer, err := engine.FailNode(ctx, q, n.id, n.version, n.workerID.String, code,
+			fmt.Sprintf("reaped after %d attempts", n.maxAttempts))
+		if err != nil {
+			return err
+		}
+		if err := st.stageRow(audit.EventNodeStateChanged, n, 0, audit.NodeStateChangedPayload{
+			From: string(engine.NodeExecuting), To: string(engine.NodeFailed),
+			NodeID: n.nodeID, Version: failVer, Code: code,
+			AttemptNo: n.attempts, WorkerID: n.workerID.String, InstanceNo: n.instanceNo,
+		}); err != nil {
+			return err
+		}
+		n.status = engine.NodeFailed
+		n.version = failVer
+		pn := g.nodes[n.nodeID]
+		if pn == nil || pn.Parallel == nil {
+			return fmt.Errorf("scheduler: node %q has instance rows but is not a parallel node (definition/rows drift)", n.nodeID)
+		}
+		if effectiveOnFailure(pn.Parallel) == "wait_all" {
+			return st.gatherCheck(n.nodeID)
+		}
+		ctrl := rows.byNodeID[n.nodeID]
+		return st.failParallelController(ctrl, n.nodeID,
+			fmt.Sprintf("instance %d failed: %s (reaped)", n.instanceNo, code))
+	})
 }
 
 func (st *execState) appendNodeTask(row *nodeRow) error {
