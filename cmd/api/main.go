@@ -128,6 +128,18 @@ func run(ctx context.Context) error {
 	apiSrv := api.NewServer(cfg, dbh, ids, toolReg, sched, auth.BuiltinProvider{DB: dbh})
 	apiSrv.LoginMetrics(mset.Login)
 	apiSrv.Tracing(traceProv.Tracer("braid/api"))
+	// OIDC 插件(T11.1,D-2026-09-28-t111-oidc-subject-anchor):BRAID_OIDC_*
+	// 组经 ConfigFromEnv 解析(半开启动即败);配置完整才构造——discovery
+	// 启动期拉取,issuer 错/不可达即启动失败。未配置零行为(路由不挂载),
+	// 内置 login 不受影响;主体映射 = 本地账号锚定(claim 值 == 本地账号名)。
+	if cfg.OIDC.Configured() {
+		oidcProv, err := auth.NewOIDCProvider(ctx, cfg.OIDC, dbh)
+		if err != nil {
+			return fmt.Errorf("api: %w", err)
+		}
+		apiSrv.OIDCProvider(oidcProv)
+		slog.Info("api: oidc login enabled", "issuer", cfg.OIDC.Issuer, "claim", cfg.OIDC.Claim)
+	}
 	router := apiSrv.Router()
 	// /metrics 与 /healthz 同端口同回环绑定(BRAID_API_ADDR 部署约定)。
 	// 公开面部署注记:反向代理只应转发 /api/v1 与 /ui/,/metrics 与

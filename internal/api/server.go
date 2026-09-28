@@ -45,6 +45,11 @@ type Server struct {
 	// loginMetrics 是登录指标面(T6.4;nil = 观测关闭——测试默认,
 	// cmd/api 装配注入)。
 	loginMetrics *metrics.LoginSet
+	// oidc 是 OIDC 插件面(T11.1):nil = 未配置,路由不挂载。注入经
+	// OIDCProvider setter(镜像 LoginMetrics/Tracing 先例),NewServer
+	// 签名不动——与并行任务的装配面冲突收敛到零。测试桩直赋字段
+	// (oidcAuther 缝),生产唯一实现 = *auth.OIDCProvider。
+	oidc oidcAuther
 }
 
 // NewServer 构造 definition CRUD + execution 触发服务(dbh 为连接池;
@@ -81,6 +86,16 @@ func (s *Server) LoginMetrics(m *metrics.LoginSet) { s.loginMetrics = m }
 
 // Tracing 注入 OTel tracer 面(T6.2;cmd/api 装配,测试默认 nil)。
 func (s *Server) Tracing(t trace.Tracer) { s.tracer = t }
+
+// OIDCProvider 注入 OIDC 插件面(T11.1;cmd/api 在 BRAID_OIDC_* 组配置
+// 完整时装配,见 D-2026-09-28-t111-oidc-subject-anchor)。nil 拒绝:静默
+// 缺配会把「忘了注入」伪装成「未配置」(路由面 404),可诊断性丢失。
+func (s *Server) OIDCProvider(p *auth.OIDCProvider) {
+	if p == nil {
+		panic("api: nil OIDCProvider (oidc plugin seam)")
+	}
+	s.oidc = p
+}
 
 // traceSpan 给 authed 组每请求起 root span(T6.2):trace id 随 request
 // ctx 注入,触发/决策两路生产点据此落 audit 行与 outbox 行(经 ctx 自动
@@ -164,5 +179,13 @@ func (s *Server) Router() *gin.Engine {
 	// actor 维度 in-handler admin 闸(参数条件闸,路由中间件做不到——
 	// 形态镜像 T5.2 审批决定面);execution/trace 维度读面任意有效 token。
 	v1.GET("/audit", s.listAuditEvents)
+
+	// OIDC redirect 流(T11.1):authed 组外(凭据换 token 的入口同
+	// login),注入过 OIDCProvider 才挂载(未配置零行为)。挂载点收敛在
+	// 路由尾段——与并行任务的路由面改动错开(issue #82 冲突申报)。
+	if s.oidc != nil {
+		r.GET("/api/v1/auth/oidc/login", s.oidcLoginStart)
+		r.GET("/api/v1/auth/oidc/callback", s.oidcCallback)
+	}
 	return r
 }
