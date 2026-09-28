@@ -141,7 +141,8 @@ SELECT COUNT(*)
  WHERE ne.status='WAITING_APPROVAL'
    AND ne.deadline_at < NOW(3) - INTERVAL ? MICROSECOND
    AND EXISTS(SELECT 1 FROM approval_decision d
-               WHERE d.node_execution_id = ne.id)
+               WHERE d.node_execution_id = ne.id
+                 AND d.round = ne.attempts)
    AND we.status IN ('RUNNING','WAITING_APPROVAL')`,
 		r.cfg.ScanInterval.Microseconds()).Scan(&n); err != nil {
 		r.log.Warn("metrics.resume_stuck", "err", err)

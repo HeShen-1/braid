@@ -50,6 +50,13 @@ func (f fakeTrigger) Instantiate(context.Context, scheduler.InstantiateParams) (
 	return f.id, f.err
 }
 
+func (f fakeTrigger) RollbackTo(_ context.Context, p scheduler.RollbackParams) (*scheduler.RollbackResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &scheduler.RollbackResult{TargetNodeID: p.TargetNodeID}, nil
+}
+
 // publishViaAPI 建草稿并发布(触发前置:目标必须 PUBLISHED),返回版本号。
 func publishViaAPI(t *testing.T, r *gin.Engine, token, name string) uint32 {
 	t.Helper()

@@ -71,7 +71,13 @@ func NewSender(d Deps, cfg Config) (*Sender, error) {
 // NotifyApproval 送达一封审批通知(exec/node 标识 + 成因码)。步骤与幂等
 // 语义见包注释;快照真相源 = node_execution.input_snapshot(engine 不变量:
 // 挂起 ⇒ NOT NULL 且可解析为 ApprovalInput——坏快照 = 数据缺陷,响亮失败)。
-func (s *Sender) NotifyApproval(ctx context.Context, execID, nodeExecID uint64, reason string) error {
+// NotifyApproval 发送审批升级通知。round = 挂起所属轮(T9.2,D-t92 决策 7):
+// 去重锚按轮匹配——approval.notified 行 payload 携 round,回滚重挂后的
+// 第二轮升级是新的通知意图,不再被第一轮行静默吞(对抗审计 HIGH 修:队列
+// TaskID 轮次段只修了半边)。升级窗取舍:T9.2 前的存量 notified 行 payload
+// 无 round 键(JSON_EXTRACT 为 NULL)不参与去重 ⇒ 同一挂起重投时最坏多发
+// 一封(有界、可观测;反向选择会让存量行吞掉新轮通知,不可接受)。
+func (s *Sender) NotifyApproval(ctx context.Context, execID, nodeExecID uint64, reason string, round int) error {
 	if execID == 0 || nodeExecID == 0 {
 		return errors.New("notify: zero exec or node exec id")
 	}
@@ -122,8 +128,9 @@ SELECT n.execution_id, n.node_id, n.status, n.deadline_at, n.input_snapshot,
 	var one int
 	err = s.deps.DB.QueryRowContext(ctx,
 		`SELECT 1 FROM audit_log
-		 WHERE exec_date=? AND execution_id=? AND node_execution_id=? AND event_type=? LIMIT 1`,
-		execDate, execID, nodeExecID, audit.EventApprovalNotified).Scan(&one)
+		 WHERE exec_date=? AND execution_id=? AND node_execution_id=? AND event_type=?
+		   AND JSON_EXTRACT(payload, '$.round') = ? LIMIT 1`,
+		execDate, execID, nodeExecID, audit.EventApprovalNotified, round).Scan(&one)
 	if err == nil {
 		return ErrAlreadyNotified
 	}
@@ -155,7 +162,7 @@ SELECT n.execution_id, n.node_id, n.status, n.deadline_at, n.input_snapshot,
 	if err != nil {
 		return fmt.Errorf("notify: gen audit id: %w", err)
 	}
-	raw, err := json.Marshal(audit.ApprovalNotifiedPayload{NodeID: nodeID, Reason: reason})
+	raw, err := json.Marshal(audit.ApprovalNotifiedPayload{NodeID: nodeID, Reason: reason, Round: round})
 	if err != nil {
 		return fmt.Errorf("notify: marshal approval.notified payload: %w", err)
 	}

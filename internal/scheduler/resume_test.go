@@ -30,6 +30,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -58,10 +59,15 @@ const approvalBadOutputDSL = `{"dsl":"1.0","name":"approval-badout-t",
 func seedDecision(t *testing.T, d *sql.DB, execID, nodeExecID uint64, nodeID, decidedBy, decision, comment string) uint64 {
 	t.Helper()
 	id := uint64(time.Now().UnixNano())&0x7FFFFFFFFFFF<<10 | uint64(nodeExecID&0x3FF)
+	// round = 锁行 attempts(T9.2 决策 6:决定锚定挂起所属轮,与生产写入面同源)。
+	var attempts uint16
+	if err := d.QueryRow(`SELECT attempts FROM node_execution WHERE id=?`, nodeExecID).Scan(&attempts); err != nil {
+		t.Fatalf("seed decision read attempts: %v", err)
+	}
 	if _, err := d.Exec(`INSERT INTO approval_decision
-	  (id, execution_id, node_execution_id, node_id, decided_by, decision, comment)
-	VALUES (?,?,?,?,?,?,?)`,
-		id, execID, nodeExecID, nodeID, decidedBy, decision, comment); err != nil {
+	  (id, execution_id, node_execution_id, node_id, round, decided_by, decision, comment)
+	VALUES (?,?,?,?,?,?,?,?)`,
+		id, execID, nodeExecID, nodeID, int(attempts), decidedBy, decision, comment); err != nil {
 		t.Fatalf("seed decision: %v", err)
 	}
 	return id
@@ -450,4 +456,36 @@ func TestResumeBadOutputDeclarationFails(t *testing.T) {
 		t.Fatalf("error_code = %v, want bad_approval_output", code)
 	}
 	waitExecStatus(t, d, execID, engine.WorkflowFailed)
+}
+
+// TestResumeStaleRoundDecisionRejected:T9.2 轮次锚(对抗审计 HIGH 修的
+// 回归锚)——决定行 round ≠ 当前挂起轮(锁行 attempts)时,续跑事务响亮
+// 拒绝:回滚重挂后 round-1 旧行不得套用 round-2 挂起(D-t92 决策 6)。
+func TestResumeStaleRoundDecisionRejected(t *testing.T) {
+	s, d := newSched(t)
+	execID, b := dispatchSuspended(t, s, d, approvalDSL)
+	// 旧轮行:round=attempts-1(回滚重挂前的残留)。
+	oldRound := b.attempts - 1
+	decID, err := mustTestIDs(t).Next()
+	if err != nil {
+		t.Fatalf("gen decision id: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO approval_decision
+	  (id, execution_id, node_execution_id, node_id, round, decided_by, decision, decided_at)
+	  VALUES (?,?,?,?,?,?,?,NOW(3))`,
+		decID, execID, b.id, "b", oldRound, "carol", DecisionApproved); err != nil {
+		t.Fatalf("seed stale-round decision: %v", err)
+	}
+	if err := s.Resume(context.Background(), ResumeRequest{
+		ExecID: execID, NodeExecID: b.id,
+		AttemptNo: b.attempts + 1, DecisionID: decID, WorkerID: "w1",
+	}); err == nil {
+		t.Fatal("旧轮决定行套用新轮挂起应响亮拒绝")
+	} else if !strings.Contains(err.Error(), "stale-round") {
+		t.Fatalf("err = %v, want stale-round decision 拒绝面", err)
+	}
+	// 零动作:节点仍在 WAITING_APPROVAL。
+	if got := readNode(t, d, execID, "b"); got.status != engine.NodeWaitingApproval {
+		t.Fatalf("b = %s, want WAITING_APPROVAL(拒绝零动作)", got.status)
+	}
 }

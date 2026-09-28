@@ -217,3 +217,38 @@ tests:
             exp_annotations:
               summary: "最老待审已挂起超过 5h 33m 20s"
               description: "超过 4h 的待审接近默认 72h 超时升级线;升级与通知链路(T4.3/T4.5)是否健康需核查。"
+
+  # T9.2 回滚面:blocked 持续(settle 链路故障)与 denied 风暴。
+  - interval: 1m
+    input_series:
+      - series: 'braid_rollback_denied_total{reason="blocked_inflight"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 35m
+        alertname: RollbackBlockedPersisting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "回滚持续被在飞残留阻塞(15 次/15m)"
+              description: "orphanQuiet+tick 量级的 settle 窗已过仍持续 409:reaper 收口链路故障或积压。查 reaper 进程与 ⑤b/③ 扫描;自动化重试应按 Retry-After 退避。"
+
+  - interval: 1m
+    input_series:
+      - series: 'braid_rollback_denied_total{reason="role_denied"}'
+        values: '0+3x40'
+    alert_rule_test:
+      - eval_time: 18m
+        alertname: RollbackDeniedStorm
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: RollbackDeniedStorm
+        exp_alerts: []
+      - eval_time: 31m
+        alertname: RollbackDeniedStorm
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "回滚拒绝风暴(45 次/15m)"
+              description: "自动化重试未按分面退避,或权限/目标配置错误(role_denied/bad_node_id 为主)。查 rollback.denied 审计行的 reason 分布与调用方退避实现。"

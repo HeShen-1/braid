@@ -3,6 +3,7 @@ package engine
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -21,8 +22,9 @@ type AttemptParams struct {
 	ExecID         uint64
 	AttemptNo      uint16 // 1 起;(node_execution_id, attempt_no) 唯一
 	WorkerID       string
-	IdempotencyKey string // att:<node_exec_id>:<attempt_no>,供应商侧幂等去重
-	AsynqTaskID    string // 与 outbox.task_id 同值域,队列↔DB 对账连接列
+	IdempotencyKey string          // att:<node_exec_id>:<attempt_no>,供应商侧幂等去重
+	AsynqTaskID    string          // 与 outbox.task_id 同值域,队列↔DB 对账连接列
+	InputSnapshot  json.RawMessage // T9.2 台账:本 attempt 输入快照抄档(与 node 行同事务一致);空 → NULL
 }
 
 // InsertAttempt 在派发事务内创建 RUNNING attempt 行。
@@ -32,9 +34,10 @@ func InsertAttempt(ctx context.Context, q DBTX, p AttemptParams) error {
 	_, err := q.ExecContext(ctx, `
 INSERT INTO node_attempt
   (id, node_execution_id, execution_id, attempt_no, worker_id, status,
-   idempotency_key, asynq_task_id, started_at)
-VALUES (?,?,?,?,?,'RUNNING',?,?,NOW(3))`,
-		p.ID, p.NodeExecID, p.ExecID, p.AttemptNo, p.WorkerID, p.IdempotencyKey, p.AsynqTaskID)
+   idempotency_key, asynq_task_id, input_snapshot, started_at)
+VALUES (?,?,?,?,?,'RUNNING',?,?,?,NOW(3))`,
+		p.ID, p.NodeExecID, p.ExecID, p.AttemptNo, p.WorkerID,
+		p.IdempotencyKey, p.AsynqTaskID, nullableJSON(p.InputSnapshot))
 	if err != nil {
 		var me *mysql.MySQLError
 		if errors.As(err, &me) && me.Number == 1062 {
@@ -119,9 +122,13 @@ var (
 
 // CloseAttempt 收口 attempt:RUNNING→SUCCEEDED|FAILED(观察到的终态)。
 // usage 非 nil 时同一条终写落 usage/cost 台账列(单次 UPDATE,收口与台账
-// 原子;T3.1)。DEAD 边已归 reaper(CloseAttemptDead,同一收口形状的裁决分立)。
-// WHERE status='RUNNING' 保证终态后禁改(行无 updated_at,收口是一次终写)。
-func CloseAttempt(ctx context.Context, q DBTX, attemptID uint64, to AttemptState, code, msg string, usage *AttemptUsage) error {
+// 原子;T3.1)。output 非 nil(仅 SUCCEEDED 语义位)时同语句落 T9.2 留档列
+// (D-2026-09-28-t92 决策 3①:旧轮输出证据物理载体;FAILED 恒 NULL=未产出,
+// 调用方传值与终态矛盾属调用方 bug,此处不做二次守卫——观察面收口方与节点
+// CAS 同事务,源头已收敛)。DEAD 边已归 reaper(CloseAttemptDead,同一收口
+// 形状的裁决分立)。WHERE status='RUNNING' 保证终态后禁改(行无 updated_at,
+// 收口是一次终写)。
+func CloseAttempt(ctx context.Context, q DBTX, attemptID uint64, to AttemptState, output json.RawMessage, code, msg string, usage *AttemptUsage) error {
 	if to != AttemptSucceed && to != AttemptFailed {
 		return fmt.Errorf("%w: attempt →%s(收口仅 SUCCEEDED/FAILED;DEAD 归 T2.5)", ErrIllegalTransition, to)
 	}
@@ -140,9 +147,9 @@ func CloseAttempt(ctx context.Context, q DBTX, attemptID uint64, to AttemptState
 	if usage == nil {
 		res, err = q.ExecContext(ctx, `
 UPDATE node_attempt
-   SET status=?, error_code=?, error_message=?, finished_at=NOW(3)
+   SET status=?, error_code=?, error_message=?, finished_at=NOW(3), output=?
  WHERE id=? AND status='RUNNING'`,
-			to, codeArg, msgArg, attemptID)
+			to, codeArg, msgArg, nullableJSON(output), attemptID)
 	} else {
 		var costArg, currencyArg any
 		if usage.Billed {
@@ -150,11 +157,11 @@ UPDATE node_attempt
 		}
 		res, err = q.ExecContext(ctx, `
 UPDATE node_attempt
-   SET status=?, error_code=?, error_message=?, finished_at=NOW(3),
+   SET status=?, error_code=?, error_message=?, finished_at=NOW(3), output=?,
        model=?, prompt_tokens=?, completion_tokens=?, total_tokens=?,
        cost_amount=?, cost_currency=?, estimated=?
  WHERE id=? AND status='RUNNING'`,
-			to, codeArg, msgArg, usage.Model,
+			to, codeArg, msgArg, nullableJSON(output), usage.Model,
 			usage.PromptTokens, usage.CompletionTokens, usage.TotalTokens,
 			costArg, currencyArg, usage.Estimated, attemptID)
 	}

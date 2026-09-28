@@ -77,12 +77,15 @@ func (s *Store) lockApprovalNode(ctx context.Context, q DBTX, execID uint64, nod
 	return n, nil
 }
 
-// Decision 是 approval_decision 一行的模型(0003 DDL 契约)。
+// Decision 是 approval_decision 一行的模型(0003 DDL 契约;round 列
+// T9.2/0007,D-2026-09-28-t92 决策 3③:投票轮次 = 决定时锁行 attempts,
+// 与轮次守卫同源单点——回滚重挂新轮新票、T14.2 会签每审批人每轮恰一票)。
 type Decision struct {
 	ID          uint64
 	ExecutionID uint64
 	NodeExecID  uint64
 	NodeID      string
+	Round       int
 	DecidedBy   string
 	Decision    string // APPROVED | REJECTED(DDL ENUM)
 	Comment     *string
@@ -95,6 +98,7 @@ type InsertDecisionParams struct {
 	ExecutionID uint64
 	NodeExecID  uint64
 	NodeID      string
+	Round       int // 挂起所属轮 = 锁行 attempts(T9.2;0 仅存量行)
 	DecidedBy   string
 	Decision    string // APPROVED | REJECTED
 	Comment     string // 空 → NULL
@@ -118,9 +122,9 @@ func (s *Store) InsertDecision(ctx context.Context, q DBTX, p InsertDecisionPara
 	}
 	_, err := q.ExecContext(ctx, `
 INSERT INTO approval_decision
-  (id, execution_id, node_execution_id, node_id, decided_by, decision, comment)
-VALUES (?,?,?,?,?,?,?)`,
-		p.ID, p.ExecutionID, p.NodeExecID, p.NodeID, p.DecidedBy, p.Decision, comment)
+  (id, execution_id, node_execution_id, node_id, round, decided_by, decision, comment)
+VALUES (?,?,?,?,?,?,?,?)`,
+		p.ID, p.ExecutionID, p.NodeExecID, p.NodeID, p.Round, p.DecidedBy, p.Decision, comment)
 	if err != nil {
 		var me *mysql.MySQLError
 		// 键名判别(镜像 sched.go Instantiate 的 1062 纪律):只有 uk 撞是
@@ -136,12 +140,13 @@ VALUES (?,?,?,?,?,?,?)`,
 	return nil
 }
 
-// GetDecisionByApprover 读某审批人对某节点的既存决定(uk 命中面;行不存在
-// → ErrNotFound)。重放/改判裁决的读回。
-func (s *Store) GetDecisionByApprover(ctx context.Context, q DBTX, nodeExecID uint64, decidedBy string) (Decision, error) {
+// GetDecisionByApprover 读某审批人对某节点某轮的既存决定(uk 命中面;
+// 行不存在 → ErrNotFound)。重放/改判裁决的读回。round 维度是 T9.2 下沉点
+// (D-t92 决策 6):同轮重放/跨轮新票的判据由谓词承载,消费点不漏改的结构锚。
+func (s *Store) GetDecisionByApprover(ctx context.Context, q DBTX, nodeExecID uint64, round int, decidedBy string) (Decision, error) {
 	d, err := scanDecision(q.QueryRowContext(ctx, `
-SELECT id, execution_id, node_execution_id, node_id, decided_by, decision, comment, decided_at
-  FROM approval_decision WHERE node_execution_id=? AND decided_by=?`, nodeExecID, decidedBy))
+SELECT id, execution_id, node_execution_id, node_id, round, decided_by, decision, comment, decided_at
+  FROM approval_decision WHERE node_execution_id=? AND round=? AND decided_by=?`, nodeExecID, round, decidedBy))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Decision{}, fmt.Errorf("%w: decision by %q on node %d", ErrNotFound, decidedBy, nodeExecID)
 	}
@@ -149,10 +154,11 @@ SELECT id, execution_id, node_execution_id, node_id, decided_by, decision, comme
 }
 
 // ListDecisions 列某审批节点的全部决定(decided_at, id 序 = 投票时间线;
-// 或签 P0 恒 ≤1 行,会签 P1 多行)。
+// 跨轮全历史按 Round 分组呈现——回滚重挂后旧轮票是新轮的对照证据,过滤
+// 由读面消费方按 Round 承载,本原语不做第二轮次谓词)。
 func (s *Store) ListDecisions(ctx context.Context, q DBTX, nodeExecID uint64) ([]Decision, error) {
 	rows, err := q.QueryContext(ctx, `
-SELECT id, execution_id, node_execution_id, node_id, decided_by, decision, comment, decided_at
+SELECT id, execution_id, node_execution_id, node_id, round, decided_by, decision, comment, decided_at
   FROM approval_decision WHERE node_execution_id=? ORDER BY decided_at, id`, nodeExecID)
 	if err != nil {
 		return nil, fmt.Errorf("api: list decisions of node %d: %w", nodeExecID, err)
@@ -172,11 +178,13 @@ SELECT id, execution_id, node_execution_id, node_id, decided_by, decision, comme
 	return out, nil
 }
 
-// CountDecisions 数某审批节点的既存决定数(或签首票定局守卫:"> 0" 即定局)。
-func (s *Store) CountDecisions(ctx context.Context, q DBTX, nodeExecID uint64) (int, error) {
+// CountDecisions 数某审批节点某轮的既存决定数(或签首票定局守卫:"> 0"
+// 即定局;round 谓词 = T14.2 会签判据的换装点,D-t42 预告的 CountDecisions
+// 判据改法在此落定)。
+func (s *Store) CountDecisions(ctx context.Context, q DBTX, nodeExecID uint64, round int) (int, error) {
 	var n int
 	if err := q.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM approval_decision WHERE node_execution_id=?`, nodeExecID).Scan(&n); err != nil {
+		`SELECT COUNT(*) FROM approval_decision WHERE node_execution_id=? AND round=?`, nodeExecID, round).Scan(&n); err != nil {
 		return 0, fmt.Errorf("api: count decisions of node %d: %w", nodeExecID, err)
 	}
 	return n, nil
@@ -204,7 +212,7 @@ func scanDecision(r decisionScanner) (Decision, error) {
 		d       Decision
 		comment sql.NullString
 	)
-	if err := r.Scan(&d.ID, &d.ExecutionID, &d.NodeExecID, &d.NodeID,
+	if err := r.Scan(&d.ID, &d.ExecutionID, &d.NodeExecID, &d.NodeID, &d.Round,
 		&d.DecidedBy, &d.Decision, &comment, &d.DecidedAt); err != nil {
 		return Decision{}, err
 	}

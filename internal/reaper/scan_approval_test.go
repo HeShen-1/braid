@@ -83,14 +83,19 @@ func seedApproval(t *testing.T, d *sql.DB, wfStatus string, deadlinePast time.Du
 	return approvalSeeded{execID: execID, nodeExecID: nodeRowID}
 }
 
-// seedDecision 落一行决定(或签首票形态,唯一行)。
+// seedDecision 落一行决定(或签首票形态,唯一行)。round = 行内 attempts
+// (T9.2 决策 6:⑤a 死信网按轮锚定,种子行与生产写入面同源)。
 func seedDecision(t *testing.T, d *sql.DB, s approvalSeeded, decision string) uint64 {
 	t.Helper()
 	id := nextID(t)
+	var attempts uint16
+	if err := d.QueryRow(`SELECT attempts FROM node_execution WHERE id=?`, s.nodeExecID).Scan(&attempts); err != nil {
+		t.Fatalf("seed decision read attempts: %v", err)
+	}
 	if _, err := d.Exec(`INSERT INTO approval_decision
-	  (id, execution_id, node_execution_id, node_id, decided_by, decision, decided_at)
-	  VALUES (?, ?, ?, 'boss', 'alice', ?, NOW(3))`,
-		id, s.execID, s.nodeExecID, decision); err != nil {
+	  (id, execution_id, node_execution_id, node_id, round, decided_by, decision, decided_at)
+	  VALUES (?, ?, ?, 'boss', ?, 'alice', ?, NOW(3))`,
+		id, s.execID, s.nodeExecID, int(attempts), decision); err != nil {
 		t.Fatalf("seed decision: %v", err)
 	}
 	return id
@@ -188,7 +193,7 @@ func TestApprovalEscalateNotifiesOnce(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("approval.notify 行数 = %d, want 1", len(rows))
 	}
-	if want := fmt.Sprintf("notify:%d", s.nodeExecID); rows[0].taskID != want {
+	if want := fmt.Sprintf("notify:%d:1", s.nodeExecID); rows[0].taskID != want {
 		t.Fatalf("task_id = %q, want %q", rows[0].taskID, want)
 	}
 	var np scheduler.ApprovalNotifyPayload
@@ -626,5 +631,56 @@ func TestApprovalEscalatedDecidedRedispatched(t *testing.T) {
 	if ns, _, escalatedAt := readApprovalNode(t, d, s.nodeExecID); ns != engine.NodeWaitingApproval ||
 		!escalatedAt.Valid {
 		t.Fatalf("decided 分支不动行: %s %v", ns, escalatedAt)
+	}
+}
+
+// TestApprovalEscalateNotifyRoundSegment:M5 锚(T9.2 决策 7)——升级通知
+// TaskID 携挂起轮次:回滚重挂后(attempts=2)第二轮升级是新的通知意图,
+// notify:<id>:<round> 与滞留旧副本零冲突。硬编码 round=1 的旧断言测不出
+// 动态轮次(变异:轮次段回退单段 → 本测红)。
+func TestApprovalEscalateNotifyRoundSegment(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	s := seedApproval(t, d, "RUNNING", 5*time.Minute, "", false)
+	// 回滚重挂后现场:attempts=2(第二轮挂起)。
+	if _, err := d.Exec(`UPDATE node_execution SET attempts=2 WHERE id=?`, s.nodeExecID); err != nil {
+		t.Fatalf("seed round-2 suspension: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	rows := fetchOutbox(t, d, s.execID, "approval.notify")
+	if len(rows) != 1 {
+		t.Fatalf("approval.notify 行数 = %d, want 1", len(rows))
+	}
+	if want := fmt.Sprintf("notify:%d:2", s.nodeExecID); rows[0].taskID != want {
+		t.Fatalf("task_id = %q, want %q(第二轮轮次段)", rows[0].taskID, want)
+	}
+}
+
+// TestApprovalDeadLetterAnchorRoundScoped:H5 锚(对抗审计 HIGH 修)——⑤a
+// 死信网决策锚按轮匹配:回滚重挂后旧轮决定行(round=1)对本轮(attempts=2)
+// 不可见,不得触发续跑重投(旧票套新轮的实害路径封闭)。
+func TestApprovalDeadLetterAnchorRoundScoped(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	// 已升级 + deadline 过期 + 旧轮已决票:候选谓词(本轮有票)不命中,
+	// [5] round 锚亦不命中 → 无 redispatchResume。
+	s := seedApproval(t, d, "RUNNING", 5*time.Minute, "", true)
+	if _, err := d.Exec(`UPDATE node_execution SET attempts=2 WHERE id=?`, s.nodeExecID); err != nil {
+		t.Fatalf("seed round-2 suspension: %v", err)
+	}
+	seedDecision(t, d, s, "APPROVED") // round = 行内 attempts = 2?种子读行内——改旧轮:
+	if _, err := d.Exec(`UPDATE approval_decision SET round=1 WHERE node_execution_id=?`, s.nodeExecID); err != nil {
+		t.Fatalf("age decision to round 1: %v", err)
+	}
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	rows := fetchOutbox(t, d, s.execID, "execution.resume")
+	if len(rows) != 0 {
+		t.Fatalf("execution.resume 行数 = %d, want 0(旧轮票不得套用新轮挂起)", len(rows))
+	}
+	ns, _, _ := readApprovalNode(t, d, s.nodeExecID)
+	if ns != engine.NodeWaitingApproval {
+		t.Fatalf("node = %s, want WAITING_APPROVAL(零动作)", ns)
 	}
 }

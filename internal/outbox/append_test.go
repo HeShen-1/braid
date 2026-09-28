@@ -198,14 +198,17 @@ func TestTaskIDVocabularyNotify(t *testing.T) {
 	}
 	t.Cleanup(func() { mustExec(t, d, `DELETE FROM outbox WHERE execution_id=?`, base.ExecutionID) })
 	ok := []string{
-		fmt.Sprintf("notify:%d", newID()),
+		// T9.2(D-t92 决策 7):两段式 node_exec_id:round——每轮升级通知
+		// 携带独立 ID;旧单段形态被超越(跨轮静默吞的实害路径)。
+		fmt.Sprintf("notify:%d:1", newID()),
+		fmt.Sprintf("notify:%d:2", newID()),
 	}
 	bad := map[string]string{
-		"空 id 段":   "notify:",
-		"非数字段":     fmt.Sprintf("notify:node-%d", newID()),
-		"二段式(词表外)": fmt.Sprintf("notify:%d:1", newID()),
-		"前缀错位":     fmt.Sprintf("notifx:%d", newID()),
-		"大写前缀":     fmt.Sprintf("Notify:%d", newID()),
+		"空 id 段":    "notify:",
+		"非数字段":      fmt.Sprintf("notify:node-%d:1", newID()),
+		"旧单段式(被超越)": fmt.Sprintf("notify:%d", newID()),
+		"前缀错位":      fmt.Sprintf("notifx:%d:1", newID()),
+		"大写前缀":      fmt.Sprintf("Notify:%d:1", newID()),
 	}
 	for _, id := range ok {
 		evt := base

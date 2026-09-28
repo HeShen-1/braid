@@ -192,6 +192,7 @@ func (f *fakeExec) count() int {
 type notifyCall struct {
 	execID, nodeExecID uint64
 	reason             string
+	round              int // T9.2:轮次段(notify 去重锚)
 }
 
 // fakeNotifier 是 ApprovalNotifier 测试桩(T4.5):记录调用,fn 决定返回
@@ -202,8 +203,8 @@ type fakeNotifier struct {
 	fn    func(call notifyCall) error
 }
 
-func (f *fakeNotifier) NotifyApproval(_ context.Context, execID, nodeExecID uint64, reason string) error {
-	call := notifyCall{execID: execID, nodeExecID: nodeExecID, reason: reason}
+func (f *fakeNotifier) NotifyApproval(_ context.Context, execID, nodeExecID uint64, reason string, round int) error {
+	call := notifyCall{execID: execID, nodeExecID: nodeExecID, reason: reason, round: round}
 	f.mu.Lock()
 	f.calls = append(f.calls, call)
 	f.mu.Unlock()

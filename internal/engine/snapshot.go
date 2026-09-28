@@ -9,8 +9,12 @@ import (
 
 // 输入快照契约(验收 2 的真源,DDL node_execution.input_snapshot 列注释):
 //
-// 何时写:仅 Claim/Resume 两条进入 EXECUTING 的 CAS **同语句**写入/重写——
-// 列级天然单写者,恰好由唯一获胜者写一次;败方 0 行,字节不可能落行。
+// 何时写:Claim/Resume/Rerun(T9.2,D-2026-09-28-t92-rollback-same-branch
+// 决策 2b)三条进入 EXECUTING 的 CAS **同语句**写入/重写——列级天然单写者,
+// 恰好由唯一获胜者写一次;败方 0 行,字节不可能落行。Rerun 的输入 =
+// ReadNodeInput 读回值(「以 input_snapshot 重跑」的逐字兑现,复现语义锚);
+// 闭包重置(ResetNodeToPending)只清列不写(PENDING⇒NULL 不变量),下游
+// 重派由求值器对新前驱输出重求值。
 //
 // 写什么:全部 {{...}} 已对 workflow_execution.input 根 + 前驱 output 求值的
 // 已解析 JSON(T2.4 起由求值器填充,引擎不解析、存原文、仅 json.Valid)。

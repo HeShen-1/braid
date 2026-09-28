@@ -63,7 +63,7 @@ import (
 // 审批续跑事件(DDL §5 开放词表注释预留同名;TaskID 词表 resume:<exec>:<node>:<attempt>,
 // 0003 头注释定稿)——发射点在 api 审批面(决策事务),消费面在 worker
 // handleNodeResume → Scheduler.Resume。approval.notify(T4.3 起有发射点 = reaper
-// 审批超时升级事务;TaskID notify:<node_exec_id>,T4.5 起消费面 = worker
+// 审批超时升级事务;TaskID notify:<node_exec_id>:<round>(T9.2 轮次段),T4.5 起消费面 = worker
 // handleApprovalNotify → notify.Sender SMTP 发送;D-t41 #3 移交闭环)。
 const (
 	EventTypeNodeTask        = "node.task_enqueue"
@@ -109,13 +109,18 @@ type ResumePayload struct {
 // ApprovalNotifyPayload 是 approval.notify 事件的自描述体(T4.3 起有发射点:
 // reaper 审批超时升级事务;T4.5 起消费面 = worker handleApprovalNotify →
 // notify.Sender SMTP 发送,未配置 SMTP 时降级 log-only ack)。
-// TaskID = notify:<node_execution_id>(恰好一次锚在 escalated_at)。Reason 是
+// TaskID = notify:<node_execution_id>:<round>(每轮恰好一次锚在 escalated_at,
+// T9.2 轮次段——回滚重挂的新轮升级是新意图)。Reason 是
 // 成因码(词表单源见 ReasonApproval* 常量,后续成因在此扩词);payload 仅
 // id 引用:审批人/策略/截止真相源在 node_execution 行,消费方回表。
 type ApprovalNotifyPayload struct {
 	ExecutionID     uint64 `json:"execution_id"`
 	NodeExecutionID uint64 `json:"node_execution_id"`
 	Reason          string `json:"reason"`
+	// Round:T9.2 轮次段(挂起所属 attempts)——队列 TaskID(notify:<id>:
+	// <round>)与消费侧去重锚(approval.notified 行 payload)同源;回滚
+	// 重挂后第二轮升级是新的通知意图(D-t92 决策 7),两半都必须携轮。
+	Round int `json:"round"`
 	// TraceID:T6.2 边界——notify 链 P0 无段 trace(发射面 reaper tick 无
 	// span 上下文,approval.notified 行 trace NULL),D-t62 登记;P1 若
 	// 回读 root 续链在此扩。
@@ -663,6 +668,10 @@ func (s *Scheduler) Complete(ctx context.Context, req CompletionRequest) error {
 		return errors.New("scheduler: usage requires SUCCEEDED (failed LLM calls are unbilled in P0)")
 	case req.ToolCall != nil && req.Status != engine.AttemptSucceed:
 		return errors.New("scheduler: tool call info requires SUCCEEDED (failed calls ride node.state_changed)")
+	case len(req.Output) > 0 && req.Status != engine.AttemptSucceed:
+		// T9.2 台账守卫(对抗审计 LOW 修):attempt.output 的 DDL 契约是
+		// 「FAILED/DEAD 恒 NULL——未产出」,与 Usage/ToolCall 同层对称。
+		return errors.New("scheduler: output requires SUCCEEDED (failed attempts produce no output)")
 	}
 	exec, err := s.loadExecution(ctx, req.ExecID)
 	if err != nil {
@@ -725,7 +734,7 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 		// T3.1)。Conflict = 收口权已旁落(早前 Complete 或 reaper DEAD)
 		// ⇒ 幂等;Observed==DEAD 时记结构化 warn——成功结果被
 		// 丢弃 = 发生过判死双执行的观测信号(W1 哨兵,零行为变更)。
-		if err := engine.CloseAttempt(ctx, q, req.AttemptID, req.Status, req.Code, req.Msg, req.Usage); err != nil {
+		if err := engine.CloseAttempt(ctx, q, req.AttemptID, req.Status, req.Output, req.Code, req.Msg, req.Usage); err != nil {
 			if errors.Is(err, engine.ErrConflict) {
 				var ce *engine.ConflictError
 				if errors.As(err, &ce) && ce.Observed == engine.NodeState(engine.AttemptDead) {
@@ -810,7 +819,9 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 			switch {
 			case termGuard:
 				// 终态执行内的迟到失败:不再重试/失败收口。
-			case int(n.attempts) < int(n.maxAttempts):
+			case int(n.attempts)-int(n.attemptsBase) < int(n.maxAttempts):
+				// T9.2 预算 = 本轮口径(attempts-attempts_base,回滚后满额;
+				// 存量行 base=0 逐字保持旧语义)。
 				// 节点级重试:平台重试权威(新 attempt = 新 TaskID),节点留 EXECUTING。
 				newVer, err := engine.RedispatchNode(ctx, q, n.id, n.version, engine.RedispatchInput{
 					WorkerID:   req.WorkerID,
@@ -976,16 +987,17 @@ func (s *Scheduler) finishIfDone(ctx context.Context, execID uint64, wf *dsl.Wor
 // nodeRow 是锁读到的节点行快照(事务内随 CAS 就地更新;前驱判定只读本副本,
 // 锁序保证副本即最新已提交 + 本事务写)。
 type nodeRow struct {
-	id          uint64
-	nodeID      string
-	instanceNo  uint16 // T9.1:控制行/单实例节点恒 0;parallel 实例行 1..N(输入序)
-	version     uint32
-	status      engine.NodeState
-	nodeType    string
-	attempts    uint16
-	maxAttempts uint16
-	workerID    sql.NullString
-	output      sql.NullString
+	id           uint64
+	nodeID       string
+	instanceNo   uint16 // T9.1:控制行/单实例节点恒 0;parallel 实例行 1..N(输入序)
+	version      uint32
+	status       engine.NodeState
+	nodeType     string
+	attempts     uint16
+	attemptsBase uint16 // T9.2:本轮重试预算基线(D-t92 决策 3②),预算判定 = attempts-attemptsBase<maxAttempts
+	maxAttempts  uint16
+	workerID     sql.NullString
+	output       sql.NullString
 }
 
 // lockedRows 是全行集的索引:byNodeID 恒指控制行(parallel 后继的前驱判定
@@ -1016,7 +1028,7 @@ func lockAllRows(ctx context.Context, q engine.DBTX, execID uint64, g *dag) (*lo
 	}
 	for _, nodeID := range ids {
 		rs, err := rq.QueryContext(ctx, `
-SELECT id, node_id, instance_no, version, status, type, attempts, max_attempts, worker_id, output
+SELECT id, node_id, instance_no, version, status, type, attempts, attempts_base, max_attempts, worker_id, output
   FROM node_execution WHERE execution_id=? AND node_id=?
   ORDER BY instance_no FOR UPDATE`, execID, nodeID)
 		if err != nil {
@@ -1027,7 +1039,7 @@ SELECT id, node_id, instance_no, version, status, type, attempts, max_attempts, 
 		for rs.Next() {
 			var r nodeRow
 			if err := rs.Scan(&r.id, &r.nodeID, &r.instanceNo, &r.version, &r.status, &r.nodeType,
-				&r.attempts, &r.maxAttempts, &r.workerID, &r.output); err != nil {
+				&r.attempts, &r.attemptsBase, &r.maxAttempts, &r.workerID, &r.output); err != nil {
 				_ = rs.Close()
 				return nil, fmt.Errorf("scheduler: lock scan node %q: %w", nodeID, err)
 			}
@@ -1559,7 +1571,8 @@ func (s *Scheduler) ReapInstanceExhausted(ctx context.Context, execID, nodeExecI
 			return fmt.Errorf("%w: node_execution %d not in execution %d",
 				engine.ErrNotFound, nodeExecID, execID)
 		}
-		if n.instanceNo == 0 || n.status != engine.NodeExecuting || int(n.attempts) < int(n.maxAttempts) {
+		if n.instanceNo == 0 || n.status != engine.NodeExecuting ||
+			int(n.attempts)-int(n.attemptsBase) < int(n.maxAttempts) {
 			return nil // 非耗尽实例行:他方已收口/预算仍在,归原路径
 		}
 		// 终态守卫(快照读,completeOnce termGuard 同式):终态执行内迟到

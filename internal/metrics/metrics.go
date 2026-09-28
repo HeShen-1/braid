@@ -161,14 +161,26 @@ type LoginSet struct {
 	Attempts *prometheus.CounterVec
 }
 
+// RollbackSet covers the T9.2 rollback/resume endpoints (api process;
+// D-2026-09-28-t92 decision 10). Requested counts every authenticated
+// attempt reaching the scheduler seam; Applied counts committed rollbacks;
+// Denied breaks rejections down by reason facet (mirroring the structured
+// error kinds + the role gate).
+type RollbackSet struct {
+	Requested prometheus.Counter
+	Applied   prometheus.Counter
+	Denied    *prometheus.CounterVec // by reason
+}
+
 // Set aggregates every component subset; exactly one per process.
 type Set struct {
-	LLM    *LLMSet
-	Reaper *ReaperSet
-	Worker *WorkerSet
-	Relay  *RelaySet
-	Login  *LoginSet
-	DBPool *DBPoolSet
+	LLM      *LLMSet
+	Reaper   *ReaperSet
+	Worker   *WorkerSet
+	Relay    *RelaySet
+	Login    *LoginSet
+	Rollback *RollbackSet
+	DBPool   *DBPoolSet
 }
 
 // NewSet builds a Set registered into a fresh Registry and returns both.
@@ -312,6 +324,20 @@ func NewSet() (*Set, *prometheus.Registry) {
 				Name: "braid_login_attempts_total",
 				Help: "Login attempts by result; durable twin in login_audit (migration 0005).",
 			}, []string{"result"}),
+		},
+		Rollback: &RollbackSet{
+			Requested: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_rollback_requested_total",
+				Help: "Rollback/resume requests reaching the scheduler seam (authenticated).",
+			}),
+			Applied: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_rollback_applied_total",
+				Help: "Committed rollbacks (scheduler.RollbackTo success).",
+			}),
+			Denied: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_rollback_denied_total",
+				Help: "Rejected rollback/resume requests by reason (role_denied/not_rollbackable/blocked_inflight/bad_node_id/no_resume_target).",
+			}, []string{"reason"}),
 		},
 		DBPool: &DBPoolSet{
 			OpenConnections: f.NewGauge(prometheus.GaugeOpts{

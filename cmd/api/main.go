@@ -127,6 +127,7 @@ func run(ctx context.Context) error {
 	slog.Info("api: tracing", "exporter", traceCfg.Exporter)
 	apiSrv := api.NewServer(cfg, dbh, ids, toolReg, sched, auth.BuiltinProvider{DB: dbh})
 	apiSrv.LoginMetrics(mset.Login)
+	apiSrv.RollbackMetrics(mset.Rollback) // T9.2:回滚面三计数器(D-t92 决策 10)
 	apiSrv.Tracing(traceProv.Tracer("braid/api"))
 	// OIDC 插件(T11.1,D-2026-09-28-t111-oidc-subject-anchor):BRAID_OIDC_*
 	// 组经 ConfigFromEnv 解析(半开启动即败);配置完整才构造——discovery

@@ -42,6 +42,10 @@ type Server struct {
 	// 注入姿势)。span 边界 = authed 组每请求;trace id 是 audit 行与
 	// outbox 行的传播载体(D-2026-09-27-t62-otel-trace)。
 	tracer trace.Tracer
+	// rollbackMetrics 是回滚面指标(T9.2/T6.4;nil = 观测关闭——测试默认,
+	// cmd/api 装配注入;requested/applied/denied{reason} 三计数器,
+	// D-2026-09-28-t92 决策 10)。
+	rollbackMetrics *metrics.RollbackSet
 	// loginMetrics 是登录指标面(T6.4;nil = 观测关闭——测试默认,
 	// cmd/api 装配注入)。
 	loginMetrics *metrics.LoginSet
@@ -83,6 +87,9 @@ func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry, trig
 
 // LoginMetrics 注入登录指标面(T6.4;cmd/api 装配,测试默认 nil)。
 func (s *Server) LoginMetrics(m *metrics.LoginSet) { s.loginMetrics = m }
+
+// RollbackMetrics 注入回滚面指标(T9.2;nil = 观测关闭,镜像 LoginMetrics)。
+func (s *Server) RollbackMetrics(m *metrics.RollbackSet) { s.rollbackMetrics = m }
 
 // Tracing 注入 OTel tracer 面(T6.2;cmd/api 装配,测试默认 nil)。
 func (s *Server) Tracing(t trace.Tracer) { s.tracer = t }
@@ -160,6 +167,10 @@ func (s *Server) Router() *gin.Engine {
 	v1.POST("/executions", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.triggerExecution)
 	v1.GET("/executions", s.listExecutions)
 	v1.GET("/executions/:id", s.getExecution)
+	// 回滚/续跑(T9.2,D-2026-09-28-t92):author|admin in-handler 闸
+	// (拒绝落审计 rollback.denied,中间件做不到)——形态镜像审批决定面。
+	v1.POST("/executions/:id/rollback", s.rollbackExecution)
+	v1.POST("/executions/:id/resume", s.resumeExecution)
 
 	// 待办列表(T4.4):任意有效 token,主体过滤即读边界(名单真相源 =
 	// 快照 approvers,谓词面见 approvaltodo.go)。

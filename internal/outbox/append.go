@@ -48,16 +48,19 @@ const (
 	maxErrText = 2000
 )
 
-// TaskID 词表(全库统一,DDL §5 表注释 + 0003 扩展):node_id 段与 DSL 词表
-// 一致(dsl/refs.go 同款 [a-z][a-z0-9_]{0,63})。notify: 是 T4.3 审批超时
-// 升级通知(approval.notify)的 TaskID:单段 node_execution_id——恰好一次
-// 语义锚在 node_execution.escalated_at(DB 谓词),同节点永无第二条通知意图,
-// 不变量「同一 task_id 永不表达需要再投一次的新意图」因此保持。
+// TaskID 词表(全库统一,DDL §5 表注释 + 0003/0007 扩展):node_id 段与 DSL
+// 词表一致(dsl/refs.go 同款 [a-z][a-z0-9_]{0,63})。notify: 是 T4.3 审批超时
+// 升级通知(approval.notify)的 TaskID:两段 node_execution_id:round——每轮
+// 恰好一次语义锚在 node_execution.escalated_at(DB 谓词;T9.2 回滚重挂清列
+// 后按轮恢复)。旧单段形态被 T9.2(D-2026-09-28-t92 决策 7)超越:回滚重挂
+// 的第二轮升级是新的通知意图,单段形态撞 asynq 滞留旧副本 ErrTaskIDConflict
+// 被静默吞(违反「同一 task_id 永不表达需要再投一次的新意图」);轮次段
+// (round = 挂起所属 attempts,与 resume: 四段式同源)使每轮意图携带独立 ID。
 var (
 	taskIDReExec   = regexp.MustCompile(`^exec:\d+$`)
 	taskIDReResume = regexp.MustCompile(`^resume:\d+:[a-z][a-z0-9_]{0,63}:\d+$`)
 	taskIDReAtt    = regexp.MustCompile(`^att:\d+:\d+$`)
-	taskIDReNotify = regexp.MustCompile(`^notify:\d+$`)
+	taskIDReNotify = regexp.MustCompile(`^notify:\d+:\d+$`)
 	queueRe        = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
 	traceIDRe      = regexp.MustCompile(`^[0-9a-f]{32}$`)
 )

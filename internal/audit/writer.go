@@ -76,8 +76,11 @@ var ErrInvalidEvent = errors.New("audit: invalid event")
 //   - approval.notified:审批通知送达(T4.5 SMTP;worker 消费 approval.notify
 //     事件、邮件发送成功后落行)。与 escalated(意图)/notify outbox 事件不同
 //     事务——本行是**送达**事实,兼作 at-least-once 重投的去重锚(先查行后
-//     发送,命中即 ack 跳过;task_id=notify:<node_exec_id> 与 (execution_id,
-//     node_execution_id) 单射)。actor=worker/消费进程。T6.4 对账面:
+//     发送,命中即 ack 跳过;去重锚按轮匹配——payload.round 与当轮相等
+//     (T9.2/D-t92 决策 7 消费半边:task_id=notify:<node_exec_id>:<round> 与
+//     (execution_id, node_execution_id, round) 三元单射,回滚重挂后第二轮
+//     升级是新的通知意图;T9.2 前存量行无 round 键不参与去重,升级窗内
+//     同挂起重投最坏多发一封,有界可观测)。actor=worker/消费进程。T6.4 对账面:
 //     escalated 有行而本行缺 = 通知丢失(D-t43 已知边界获得观测信号)。
 //   - execution.triggered:API 触发落执行(T5.5;DDL 开放词表注释预留同名,
 //     D-t26 §6 显式留给 T5 接入登记)。执行级事件(node_id NULL),与
@@ -107,6 +110,8 @@ const (
 	EventApprovalResumeRedispatched = "approval.resume_redispatched"
 	EventApprovalNotified           = "approval.notified"
 	EventExecutionTriggered         = "execution.triggered"
+	EventExecutionRolledBack        = "execution.rolled_back"
+	EventRollbackDenied             = "rollback.denied"
 	EventToolCallDenied             = "tool.call.denied"
 )
 
@@ -155,6 +160,8 @@ var knownEvents = map[string]bool{
 	EventApprovalResumeRedispatched: true,
 	EventApprovalNotified:           true,
 	EventExecutionTriggered:         true,
+	EventExecutionRolledBack:        true,
+	EventRollbackDenied:             true,
 	EventToolCallDenied:             true,
 }
 

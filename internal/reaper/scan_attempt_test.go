@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"braid/internal/engine"
 	"braid/internal/scheduler"
 )
 
@@ -100,4 +101,60 @@ func TestReapRedispatchNoTraceStaysZeroInjected(t *testing.T) {
 	if np.TraceID != "" {
 		t.Fatalf("无 trace 原行 → 重派 payload trace_id = %q, want 空(键缺席零注入)", np.TraceID)
 	}
+}
+
+// TestReapBudgetBaseFreshRound:T9.2 预算基线(对抗审计 HIGH 修)——attempts-
+// attempts_base < max_attempts 判定:回滚后新一轮满额(旧轮不吃新预算),
+// 旧谓词(attempts<max)会把重跑首轮直接判耗尽。分支 B 路径(attempt 行
+// 未物化于当前号)。变异锚:漏改本判定点 → 第一臂红(旧轮吃光)或耗尽臂
+// 永不触发 → 第二臂红。
+func TestReapBudgetBaseFreshRound(t *testing.T) {
+	t.Run("新一轮预算内重派", func(t *testing.T) {
+		r, d := newReaper(t, testCfg())
+		s := seedReap(t, d, 5*time.Minute, 0, 2)
+		// 回滚后现场:attempts=2(旧轮烧 1 + rerun claim 1)、base=1;
+		// 判死走分支 B(当前号 attempt 行未物化)。2-1=1 < 2 ⇒ 重派。
+		if _, err := d.Exec(`UPDATE node_execution SET attempts=2, attempts_base=1 WHERE id=?`, s.nodeExecID); err != nil {
+			t.Fatalf("seed rolled-back budget: %v", err)
+		}
+		// 保留陈旧 RUNNING attempt 行(attempt_no=1 ≠ 当前 attempts):扫描①
+		// 以它为候选,[2] 按当前号定位落空 → 分支 B(attemptGone)。
+
+		if err := r.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+		var attempts uint16
+		var status engine.NodeState
+		if err := d.QueryRow(`SELECT attempts, status FROM node_execution WHERE id=?`, s.nodeExecID).
+			Scan(&attempts, &status); err != nil {
+			t.Fatalf("read node: %v", err)
+		}
+		if status != engine.NodeExecuting || attempts != 3 {
+			t.Fatalf("node = %s/%d, want EXECUTING/3(新一轮 Redispatch)", status, attempts)
+		}
+	})
+	t.Run("新一轮耗尽终败", func(t *testing.T) {
+		r, d := newReaper(t, testCfg())
+		s := seedReap(t, d, 5*time.Minute, 0, 2)
+		// attempts=3、base=1:3-1=2 ≮ 2 ⇒ FailNode + wf FAILED。
+		if _, err := d.Exec(`UPDATE node_execution SET attempts=3, attempts_base=1 WHERE id=?`, s.nodeExecID); err != nil {
+			t.Fatalf("seed exhausted budget: %v", err)
+		}
+		// 保留陈旧 RUNNING attempt 行(attempt_no=1 ≠ 当前 attempts):扫描①
+		// 以它为候选,[2] 按当前号定位落空 → 分支 B(attemptGone)。
+
+		if err := r.RunOnce(context.Background()); err != nil {
+			t.Fatalf("RunOnce: %v", err)
+		}
+		var ns engine.NodeState
+		var ws engine.WorkflowState
+		if err := d.QueryRow(`SELECT n.status, w.status FROM node_execution n
+		  JOIN workflow_execution w ON w.id=n.execution_id WHERE n.id=?`, s.nodeExecID).
+			Scan(&ns, &ws); err != nil {
+			t.Fatalf("read states: %v", err)
+		}
+		if ns != engine.NodeFailed || ws != engine.WorkflowFailed {
+			t.Fatalf("node/wf = %s/%s, want FAILED/FAILED(新一轮耗尽)", ns, ws)
+		}
+	})
 }

@@ -77,21 +77,36 @@ const (
 // 是 DDL error_code 词表预留词);
 // EXECUTING→PENDING 仅限 reconciler 重入队(T2.5);
 // PENDING→SKIPPED(分支剪枝,T2.4);任意非终态→CANCELLED。
-// 否决 FAILED→PENDING:FAILED 必须终态(重入队只从 EXECUTING 走)。
+// T9.2 重开边(D-2026-09-28-t92-rollback-same-branch 决策 2a,超越旧注
+// 「否决 FAILED→PENDING:FAILED 必须终态」):「终态对自动路径恒无出边」立场
+// 不变;显式回滚是唯一例外通道——SUCCEEDED|FAILED|SKIPPED|CANCELLED→PENDING
+// 仅经 ResetNodeToPending(闭包重置)、SUCCEEDED|FAILED|CANCELLED→EXECUTING
+// 仅经 RerunNode(目标重跑,快照读回),两者仅 api 回滚同步事务可达且同事务
+// 落审计行(D-t26)。原否决的保护意图(防自动路径静默重跑、节点 FAILED 与
+// attempt DEAD 混淆)由「attempt 台账不可变 + 审计链 + 单一调用面」承载;
+// 自动重入队仍只从 EXECUTING 走(RequeueNode,语义不变)。
 var nodeEdges = map[NodeState][]NodeState{
 	NodePending:         {NodeExecuting, NodeSkipped, NodeCancelled},
 	NodeExecuting:       {NodeSucceeded, NodeFailed, NodeWaitingApproval, NodePending /*仅 reconciler(T2.5)*/, NodeCancelled},
 	NodeWaitingApproval: {NodeExecuting, NodeFailed, NodeCancelled},
+	NodeSucceeded:       {NodePending /*仅 ResetNodeToPending(T9.2 回滚)*/, NodeExecuting /*仅 RerunNode(T9.2 回滚目标重跑)*/},
+	NodeFailed:          {NodePending /*仅 ResetNodeToPending(T9.2 回滚)*/, NodeExecuting /*仅 RerunNode(T9.2 回滚目标重跑)*/},
+	NodeSkipped:         {NodePending /*仅 ResetNodeToPending(T9.2 回滚重评估)*/},
+	NodeCancelled:       {NodePending /*仅 ResetNodeToPending(T9.2 回滚)*/, NodeExecuting /*仅 RerunNode(T9.2,快照非 NULL 时;自 PENDING 连坐的 CANCELLED 快照 NULL 走 Reset 重评估)*/},
 }
 
 // wfEdges 是工作流状态机唯一真源(DDL workflow_execution.status 列注释):
 // PENDING→RUNNING→(WAITING_APPROVAL⇄RUNNING)*→SUCCEEDED|FAILED|CANCELLED;
 // PENDING 可直接→FAILED(reconciler 判死)。
 // 终态(SUCCEEDED)仅自 RUNNING 出:挂起的执行必须先回 RUNNING 才能终局。
+// T9.2(D-2026-09-28-t92 决策 2a):FAILED→RUNNING 仅经 RestartExecution
+// (显式回滚复活,同语句清终态列组);终态对自动路径仍恒无出边,SUCCEEDED/
+// CANCELLED 不可回滚(白名单仅 FAILED,决策 4)。
 var wfEdges = map[WorkflowState][]WorkflowState{
 	WorkflowPending:         {WorkflowRunning, WorkflowFailed, WorkflowCancelled},
 	WorkflowRunning:         {WorkflowWaitingApproval, WorkflowSucceeded, WorkflowFailed, WorkflowCancelled},
 	WorkflowWaitingApproval: {WorkflowRunning, WorkflowCancelled},
+	WorkflowFailed:          {WorkflowRunning /*仅 RestartExecution(T9.2 显式回滚)*/},
 }
 
 // CanTransitionNode 报告节点边 from→to 是否在矩阵内。矩阵外的迁移是调用方 bug。
