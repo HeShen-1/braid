@@ -52,7 +52,10 @@ func buildSandboxRunArgv(cfg sandboxConfig, name, tool string, mounts []string) 
 	}
 
 	args := []string{
-		"run", "--rm",
+		// --interactive 是 stdin 信封通道的管道前提(D-t101 #2):无 -i 时
+		// docker run 不挂 stdin,信封静默丢失 → exit 0 空输出(本机 docker
+		// 29.1 实证;fake shim 是 Go exec 直连管道测不出,argv golden 钉死)。
+		"run", "--rm", "--interactive",
 		"--name", name,
 		"--label", "braid.sandbox=1",
 		"--label", "braid.tool=" + tool,

@@ -26,7 +26,7 @@ func TestSandboxArgvGolden(t *testing.T) {
 			t.Fatalf("err = %v", err)
 		}
 		want := strings.Join([]string{
-			"run", "--rm",
+			"run", "--rm", "--interactive",
 			"--name", "braid-sbx-1-2-abcd1234",
 			"--label", "braid.sandbox=1",
 			"--label", "braid.tool=file_read",

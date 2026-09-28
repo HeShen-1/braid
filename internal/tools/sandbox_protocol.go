@@ -17,6 +17,7 @@ package tools
 // 信封返回普通错误,经 runner 默认分支归 tool_failed(基线 §6)。
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -51,9 +52,33 @@ type SandboxResponse struct {
 	Message string          `json:"message,omitempty"`
 }
 
-// EncodeSandboxRequest 序列化请求信封(单行 JSON;json.Marshal 不产生换行)。
+// EncodeSandboxRequest 序列化请求信封(单行 JSON)。编码纪律与
+// marshalToolOutput 同款:SetEscapeHTML(false)——裸 json.Marshal 对
+// RawMessage 做 HTML 转义(&<> 1 字节→6 字节),8MiB inputs 最坏放大成
+// 48MiB 瞬时内存(T3.5 审计同款 OOM 论证);两侧解码不受转义形态影响。
 func EncodeSandboxRequest(req SandboxRequest) ([]byte, error) {
-	return json.Marshal(req)
+	return marshalSandboxEnvelope(&req)
+}
+
+// EncodeSandboxResponse 序列化响应信封(T5 helper 的唯一响应编码口,宿主
+// 侧不编码)。同款 SetEscapeHTML(false):裸 Marshal 下 16MiB 合法产出
+// (marshalToolOutput 已免转义,&<> 字面量在场)可被放大到 ~96MiB,打爆
+// 载体 16MiB 级 stdout 收流上限,把本地模式成功的调用在沙箱误判为溢出
+// (T4 对抗审计确认 MEDIUM 的结构性关闭)。helper 不得绕开本编码器。
+func EncodeSandboxResponse(resp SandboxResponse) ([]byte, error) {
+	return marshalSandboxEnvelope(&resp)
+}
+
+// marshalSandboxEnvelope 两向共用:非转义单行编码(Encoder 追加一个换行,
+// 剥掉)。
+func marshalSandboxEnvelope(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }
 
 // DecodeSandboxResponse 解析响应信封。ok=true 返回 Result(Output 原样,

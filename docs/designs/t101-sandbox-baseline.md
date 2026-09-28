@@ -80,6 +80,7 @@
 8. cgroup v2 细粒度调优(memory.high 软限、cpu.weight、限额×扇出吞吐平衡)
 9. 宿主侧泄漏容器 watchdog(daemon 层带外监控,超越 per-call 结构化清理)
 10. 资源限额生产档位定档(当前为基线提案值)
+11. 启动清扫的实例身份维度(#13 现按全局 label `braid.sandbox=1` 清扫,T4 对抗审计确认 MEDIUM:同 daemon 多 worker 副本/滚动重启共存时,后起 worker 的启动清扫会误杀共存 worker 的在飞容器;当前单 worker 拓扑下不触发。实例化 label(如 `braid.worker=<id>`)需与「kill -9 后死实例身份不可知、孤儿回收依赖全局 label」再权衡,届时与 P1 reaper 收口一并议)
 
 ## 9. 残余风险(已知晓、接受)
 
