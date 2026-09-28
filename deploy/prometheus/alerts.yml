@@ -132,3 +132,27 @@ groups:
         annotations:
           summary: "账号锁定持续触发(15m 均 {{ $value }}/s)"
           description: "D-t44 §7-① 登录防御观测面:锁定计数持续触发 = 暴力破解进行中(限流+锁定已减速,不构成破口)。持久层 = login_audit 表按 username 聚合可查攻击面。"
+
+  # T9.2 回滚/续跑面(D-2026-09-28-t92 决策 10)。回滚是显式修复动作:
+  # blocked 持续 = reaper settle 链路故障(自动回退不可达,人工必须介入);
+  # denied 风暴 = 自动化按阻塞清单退避失败或权限配置错误(角色面)。
+  # 「回滚后 stuck RUNNING」的直读 gauge 属停车场(自愈面 = 提交后
+  # finishIfDone 失败仅记日志 + reaper ④b FinishIfDone 周期补判)。
+  - name: braid-rollback
+    rules:
+      - alert: RollbackBlockedPersisting
+        expr: sum(increase(braid_rollback_denied_total{reason="blocked_inflight"}[15m])) > 3
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "回滚持续被在飞残留阻塞({{ $value }} 次/15m)"
+          description: "orphanQuiet+tick 量级的 settle 窗已过仍持续 409:reaper 收口链路故障或积压。查 reaper 进程与 ⑤b/③ 扫描;自动化重试应按 Retry-After 退避。"
+      - alert: RollbackDeniedStorm
+        expr: sum(increase(braid_rollback_denied_total[15m])) > 30
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "回滚拒绝风暴({{ $value }} 次/15m)"
+          description: "自动化重试未按分面退避,或权限/目标配置错误(role_denied/bad_node_id 为主)。查 rollback.denied 审计行的 reason 分布与调用方退避实现。"

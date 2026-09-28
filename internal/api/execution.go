@@ -64,11 +64,13 @@ func scopedIdempotencyKey(subject, definitionName, key string) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// ExecutionTrigger 是触发缝:*scheduler.Scheduler 结构性满足(方法集
-// 子集)。Instantiate 仅触 MySQL(单事务物化执行 + 全节点行 + outbox),
-// 推进链(outbox→relay→asynq→worker)不在 api 进程。
+// ExecutionTrigger 是执行引擎缝(T5.5 立,T9.2 扩):*scheduler.Scheduler
+// 结构性满足(方法集子集)。两方法均仅触 MySQL(Instantiate 单事务物化;
+// RollbackTo 单事务回滚,api 同步通道,D-2026-09-28-t92 决策 8),推进链
+// (outbox→relay→asynq→worker)不在 api 进程。
 type ExecutionTrigger interface {
 	Instantiate(ctx context.Context, p scheduler.InstantiateParams) (uint64, error)
+	RollbackTo(ctx context.Context, p scheduler.RollbackParams) (*scheduler.RollbackResult, error)
 }
 
 // triggerRequest 是 POST /executions 请求体。version 缺省 = 该 name 最新

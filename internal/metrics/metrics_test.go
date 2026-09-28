@@ -45,6 +45,9 @@ var metricNames = map[string]dto.MetricType{
 	"braid_redis_memory_max_bytes":              dto.MetricType_GAUGE,
 	"braid_asynq_queue_tasks":                   dto.MetricType_GAUGE,
 	"braid_login_attempts_total":                dto.MetricType_COUNTER,
+	"braid_rollback_requested_total":            dto.MetricType_COUNTER, // T9.2:回滚面三计数器(D-t92 决策 10)
+	"braid_rollback_applied_total":              dto.MetricType_COUNTER,
+	"braid_rollback_denied_total":               dto.MetricType_COUNTER,
 	"braid_db_pool_open_connections":            dto.MetricType_GAUGE,
 	"braid_db_pool_in_use_connections":          dto.MetricType_GAUGE,
 	"braid_db_pool_idle_connections":            dto.MetricType_GAUGE,
@@ -97,6 +100,7 @@ func touchAll(s *Set) {
 	s.Relay.Deliveries.WithLabelValues(DeliverDispatched)
 	s.Relay.QueueTasks.WithLabelValues("default")
 	s.Login.Attempts.WithLabelValues(ResultSucceeded)
+	s.Rollback.Denied.WithLabelValues("role_denied") // T9.2:vec 子项实例化后闭集锚才可见
 }
 
 func TestNewSetRegistersClosedVocabulary(t *testing.T) {
