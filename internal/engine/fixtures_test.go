@@ -107,27 +107,28 @@ func jsonEqStr(t *testing.T, got string, want json.RawMessage) {
 
 // nodeRow 是断言用回读快照。
 type nodeRow struct {
-	Status      NodeState
-	Version     uint32
-	Attempts    uint16
-	WorkerID    sql.NullString
-	Snapshot    sql.NullString // JSON 列按字符串读,MySQL 规范化后字节可预测
-	Deadline    sql.NullTime
-	StartedAt   sql.NullTime
-	FinishedAt  sql.NullTime
-	ErrorCode   sql.NullString
-	Output      sql.NullString
-	EscalatedAt sql.NullTime
+	Status       NodeState
+	Version      uint32
+	Attempts     uint16
+	AttemptsBase uint16
+	WorkerID     sql.NullString
+	Snapshot     sql.NullString // JSON 列按字符串读,MySQL 规范化后字节可预测
+	Deadline     sql.NullTime
+	StartedAt    sql.NullTime
+	FinishedAt   sql.NullTime
+	ErrorCode    sql.NullString
+	Output       sql.NullString
+	EscalatedAt  sql.NullTime
 }
 
 func scanNode(t *testing.T, d *sql.DB, id uint64) nodeRow {
 	t.Helper()
 	var r nodeRow
 	err := d.QueryRowContext(context.Background(), `
-SELECT status, version, attempts, worker_id, input_snapshot, deadline_at,
+SELECT status, version, attempts, attempts_base, worker_id, input_snapshot, deadline_at,
        started_at, finished_at, error_code, output, escalated_at
   FROM node_execution WHERE id=?`, id).
-		Scan(&r.Status, &r.Version, &r.Attempts, &r.WorkerID, &r.Snapshot, &r.Deadline,
+		Scan(&r.Status, &r.Version, &r.Attempts, &r.AttemptsBase, &r.WorkerID, &r.Snapshot, &r.Deadline,
 			&r.StartedAt, &r.FinishedAt, &r.ErrorCode, &r.Output, &r.EscalatedAt)
 	if err != nil {
 		t.Fatalf("scan node %d: %v", id, err)

@@ -56,6 +56,29 @@ func ResumeExecution(ctx context.Context, q DBTX, execID uint64) error {
 	return TransitionWorkflow(ctx, q, execID, WorkflowWaitingApproval, WorkflowRunning)
 }
 
+// RestartExecution:FAILED→RUNNING(T9.2 回滚复活,D-2026-09-28-t92 决策 2a)。
+// 与 TransitionWorkflow 分立:复活必须同语句清终态列组(恢复「终态列组仅终态
+// 携带」纪律——wfcas FinishExecution 注释「finished_at 恰好置一次」的 T9.2
+// 超越:先前终局时刻在审计链,行内只保最近一次终局),outputs/error 双清防
+// 「RUNNING 却携带旧终态输出」的中间窗。started_at=IFNULL 与 TransitionWorkflow
+// 的 RUNNING 语义对齐:已起跑执行跨轮回滚不动(首次起跑),PENDING→FAILED
+// 型未起跑执行的复活补本次时刻(进入 RUNNING 即起跑,T6.4 延迟指标无 NULL 洞)。
+// 白名单仅 FAILED(SUCCEEDED/CANCELLED 不可回滚,D- t92 决策 4);status-only
+// CAS(无 version),并发双回滚败者 ErrConflict → api 409。
+func RestartExecution(ctx context.Context, q DBTX, execID uint64) error {
+	res, err := q.ExecContext(ctx, `
+UPDATE workflow_execution
+   SET status='RUNNING', outputs=NULL, error_code=NULL, error_message=NULL,
+       finished_at=NULL, started_at=IFNULL(started_at, NOW(3)),
+       status_changed_at=NOW(3), last_activity_at=NOW(3)
+ WHERE id=? AND status='FAILED'`,
+		execID)
+	if err != nil {
+		return fmt.Errorf("engine: restart workflow %d: %w", execID, err)
+	}
+	return checkWfCAS(ctx, q, res, execID, WorkflowFailed)
+}
+
 // FinishExecution 把执行迁入终态(to ∈ SUCCEEDED/FAILED/CANCELLED)。
 // from 集合由 wfEdges 生成(防 ENUM 尾部追加时遗漏),SQL IN 谓词即其投影。
 // 列纪律:outputs 仅 SUCCEEDED 携带;error_code/message 仅 FAILED 携带

@@ -145,20 +145,21 @@ func (r *Reaper) reapOnce(ctx context.Context, nodeExecID, execID uint64, ent en
 	err = engine.WithTx(ctx, r.deps.DB, func(q engine.DBTX) error {
 		// [1] 锁 node 行。
 		var (
-			nodeID     string
-			nodeType   string
-			nodeStatus engine.NodeState
-			nodeVer    uint32
-			instanceNo uint16
-			attempts   uint16
-			maxA       uint16
-			workerID   sql.NullString
-			deadline   sql.NullTime
+			nodeID       string
+			nodeType     string
+			nodeStatus   engine.NodeState
+			nodeVer      uint32
+			instanceNo   uint16
+			attempts     uint16
+			attemptsBase uint16
+			maxA         uint16
+			workerID     sql.NullString
+			deadline     sql.NullTime
 		)
 		err := q.QueryRowContext(ctx, `
-SELECT node_id, type, status, version, instance_no, attempts, max_attempts, worker_id, deadline_at
+SELECT node_id, type, status, version, instance_no, attempts, attempts_base, max_attempts, worker_id, deadline_at
   FROM node_execution WHERE id=? FOR UPDATE`, nodeExecID).
-			Scan(&nodeID, &nodeType, &nodeStatus, &nodeVer, &instanceNo, &attempts, &maxA, &workerID, &deadline)
+			Scan(&nodeID, &nodeType, &nodeStatus, &nodeVer, &instanceNo, &attempts, &attemptsBase, &maxA, &workerID, &deadline)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("reaper: node_execution %d vanished (data defect)", nodeExecID)
 		}
@@ -355,7 +356,8 @@ SELECT COUNT(*) FROM outbox
 				"node_execution_id", nodeExecID, "execution_id", execID,
 				"hint", "EXECUTING node under WAITING_APPROVAL violates T4.1 contract")
 			return nil
-		case instanceNo > 0 && int(attempts) >= int(maxA):
+		case instanceNo > 0 && int(attempts)-int(attemptsBase) >= int(maxA):
+			// T9.2:预算 = 本轮口径(attempts-attempts_base,回滚后满额)。
 			// T9.1:parallel 实例行耗尽——attempt DEAD 收口已在本事务,节点级
 			// 终败(fail_fast 收敛控制器 / wait_all 收齐再判)提交后委托
 			// scheduler(全行锁序 + 与 completeOnce 同款语义)。直接走下方
@@ -363,7 +365,7 @@ SELECT COUNT(*) FROM outbox
 			// 的 EXECUTING(对抗审计 HIGH②)。
 			delegate = true
 			return nil
-		case int(attempts) < int(maxA):
+		case int(attempts)-int(attemptsBase) < int(maxA):
 			// 预算内重派:RedispatchNode(平台重试 claim 即本语句)+ 同事务
 			// outbox 事件(新 attempt_no ⇒ 新 TaskID,与 asynq 滞留旧副本零冲突)。
 			if _, err := engine.RedispatchNode(ctx, q, nodeExecID, nodeVer, engine.RedispatchInput{

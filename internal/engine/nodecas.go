@@ -168,6 +168,67 @@ UPDATE node_execution
 	return checkNodeCAS(ctx, q, res, id, NodeExecuting, expectVer)
 }
 
+// ResetNodeToPending:四终态→PENDING(T9.2 回滚闭包重置,D-2026-09-28-t92
+// 决策 2a 重开边)。RequeueNode 的全清形态扩展到终态来源 + 回滚新增清列:
+//   - output/finished_at/escalated_at 清列:PENDING 非终态(DDL finished_at
+//     NULL=未终态)、无产出;escalated_at 清列 = 升级预算按轮恢复(D- t92
+//     决策 2d,MarkNodeEscalated 的 IS NULL 锚重新可用);
+//   - attempts_base=attempts 落在新一轮基线(SET 序:先 base 后 attempts,
+//     MySQL 同语句赋值用已更新值——本语句不动 attempts,次序防御性钉死);
+//     attempts 绝不清零(uk_attempt / att: TaskID / approval round 全依赖
+//     单调),预算判定改 attempts-attempts_base<max_attempts;
+//   - started_at 不动(0001「首次 EXECUTING 跨重试不变」,RequeueNode 同款);
+//   - 旧轮 input_snapshot/output 证据在 node_attempt 留档列(T9.2 台账),
+//     本处清列即移交完成。
+//
+// 仅 api 回滚同步事务可达(与 RerunNode 同为矩阵唯一例外通道),调用方必须
+// 同事务落审计行(node.state_changed from=旧终态)+ 同事务处置 RUNNING attempt。
+func ResetNodeToPending(ctx context.Context, q DBTX, id uint64, expectVer uint32) (uint32, error) {
+	res, err := q.ExecContext(ctx, `
+UPDATE node_execution
+   SET status='PENDING', worker_id=NULL, input_snapshot=NULL, output=NULL,
+       deadline_at=NULL, error_code=NULL, error_message=NULL, finished_at=NULL,
+       escalated_at=NULL, attempts_base=attempts,
+       status_changed_at=NOW(3), version=version+1
+ WHERE id=? AND status IN ('SUCCEEDED','FAILED','SKIPPED','CANCELLED') AND version=?`,
+		id, expectVer)
+	if err != nil {
+		return 0, fmt.Errorf("engine: reset node to pending %d: %w", id, err)
+	}
+	// from 谓词是「终态集合」,无单一 from:Expect 留空(CancelNode 同款),
+	// 复查仍能区分 NotFound 与 Conflict(Observed=真实态)。
+	return checkNodeCAS(ctx, q, res, id, "", expectVer)
+}
+
+// RerunNode:SUCCEEDED|FAILED|CANCELLED→EXECUTING(T9.2 回滚目标重跑)。
+// ResumeNode 的泛化(自终态而非 WAITING_APPROVAL 复入):
+//   - attempts+1 = 本语句即新轮 claim(D-t24 #5「平台重试的 claim 即本语句」
+//     同源);attempts_base 先于 +1 赋值 ⇒ 基线=旧轮总数(同轮预算从 1 计);
+//   - input_snapshot = ReadNodeInput 读回值重写(D- t92 决策 2b:「以
+//     input_snapshot 重跑」逐字兑现——快照单写者契约的第三写者,恰好由唯一
+//     获胜者写一次);快照 NULL(自 PENDING 连坐的 CANCELLED)不可达本 helper,
+//     调用方须先分流 ResetNodeToPending 重评估;
+//   - output/error/finished_at/escalated_at 全清(新轮从 EXECUTING 起步,
+//     与 ResetNodeToPending 同清单);started_at 不动(首次 EXECUTING 语义);
+//   - deadline 由调用方按节点类型超时计算(零值 → NULL)。
+func RerunNode(ctx context.Context, q DBTX, id uint64, expectVer uint32, in ClaimInput) (uint32, error) {
+	if err := validSnapshot(in.InputSnapshot); err != nil {
+		return 0, err
+	}
+	res, err := q.ExecContext(ctx, `
+UPDATE node_execution
+   SET status='EXECUTING', worker_id=?, input_snapshot=?, deadline_at=?,
+       output=NULL, error_code=NULL, error_message=NULL, finished_at=NULL,
+       escalated_at=NULL, attempts_base=attempts, attempts=attempts+1,
+       status_changed_at=NOW(3), version=version+1
+ WHERE id=? AND status IN ('SUCCEEDED','FAILED','CANCELLED') AND version=?`,
+		in.WorkerID, in.InputSnapshot, nullTime(in.DeadlineAt), id, expectVer)
+	if err != nil {
+		return 0, fmt.Errorf("engine: rerun node %d: %w", id, err)
+	}
+	return checkNodeCAS(ctx, q, res, id, "", expectVer)
+}
+
 // RedispatchInput 是 RedispatchNode 的再派发参数。
 type RedispatchInput struct {
 	WorkerID   string    // 再派发方(完成上一个 attempt 的调度进程)

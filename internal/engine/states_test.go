@@ -11,20 +11,23 @@ import (
 // DDL 冻结下这是机器可查的契约面——任一侧改边即红。
 
 func TestNodeTransitionMatrix(t *testing.T) {
+	// T9.2 重开边(D-2026-09-28-t92-rollback-same-branch 决策 2a):终态出边
+	// 仅限显式回滚原语(ResetNodeToPending→PENDING / RerunNode→EXECUTING),
+	// 自动路径视角下终态仍不可达新意图。
 	want := map[NodeState][]NodeState{
 		NodePending:         {NodeExecuting, NodeSkipped, NodeCancelled},
 		NodeExecuting:       {NodeSucceeded, NodeFailed, NodeWaitingApproval, NodePending, NodeCancelled},
 		NodeWaitingApproval: {NodeExecuting, NodeFailed, NodeCancelled},
-		NodeSucceeded:       {},
-		NodeFailed:          {},
-		NodeSkipped:         {},
-		NodeCancelled:       {},
+		NodeSucceeded:       {NodePending, NodeExecuting},
+		NodeFailed:          {NodePending, NodeExecuting},
+		NodeSkipped:         {NodePending},
+		NodeCancelled:       {NodePending, NodeExecuting},
 	}
 	if len(want) != len(nodeStates) {
 		t.Fatalf("期望表状态数 %d ≠ nodeStates %d(词表漂移)", len(want), len(nodeStates))
 	}
 	for _, from := range nodeStates {
-		if len(want[from]) != len(nodeEdges[from]) { // 终态在 nodeEdges 缺席 = 0 出边
+		if len(want[from]) != len(nodeEdges[from]) { // 期望表缺席 = 0 出边
 			t.Fatalf("%s 出边数 %d ≠ %d", from, len(want[from]), len(nodeEdges[from]))
 		}
 	}
@@ -41,8 +44,11 @@ func TestNodeTransitionMatrix(t *testing.T) {
 			if got != expect {
 				t.Errorf("CanTransitionNode(%s→%s)=%v, want %v", from, to, got, expect)
 			}
-			if from.Terminal() && got {
-				t.Errorf("终态 %s 不该有出边 →%s", from, to)
+			// T9.2 例外通道外的终态出边纪律:终态只允许 →PENDING(Reset)与
+			// →EXECUTING(Rerun,SKIPPED 无此边——被剪枝节点重跑须回 PENDING
+			// 重评估),其余终态出边(如 SUCCEEDED→FAILED 直达)仍然非法。
+			if from.Terminal() && got && to != NodePending && to != NodeExecuting {
+				t.Errorf("终态 %s 的 T9.2 例外外出边 →%s", from, to)
 			}
 		}
 	}
@@ -54,8 +60,9 @@ func TestWorkflowTransitionMatrix(t *testing.T) {
 		WorkflowRunning:         {WorkflowWaitingApproval, WorkflowSucceeded, WorkflowFailed, WorkflowCancelled},
 		WorkflowWaitingApproval: {WorkflowRunning, WorkflowCancelled},
 		WorkflowSucceeded:       {},
-		WorkflowFailed:          {},
-		WorkflowCancelled:       {},
+		// T9.2(D-t92 决策 2a):FAILED→RUNNING 仅 RestartExecution(显式回滚)。
+		WorkflowFailed:    {WorkflowRunning},
+		WorkflowCancelled: {},
 	}
 	if len(want) != len(wfStates) {
 		t.Fatalf("期望表状态数 %d ≠ wfStates %d(词表漂移)", len(want), len(wfStates))
@@ -119,7 +126,8 @@ func TestIllegalTransitionRejectedInProcess(t *testing.T) {
 	for _, tc := range []struct{ from, to WorkflowState }{
 		{WorkflowPending, WorkflowSucceeded},         // 未起跑不得直接成功
 		{WorkflowPending, WorkflowWaitingApproval},   // 挂起仅自 RUNNING
-		{WorkflowSucceeded, WorkflowRunning},         // 终态无出边
+		{WorkflowSucceeded, WorkflowRunning},         // 终态无出边(白名单仅 FAILED,D-t92 决策 4)
+		{WorkflowCancelled, WorkflowRunning},         // CANCELLED 不可回滚(同上)
 		{WorkflowCancelled, WorkflowFailed},          // 终态无出边
 		{WorkflowWaitingApproval, WorkflowSucceeded}, // 终局前必须回 RUNNING
 	} {

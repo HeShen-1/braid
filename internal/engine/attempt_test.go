@@ -2,6 +2,7 @@ package engine
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"testing"
@@ -47,14 +48,14 @@ func TestCloseAttempt(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	if err := CloseAttempt(f.ctx(), f.db, attID, AttemptDead, "", "", nil); !errors.Is(err, ErrIllegalTransition) {
+	if err := CloseAttempt(f.ctx(), f.db, attID, AttemptDead, nil, "", "", nil); !errors.Is(err, ErrIllegalTransition) {
 		t.Fatalf("DEAD 收口应拒绝(归 T2.5),got %v", err)
 	}
-	if err := CloseAttempt(f.ctx(), f.db, attID, AttemptFailed, "429", "rate limited", nil); err != nil {
+	if err := CloseAttempt(f.ctx(), f.db, attID, AttemptFailed, nil, "429", "rate limited", nil); err != nil {
 		t.Fatalf("close: %v", err)
 	}
 	// 终态后禁改:二次收口 0 行 → Conflict(行无 updated_at,收口是一次终写)
-	if err := CloseAttempt(f.ctx(), f.db, attID, AttemptSucceed, "", "", nil); !errors.Is(err, ErrConflict) {
+	if err := CloseAttempt(f.ctx(), f.db, attID, AttemptSucceed, nil, "", "", nil); !errors.Is(err, ErrConflict) {
 		t.Fatalf("二次收口 got %v, want ErrConflict", err)
 	}
 	var status string
@@ -125,7 +126,7 @@ func TestCloseAttemptDead(t *testing.T) {
 			prep func(t *testing.T, f *fixture, attID uint64)
 		}{
 			{"observed_succeeded", "SUCCEEDED", func(t *testing.T, f *fixture, attID uint64) {
-				if err := CloseAttempt(f.ctx(), f.db, attID, AttemptSucceed, "", "", nil); err != nil {
+				if err := CloseAttempt(f.ctx(), f.db, attID, AttemptSucceed, nil, "", "", nil); err != nil {
 					t.Fatalf("pre succeed: %v", err)
 				}
 			}},
@@ -200,7 +201,7 @@ SELECT model, prompt_tokens, completion_tokens, total_tokens,
 
 	// 1. 计费路径:known model 精确金额(2/mtok in ×1000 + 8/mtok out ×150)。
 	billed := insAttempt(1)
-	if err := CloseAttempt(f.ctx(), f.db, billed, AttemptSucceed, "", "", &AttemptUsage{
+	if err := CloseAttempt(f.ctx(), f.db, billed, AttemptSucceed, nil, "", "", &AttemptUsage{
 		Model: "glm-5.3", PromptTokens: 1000, CompletionTokens: 150, TotalTokens: 1150,
 		CostAmount: "0.003200", CostCurrency: "CNY", Billed: true,
 	}); err != nil {
@@ -222,7 +223,7 @@ SELECT model, prompt_tokens, completion_tokens, total_tokens,
 
 	// 2. 不计费路径:未知模型无 fallback ⇒ cost 两列 NULL + estimated=1。
 	unbilled := insAttempt(2)
-	if err := CloseAttempt(f.ctx(), f.db, unbilled, AttemptSucceed, "", "", &AttemptUsage{
+	if err := CloseAttempt(f.ctx(), f.db, unbilled, AttemptSucceed, nil, "", "", &AttemptUsage{
 		Model: "unknown-model", PromptTokens: 10, CompletionTokens: 5, TotalTokens: 15,
 		Estimated: true,
 	}); err != nil {
@@ -238,7 +239,7 @@ SELECT model, prompt_tokens, completion_tokens, total_tokens,
 
 	// 3. 免费模型:0.000000 落列,与 NULL 严格区分。
 	free := insAttempt(3)
-	if err := CloseAttempt(f.ctx(), f.db, free, AttemptSucceed, "", "", &AttemptUsage{
+	if err := CloseAttempt(f.ctx(), f.db, free, AttemptSucceed, nil, "", "", &AttemptUsage{
 		Model: "free-model", CostAmount: "0.000000", CostCurrency: "USD", Billed: true,
 	}); err != nil {
 		t.Fatalf("close free: %v", err)
@@ -253,12 +254,12 @@ SELECT model, prompt_tokens, completion_tokens, total_tokens,
 
 	// 4. 形状违规触 DB 前即拒(行留 RUNNING,收口未发生)。
 	invalid := insAttempt(4)
-	if err := CloseAttempt(f.ctx(), f.db, invalid, AttemptSucceed, "", "", &AttemptUsage{
+	if err := CloseAttempt(f.ctx(), f.db, invalid, AttemptSucceed, nil, "", "", &AttemptUsage{
 		Model: "m", CostAmount: "1.00", CostCurrency: "cny", Billed: true,
 	}); err == nil {
 		t.Error("lowercase currency accepted, want rejection")
 	}
-	if err := CloseAttempt(f.ctx(), f.db, invalid, AttemptSucceed, "", "", &AttemptUsage{
+	if err := CloseAttempt(f.ctx(), f.db, invalid, AttemptSucceed, nil, "", "", &AttemptUsage{
 		Model: "m", CostAmount: "1.00", CostCurrency: "CNY",
 	}); err == nil {
 		t.Error("unbilled with cost strings accepted, want rejection")
@@ -270,5 +271,70 @@ SELECT model, prompt_tokens, completion_tokens, total_tokens,
 	}
 	if st != AttemptRunning {
 		t.Fatalf("invalid usage closed row to %s, want RUNNING(reject before SQL)", st)
+	}
+}
+
+// TestAttemptLedgerColumns:T9.2 台账(D-2026-09-28-t92 决策 3①)——attempt 行
+// 出生即抄输入快照、收口同语句落输出留档;旧轮证据四件套(input/output/
+// error_code/usage)的物理载体面。
+func TestAttemptLedgerColumns(t *testing.T) {
+	f := newFixture(t)
+	nodeID := f.node()
+	// claim 写快照后,attempt 出生抄档(与 worker.claimAttempt 同序)。
+	if _, err := ClaimNode(f.ctx(), f.db, nodeID, 1, ClaimInput{
+		WorkerID: "w1", InputSnapshot: []byte(`{"q":"为什么"}`),
+	}); err != nil {
+		t.Fatalf("claim: %v", err)
+	}
+	snap, err := ReadNodeInput(f.ctx(), f.db, nodeID)
+	if err != nil || snap == nil {
+		t.Fatalf("read input: %v snap=%s", err, snap)
+	}
+	attID := newID()
+	if err := InsertAttempt(f.ctx(), f.db, AttemptParams{
+		ID: attID, NodeExecID: nodeID, ExecID: f.execID, AttemptNo: 1,
+		WorkerID: "w1", IdempotencyKey: "k-ledger", AsynqTaskID: "t-ledger",
+		InputSnapshot: snap,
+	}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	var gotSnap sql.NullString
+	if err := f.db.QueryRowContext(f.ctx(),
+		`SELECT input_snapshot FROM node_attempt WHERE id=?`, attID).Scan(&gotSnap); err != nil {
+		t.Fatalf("scan attempt input: %v", err)
+	}
+	jsonEq(t, gotSnap, snap)
+	// 收口:output 同语句留档;二次收口禁改(终写)。
+	out := json.RawMessage(`{"a":"答案"}`)
+	if err := CloseAttempt(f.ctx(), f.db, attID, AttemptSucceed, out, "", "", nil); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	var gotOut sql.NullString
+	if err := f.db.QueryRowContext(f.ctx(),
+		`SELECT output FROM node_attempt WHERE id=?`, attID).Scan(&gotOut); err != nil {
+		t.Fatalf("scan attempt output: %v", err)
+	}
+	jsonEq(t, gotOut, out)
+	// FAILED 收口输出恒 NULL(未产出)——空 output 不落值。
+	att2 := newID()
+	if err := InsertAttempt(f.ctx(), f.db, AttemptParams{
+		ID: att2, NodeExecID: nodeID, ExecID: f.execID, AttemptNo: 2,
+		WorkerID: "w1", IdempotencyKey: "k-ledger2", AsynqTaskID: "t-ledger2",
+	}); err != nil {
+		t.Fatalf("insert 2: %v", err)
+	}
+	if err := CloseAttempt(f.ctx(), f.db, att2, AttemptFailed, nil, "429", "rate limited", nil); err != nil {
+		t.Fatalf("close 2: %v", err)
+	}
+	var snap2, out2 sql.NullString
+	if err := f.db.QueryRowContext(f.ctx(),
+		`SELECT input_snapshot, output FROM node_attempt WHERE id=?`, att2).Scan(&snap2, &out2); err != nil {
+		t.Fatalf("scan 2: %v", err)
+	}
+	if snap2.Valid {
+		t.Fatalf("未携快照的 attempt 应 NULL,got %s", snap2.String)
+	}
+	if out2.Valid {
+		t.Fatalf("FAILED 收口输出应 NULL,got %s", out2.String)
 	}
 }

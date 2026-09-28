@@ -158,7 +158,7 @@ func (s *Scheduler) suspendOnce(ctx context.Context, req SuspendRequest,
 		// 心跳判死扫描误报)。Conflict = 收口权旁落 ⇒ 幂等(Complete 同款);
 		// Observed==DEAD 时落结构化 warn(W1 哨兵镜像 completeOnce:判死双
 		// 执行的观测信号,对抗审计修,零行为变更)。
-		if err := engine.CloseAttempt(ctx, q, req.AttemptID, engine.AttemptSucceed, "", "", nil); err != nil {
+		if err := engine.CloseAttempt(ctx, q, req.AttemptID, engine.AttemptSucceed, nil, "", "", nil); err != nil {
 			if errors.Is(err, engine.ErrConflict) {
 				var ce *engine.ConflictError
 				if errors.As(err, &ce) && ce.Observed == engine.NodeState(engine.AttemptDead) {

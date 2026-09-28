@@ -278,6 +278,15 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 	if err != nil {
 		return 0, fmt.Errorf("worker: gen attempt id: %w", err)
 	}
+	// T9.2 台账:attempt 行出生即抄输入快照(旧轮输入证据物理载体,
+	// D-2026-09-28-t92 决策 3①)。node 行此刻的快照即本 attempt 的输入
+	// (dispatch 侧 ClaimNode/RerunNode 已写就;重派不重写、值恒同)。
+	// 行缺失 = 数据缺陷,响亮拒绝(与 readAttempt 同判)。
+	var snap []byte
+	if err := h.deps.DB.QueryRowContext(ctx,
+		`SELECT input_snapshot FROM node_execution WHERE id=?`, p.NodeExecutionID).Scan(&snap); err != nil {
+		return 0, fmt.Errorf("worker: read node snapshot for attempt ledger (node %d): %w", p.NodeExecutionID, err)
+	}
 	err = engine.InsertAttempt(ctx, h.deps.DB, engine.AttemptParams{
 		ID:             id,
 		NodeExecID:     p.NodeExecutionID,
@@ -286,6 +295,7 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 		WorkerID:       h.cfg.WorkerID,
 		IdempotencyKey: taskID,
 		AsynqTaskID:    taskID,
+		InputSnapshot:  json.RawMessage(snap),
 	})
 	switch {
 	case err == nil:
