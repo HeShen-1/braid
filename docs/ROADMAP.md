@@ -7,7 +7,7 @@
 
 ## M9 引擎纵深(并行/回滚/防篡改)
 
-- [ ] T9.1 并行节点(Scatter-Gather)— L — 验收:DSL 新增 parallel 节点(foreach 集合展开 fan-out + gather 汇聚);调度器入度推进复用,并发执行断言(多 attempt 同时 RUNNING);部分失败语义显式建模(fail-fast 收敛 vs 继续收齐再判,gather 处钉死一种并文档化);表驱动 + 真 asynq e2e(≥3 路并行恰一次汇合)全绿
+- [x] T9.1 并行节点(Scatter-Gather)— L — 验收:DSL 新增 parallel 节点(foreach 集合展开 fan-out + gather 汇聚);调度器入度推进复用,并发执行断言(多 attempt 同时 RUNNING);部分失败语义显式建模(fail-fast 收敛 vs 继续收齐再判,gather 处钉死一种并文档化);表驱动 + 真 asynq e2e(≥3 路并行恰一次汇合)全绿
 - [ ] T9.2 回滚 / 断点续跑 — L — 验收:回到指定节点以 input_snapshot 重跑(ARCHITECTURE 底层假设:回滚 = 节点重跑非补偿);下游节点按拓扑重派;新 attempt 不覆盖旧终态(审计可追溯两条路径);续跑(进程崩溃后 execution 恢复推进)与回滚同基座;语义拍板先行(D- 条目:同 execution 分支 vs 派生 execution);e2e:回滚→重跑→终态 + 审计链完整
 - [ ] T9.3 审计哈希链 — M — 依赖 T9.2(先钉回滚不改写历史的语义)— 验收:append 时 prev_hash = H(prev_hash ‖ 本行关键列),启动自检 + 定期校验断链(断链 = 响亮拒绝新 append);reaper 搬运路径同链;性能:逐行链 vs 批内链的权衡拍板(D- 条目);篡改检测测试(改一行 → 校验红)
 
