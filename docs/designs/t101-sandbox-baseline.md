@@ -31,7 +31,7 @@
 | 10 | 非 root 用户 | `--user 65532:65532` | root-in-container 对 bind mount 按宿主 uid 判权;逃逸以 root 起跑半径远大于 65532 | probe 断言 Geteuid()==65532;写挂载目录 → EACCES;读白名单内文件成功(权限矩阵健全) |
 | 11 | 网络按载体拆分 | file_read:`--network none`;http:`--network bridge`(过渡,t10.2 单点换装) | file_read 零出网需求——none 是零成本纵深;http 出网执法完全依赖守卫随行(见 §4) | file_read 容器内拨任意地址 → unreachable;http 容器内 `https://127.0.0.1` / `https://169.254.169.254` → `tool_ssrf_blocked`(守卫在容器内执法的证明) |
 | 12 | env 从零构造 | 容器 env 仅 `PATH` / `LANG=C.UTF-8`;token、attempt_key、工具 config、inputs 全走 stdin 信封(GATE 1 拍板) | worker ambient env(DSN/LLM key/HMAC secret/代理变量)经 env 通道泄漏;`-e` 旗标把值写进 docker argv(`/proc/<pid>/cmdline` 宿主全局可读);docker inspect 对 daemon 可达主体可读 | command_test.go:14-46 双向断言模式上移:t.Setenv 假主凭证,容器内序列化全量 env,正半边(两成员在场)+ 负半边(假凭证键名与值双缺席);结构性防再入:所有 `BRAID_TOOL_SANDBOX*` 键永不进容器 env(构造式白名单天然成立 + 断言) |
-| 13 | 生命周期绑定 ctx | `--rm` + ctx.Done → `docker stop -t 3 <name>`(5s 有界)+ helper 内 watchdog(deadline−grace 自退)+ worker 启动按 label 清扫 | cancel 窗僵尸容器占资源;worker kill -9 孤儿 | 短超时触发 cancel → 15s 内 label 查询容器清零;kill -9 残余窗 = watchdog 有界自灭,登记残余 |
+| 13 | 生命周期绑定 ctx | `--rm` + ctx.Done → `docker stop -t 3 <name>`(5s 有界)+ helper 内 watchdog(信封携相对剩余毫秒,与宿主 ctx 同单调钟锚;期限后 +grace 硬退兜底)+ worker 启动按 label 清扫 | cancel 窗僵尸容器占资源;worker kill -9 孤儿;时钟步进把 helper 期限提前致宿主误分类(绝对秒锚缝,T5 审计收口) | 短超时触发 cancel → 15s 内 label 查询容器清零;kill -9 残余窗 = watchdog 有界自灭,登记残余 |
 | 14 | daemon 日志封顶 | `--log-driver json-file --log-opt max-size=5m --log-opt max-file=1` | 工具无界 stderr 经 daemon 日志通道填宿主盘(stdout 已 16MiB 信封封顶,此为独立防线) | probe 写 50MB stderr;inspect LogConfig 配置断言 + 宿主侧日志文件 ≤ cap |
 | 15 | tini 作 PID 1 | `--init` | 工具进程派生子进程后退出 → 孤儿僵尸堆积顶满 pids limit(与 #6 的复合失败) | inspect `HostConfig.Init`;probe 派生即退子进程后自身退出,扫 `/proc/*/stat` Z 状态为空;pids 上限触顶用例复合 |
 

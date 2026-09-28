@@ -131,7 +131,13 @@ func (c *sandboxCarrier) Run(ctx context.Context, call Call) (Result, error) {
 		Inputs:         inputs,
 	}
 	if dl, ok := ctx.Deadline(); ok {
-		req.DeadlineUnix = dl.Unix()
+		// 相对剩余毫秒(time.Until 单调钟):信封期限与宿主 ctx 同锚,
+		// 时钟步进不解耦两侧;已到期钳到 1ms(0 经 omitempty = 无期限)。
+		ms := time.Until(dl).Milliseconds()
+		if ms < 1 {
+			ms = 1
+		}
+		req.DeadlineMs = ms
 	}
 	in, err := EncodeSandboxRequest(req)
 	if err != nil {

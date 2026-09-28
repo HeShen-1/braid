@@ -41,7 +41,13 @@ type SandboxRequest struct {
 	Token          string          `json:"token,omitempty"`
 	IdempotencyKey string          `json:"idempotency_key,omitempty"`
 	Inputs         json.RawMessage `json:"inputs,omitempty"`
-	DeadlineUnix   int64           `json:"deadline_unix,omitempty"`
+	// DeadlineMs 是相对剩余毫秒:carrier 编码信封时 time.Until(ctx 截止)
+	// 取值,helper 以 WithTimeout 消费——相对量两侧皆单调钟语义,结构性
+	// 免疫 CLOCK_REALTIME 前跳把期限提前(绝对秒锚在时钟步进窗内会让
+	// helper 先于宿主 ctx 自灭,宿主误归 tool_failed 丢一次有效重试——
+	// T5 对抗审计确认 MEDIUM)。≤0 = 已到期(立即超时);缺省 0 经
+	// omitempty 语义 = 无期限约束。
+	DeadlineMs int64 `json:"deadline_ms,omitempty"`
 }
 
 // SandboxResponse 容器 → 宿主的 stdout 响应信封。

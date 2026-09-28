@@ -176,7 +176,6 @@ echo '{"ok":true,"output":{"path":"/etc/hosts","bytes":12}}'
 		c := newTestCarrier(t, "http", json.RawMessage(`{"endpoints":{"api":"https://a.test"}}`), nil, bin, 8)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
-		start := time.Now()
 		res, err := c.Run(ctx, Call{
 			Inputs:         map[string]any{"endpoint": "api", "path": "/x"},
 			Token:          "tok-abc",
@@ -226,10 +225,11 @@ echo '{"ok":true,"output":{"path":"/etc/hosts","bytes":12}}'
 		if inputs == nil || inputs["endpoint"] != "api" {
 			t.Fatalf("envelope inputs missing: %v", env)
 		}
-		deadline, _ := env["deadline_unix"].(float64)
-		wantDeadline := float64(start.Add(10 * time.Second).Unix())
-		if d := deadline - wantDeadline; d < -1 || d > 1 {
-			t.Fatalf("deadline_unix = %v, want ~%v (ctx deadline)", deadline, wantDeadline)
+		deadlineMs, _ := env["deadline_ms"].(float64)
+		// 相对剩余毫秒:编码发生在 Run 内(≈ start),10s 预算减去启动
+		// 开销后落在 (9.8s, 10s];绝对秒锚已废弃(双钟锚缝,T5 审计)。
+		if deadlineMs < 9800 || deadlineMs > 10000 {
+			t.Fatalf("deadline_ms = %v, want remaining budget in (9800, 10000]", deadlineMs)
 		}
 	})
 

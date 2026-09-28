@@ -19,7 +19,7 @@ func TestSandboxEnvelopeRoundTrip(t *testing.T) {
 		Token:          "tok-xyz",
 		IdempotencyKey: "att:42:1",
 		Inputs:         json.RawMessage(`{"endpoint":"api","path":"/x"}`),
-		DeadlineUnix:   1790582400,
+		DeadlineMs:     30000,
 	}
 	raw, err := EncodeSandboxRequest(req)
 	if err != nil {
@@ -32,7 +32,7 @@ func TestSandboxEnvelopeRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &back); err != nil {
 		t.Fatalf("decode err = %v", err)
 	}
-	if back.Tool != req.Tool || back.Token != req.Token || back.IdempotencyKey != req.IdempotencyKey || back.DeadlineUnix != req.DeadlineUnix {
+	if back.Tool != req.Tool || back.Token != req.Token || back.IdempotencyKey != req.IdempotencyKey || back.DeadlineMs != req.DeadlineMs {
 		t.Fatalf("round trip lost fields: %+v", back)
 	}
 	if string(back.Config) != string(req.Config) || string(back.Inputs) != string(req.Inputs) {
