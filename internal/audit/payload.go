@@ -11,13 +11,14 @@ import "time"
 // 文本违反 D-t26 §4「payload 只含 id/码/枚举」,失败摘要真相源在
 // node_execution.error_message(review 修;T6.1 脱敏钩子落地后再评估放开)。
 type NodeStateChangedPayload struct {
-	From      string `json:"from"` // 迁移前状态(NodeState)
-	To        string `json:"to"`   // 迁移后状态
-	NodeID    string `json:"node_id"`
-	Version   uint32 `json:"version"`              // 迁移后行版本
-	Code      string `json:"code,omitempty"`       // FAILED 路径:error_code
-	AttemptNo uint16 `json:"attempt_no,omitempty"` // 关联 attempt 序号(1 起,0=未触 attempt)
-	WorkerID  string `json:"worker_id,omitempty"`  // 归因快照(行内 worker_id)
+	From       string `json:"from"` // 迁移前状态(NodeState)
+	To         string `json:"to"`   // 迁移后状态
+	NodeID     string `json:"node_id"`
+	Version    uint32 `json:"version"`               // 迁移后行版本
+	Code       string `json:"code,omitempty"`        // FAILED 路径:error_code
+	AttemptNo  uint16 `json:"attempt_no,omitempty"`  // 关联 attempt 序号(1 起,0=未触 attempt)
+	WorkerID   string `json:"worker_id,omitempty"`   // 归因快照(行内 worker_id)
+	InstanceNo uint16 `json:"instance_no,omitempty"` // T9.1:parallel 实例行(控制行/单实例 0,缺省键缺席 = 0)
 }
 
 // NodeRedispatchedPayload 是 node.redispatched(status-preserving 重派)的事件体。
@@ -26,6 +27,7 @@ type NodeRedispatchedPayload struct {
 	AttemptNo   uint16 `json:"attempt_no"`             // 新 attempt 序号(已 +1)
 	Trigger     string `json:"trigger"`                // TriggerAttemptFailed | TriggerReaped
 	MaxAttempts uint16 `json:"max_attempts,omitempty"` // 决策时刻的预算上限(reaper 路径)
+	InstanceNo  uint16 `json:"instance_no,omitempty"`  // T9.1:parallel 实例行(控制行/单实例 0)
 }
 
 // AttemptReapedPayload 是 attempt.reaped(reaper DEAD 裁决)的事件体。
