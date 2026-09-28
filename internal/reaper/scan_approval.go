@@ -74,7 +74,8 @@ SELECT id, execution_id
  WHERE status='WAITING_APPROVAL' AND deadline_at < NOW(3) - INTERVAL ? MICROSECOND
    AND (escalated_at IS NULL
         OR EXISTS(SELECT 1 FROM approval_decision d
-                   WHERE d.node_execution_id = node_execution.id))
+                   WHERE d.node_execution_id = node_execution.id
+                     AND d.round = node_execution.attempts))
    AND id > ?
  ORDER BY id
  LIMIT ?`, r.cfg.ScanInterval.Microseconds(), lastID, scanBatchSize)
@@ -413,7 +414,8 @@ SELECT (SELECT COUNT(*) FROM outbox
 func (r *Reaper) appendApprovalNotifyEvent(ctx context.Context, q engine.DBTX,
 	execID, nodeExecID uint64, round int) error {
 	raw, err := json.Marshal(scheduler.ApprovalNotifyPayload{
-		ExecutionID: execID, NodeExecutionID: nodeExecID, Reason: scheduler.ReasonApprovalEscalated,
+		ExecutionID: execID, NodeExecutionID: nodeExecID,
+		Reason: scheduler.ReasonApprovalEscalated, Round: round,
 	})
 	if err != nil {
 		return fmt.Errorf("reaper: marshal notify payload: %w", err)

@@ -10,7 +10,6 @@ package api
 import (
 	"encoding/json"
 	"errors"
-	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -55,10 +54,24 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 	if !ok {
 		return
 	}
+	// 体上界与全仓写面单源(readBodyLimited/MaxBytesReader;对抗审计 HIGH 修:
+	// 裸 ShouldBindJSON 是全仓唯一无体上界的写面,且体解析先于角色闸)。
+	// 空 body(resume 无参语法糖)合法:零字节 → 零值请求。
 	var req rollbackRequest
-	// 空 body(resume 无参语法糖)合法:EOF 视作零值请求,仅真畸形体 400。
-	if err := c.ShouldBindJSON(&req); err != nil && !errors.Is(err, io.EOF) {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "invalid_body"})
+	b, ok := readBodyLimited(c)
+	if !ok {
+		return
+	}
+	if len(b) > 0 {
+		if err := json.Unmarshal(b, &req); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad_request"})
+			return
+		}
+	}
+	// node_id 形状闸(镜像审批面):先于角色闸/审计,防超长值穿透到
+	// 审计行的 NodeID 校验(对抗审计 MEDIUM 修:denied 审计静默吞)。
+	if req.NodeID != "" && !nodeIDRe.MatchString(req.NodeID) {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_node_id"})
 		return
 	}
 	if req.NodeID == "" && !allowAutoTarget {
@@ -73,11 +86,11 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 		return
 	}
 	if !claimsHaveAnyRole(claims, auth.RoleAuthor, auth.RoleAdmin) {
-		s.writeRollbackDeniedAudit(c, execID, req.NodeID, claims.Subject, "role_denied")
+		s.writeRollbackDeniedAudit(c, execID, req.NodeID, claims.Subject, "role_denied", 0)
 		if s.rollbackMetrics != nil {
 			s.rollbackMetrics.Denied.WithLabelValues("role_denied").Inc()
 		}
-		c.JSON(http.StatusForbidden, gin.H{"error": "forbidden"})
+		c.JSON(http.StatusForbidden, gin.H{"error": "role_denied"})
 		return
 	}
 	if s.rollbackMetrics != nil {
@@ -93,9 +106,15 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 		ActorID:  claims.Subject,
 	})
 	if err != nil {
+		var re *scheduler.RollbackError
+		if errors.As(err, &re) {
+			// 业务拒绝全分面落审计(对抗审计 HIGH 修:此前仅 role_denied
+			// 落行,与 D-t92 决策 9/10 及告警 runbook 引用的证据源脱节)。
+			// infra 错误/conflict(瞬态/并发收敛面)不落——自愈路径不灌水。
+			s.writeRollbackDeniedAudit(c, execID, req.NodeID, claims.Subject, string(re.Kind), len(re.Blocked))
+		}
 		if s.rollbackMetrics != nil {
-			var re *scheduler.RollbackError
-			if errors.As(err, &re) {
+			if re != nil {
 				s.rollbackMetrics.Denied.WithLabelValues(string(re.Kind)).Inc()
 			} else {
 				s.rollbackMetrics.Denied.WithLabelValues("internal").Inc()
@@ -118,8 +137,6 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 // mapRollbackError 是回滚面错误映射第三单点(mapApprovalError 先例):
 // 结构化 RollbackError 按 Kind 分面;engine.ErrNotFound → 404;
 // 裸 ErrConflict = 并发双回滚败者(锁后当前读/CAS 双兜底收敛面)。
-// 业务拒绝不重复落审计——决定事务自身的 execution.rolled_back 行是成功面
-// 事实源,拒绝面的可观测走 metrics(T6.4 侧)。
 func (s *Server) mapRollbackError(c *gin.Context, err error) {
 	var re *scheduler.RollbackError
 	switch {
@@ -151,18 +168,23 @@ func (s *Server) mapRollbackError(c *gin.Context, err error) {
 	}
 }
 
-// writeRollbackDeniedAudit:越权拒绝落审计(独立小事务,best-effort——
-// 403 的裁决不受旁路写入失败影响;执行缺行时 Append 的分区键点查失败
-// = 天然防灌水,镜像 decided 面的锚定语义)。
-func (s *Server) writeRollbackDeniedAudit(c *gin.Context, execID uint64, nodeID, actor, reason string) {
+// writeRollbackDeniedAudit:拒绝落审计(独立小事务,best-effort——裁决不受
+// 旁路写入失败影响;失败仅 slog 零遥测不可接受,对抗审计 LOW 修)。全部
+// 业务分面(role_denied/not_rollbackable/blocked_inflight/bad_node_id/
+// no_resume_target)都落行:告警 runbook 与 T6.4 denied 计数器的证据源
+// (对抗审计 HIGH 修:此前仅 role_denied 落行)。执行缺行时 Append 的分区键
+// 点查失败 = 天然防灌水,镜像 decided 面的锚定语义。
+func (s *Server) writeRollbackDeniedAudit(c *gin.Context, execID uint64, nodeID, actor, reason string, blockedCount int) {
 	id, err := s.ids.Next()
 	if err != nil {
+		slog.Error("api: gen rollback.denied id", "err", err)
 		return
 	}
 	raw, err := json.Marshal(audit.RollbackDeniedPayload{
-		Reason: reason, TargetNodeID: nodeID,
+		Reason: reason, TargetNodeID: nodeID, BlockedCount: blockedCount,
 	})
 	if err != nil {
+		slog.Error("api: marshal rollback.denied payload", "err", err)
 		return
 	}
 	if err := audit.Append(c.Request.Context(), s.dbh, audit.Event{

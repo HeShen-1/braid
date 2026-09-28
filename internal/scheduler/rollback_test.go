@@ -517,3 +517,71 @@ func TestRollbackConcurrentDouble(t *testing.T) {
 
 // u64str 是断言用 uint64 → string(outbox TaskID 拼接镜像)。
 func u64str(v uint64) string { return strconv.FormatUint(v, 10) }
+
+// TestRollbackAnnexCancelledOrphans:M6 锚——CANCELLED 连坐行(reaper ③ 收口
+// 产物)在闭包内被收编重置重派;收编条件若缩成「只收 FAILED」,本测红
+// (fail-fast 遗留 EXECUTING 兄弟被 reaper 取消后,回滚必须一并复活)。
+func TestRollbackAnnexCancelledOrphans(t *testing.T) {
+	s, d := newSched(t)
+	execID := rbStart(t, s, d, rbDiamondDSL, `{"q":"hi"}`)
+	a := readNode(t, d, execID, "a")
+	mustComplete(t, s, execID, a.id, seedAttempt(t, d, execID, a.id, 1),
+		engine.AttemptSucceed, json.RawMessage(`{"text":"va"}`))
+	// b 终败(fail-fast);c 兄弟在飞 → wf FAILED 后人工收口为 CANCELLED
+	//(reaper ③ 的连坐形态;快照保留——自 EXECUTING 取消)。
+	b := readNode(t, d, execID, "b")
+	mustComplete(t, s, execID, b.id, seedAttempt(t, d, execID, b.id, 1),
+		engine.AttemptFailed, nil)
+	c := readNode(t, d, execID, "c")
+	if _, err := engine.CancelNode(context.Background(), d, c.id, c.version); err != nil {
+		t.Fatalf("cancel c: %v", err)
+	}
+	if _, err := s.RollbackTo(context.Background(), RollbackParams{
+		ExecID: execID, TargetNodeID: "d", WorkerID: "api-rb", ActorID: "op"}); err != nil {
+		t.Fatalf("RollbackTo: %v", err)
+	}
+	// c:CANCELLED → 收编 → advance 重派(fresh eval);d 保持 PENDING 等待。
+	c2 := readNode(t, d, execID, "c")
+	if c2.status != engine.NodeExecuting {
+		t.Fatalf("c = %s, want EXECUTING(CANCELLED 连坐行收编重派)", c2.status)
+	}
+	if dRow := readNode(t, d, execID, "d"); dRow.status != engine.NodePending {
+		t.Fatalf("d = %s, want PENDING", dRow.status)
+	}
+	if e := readExec(t, d, execID); e.status != engine.WorkflowRunning {
+		t.Fatalf("wf = %s, want RUNNING", e.status)
+	}
+}
+
+// TestRollbackAuditPayload:M7 锚——execution.rolled_back 载荷字段是「两条
+// 路径按轮可追溯」的机器判据(决策 9),字段零断言 = 恒真测试。
+func TestRollbackAuditPayload(t *testing.T) {
+	s, d := newSched(t)
+	execID, _, _ := rbFailChain(t, s, d)
+	// 目标 = c(冻结 PENDING):失败源 b 被收编重置(reset_count 有牙)、
+	// 目标本身走重评估(rerun_target=false)——两字段各锚一面。
+	if _, err := s.RollbackTo(context.Background(), RollbackParams{
+		ExecID: execID, TargetNodeID: "c", WorkerID: "api-rb", ActorID: "op"}); err != nil {
+		t.Fatalf("RollbackTo: %v", err)
+	}
+	var payload []byte
+	if err := d.QueryRow(`SELECT payload FROM audit_log
+	  WHERE execution_id=? AND event_type='execution.rolled_back'`, execID).Scan(&payload); err != nil {
+		t.Fatalf("read rolled_back payload: %v", err)
+	}
+	var p struct {
+		TargetNodeID string `json:"target_node_id"`
+		FromStatus   string `json:"from_status"`
+		ResetCount   int    `json:"reset_count"`
+		RerunTarget  bool   `json:"rerun_target"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil {
+		t.Fatalf("unmarshal payload: %v", err)
+	}
+	if p.TargetNodeID != "c" || p.FromStatus != "FAILED" || p.RerunTarget {
+		t.Fatalf("payload = %+v, want target=c from=FAILED rerun=false", p)
+	}
+	if p.ResetCount != 1 {
+		t.Fatalf("reset_count = %d, want 1(失败源 b 恰一行重置)", p.ResetCount)
+	}
+}

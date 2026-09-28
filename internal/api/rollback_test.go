@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -211,3 +212,72 @@ func TestHTTPResumeEndpoint(t *testing.T) {
 		t.Fatalf("auto target = %v, want b", body["target_node_id"])
 	}
 }
+
+// TestHTTPDecideCrossRoundNewVote:H5 锚(对抗审计 HIGH 修)——回滚重挂后
+// (挂起轮 attempts=2),旧轮决定行(round=1)对新轮判定面不可见:同审批人
+// 再投 = 新票 201(非重放 200 / 非改判 409),或签首票定局按本轮计数。
+func TestHTTPDecideCrossRoundNewVote(t *testing.T) {
+	dbh := openAPITestDB(t)
+	schedIDs, _ := snowflake.New(4)
+	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: schedIDs})
+	if err != nil {
+		t.Fatalf("scheduler: %v", err)
+	}
+	r, _, _ := newTestServerWithTrigger(t, sched)
+	publisher := signSubject(t, "author1", auth.RoleAuthor)
+	author := signSubject(t, "alice", auth.RoleApprover)
+
+	// 种子:RUNNING 执行 + WA 审批节点(attempts=2 = 回滚重挂后的第二轮
+	// 挂起)+ 旧轮票(round=1,alice 已批)。
+	name := fmt.Sprintf("rb-round-%d", nextRBID())
+	rbPublish(t, r, publisher, name, fmt.Appendf(nil, `{"dsl":"1.0","name":%q,
+ "nodes":[{"id":"boss","type":"approval","approvers":["alice"],"mode":"any"}],"outputs":{}}`, name))
+	var defID uint64
+	if err := dbh.QueryRow(`SELECT id FROM workflow_definition WHERE name=?`, name).Scan(&defID); err != nil {
+		t.Fatalf("read definition: %v", err)
+	}
+	execID := nextRBID()
+	if _, err := dbh.Exec(`INSERT INTO workflow_execution
+	  (id, definition_id, definition_name, definition_version, definition_hash, status, triggered_by, input)
+	  SELECT ?, id, name, version, dsl_hash, 'RUNNING', 'seed', '{}' FROM workflow_definition WHERE id=?`,
+		execID, defID); err != nil {
+		t.Fatalf("seed execution: %v", err)
+	}
+	nodeExecID := nextRBID()
+	if _, err := dbh.Exec(`INSERT INTO node_execution
+	  (id, execution_id, node_id, type, status, attempts, worker_id, version, deadline_at, input_snapshot)
+	  VALUES (?, ?, 'boss', 'approval', 'WAITING_APPROVAL', 2, 'w', 1, NOW(3) + INTERVAL 72 HOUR, ?)`,
+		nodeExecID, execID, `{"approvers":["alice"],"mode":"any","timeout_hours":72}`); err != nil {
+		t.Fatalf("seed node: %v", err)
+	}
+	decID := nextRBID()
+	if _, err := dbh.Exec(`INSERT INTO approval_decision
+	  (id, execution_id, node_execution_id, node_id, round, decided_by, decision, decided_at)
+	  VALUES (?,?,?, 'boss', 1, 'alice', 'APPROVED', NOW(3))`,
+		decID, execID, nodeExecID); err != nil {
+		t.Fatalf("seed old-round decision: %v", err)
+	}
+
+	code, body := doJSON(t, r, http.MethodPost,
+		fmt.Sprintf("/api/v1/executions/%d/approvals/boss/decision", execID), author,
+		[]byte(`{"decision":"approve"}`))
+	if code != http.StatusCreated {
+		t.Fatalf("cross-round vote = %d %v, want 201 新票(旧轮不可见)", code, body)
+	}
+	if body["round"] != float64(2) {
+		t.Fatalf("round = %v, want 2(锚定当轮挂起)", body["round"])
+	}
+	// 同轮重放语义保持:同 (approver, round=2) 再投 → 200 重放。
+	code, body = doJSON(t, r, http.MethodPost,
+		fmt.Sprintf("/api/v1/executions/%d/approvals/boss/decision", execID), author,
+		[]byte(`{"decision":"approve"}`))
+	if code != http.StatusOK {
+		t.Fatalf("same-round replay = %d %v, want 200", code, body)
+	}
+}
+
+func nextRBID() uint64 {
+	return uint64(time.Now().UnixNano())&0x7FFFFFFFFFFF<<10 | uint64(atomic.AddUint32(&rbIDSeq, 1))
+}
+
+var rbIDSeq uint32

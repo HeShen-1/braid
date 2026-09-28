@@ -21,6 +21,7 @@
 --      (RestartExecution;仅 FAILED 可回滚,白名单决策见 D- t92 决策 4)。
 -- 每表恰一条 ALTER(0006:17-19 单语句纪律,multiStatements DSN 下每条 DDL
 --   独立自动提交,拆多条 = 半应用态 dirty);失败即整条回滚,re-up 可重入。
+--   尾随一条存量回填 UPDATE(在飞 WA 决定行 round 0→attempts,见下)。
 -- DDL 形态注记:带默认值加列/唯一索引重建/注释 MODIFY 在 MySQL 8 下均
 --   INSTANT/INPLACE,不锁写。
 -- ============================================================================
@@ -50,3 +51,13 @@ ALTER TABLE approval_decision
 ALTER TABLE workflow_execution
   MODIFY COLUMN status ENUM('PENDING','RUNNING','WAITING_APPROVAL','SUCCEEDED','FAILED','CANCELLED') NOT NULL DEFAULT 'PENDING'
     COMMENT 'PENDING=已建未跑(覆盖 §3.1 QUEUED 语义)→ RUNNING →(WAITING_APPROVAL⇄RUNNING)*→ SUCCEEDED|FAILED|CANCELLED;PENDING 可直接→FAILED(reconciler 判死);FAILED→RUNNING 仅限显式回滚 RestartExecution(T9.2,D-2026-09-28-t92:同语句清 outputs/error_code/error_message/finished_at,终态列组仅终态携带、先前终局时刻在审计链);终态=SUCCEEDED/FAILED/CANCELLED(终态对自动路径恒无出边,回滚复活是唯一例外通道且仅 FAILED);迁移:仅末尾追加';
+
+-- 存量回填(对抗审计 MEDIUM 修):迁移生效时处于 WAITING_APPROVAL 的在飞
+-- 决定行若留 round=0,会对本轮判定面失明(decideApproval 全部按 round=
+-- node.attempts 过滤)——部署窗内同投票人重试不再是重放而是插新票、或签
+-- 后投者误成功。回填为挂起所属轮(ne.attempts);终态历史行留 0(归档语义,
+-- 与新轮永不相交)。单条 UPDATE,失败即回滚,re-up 幂等(round=0 谓词)。
+UPDATE approval_decision d
+  JOIN node_execution ne ON ne.id = d.node_execution_id
+   SET d.round = ne.attempts
+ WHERE d.round = 0 AND ne.status = 'WAITING_APPROVAL';

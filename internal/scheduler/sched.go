@@ -63,7 +63,7 @@ import (
 // 审批续跑事件(DDL §5 开放词表注释预留同名;TaskID 词表 resume:<exec>:<node>:<attempt>,
 // 0003 头注释定稿)——发射点在 api 审批面(决策事务),消费面在 worker
 // handleNodeResume → Scheduler.Resume。approval.notify(T4.3 起有发射点 = reaper
-// 审批超时升级事务;TaskID notify:<node_exec_id>,T4.5 起消费面 = worker
+// 审批超时升级事务;TaskID notify:<node_exec_id>:<round>(T9.2 轮次段),T4.5 起消费面 = worker
 // handleApprovalNotify → notify.Sender SMTP 发送;D-t41 #3 移交闭环)。
 const (
 	EventTypeNodeTask        = "node.task_enqueue"
@@ -109,13 +109,18 @@ type ResumePayload struct {
 // ApprovalNotifyPayload 是 approval.notify 事件的自描述体(T4.3 起有发射点:
 // reaper 审批超时升级事务;T4.5 起消费面 = worker handleApprovalNotify →
 // notify.Sender SMTP 发送,未配置 SMTP 时降级 log-only ack)。
-// TaskID = notify:<node_execution_id>(恰好一次锚在 escalated_at)。Reason 是
+// TaskID = notify:<node_execution_id>:<round>(每轮恰好一次锚在 escalated_at,
+// T9.2 轮次段——回滚重挂的新轮升级是新意图)。Reason 是
 // 成因码(词表单源见 ReasonApproval* 常量,后续成因在此扩词);payload 仅
 // id 引用:审批人/策略/截止真相源在 node_execution 行,消费方回表。
 type ApprovalNotifyPayload struct {
 	ExecutionID     uint64 `json:"execution_id"`
 	NodeExecutionID uint64 `json:"node_execution_id"`
 	Reason          string `json:"reason"`
+	// Round:T9.2 轮次段(挂起所属 attempts)——队列 TaskID(notify:<id>:
+	// <round>)与消费侧去重锚(approval.notified 行 payload)同源;回滚
+	// 重挂后第二轮升级是新的通知意图(D-t92 决策 7),两半都必须携轮。
+	Round int `json:"round"`
 	// TraceID:T6.2 边界——notify 链 P0 无段 trace(发射面 reaper tick 无
 	// span 上下文,approval.notified 行 trace NULL),D-t62 登记;P1 若
 	// 回读 root 续链在此扩。
@@ -663,6 +668,10 @@ func (s *Scheduler) Complete(ctx context.Context, req CompletionRequest) error {
 		return errors.New("scheduler: usage requires SUCCEEDED (failed LLM calls are unbilled in P0)")
 	case req.ToolCall != nil && req.Status != engine.AttemptSucceed:
 		return errors.New("scheduler: tool call info requires SUCCEEDED (failed calls ride node.state_changed)")
+	case len(req.Output) > 0 && req.Status != engine.AttemptSucceed:
+		// T9.2 台账守卫(对抗审计 LOW 修):attempt.output 的 DDL 契约是
+		// 「FAILED/DEAD 恒 NULL——未产出」,与 Usage/ToolCall 同层对称。
+		return errors.New("scheduler: output requires SUCCEEDED (failed attempts produce no output)")
 	}
 	exec, err := s.loadExecution(ctx, req.ExecID)
 	if err != nil {

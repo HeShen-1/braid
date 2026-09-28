@@ -124,7 +124,7 @@ type Executor interface {
 // 的降级面——保留 T4.3 占位 log-only ack 语义(dev 栈无 SMTP 可用;送达
 // 缺口由 T6.4 的 escalated-vs-notified 审计对账暴露,非静默)。
 type ApprovalNotifier interface {
-	NotifyApproval(ctx context.Context, execID, nodeExecID uint64, reason string) error
+	NotifyApproval(ctx context.Context, execID, nodeExecID uint64, reason string, round int) error
 }
 
 // Deps 是运行依赖。Logger 为 nil 时用 slog.Default()。Notifier 为 nil 是
@@ -278,14 +278,27 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 	if err != nil {
 		return 0, fmt.Errorf("worker: gen attempt id: %w", err)
 	}
-	// T9.2 台账:attempt 行出生即抄输入快照(旧轮输入证据物理载体,
-	// D-2026-09-28-t92 决策 3①)。node 行此刻的快照即本 attempt 的输入
-	// (dispatch 侧 ClaimNode/RerunNode 已写就;重派不重写、值恒同)。
-	// 行缺失 = 数据缺陷,响亮拒绝(与 readAttempt 同判)。
+	// T9.2 台账 + 轮次兜底(对抗审计 HIGH 修):node 行此刻的快照即本
+	// attempt 的输入(dispatch 侧 ClaimNode/RerunNode 已写就;重派不重写、
+	// 值恒同),attempt 行出生即抄档(旧轮输入证据物理载体,D-t92 决策 3①)。
+	// 轮次校验:attempt_no ≤ attempts_base = 已关闭轮次的滞留任务(回滚
+	// 重置/重跑后,base=旧轮总数;积压队列中的旧轮任务在回滚后被消化时,
+	// 其 attempt 行从未物化 ⇒ uk 不冲突 ⇒ 原样会物化新行并以新轮快照执行
+	// ——双烧 + 台账串轮)。按已终轮处理:幂等 ack、零物化零执行;行缺失
+	// = 数据缺陷,响亮拒绝(与 readAttempt 同判)。
 	var snap []byte
+	var attempts, attemptsBase uint16
 	if err := h.deps.DB.QueryRowContext(ctx,
-		`SELECT input_snapshot FROM node_execution WHERE id=?`, p.NodeExecutionID).Scan(&snap); err != nil {
+		`SELECT input_snapshot, attempts, attempts_base FROM node_execution WHERE id=?`, p.NodeExecutionID).
+		Scan(&snap, &attempts, &attemptsBase); err != nil {
 		return 0, fmt.Errorf("worker: read node snapshot for attempt ledger (node %d): %w", p.NodeExecutionID, err)
+	}
+	if p.AttemptNo <= attemptsBase {
+		h.log.Info("attempt.stale_round_task",
+			"task_id", taskID, "node_execution_id", p.NodeExecutionID,
+			"attempt_no", p.AttemptNo, "attempts_base", attemptsBase,
+			"hint", "closed-round task drained after rollback; ack without materializing")
+		return 0, nil
 	}
 	err = engine.InsertAttempt(ctx, h.deps.DB, engine.AttemptParams{
 		ID:             id,
@@ -495,7 +508,7 @@ func (h *attHandler) dispatchApprovalNotify(ctx context.Context, taskID string, 
 		h.mNotify(metrics.NotifyOutcomeDegraded)
 		return nil
 	}
-	err := h.deps.Notifier.NotifyApproval(ctx, p.ExecutionID, p.NodeExecutionID, p.Reason)
+	err := h.deps.Notifier.NotifyApproval(ctx, p.ExecutionID, p.NodeExecutionID, p.Reason, p.Round)
 	switch {
 	case err == nil:
 		h.log.Info("approval.notified",

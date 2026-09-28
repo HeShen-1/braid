@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"sort"
 	"time"
 
@@ -86,7 +87,8 @@ func (s *Scheduler) RollbackTo(ctx context.Context, p RollbackParams) (*Rollback
 	if err != nil {
 		return nil, err
 	}
-	res, err := s.rollbackOnce(ctx, p, wf, g, exec.input)
+	var res *RollbackResult
+	err = s.rollbackWithRetry(ctx, p, wf, g, exec.input, &res)
 	if err != nil {
 		return nil, err
 	}
@@ -96,6 +98,30 @@ func (s *Scheduler) RollbackTo(ctx context.Context, p RollbackParams) (*Rollback
 		s.log.Error("rollback.finish_check_failed", "execution_id", p.ExecID, "err", ferr)
 	}
 	return res, nil
+}
+
+// rollbackWithRetry 套 1213/1205 瞬态抖动重试环(对抗审计 LOW 修:回滚是
+// 全库锁窗口最长的写事务,却是唯一无该环的事务入口——Complete/Resume/
+// Suspend/reapAttempt 四入口同款形态;守卫拒绝面 *RollbackError 非 Transient
+// 自然直通)。
+func (s *Scheduler) rollbackWithRetry(ctx context.Context, p RollbackParams,
+	wf *dsl.Workflow, g *dag, wfInput json.RawMessage, out **RollbackResult) error {
+	for attempt := 0; ; attempt++ {
+		res, err := s.rollbackOnce(ctx, p, wf, g, wfInput)
+		if err == nil {
+			*out = res
+			return nil
+		}
+		if !engine.Transient(err) || attempt >= maxTransientRetries {
+			return err
+		}
+		backoff := time.Duration(float64(time.Millisecond*25<<(attempt+1)) * (1 + rand.Float64()))
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(backoff):
+		}
+	}
 }
 
 func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
@@ -234,10 +260,14 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 			rerun = snap != nil
 		}
 
-		// 8. RUNNING attempt 同事务收口(锁序 node→attempt;纵深防御:守卫②
-		// 已拦 EXECUTING/WA,此处收口闭包内节点在两拍窗(scan③→scan①)遗留
-		// 的 RUNNING attempt——消旧 att: 接管/幂等键串轮/双烧/永久 RUNNING 行,
-		// D-t92 决策 4⑤)。多行枚举走 RowsDBTX 面(lockAllRows 同款)。
+		// 8. RUNNING attempt 同事务收口(锁序 node→attempt;两拍窗 scan③→
+		// scan① 的遗留行,D-t92 决策 4⑤)。「事件已入 asynq 但 worker 未认领
+		// (attempt 行未物化)」的旧轮积压任务不在本面拦——其命中时事件必然
+		// 已过 DispatchStale 窗(活事件闸结构性错过目标),结构性封口在
+		// worker.claimAttempt 的轮次校验(attempt_no ≤ attempts_base ⇒ 幂等
+		// ack 零物化零执行,对抗审计 HIGH 修的采纳形态);fresh 窗内拦反而
+		// 把「刚失败就回滚」误伤成 30 分钟 409。多行枚举走 RowsDBTX 面
+		// (lockAllRows 同款)。
 		rq, ok := q.(engine.RowsDBTX)
 		if !ok {
 			return fmt.Errorf("scheduler: DBTX lacks the multi-row facet (engine.RowsDBTX)")

@@ -152,7 +152,7 @@ func TestNotifyApprovalDeliversContextAndLink(t *testing.T) {
 	execID, nodeExecID, defName := seedApprovalEscalated(t, d)
 	s := newTestSender(t, d, f)
 
-	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated"); err != nil {
+	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1); err != nil {
 		t.Fatalf("NotifyApproval: %v", err)
 	}
 
@@ -218,10 +218,10 @@ func TestNotifyApprovalDedupOnRedelivery(t *testing.T) {
 	execID, nodeExecID, _ := seedApprovalEscalated(t, d)
 	s := newTestSender(t, d, f)
 
-	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated"); err != nil {
+	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1); err != nil {
 		t.Fatalf("first NotifyApproval: %v", err)
 	}
-	err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated")
+	err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1)
 	if !errors.Is(err, ErrAlreadyNotified) {
 		t.Fatalf("second NotifyApproval = %v, want ErrAlreadyNotified", err)
 	}
@@ -283,7 +283,7 @@ func TestNotifyApprovalSendFailureLeavesNoAudit(t *testing.T) {
 	s := newTestSender(t, d, f)
 	s.cfg.Port = deadPort
 
-	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated"); err == nil {
+	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1); err == nil {
 		t.Fatal("NotifyApproval(dead smtp) = nil, want error")
 	}
 	if got := f.Count(); got != 0 {
@@ -304,7 +304,7 @@ func TestNotifyApprovalQuitFailureAfterDelivery(t *testing.T) {
 	execID, nodeExecID, _ := seedApprovalEscalated(t, d)
 	s := newTestSender(t, d, f)
 
-	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated"); err != nil {
+	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1); err != nil {
 		t.Fatalf("NotifyApproval = %v, want nil (quit failure after delivery is non-fatal)", err)
 	}
 	if got := f.Count(); got != 1 {
@@ -346,7 +346,7 @@ func TestNotifyApprovalStartTLSAndAuth(t *testing.T) {
 		t.Fatalf("NewSender: %v", err)
 	}
 
-	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated"); err != nil {
+	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1); err != nil {
 		t.Fatalf("NotifyApproval(starttls+auth): %v", err)
 	}
 	if got := f.Count(); got != 1 {
@@ -381,7 +381,7 @@ func TestNotifyApprovalContextDefects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := s.NotifyApproval(ctx, tc.execID, tc.nodeExecID, "escalated"); err == nil {
+			if err := s.NotifyApproval(ctx, tc.execID, tc.nodeExecID, "escalated", 1); err == nil {
 				t.Fatal("NotifyApproval = nil, want error")
 			}
 		})
@@ -398,7 +398,7 @@ func TestNotifyApprovalContextDefects(t *testing.T) {
 				`{"approvers":["carol","dave"],"mode":"any","timeout_hours":24,"on_timeout":"escalate","instructions":"请审批这笔报销"}`,
 				nodeExecID)
 		}()
-		if err := s.NotifyApproval(ctx, execID, nodeExecID, "escalated"); err == nil {
+		if err := s.NotifyApproval(ctx, execID, nodeExecID, "escalated", 1); err == nil {
 			t.Fatal("NotifyApproval(bad snapshot) = nil, want error")
 		}
 	})

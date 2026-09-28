@@ -141,6 +141,9 @@ type ApprovalResumeRedispatchedPayload struct {
 type ApprovalNotifiedPayload struct {
 	NodeID string `json:"node_id"`
 	Reason string `json:"reason"` // escalated(P0 词表,scheduler.ApprovalNotifyPayload 同源)
+	// Round:T9.2 轮次段(D-t92 决策 7 的消费半边)——notify 去重锚按轮匹配,
+	// 回滚重挂后第二轮升级不再被第一轮行静默吞。
+	Round int `json:"round"`
 }
 
 // ExecutionTriggeredPayload 是 execution.triggered(T5.5 API 触发面)的

@@ -719,3 +719,66 @@ func TestResumeEventBadPayloadArchived(t *testing.T) {
 		})
 	}
 }
+
+// TestStaleRoundTaskAcksWithoutMaterializing:T9.2 轮次兜底(对抗审计 HIGH 修)
+// ——回滚重置/重跑后(attempts_base=旧轮总数),积压队列中的旧轮任务被消化
+// 时其 attempt 行从未物化(uk 不冲突),claimAttempt 必须按已终轮幂等 ack:
+// 零物化、零执行;新轮任务照常认领执行。
+func TestStaleRoundTaskAcksWithoutMaterializing(t *testing.T) {
+	d := sqltest.MustOpenAt(t, workerSchema)
+	execID, nodeExecID := seedNodeExec(t, d)
+	ctx := context.Background()
+
+	// 现场回滚后形态(seedNodeExec 起点即 EXECUTING/attempts=1/快照由本步
+	// 前置 UPDATE 补):终败(attempts=1)→ RerunNode(attempts=2, base=1)。
+	// attempt_no=1 的行从未物化(任务积压未消化)。
+	if _, err := d.Exec(`UPDATE node_execution SET input_snapshot='{"q":"x"}' WHERE id=?`, nodeExecID); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+	if err := engine.WithTx(ctx, d, func(q engine.DBTX) error {
+		if _, err := engine.FailNode(ctx, q, nodeExecID, 1, "seed-dispatcher", "boom", "x"); err != nil {
+			return err
+		}
+		_, err := engine.RerunNode(ctx, q, nodeExecID, 2, engine.ClaimInput{
+			WorkerID: "api:rollback", InputSnapshot: json.RawMessage(`{"q":"x"}`),
+		})
+		return err
+	}); err != nil {
+		t.Fatalf("seed rolled-back node: %v", err)
+	}
+
+	ex := &fakeExec{fn: func(req Request, callNo int) (Outcome, error) {
+		return Outcome{Status: engine.AttemptSucceed}, nil
+	}}
+	queue := startWorker(t, d, ex, DefaultConfig())
+	client := asynq.NewClient(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = client.Close() })
+
+	// 旧轮任务(积压消化):ack、零物化、零执行。
+	stale := fmt.Sprintf("att:%d:1", nodeExecID)
+	if _, err := enqueue(t, client, queue, stale,
+		nodeTaskPayload{ExecutionID: execID, NodeExecutionID: nodeExecID, AttemptNo: 1}); err != nil {
+		t.Fatalf("enqueue stale: %v", err)
+	}
+	insp := asynq.NewInspector(redistest.MustOpt(t))
+	t.Cleanup(func() { _ = insp.Close() })
+	waitTaskGone(t, insp, queue, stale)
+	if got := ex.count(); got != 0 {
+		t.Fatalf("executor calls = %d, want 0(旧轮任务不得执行)", got)
+	}
+	var rows int
+	if err := d.QueryRow(`SELECT COUNT(*) FROM node_attempt WHERE node_execution_id=? AND attempt_no=1`,
+		nodeExecID).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("旧轮 attempt 行 = %d(%v), want 0(零物化)", rows, err)
+	}
+	// 新轮任务:照常认领执行(轮次校验不误伤)。
+	fresh := fmt.Sprintf("att:%d:2", nodeExecID)
+	if _, err := enqueue(t, client, queue, fresh,
+		nodeTaskPayload{ExecutionID: execID, NodeExecutionID: nodeExecID, AttemptNo: 2}); err != nil {
+		t.Fatalf("enqueue fresh: %v", err)
+	}
+	waitTaskGone(t, insp, queue, fresh)
+	if got := ex.count(); got != 1 {
+		t.Fatalf("executor calls = %d, want 1(新轮任务正常执行)", got)
+	}
+}
