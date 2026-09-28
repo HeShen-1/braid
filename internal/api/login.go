@@ -176,6 +176,9 @@ func (s *Server) login(c *gin.Context) {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal"})
 		return
 	}
+	// token 出现在响应体:禁中间层缓存(T11.1 起 token 携带面统一契约,
+	// oidc 回调同判)。
+	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, loginResponse{
 		Token:     token,
 		TokenType: "Bearer",

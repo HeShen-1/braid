@@ -93,6 +93,9 @@ type Config struct {
 	// Pool 是 MySQL 连接池三值(T7.1,D-t63 移交回收):db.ParsePoolConfig
 	// 注入式解析 BRAID_DB_* 三键,施加点 cmd 的 db.ConfigurePool。
 	Pool db.PoolConfig
+	// OIDC 是 OIDC 插件配置组(T11.1,BRAID_OIDC_*):零值 = 关闭(路由
+	// 不挂载);半开在 auth.ParseOIDCConfig 启动即败(组全或无)。
+	OIDC auth.OIDCConfig
 }
 
 // DefaultConfig 返回生产默认值(JWTSecret 故意留空:必须显式供给)。
@@ -149,6 +152,11 @@ func (c Config) Validate() error {
 	if c.ReadHeaderTimeout <= 0 || c.ReadTimeout <= 0 || c.WriteTimeout <= 0 || c.IdleTimeout <= 0 {
 		return fmt.Errorf("api: http timeouts must be > 0 (got header=%s read=%s write=%s idle=%s)",
 			c.ReadHeaderTimeout, c.ReadTimeout, c.WriteTimeout, c.IdleTimeout)
+	}
+	// OIDC 组(T11.1):零值合法(关闭);程序化直构 Config 的半开组在此
+	// 拦下(env 面已由 auth.ParseOIDCConfig 拦,此为第二道)。
+	if err := c.OIDC.Validate(); err != nil {
+		return err
 	}
 	return nil
 }
@@ -218,6 +226,12 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	// BRAID_TOOL_ALLOWLIST 已随 T3.2 退役:发布白名单真源 = tools.Registry
 	// 注册名(NewServer 注入;空 registry = 禁用一切工具,语义不变)。
+	// OIDC 组(T11.1):全组缺省 = 零值(关闭);半开启动即败。
+	oidcCfg, err := auth.ParseOIDCConfig(getenv)
+	if err != nil {
+		return c, err
+	}
+	c.OIDC = oidcCfg
 	pool, err := db.ParsePoolConfig(getenv)
 	if err != nil {
 		return c, err

@@ -20,7 +20,7 @@
 
 ## M11 身份与多租户
 
-- [ ] T11.1 OIDC 插件 — M — 验收:IdentityProvider 缥兑现(redirect 流,回调路由面新立);错误族复用 T5.3 契约(CredentialsError→401 / ErrUserDisabled→403 / 其余 500);LDAP bind 留桩;配置半开启动即败
+- [x] T11.1 OIDC 插件 — M — 验收:IdentityProvider 缥兑现(redirect 流,回调路由面新立);错误族复用 T5.3 契约(CredentialsError→401 / ErrUserDisabled→403 / 其余 500);LDAP bind 留桩;配置半开启动即败
 - [ ] T11.2 SaaS 多租户 — L — 依赖 T11.1、M9 — 验收:tenant 模型 + 行级隔离(隔离机制拍板 D- 条目:中间件注入 vs MySQL 层);审计读面收紧 + tool.call.denied 账号态字段暴露重议(D-t63 #5,**外部读者出现前必须重议**——本任务即触发);跨租户访问被拒的对抗测试(语句→caller 反证口径)
 - [ ] T11.3 auth 纵深批 — M — 验收:token 绑定(D-t44 §7-⑦)、登录防御 DB 锚定(D-t64:多副本部署升级)、username 定向锁定 DoS 纵深评估(结论入 D-);三项一 PR,各自独立验收
 
