@@ -240,12 +240,15 @@ SELECT node_id, status, version, attempts, worker_id, deadline_at, escalated_at,
 			return errSkip
 		}
 
-		// [5] 已决票?(或签首票定局,P0 至多一行,取最早;决定方向不入判据
-		// ——重投事件仅锚 DecisionID,worker 续跑事务回表复核)。
+		// [5] 已决票?(或签首票定局,本轮至多一行,取最早;决定方向不入判据
+		// ——重投事件仅锚 DecisionID,worker 续跑事务回表复核)。round 谓词
+		// = T9.2 轮次锚(D-t92 决策 6):旧形态 ORDER BY decided_at LIMIT 1 无
+		// 轮次维度,回滚重挂新轮挂起时 round-1 旧行被合法套用到新轮(实害
+		// 路径,D-t42 #9-③ 点名);锚定本轮(锁行 attempts)后旧轮结构性不可达。
 		var decisionID uint64
 		decErr := q.QueryRowContext(ctx,
-			`SELECT id FROM approval_decision WHERE node_execution_id=? ORDER BY decided_at, id LIMIT 1`,
-			nodeExecID).Scan(&decisionID)
+			`SELECT id FROM approval_decision WHERE node_execution_id=? AND round=? ORDER BY decided_at, id LIMIT 1`,
+			nodeExecID, int(attempts)).Scan(&decisionID)
 		if decErr != nil && !errors.Is(decErr, sql.ErrNoRows) {
 			return fmt.Errorf("reaper: read decision node %d: %w", nodeExecID, decErr)
 		}
@@ -272,7 +275,7 @@ SELECT node_id, status, version, attempts, worker_id, deadline_at, escalated_at,
 				audit.ApprovalEscalatedPayload{NodeID: nodeID, DeadlineAt: deadline.Time}); err != nil {
 				return err
 			}
-			if err := r.appendApprovalNotifyEvent(ctx, q, execID, nodeExecID); err != nil {
+			if err := r.appendApprovalNotifyEvent(ctx, q, execID, nodeExecID, int(attempts)); err != nil {
 				return err
 			}
 			if err := engine.TouchExecution(ctx, q, execID); err != nil {
@@ -400,12 +403,15 @@ SELECT (SELECT COUNT(*) FROM outbox
 }
 
 // appendApprovalNotifyEvent 落升级通知事件(approval.notify 首个发射点;
-// 恰好一次锚在 escalated_at——本调用只在 MarkNodeEscalated 同事务后到达,
-// 同节点永无第二条通知意图,TaskID notify:<node_exec_id> 满足词表不变量)。
-// 消费面:worker handleApprovalNotify → notify.Sender SMTP 发送(T4.5;
-// SMTP 未配置时降级 log-only ack)。
+// 每轮恰好一次锚在 escalated_at——本调用只在 MarkNodeEscalated 同事务后
+// 到达)。TaskID = notify:<node_exec_id>:<round>(T9.2 轮次段,D-t92 决策 7:
+// 旧单段形态下回滚重挂清 escalated_at 再升级,新通知撞 asynq 滞留旧副本
+// ErrTaskIDConflict 被静默吞,违反「同一 task_id 永不表达新意图」;轮次段
+// 后每轮通知意图携带独立 ID,与 resume: 四段式同源(round = 挂起所属
+// attempts)。消费面:worker handleApprovalNotify → notify.Sender SMTP
+// 发送(T4.5;SMTP 未配置时降级 log-only ack)。
 func (r *Reaper) appendApprovalNotifyEvent(ctx context.Context, q engine.DBTX,
-	execID, nodeExecID uint64) error {
+	execID, nodeExecID uint64, round int) error {
 	raw, err := json.Marshal(scheduler.ApprovalNotifyPayload{
 		ExecutionID: execID, NodeExecutionID: nodeExecID, Reason: scheduler.ReasonApprovalEscalated,
 	})
@@ -420,7 +426,7 @@ func (r *Reaper) appendApprovalNotifyEvent(ctx context.Context, q engine.DBTX,
 		ID:          id,
 		ExecutionID: execID,
 		EventType:   scheduler.EventTypeApprovalNotify,
-		TaskID:      fmt.Sprintf("notify:%d", nodeExecID),
+		TaskID:      fmt.Sprintf("notify:%d:%d", nodeExecID, round),
 		Queue:       r.cfg.Queue,
 		Payload:     raw,
 	})

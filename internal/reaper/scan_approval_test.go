@@ -83,14 +83,19 @@ func seedApproval(t *testing.T, d *sql.DB, wfStatus string, deadlinePast time.Du
 	return approvalSeeded{execID: execID, nodeExecID: nodeRowID}
 }
 
-// seedDecision 落一行决定(或签首票形态,唯一行)。
+// seedDecision 落一行决定(或签首票形态,唯一行)。round = 行内 attempts
+// (T9.2 决策 6:⑤a 死信网按轮锚定,种子行与生产写入面同源)。
 func seedDecision(t *testing.T, d *sql.DB, s approvalSeeded, decision string) uint64 {
 	t.Helper()
 	id := nextID(t)
+	var attempts uint16
+	if err := d.QueryRow(`SELECT attempts FROM node_execution WHERE id=?`, s.nodeExecID).Scan(&attempts); err != nil {
+		t.Fatalf("seed decision read attempts: %v", err)
+	}
 	if _, err := d.Exec(`INSERT INTO approval_decision
-	  (id, execution_id, node_execution_id, node_id, decided_by, decision, decided_at)
-	  VALUES (?, ?, ?, 'boss', 'alice', ?, NOW(3))`,
-		id, s.execID, s.nodeExecID, decision); err != nil {
+	  (id, execution_id, node_execution_id, node_id, round, decided_by, decision, decided_at)
+	  VALUES (?, ?, ?, 'boss', ?, 'alice', ?, NOW(3))`,
+		id, s.execID, s.nodeExecID, int(attempts), decision); err != nil {
 		t.Fatalf("seed decision: %v", err)
 	}
 	return id
@@ -188,7 +193,7 @@ func TestApprovalEscalateNotifiesOnce(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("approval.notify 行数 = %d, want 1", len(rows))
 	}
-	if want := fmt.Sprintf("notify:%d", s.nodeExecID); rows[0].taskID != want {
+	if want := fmt.Sprintf("notify:%d:1", s.nodeExecID); rows[0].taskID != want {
 		t.Fatalf("task_id = %q, want %q", rows[0].taskID, want)
 	}
 	var np scheduler.ApprovalNotifyPayload

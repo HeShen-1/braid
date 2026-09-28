@@ -68,6 +68,7 @@ type decisionDTO struct {
 	ID          string    `json:"id"`
 	ExecutionID string    `json:"execution_id"`
 	NodeID      string    `json:"node_id"`
+	Round       int       `json:"round"`    // T9.2:投票轮次(挂起所属 attempt 号;跨轮时间线分组维度)
 	Decision    string    `json:"decision"` // approve | reject(请求面词表)
 	DecidedBy   string    `json:"decided_by"`
 	Comment     *string   `json:"comment"`
@@ -79,6 +80,7 @@ func toDecisionDTO(d Decision) decisionDTO {
 		ID:          strconv.FormatUint(d.ID, 10),
 		ExecutionID: strconv.FormatUint(d.ExecutionID, 10),
 		NodeID:      d.NodeID,
+		Round:       d.Round, // T9.2:跨轮时间线的分组维度(回滚重挂后旧轮票对照)
 		Decision:    decisionFace(d.Decision),
 		DecidedBy:   d.DecidedBy,
 		Comment:     d.Comment,
@@ -181,9 +183,13 @@ func (s *Server) decideApproval(c *gin.Context) {
 		if !containsString(snap.Approvers, actor) {
 			return ErrNotApprover
 		}
+		// 轮次锚(T9.2/D-t92 决策 6):round = 锁行 attempts(挂起所属轮),
+		// 与 resume 事件第四段(attempts+1)同源单点、恒差 1;旧轮票对
+		// 新轮不可见(谓词承载,消费点零漏改面)。
+		round := int(node.Attempts)
 		// 重放/改判裁决先行(先于终态/状态守卫:已定局的执行 wf 可能已
 		// 终态,重放语义必须胜出 409 面)。
-		if prior, err := s.st.GetDecisionByApprover(c.Request.Context(), tx, node.NodeExecID, actor); err == nil {
+		if prior, err := s.st.GetDecisionByApprover(c.Request.Context(), tx, node.NodeExecID, round, actor); err == nil {
 			if prior.Decision == dbDecision {
 				out = toDecisionDTO(prior)
 				replay = true // 重放:响应行回显,零新写(200 面)
@@ -195,7 +201,7 @@ func (s *Server) decideApproval(c *gin.Context) {
 		}
 		// 或签首票定局:任何既存票(他人先投,节点可能仍在 WAITING——
 		// 续跑是异步的)即定局,后续票 409。
-		if n, err := s.st.CountDecisions(c.Request.Context(), tx, node.NodeExecID); err != nil {
+		if n, err := s.st.CountDecisions(c.Request.Context(), tx, node.NodeExecID, round); err != nil {
 			return err
 		} else if n > 0 {
 			return ErrAlreadyDecided
@@ -225,7 +231,7 @@ func (s *Server) decideApproval(c *gin.Context) {
 		}
 		if err := s.st.InsertDecision(c.Request.Context(), tx, InsertDecisionParams{
 			ID: decisionID, ExecutionID: execID, NodeExecID: node.NodeExecID,
-			NodeID: nodeID, DecidedBy: actor, Decision: dbDecision, Comment: req.Comment,
+			NodeID: nodeID, Round: round, DecidedBy: actor, Decision: dbDecision, Comment: req.Comment,
 		}); err != nil {
 			if errors.Is(err, ErrConflict) {
 				return errDeciderRace // 并发双投:事务外读回裁决
@@ -240,7 +246,7 @@ func (s *Server) decideApproval(c *gin.Context) {
 		if err := s.appendResumeEvent(c.Request.Context(), tx, execID, node.NodeExecID, nodeID, node.Attempts+1, decisionID); err != nil {
 			return err
 		}
-		decided, err := s.st.GetDecisionByApprover(c.Request.Context(), tx, node.NodeExecID, actor)
+		decided, err := s.st.GetDecisionByApprover(c.Request.Context(), tx, node.NodeExecID, round, actor)
 		if err != nil {
 			return err
 		}
@@ -278,7 +284,10 @@ func (s *Server) resolveDeciderRace(c *gin.Context, execID uint64, nodeID, actor
 		mapApprovalError(c, err)
 		return
 	}
-	prior, err := s.st.GetDecisionByApprover(c.Request.Context(), s.dbh, node.NodeExecID, actor)
+	// 轮次锚定读回(T9.2):并发双投必同轮(同一次挂起),按当轮 attempts
+	// 查,round-1 旧行结构性不可达——旧形态「读回命中旧轮行 → 假 200/
+	// 误 409」的实害路径封闭。
+	prior, err := s.st.GetDecisionByApprover(c.Request.Context(), s.dbh, node.NodeExecID, int(node.Attempts), actor)
 	if err != nil {
 		mapApprovalError(c, err)
 		return

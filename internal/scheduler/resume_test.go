@@ -58,10 +58,15 @@ const approvalBadOutputDSL = `{"dsl":"1.0","name":"approval-badout-t",
 func seedDecision(t *testing.T, d *sql.DB, execID, nodeExecID uint64, nodeID, decidedBy, decision, comment string) uint64 {
 	t.Helper()
 	id := uint64(time.Now().UnixNano())&0x7FFFFFFFFFFF<<10 | uint64(nodeExecID&0x3FF)
+	// round = 锁行 attempts(T9.2 决策 6:决定锚定挂起所属轮,与生产写入面同源)。
+	var attempts uint16
+	if err := d.QueryRow(`SELECT attempts FROM node_execution WHERE id=?`, nodeExecID).Scan(&attempts); err != nil {
+		t.Fatalf("seed decision read attempts: %v", err)
+	}
 	if _, err := d.Exec(`INSERT INTO approval_decision
-	  (id, execution_id, node_execution_id, node_id, decided_by, decision, comment)
-	VALUES (?,?,?,?,?,?,?)`,
-		id, execID, nodeExecID, nodeID, decidedBy, decision, comment); err != nil {
+	  (id, execution_id, node_execution_id, node_id, round, decided_by, decision, comment)
+	VALUES (?,?,?,?,?,?,?,?)`,
+		id, execID, nodeExecID, nodeID, int(attempts), decidedBy, decision, comment); err != nil {
 		t.Fatalf("seed decision: %v", err)
 	}
 	return id

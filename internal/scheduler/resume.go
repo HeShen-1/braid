@@ -147,15 +147,18 @@ func (s *Scheduler) resumeOnce(ctx context.Context, req ResumeRequest,
 				req.AttemptNo, n.id, n.attempts)
 		}
 
-		// 5. 决策复核:事件引用的决定行必须存在且锚定本节点(伪事件/漂移
-		// 响亮失败;决定行不可变,当前读即终值)。
+		// 5. 决策复核:事件引用的决定行必须存在且锚定本节点与本轮(伪事件/
+		// 漂移/旧轮票套新轮挂起均响亮失败;决定行不可变,当前读即终值)。
+		// round 锚(T9.2/D-t92 决策 6):决定行的 round 必等于当前挂起所属轮
+		//(锁行 attempts)——回滚重挂后 round-1 旧行结构性不可达本轮。
 		var decExecID, decNodeExecID uint64
+		var decRound int
 		var dbDecision, decidedBy string
 		var comment sql.NullString
 		err = q.QueryRowContext(ctx,
-			`SELECT execution_id, node_execution_id, decision, decided_by, comment
+			`SELECT execution_id, node_execution_id, round, decision, decided_by, comment
 			   FROM approval_decision WHERE id=?`, req.DecisionID).
-			Scan(&decExecID, &decNodeExecID, &dbDecision, &decidedBy, &comment)
+			Scan(&decExecID, &decNodeExecID, &decRound, &dbDecision, &decidedBy, &comment)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("scheduler: resume decision %d vanished (fabricated event?)", req.DecisionID)
 		}
@@ -165,6 +168,10 @@ func (s *Scheduler) resumeOnce(ctx context.Context, req ResumeRequest,
 		if decExecID != req.ExecID || decNodeExecID != req.NodeExecID {
 			return fmt.Errorf("scheduler: decision %d anchored to (exec %d, node %d), event claims (exec %d, node %d)",
 				req.DecisionID, decExecID, decNodeExecID, req.ExecID, req.NodeExecID)
+		}
+		if decRound != int(n.attempts) {
+			return fmt.Errorf("scheduler: decision %d is round %d, node %d suspended in round %d (stale-round decision)",
+				req.DecisionID, decRound, n.id, n.attempts)
 		}
 		decidedComment := ""
 		if comment.Valid {
