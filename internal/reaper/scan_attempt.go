@@ -102,8 +102,19 @@ SELECT id, node_execution_id, execution_id
 // scheduler.Complete 循环形状;不重跑处置逻辑之外的东西)。
 func (r *Reaper) reapAttempt(ctx context.Context, nodeExecID, execID uint64, ent entry) error {
 	for attempt := 0; ; attempt++ {
-		err := r.reapOnce(ctx, nodeExecID, execID, ent)
-		if err == nil || errors.Is(err, errSkip) {
+		delegate, err := r.reapOnce(ctx, nodeExecID, execID, ent)
+		if err == nil {
+			if delegate {
+				// T9.1:实例耗尽委托在 reapOnce 事务提交后执行(DEAD 收口先落地;
+				// scheduler 侧自带全行锁 + 幂等守卫,失败上抛归 tick 日志)。
+				if derr := r.deps.Sched.ReapInstanceExhausted(ctx, execID, nodeExecID,
+					"reaper:"+r.cfg.ID); derr != nil {
+					return derr
+				}
+			}
+			return nil
+		}
+		if errors.Is(err, errSkip) {
 			return nil
 		}
 		if !engine.Transient(err) || attempt >= maxTransientRetries {
@@ -125,23 +136,29 @@ func (r *Reaper) reapAttempt(ctx context.Context, nodeExecID, execID uint64, ent
 // 锁后复核五项(候选 SELECT 与本事务之间的 TOCTOU 全部在此吸收):
 // attempt 收口态 / 心跳新鲜(无条件、与入口无关) / deadline 复活 / wf
 // 当前读 / attempt 存在性三分(分支 B)。
-func (r *Reaper) reapOnce(ctx context.Context, nodeExecID, execID uint64, ent entry) error {
-	return engine.WithTx(ctx, r.deps.DB, func(q engine.DBTX) error {
+// 返回值 delegate:本事务已收口 attempt(DEAD)且节点是耗尽的 parallel 实例,
+// 节点级终败/控制器收口须在提交后委托 scheduler.ReapInstanceExhausted
+// (T9.1,对抗审计 HIGH②:事务内镜像 completeOnce 会让 wait_all 退化
+// fail_fast 且控制器滞留 EXECUTING;委托面自带全行锁序与同款语义)。
+func (r *Reaper) reapOnce(ctx context.Context, nodeExecID, execID uint64, ent entry) (delegate bool, err error) {
+	delegate = false
+	err = engine.WithTx(ctx, r.deps.DB, func(q engine.DBTX) error {
 		// [1] 锁 node 行。
 		var (
 			nodeID     string
 			nodeType   string
 			nodeStatus engine.NodeState
 			nodeVer    uint32
+			instanceNo uint16
 			attempts   uint16
 			maxA       uint16
 			workerID   sql.NullString
 			deadline   sql.NullTime
 		)
 		err := q.QueryRowContext(ctx, `
-SELECT node_id, type, status, version, attempts, max_attempts, worker_id, deadline_at
+SELECT node_id, type, status, version, instance_no, attempts, max_attempts, worker_id, deadline_at
   FROM node_execution WHERE id=? FOR UPDATE`, nodeExecID).
-			Scan(&nodeID, &nodeType, &nodeStatus, &nodeVer, &attempts, &maxA, &workerID, &deadline)
+			Scan(&nodeID, &nodeType, &nodeStatus, &nodeVer, &instanceNo, &attempts, &maxA, &workerID, &deadline)
 		if errors.Is(err, sql.ErrNoRows) {
 			return fmt.Errorf("reaper: node_execution %d vanished (data defect)", nodeExecID)
 		}
@@ -324,6 +341,7 @@ SELECT COUNT(*) FROM outbox
 				audit.NodeStateChangedPayload{
 					From: string(nodeStatus), To: string(engine.NodeCancelled),
 					NodeID: nodeID, Version: cancelVer, AttemptNo: attempts, WorkerID: workerID.String,
+					InstanceNo: instanceNo,
 				}); err != nil {
 				return err
 			}
@@ -336,6 +354,14 @@ SELECT COUNT(*) FROM outbox
 			r.log.Error("node.orphan_on_waiting_approval",
 				"node_execution_id", nodeExecID, "execution_id", execID,
 				"hint", "EXECUTING node under WAITING_APPROVAL violates T4.1 contract")
+			return nil
+		case instanceNo > 0 && int(attempts) >= int(maxA):
+			// T9.1:parallel 实例行耗尽——attempt DEAD 收口已在本事务,节点级
+			// 终败(fail_fast 收敛控制器 / wait_all 收齐再判)提交后委托
+			// scheduler(全行锁序 + 与 completeOnce 同款语义)。直接走下方
+			// default 会把 wait_all 塌缩为 fail-fast、控制器滞留 deadline=NULL
+			// 的 EXECUTING(对抗审计 HIGH②)。
+			delegate = true
 			return nil
 		case int(attempts) < int(maxA):
 			// 预算内重派:RedispatchNode(平台重试 claim 即本语句)+ 同事务
@@ -350,7 +376,7 @@ SELECT COUNT(*) FROM outbox
 			if err := r.auditRow(ctx, q, audit.EventNodeRedispatched, execID, nodeExecID, 0, nodeID,
 				audit.NodeRedispatchedPayload{
 					NodeID: nodeID, AttemptNo: attempts + 1,
-					Trigger: audit.TriggerReaped, MaxAttempts: maxA,
+					Trigger: audit.TriggerReaped, MaxAttempts: maxA, InstanceNo: instanceNo,
 				}); err != nil {
 				return err
 			}
@@ -396,6 +422,7 @@ SELECT COUNT(*) FROM outbox
 			return nil
 		}
 	})
+	return delegate, err
 }
 
 // appendRedispatchEvent 落重派事件(与 scheduler.appendNodeTask 同构;
