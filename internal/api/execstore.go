@@ -39,6 +39,7 @@ type Execution struct {
 type NodeExecution struct {
 	ID           uint64
 	NodeID       string
+	InstanceNo   uint16 // T9.1:parallel 实例行 1..N;控制行/单实例节点 0
 	Type         string
 	Status       string
 	Attempts     uint16
@@ -125,13 +126,14 @@ func (s *Store) ListExecutions(ctx context.Context, q DBTX, name, status string,
 	return out, total, nil
 }
 
-// ListNodeExecutions 列某执行的全部节点行(node_id 字典序 = uk_node_exec
-// 索引序,DDL 钦定的确定性排序,与到达/重试顺序无关)。
+// ListNodeExecutions 列某执行的全部节点行((node_id, instance_no) 字典序 =
+// uk_node_exec 三列索引序,DDL 钦定的确定性排序,与到达/重试顺序无关;
+// parallel 展开行按实例序紧随控制行)。
 func (s *Store) ListNodeExecutions(ctx context.Context, q DBTX, execID uint64) ([]NodeExecution, error) {
 	rows, err := q.QueryContext(ctx, `
-SELECT id, node_id, type, status, attempts, max_attempts, error_code, error_message,
+SELECT id, node_id, instance_no, type, status, attempts, max_attempts, error_code, error_message,
        started_at, finished_at
-FROM node_execution WHERE execution_id = ? ORDER BY node_id`, execID)
+FROM node_execution WHERE execution_id = ? ORDER BY node_id, instance_no`, execID)
 	if err != nil {
 		return nil, fmt.Errorf("api: list node executions of %d: %w", execID, err)
 	}
@@ -139,7 +141,7 @@ FROM node_execution WHERE execution_id = ? ORDER BY node_id`, execID)
 	var out []NodeExecution
 	for rows.Next() {
 		var n NodeExecution
-		if err := rows.Scan(&n.ID, &n.NodeID, &n.Type, &n.Status, &n.Attempts, &n.MaxAttempts,
+		if err := rows.Scan(&n.ID, &n.NodeID, &n.InstanceNo, &n.Type, &n.Status, &n.Attempts, &n.MaxAttempts,
 			&n.ErrorCode, &n.ErrorMessage, &n.StartedAt, &n.FinishedAt); err != nil {
 			return nil, fmt.Errorf("api: scan node execution: %w", err)
 		}

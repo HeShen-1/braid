@@ -223,15 +223,16 @@ func TestSchemaContract(t *testing.T) {
 		}
 	}
 
-	// CHECK 约束齐备:8 个(definition 1 + node 2 + attempt 2 + audit 1 + users 2)
+	// CHECK 约束齐备:9 个(definition 1 + node 3 + attempt 2 + audit 1 + users 2;
+	// node +1 = 0006 chk_node_instance)
 	var checks int
 	if err := d.QueryRow(
 		`SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
 		 WHERE CONSTRAINT_SCHEMA = DATABASE()`).Scan(&checks); err != nil {
 		t.Fatalf("check constraints: %v", err)
 	}
-	if checks != 8 {
-		t.Fatalf("check constraints = %d, want 8", checks)
+	if checks != 9 {
+		t.Fatalf("check constraints = %d, want 9", checks)
 	}
 
 	// T6.1 对账索引存在
@@ -259,6 +260,39 @@ func TestSchemaContract(t *testing.T) {
 	}
 	if ukCols != 2 {
 		t.Fatalf("uk_node_id_exec columns = %d, want 2 (id, execution_id)", ukCols)
+	}
+
+	// 0006 并行实例契约(T9.1):type ENUM 含 parallel、instance_no NOT NULL
+	// DEFAULT 0、uk_node_exec 三列化。钉住迁移不被无声降级。
+	var enumHasParallel int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM information_schema.COLUMNS
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'node_execution'
+		   AND COLUMN_NAME = 'type' AND COLUMN_TYPE LIKE "%'parallel'%"`).Scan(&enumHasParallel); err != nil {
+		t.Fatalf("type enum parallel: %v", err)
+	}
+	if enumHasParallel != 1 {
+		t.Fatalf("node_execution.type ENUM 不含 'parallel'(0006 防回退)")
+	}
+	var instanceNoDefault string
+	if err := d.QueryRow(
+		`SELECT COLUMN_DEFAULT FROM information_schema.COLUMNS
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'node_execution'
+		   AND COLUMN_NAME = 'instance_no'`).Scan(&instanceNoDefault); err != nil {
+		t.Fatalf("instance_no column: %v", err)
+	}
+	if instanceNoDefault != "0" {
+		t.Fatalf("node_execution.instance_no DEFAULT = %q, want 0(存量行零迁移语义)", instanceNoDefault)
+	}
+	var ukExecCols int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM information_schema.STATISTICS
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'node_execution'
+		   AND INDEX_NAME = 'uk_node_exec' AND NON_UNIQUE = 0`).Scan(&ukExecCols); err != nil {
+		t.Fatalf("uk_node_exec: %v", err)
+	}
+	if ukExecCols != 3 {
+		t.Fatalf("uk_node_exec columns = %d, want 3 (execution_id, node_id, instance_no)", ukExecCols)
 	}
 }
 

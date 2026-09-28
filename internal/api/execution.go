@@ -301,10 +301,12 @@ type executionDTO struct {
 	FinishedAt        *time.Time `json:"finished_at"`
 }
 
-// nodeExecutionDTO:节点状态视图(uk_node_exec 字典序)。
+// nodeExecutionDTO:节点状态视图(uk_node_exec 字典序;parallel 实例行
+// 携 instance_no 1..N,控制行/单实例节点 0——形状稳定,非 omitempty)。
 type nodeExecutionDTO struct {
 	ID           string     `json:"id"`
 	NodeID       string     `json:"node_id"`
+	InstanceNo   uint16     `json:"instance_no"`
 	Type         string     `json:"type"`
 	Status       string     `json:"status"`
 	Attempts     uint16     `json:"attempts"`
@@ -363,7 +365,8 @@ func toExecutionDetail(e Execution, nodes []NodeExecution) executionDetailDTO {
 
 func toNodeExecutionDTO(n NodeExecution) nodeExecutionDTO {
 	return nodeExecutionDTO{
-		ID: strconv.FormatUint(n.ID, 10), NodeID: n.NodeID, Type: n.Type, Status: n.Status,
+		ID: strconv.FormatUint(n.ID, 10), NodeID: n.NodeID, InstanceNo: n.InstanceNo,
+		Type: n.Type, Status: n.Status,
 		Attempts: n.Attempts, MaxAttempts: n.MaxAttempts,
 		ErrorCode: n.ErrorCode, ErrorMessage: n.ErrorMessage,
 		StartedAt: n.StartedAt, FinishedAt: n.FinishedAt,

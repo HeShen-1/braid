@@ -19,6 +19,7 @@ package scheduler
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"math/rand/v2"
@@ -83,7 +84,7 @@ func (s *Scheduler) Suspend(ctx context.Context, req SuspendRequest) error {
 		return err
 	}
 	for attempt := 0; ; attempt++ {
-		err := s.suspendOnce(ctx, req, wf, g)
+		err := s.suspendOnce(ctx, req, wf, g, exec.input)
 		if err == nil {
 			return nil
 		}
@@ -104,7 +105,7 @@ func (s *Scheduler) Suspend(ctx context.Context, req SuspendRequest) error {
 
 // suspendOnce 是挂起的事务体(Complete 的 completeOnce 同构)。
 func (s *Scheduler) suspendOnce(ctx context.Context, req SuspendRequest,
-	wf *dsl.Workflow, g *dag) error {
+	wf *dsl.Workflow, g *dag, wfInput json.RawMessage) error {
 	var termGuard bool
 	err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
 		// 1. 有序全行锁(与 completeOnce 同集同序:并发 Complete/Suspend 在
@@ -186,7 +187,7 @@ func (s *Scheduler) suspendOnce(ctx context.Context, req SuspendRequest,
 
 		// 7. 双审计行(同事务):迁移行(与全部既有迁移一致)+ 审批域事件
 		// 行(T4.4 待办/T6.4 积压指标字源;DDL 0001 词表注释预留同名)。
-		st := newExecState(s, ctx, q, req.ExecID, wf, g, rows, req.WorkerID)
+		st := newExecState(s, ctx, q, req.ExecID, wf, g, rows, req.WorkerID, wfInput)
 		if err := st.stageRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
 			From: string(engine.NodeExecuting), To: string(engine.NodeWaitingApproval),
 			NodeID: n.nodeID, Version: newVer, AttemptNo: n.attempts, WorkerID: n.workerID.String,

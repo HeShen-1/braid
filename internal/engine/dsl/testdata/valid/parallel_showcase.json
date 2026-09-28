@@ -1,0 +1,22 @@
+{
+  "dsl": "1.0",
+  "name": "parallel-wf",
+  "description": "T9.1 Scatter-Gather 展示:foreach 数组输入展开并行评审,gather 结果按输入序汇合。",
+  "inputs": [{"name": "reviews", "type": "array", "required": true}],
+  "nodes": [
+    {"id": "pre", "type": "llm", "prompt": {"template": "t"}, "outputs": {"text": "string"}},
+    {"id": "fan", "type": "parallel", "title": "并行评审", "parallel": {
+      "foreach": "{{inputs.reviews}}",
+      "on_failure": "wait_all",
+      "body": {"type": "llm", "retry": {"max_attempts": 3},
+        "prompt": {"template": "评审以下内容",
+          "user_data": [{"name": "review", "ref": "{{item}}"},
+                        {"name": "ctx", "ref": "{{nodes.pre.output.text}}"}]},
+        "outputs": {"verdict": "string"}}
+    }},
+    {"id": "post", "type": "tool", "tool": "http",
+     "inputs": {"payload": "{{nodes.fan.output.results}}"}, "outputs": {"done": "boolean"}}
+  ],
+  "edges": [{"from": "pre", "to": "fan"}, {"from": "fan", "to": "post"}],
+  "outputs": {"all": "{{nodes.fan.output.results}}", "done": "{{nodes.post.output.done}}"}
+}

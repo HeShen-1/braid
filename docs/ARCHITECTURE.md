@@ -59,7 +59,7 @@
 ### 3.2 DSL(显式数据流)
 
 - JSON + JSON Schema 校验;引用语法 `{{nodes.<id>.output.<field>}}`;无共享可变黑板——每次执行的输入可精确快照、并行天然安全。
-- 节点类型 P0:llm / tool / branch / approval;P1:parallel(共享 context 并发原语与 fan-in 确定性在表设计预留)。
+- 节点类型:llm / tool / branch / approval(T9.1 起)+ parallel(Scatter-Gather:foreach 数组展开 fan-out + gather 输入序汇聚,单节点多实例行模型,见 D-2026-09-28-t91)。
 - 预留画布元数据(节点位置等);prompt 模板与用户数据在 DSL 里强制分离标注(间接注入缓解,完整 taint 追踪 P1)。
 
 ### 3.3 人在回路
@@ -101,7 +101,7 @@
 
 ## 5. P1
 
-画布(React Flow 候选)、并行节点、回滚/断点续跑 UI、容器沙箱 + egress 代理、MCP 双向、审计哈希链、会签、OIDC/LDAP、IM 审批卡片、工具包签名、Helm、SaaS 多租户、完整 taint 追踪、db_query 内置工具(只读账号/参数化/凭证作用域)。
+画布(React Flow 候选)、回滚/断点续跑 UI、容器沙箱 + egress 代理、MCP 双向、审计哈希链、会签、OIDC/LDAP、IM 审批卡片、工具包签名、Helm、SaaS 多租户、完整 taint 追踪、db_query 内置工具(只读账号/参数化/凭证作用域)。
 
 ## 附:审计事实链(设计依据)
 

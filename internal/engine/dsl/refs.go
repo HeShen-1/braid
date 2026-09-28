@@ -5,20 +5,24 @@ import (
 	"strings"
 )
 
-// 引用形态与 schema.json $defs.reference/inputRef/nodeRef 逐字钉死,不放宽、不模糊匹配:
+// 引用形态与 schema.json $defs.reference/inputRef/nodeRef/itemRef 逐字钉死,不放宽、不模糊匹配:
 // 纯引用位置必须是整个字符串恰为一个引用;tool.inputs 的字符串值内允许内嵌引用。
+// item 引用({{item}} / {{item.<field>}})只在 parallel body 语境合法,语境裁决归
+// 语义校验(checkRef 的 inBody 闸)与运行时求值器(实例 env 注入)——本文件只认形态。
 var (
 	inputRefRe = regexp.MustCompile(`^\{\{inputs\.([a-z][a-z0-9_]{0,63})\}\}$`)
 	nodeRefRe  = regexp.MustCompile(`^\{\{nodes\.([a-z][a-z0-9_]{0,63})\.output\.([a-z][a-z0-9_]{0,63})\}\}$`)
-	// 内嵌扫描用(无锚点):{{inputs.<name>}} 或 {{nodes.<id>.output.<field>}}
-	embeddedRefRe = regexp.MustCompile(`\{\{(?:inputs\.([a-z][a-z0-9_]{0,63})|nodes\.([a-z][a-z0-9_]{0,63})\.output\.([a-z][a-z0-9_]{0,63}))\}\}`)
+	itemRefRe  = regexp.MustCompile(`^\{\{item(?:\.([a-z][a-z0-9_]{0,63}))?\}\}$`)
+	// 内嵌扫描用(无锚点):{{inputs.<name>}} / {{nodes.<id>.output.<field>}} /
+	// {{item}} / {{item.<field>}}(组序:1=input,2/3=node id/字段,4=item 字段可空)
+	embeddedRefRe = regexp.MustCompile(`\{\{(?:inputs\.([a-z][a-z0-9_]{0,63})|nodes\.([a-z][a-z0-9_]{0,63})\.output\.([a-z][a-z0-9_]{0,63})|item(?:\.([a-z][a-z0-9_]{0,63}))?)\}\}`)
 )
 
 // Ref 是解析后的一个引用。
 type Ref struct {
-	Kind  string // "input" | "node"
-	Name  string // input 名,或节点 id
-	Field string // node 引用的输出字段;input 引用为空
+	Kind  string // "input" | "node" | "item"
+	Name  string // input 名,或节点 id;item 引用为空
+	Field string // node 引用的输出字段;item 引用的元素字段(空 = 整个元素);input 引用为空
 	Text  string // 原文
 }
 
@@ -35,10 +39,13 @@ func ExpandStringRefs(s string, resolve func(Ref) (string, bool)) (string, bool)
 	out := embeddedRefRe.ReplaceAllStringFunc(s, func(m string) string {
 		g := embeddedRefRe.FindStringSubmatch(m)
 		r := Ref{Text: m}
-		if g[1] != "" {
+		switch {
+		case g[1] != "":
 			r.Kind, r.Name = "input", g[1]
-		} else {
+		case g[2] != "":
 			r.Kind, r.Name, r.Field = "node", g[2], g[3]
+		default:
+			r.Kind, r.Field = "item", g[4]
 		}
 		if v, ok := resolve(r); ok {
 			return v
@@ -58,6 +65,9 @@ func parsePureRef(s string) (Ref, bool) {
 	if m := nodeRefRe.FindStringSubmatch(s); m != nil {
 		return Ref{Kind: "node", Name: m[1], Field: m[2], Text: s}, true
 	}
+	if m := itemRefRe.FindStringSubmatch(s); m != nil {
+		return Ref{Kind: "item", Field: m[1], Text: s}, true
+	}
 	return Ref{}, false
 }
 
@@ -74,10 +84,16 @@ func scanStringRefs(s string) (refs []Ref, bad []string) {
 		m := embeddedRefRe.FindStringSubmatchIndex(s[j:])
 		if m != nil && m[0] == 0 { // 合法引用恰从 j 开始
 			r := Ref{Text: s[j : j+m[1]]}
-			if g := m[2]; g >= 0 {
-				r.Kind, r.Name = "input", s[j+g:j+m[3]]
-			} else {
+			switch {
+			case m[2] >= 0:
+				r.Kind, r.Name = "input", s[j+m[2]:j+m[3]]
+			case m[4] >= 0:
 				r.Kind, r.Name, r.Field = "node", s[j+m[4]:j+m[5]], s[j+m[6]:j+m[7]]
+			default:
+				r.Kind = "item"
+				if m[8] >= 0 {
+					r.Field = s[j+m[8] : j+m[9]]
+				}
 			}
 			refs = append(refs, r)
 			i = j + m[1]

@@ -45,6 +45,7 @@ type validator struct {
 	adj      map[string][]string          // 正向邻接(端点合法、去重后,保持声明序)
 	radj     map[string][]string          // 反向邻接
 	ancCache map[string]map[string]bool   // 节点 → 祖先集合(懒算,不含自身)
+	inBody   bool                         // 正在校验 parallel body:item 引用语境闸(body 不可嵌套,无需栈)
 }
 
 func (v *validator) add(code, node, ref, detail string) {
@@ -69,7 +70,14 @@ func (v *validator) checkNodes() {
 			continue
 		}
 		v.nodes[n.ID] = n
-		if n.Branch == nil {
+		switch {
+		case n.Parallel != nil:
+			// 输出契约固定(T9.1 D-2026-09-28-t91):results = body 输出对象的数组
+			// (gather 输入序)。不可作者声明——下游引用面以此单源校验。
+			v.outs[n.ID] = map[string]string{"results": "array"}
+		case n.Branch != nil:
+			// branch 无输出
+		default:
 			v.outs[n.ID] = nodeOutputTypes(n)
 		}
 	}
@@ -160,13 +168,15 @@ func (v *validator) checkNodeRefs() {
 		n := &v.wf.Nodes[i]
 		switch {
 		case n.LLM != nil:
-			v.checkLLM(n)
+			v.checkLLM(n.ID, n.LLM)
 		case n.Tool != nil:
-			v.checkTool(n)
+			v.checkTool(n.ID, n.Tool)
 		case n.Branch != nil:
 			v.checkBranch(n)
 		case n.Approval != nil:
 			v.checkApproval(n)
+		case n.Parallel != nil:
+			v.checkParallel(n)
 		}
 	}
 }
@@ -206,36 +216,66 @@ func reservedApproverList() string {
 	return strings.Join(rs, ",")
 }
 
-func (v *validator) checkLLM(n *Node) {
+// checkParallel 校验 parallel 节点(T9.1,D-2026-09-28-t91):foreach 必须是指向
+// 声明 type=array 输入的纯引用(schema 钉 inputRef 形态,此处钉语义);body 限
+// llm|tool(schema 已拦,防御兜底),其引用按 parallel 节点位置参与祖先约束,
+// item 引用在 body 语境放开(inBody 闸)。签名取 nodeID + 具体指针:body 复用
+// checkLLM/checkTool 时以父节点 id 归因。
+func (v *validator) checkParallel(n *Node) {
+	p := n.Parallel
+	if r, ok := parsePureRef(p.Foreach); ok && r.Kind == "input" {
+		if t, cont := v.checkRef(n.ID, r, "parallel.foreach"); cont && t != "array" {
+			v.add(IssueBadForeach, n.ID, r.Text,
+				fmt.Sprintf("parallel.foreach input %q is declared %s, want array", r.Name, t))
+		}
+	} else {
+		v.add(IssueBadForeach, n.ID, p.Foreach,
+			"parallel.foreach must be a pure {{inputs.<name>}} reference")
+	}
+	if p.Body.LLM == nil && p.Body.Tool == nil {
+		v.add(IssueBadForeach, n.ID, "", "parallel.body must be an llm or tool node template")
+		return
+	}
+	v.inBody = true
+	defer func() { v.inBody = false }()
+	if p.Body.LLM != nil {
+		v.checkLLM(n.ID, p.Body.LLM)
+	}
+	if p.Body.Tool != nil {
+		v.checkTool(n.ID, p.Body.Tool)
+	}
+}
+
+func (v *validator) checkLLM(nodeID string, l *LLMNode) {
 	seen := map[string]bool{}
-	for _, ud := range n.LLM.Prompt.UserData {
+	for _, ud := range l.Prompt.UserData {
 		if seen[ud.Name] {
-			v.add(IssueDupUserData, n.ID, ud.Name, "duplicate user_data name in one prompt")
+			v.add(IssueDupUserData, nodeID, ud.Name, "duplicate user_data name in one prompt")
 			continue
 		}
 		seen[ud.Name] = true
 		r, ok := parsePureRef(ud.Ref)
 		if !ok {
 			// schema 已钉死纯引用形态;此处为防御(跳过 schema 直调 Parse 时兜底)。
-			v.add(IssueBadRef, n.ID, ud.Ref, "user_data.ref is not a well-formed pure reference")
+			v.add(IssueBadRef, nodeID, ud.Ref, "user_data.ref is not a well-formed pure reference")
 			continue
 		}
-		v.checkRef(n.ID, r, "user_data "+ud.Name)
+		v.checkRef(nodeID, r, "user_data "+ud.Name)
 	}
 }
 
-func (v *validator) checkTool(n *Node) {
-	if v.cfg.toolAllowlist != nil && !v.cfg.toolAllowlist[n.Tool.Tool] {
-		v.add(IssueToolNotAllowed, n.ID, n.Tool.Tool,
-			fmt.Sprintf("tool %q is not in the publish allowlist", n.Tool.Tool))
+func (v *validator) checkTool(nodeID string, t *ToolNode) {
+	if v.cfg.toolAllowlist != nil && !v.cfg.toolAllowlist[t.Tool] {
+		v.add(IssueToolNotAllowed, nodeID, t.Tool,
+			fmt.Sprintf("tool %q is not in the publish allowlist", t.Tool))
 	}
-	keys := make([]string, 0, len(n.Tool.Inputs))
-	for k := range n.Tool.Inputs {
+	keys := make([]string, 0, len(t.Inputs))
+	for k := range t.Inputs {
 		keys = append(keys, k)
 	}
 	sort.Strings(keys)
 	for _, k := range keys {
-		v.walkToolValue(n.ID, k, n.Tool.Inputs[k])
+		v.walkToolValue(nodeID, k, t.Inputs[k])
 	}
 }
 
@@ -421,6 +461,15 @@ func (v *validator) checkRef(nodeID string, r Ref, where string) (string, bool) 
 			return "", false
 		}
 		return t, true
+	case "item":
+		// item 引用只在 parallel body 语境合法(元素类型是运行时数据,静态不可判;
+		// body 限 llm|tool,无谓词类型面,不需要类型返回)。
+		if !v.inBody {
+			v.add(IssueBadRef, nodeID, r.Text,
+				fmt.Sprintf("%s uses an item reference outside a parallel body", where))
+			return "", false
+		}
+		return "unknown", true
 	case "node":
 		target, ok := v.nodes[r.Name]
 		if !ok {

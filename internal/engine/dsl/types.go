@@ -45,6 +45,7 @@ type Node struct {
 	Tool     *ToolNode     `json:"-"`
 	Branch   *BranchNode   `json:"-"`
 	Approval *ApprovalNode `json:"-"`
+	Parallel *ParallelNode `json:"-"`
 }
 
 // UnmarshalJSON 两遍解码:先取公共字段与 type,再解到对应具体结构。
@@ -74,6 +75,20 @@ func (n *Node) UnmarshalJSON(b []byte) error {
 	case "approval":
 		n.Approval = new(ApprovalNode)
 		return json.Unmarshal(b, n.Approval)
+	case "parallel":
+		// parallel 专有字段嵌套在 "parallel" 键下(其余节点类型平铺),多一层拆包。
+		var w struct {
+			Parallel *ParallelNode `json:"parallel"`
+		}
+		if err := json.Unmarshal(b, &w); err != nil {
+			return err
+		}
+		if w.Parallel == nil {
+			// schema 已 required "parallel";此处为防御(跳过 schema 直调时兜底)。
+			return fmt.Errorf("dsl: parallel node %q missing parallel block", env.ID)
+		}
+		n.Parallel = w.Parallel
+		return nil
 	default:
 		// schema 已拦截未知类型;到达此处说明调用方跳过了 schema 校验,保持防御。
 		return fmt.Errorf("dsl: unknown node type %q (node %q)", env.Type, env.ID)
@@ -143,4 +158,17 @@ type ApprovalNode struct {
 	OnTimeout    string            `json:"on_timeout"`
 	Instructions string            `json:"instructions"`
 	Outputs      map[string]string `json:"outputs"`
+}
+
+// ParallelNode 并行节点(T9.1 Scatter-Gather,D-2026-09-28-t91):foreach 纯引用
+// (指向声明 type=array 的输入)由调度器在 Instantiate 展开为 N 实例行(同
+// node_id、instance_no 1..N、body 类型);节点自身落控制行(instance 0,gather
+// 锚)。输出契约固定:results = body 输出对象的数组,输入序。元素绑定关键字
+// 钉死 "item"(自定义名与引用形态钉死冲突,不设旋钮);OnFailure 为空 =
+// fail_fast(生效值由 scheduler 物化点补齐,approval mode/timeout 同款约定);
+// Body 是 llm|tool 单节点模板(ID 恒空,实例共享父 node_id)。
+type ParallelNode struct {
+	Foreach   string `json:"foreach"`
+	OnFailure string `json:"on_failure"` // 空 = "fail_fast"
+	Body      Node   `json:"body"`       // llm|tool 模板;ID 恒空
 }

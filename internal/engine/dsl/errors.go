@@ -21,6 +21,7 @@ const (
 	IssueTypeMismatch   = "type_mismatch"    // branch.when 左右操作数/操作符类型不匹配
 	IssueToolNotAllowed = "tool_not_allowed" // 工具不在发布白名单内
 	IssueBadApprover    = "bad_approver"     // approvers[] 含 username 词域外名单(403 死面)
+	IssueBadForeach     = "bad_foreach"      // parallel.foreach 非 array 输入引用 / body 非 llm|tool 模板(防御)
 )
 
 // Issue 是一条语义校验发现。
