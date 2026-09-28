@@ -1,0 +1,291 @@
+{
+ "dsl": "1.0",
+ "name": "agent-council",
+ "description": "多智能体技术方案评审会:主持人提炼 → 架构/安全/成本三评审员并行评审 → 首席仲裁汇合裁决 → 人工审批把关 → 按结论路由终报或修订计划",
+ "inputs": [
+  {
+   "name": "proposal",
+   "type": "string",
+   "required": true,
+   "description": "待评审的技术方案文本"
+  }
+ ],
+ "edges": [
+  {
+   "from": "planner",
+   "to": "arch_reviewer"
+  },
+  {
+   "from": "planner",
+   "to": "sec_reviewer"
+  },
+  {
+   "from": "planner",
+   "to": "cost_reviewer"
+  },
+  {
+   "from": "arch_reviewer",
+   "to": "judge"
+  },
+  {
+   "from": "sec_reviewer",
+   "to": "judge"
+  },
+  {
+   "from": "cost_reviewer",
+   "to": "judge"
+  },
+  {
+   "from": "judge",
+   "to": "human_review"
+  },
+  {
+   "from": "human_review",
+   "to": "gate"
+  },
+  {
+   "from": "gate",
+   "to": "final_report"
+  },
+  {
+   "from": "gate",
+   "to": "revision"
+  }
+ ],
+ "nodes": [
+  {
+   "id": "planner",
+   "type": "llm",
+   "title": "评审会主持人",
+   "description": "提炼方案要点,统一评审上下文",
+   "model": "glm-5.3",
+   "temperature": 0.3,
+   "response_format": "json",
+   "prompt": {
+    "system": "你是技术评审会的主持人,以中性、精确的口吻提炼方案要点,不加主观评价。",
+    "template": "请提炼下述技术方案:一段 150 字以内的摘要,以及最多 3 个需要评审重点关注的关键决策点。以 JSON 对象返回:键 summary 为摘要字符串;键 focus 为关键决策点数组(字符串数组,每项一句)。仅输出该 JSON 对象。",
+    "user_data": [
+     {
+      "name": "proposal",
+      "ref": "{{inputs.proposal}}"
+     }
+    ]
+   },
+   "outputs": {
+    "summary": "string",
+    "focus": "array"
+   }
+  },
+  {
+   "id": "arch_reviewer",
+   "type": "llm",
+   "title": "架构评审员",
+   "description": "可行性/复杂度/技术债",
+   "model": "glm-5.3",
+   "temperature": 0.3,
+   "response_format": "json",
+   "prompt": {
+    "system": "你是架构评审专家,关注可行性、复杂度、扩展性与长期技术债,给出犀利但建设性的意见。",
+    "template": "请从架构角度评审该方案。以 JSON 对象返回:键 score 为评分(字符串,1-10 整数的字符串形式);键 opinion 为评审意见(200 字以内:结论、两条核心理由、一条最大风险)。仅输出该 JSON 对象。",
+    "user_data": [
+     {
+      "name": "proposal",
+      "ref": "{{inputs.proposal}}"
+     },
+     {
+      "name": "host_summary",
+      "ref": "{{nodes.planner.output.summary}}"
+     }
+    ]
+   },
+   "outputs": {
+    "score": "string",
+    "opinion": "string"
+   }
+  },
+  {
+   "id": "sec_reviewer",
+   "type": "llm",
+   "title": "安全评审员",
+   "description": "攻击面/数据风险/权限",
+   "model": "glm-5.3",
+   "temperature": 0.3,
+   "response_format": "json",
+   "prompt": {
+    "system": "你是安全评审专家,关注攻击面、数据泄露风险、权限模型与合规,宁可过严不可漏报。",
+    "template": "请从安全角度评审该方案。以 JSON 对象返回:键 score 为评分(字符串,1-10 整数的字符串形式);键 opinion 为评审意见(200 字以内:结论、两条核心理由、一条最大风险)。仅输出该 JSON 对象。",
+    "user_data": [
+     {
+      "name": "proposal",
+      "ref": "{{inputs.proposal}}"
+     },
+     {
+      "name": "host_summary",
+      "ref": "{{nodes.planner.output.summary}}"
+     }
+    ]
+   },
+   "outputs": {
+    "score": "string",
+    "opinion": "string"
+   }
+  },
+  {
+   "id": "cost_reviewer",
+   "type": "llm",
+   "title": "成本评审员",
+   "description": "资源/工时/运维负担",
+   "model": "glm-5.3",
+   "temperature": 0.3,
+   "response_format": "json",
+   "prompt": {
+    "system": "你是成本评审专家,关注资源开销、人力投入与长期运维负担,用数字说话。",
+    "template": "请从成本角度评审该方案。以 JSON 对象返回:键 score 为评分(字符串,1-10 整数的字符串形式);键 opinion 为评审意见(200 字以内:结论、两条核心理由、一条最大风险)。仅输出该 JSON 对象。",
+    "user_data": [
+     {
+      "name": "proposal",
+      "ref": "{{inputs.proposal}}"
+     },
+     {
+      "name": "host_summary",
+      "ref": "{{nodes.planner.output.summary}}"
+     }
+    ]
+   },
+   "outputs": {
+    "score": "string",
+    "opinion": "string"
+   }
+  },
+  {
+   "id": "judge",
+   "type": "llm",
+   "title": "首席仲裁",
+   "description": "汇合三方意见,形成评审会结论",
+   "model": "glm-5.3",
+   "temperature": 0.2,
+   "response_format": "json",
+   "prompt": {
+    "system": "你是评审会首席仲裁。综合三方评审意见裁决:分歧如何权衡、最终结论是什么。你只裁决,不新增评审维度。",
+    "template": "三方评审意见以标签块给出(各维度的 _score 为 1-10 评分,_opinion 为意见)。请汇合裁决。以 JSON 对象返回:键 verdict 为结论(字符串,取值仅 approve 或 revise 之一:三方平均分 ≥ 7 且无致命风险用 approve,否则 revise);键 summary 为评审会总结(300 字以内:三方分数、核心分歧、裁决理由)。仅输出该 JSON 对象。",
+    "user_data": [
+     {
+      "name": "arch_score",
+      "ref": "{{nodes.arch_reviewer.output.score}}"
+     },
+     {
+      "name": "arch_opinion",
+      "ref": "{{nodes.arch_reviewer.output.opinion}}"
+     },
+     {
+      "name": "sec_score",
+      "ref": "{{nodes.sec_reviewer.output.score}}"
+     },
+     {
+      "name": "sec_opinion",
+      "ref": "{{nodes.sec_reviewer.output.opinion}}"
+     },
+     {
+      "name": "cost_score",
+      "ref": "{{nodes.cost_reviewer.output.score}}"
+     },
+     {
+      "name": "cost_opinion",
+      "ref": "{{nodes.cost_reviewer.output.opinion}}"
+     }
+    ]
+   },
+   "outputs": {
+    "verdict": "string",
+    "summary": "string"
+   }
+  },
+  {
+   "id": "human_review",
+   "type": "approval",
+   "title": "人工把关",
+   "description": "评审会结论的人工终审",
+   "approvers": [
+    "alice",
+    "bob"
+   ],
+   "mode": "any",
+   "timeout_hours": 72,
+   "on_timeout": "escalate",
+   "instructions": "多智能体评审会已给出结论(见执行详情中 judge 节点输出)。审批语义:approve = 放行,流程按评审结论路由(结论为 revise 时将生成分条修订计划);reject = 否决整个方案,执行终态 FAILED。"
+  },
+  {
+   "id": "gate",
+   "type": "branch",
+   "title": "结论路由",
+   "description": "按首席仲裁结论路由产物形态",
+   "cases": [
+    {
+     "when": {
+      "left": "{{nodes.judge.output.verdict}}",
+      "op": "eq",
+      "right": "approve"
+     },
+     "next": "final_report"
+    }
+   ],
+   "default": "revision"
+  },
+  {
+   "id": "final_report",
+   "type": "llm",
+   "title": "决策层终报",
+   "description": "approve 臂:面向决策层的一页纸报告",
+   "model": "glm-5.3",
+   "temperature": 0.5,
+   "response_format": "json",
+   "prompt": {
+    "system": "你是评审会秘书,为决策层写一页纸终报:结论先行、篇幅克制、可执行。",
+    "template": "评审会已批准该方案。请生成决策层终报。以 JSON 对象返回:键 text 为报告正文(600 字以内:最终结论、三方评审要点、残留风险与缓解建议、下一步行动)。仅输出该 JSON 对象。",
+    "user_data": [
+     {
+      "name": "proposal",
+      "ref": "{{inputs.proposal}}"
+     },
+     {
+      "name": "council_summary",
+      "ref": "{{nodes.judge.output.summary}}"
+     }
+    ]
+   },
+   "outputs": {
+    "text": "string"
+   }
+  },
+  {
+   "id": "revision",
+   "type": "llm",
+   "title": "修订计划",
+   "description": "revise 臂:逐条修订建议",
+   "model": "glm-5.3",
+   "temperature": 0.5,
+   "response_format": "json",
+   "prompt": {
+    "system": "你是评审会秘书,把评审意见转化为方案作者可直接执行的修订计划。",
+    "template": "评审会结论为需要修订。请生成分条修订计划。以 JSON 对象返回:键 text 为修订计划正文(600 字以内:按优先级排列的修订项,每项含问题、改法、涉及方)。仅输出该 JSON 对象。",
+    "user_data": [
+     {
+      "name": "proposal",
+      "ref": "{{inputs.proposal}}"
+     },
+     {
+      "name": "council_summary",
+      "ref": "{{nodes.judge.output.summary}}"
+     }
+    ]
+   },
+   "outputs": {
+    "text": "string"
+   }
+  }
+ ],
+ "outputs": {
+  "decision_report": "{{nodes.final_report.output.text}}",
+  "revision_plan": "{{nodes.revision.output.text}}"
+ }
+}

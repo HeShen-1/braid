@@ -213,6 +213,33 @@ SELECT id, event_type, node_id, actor_id, trace_id, linked_trace_id FROM audit_l
 也可走 T6.3 查询端点 `GET /api/v1/audit?execution_id=...`(或 `?trace_id=`;`?actor_id=`
 维度 admin-only)。队列现场看 Asynqmon:http://127.0.0.1:8080。
 
+### 2.3 多智能体编排示例(agent-council)
+
+`docs/examples/agent-council.json`:技术方案评审会——主持人提炼 →
+架构/安全/成本三评审员**并行评审**(DAG 分叉)→ 首席仲裁**菱形汇合**裁决 →
+人工审批(审批语义 = 放行/否决,与仲裁结论正交)→ branch 按仲裁 verdict 路由
+approve 臂(决策层终报)或 revise 臂(分条修订计划)。同 2.2 走链提交发布后触发:
+
+```bash
+curl -s -X POST $API/executions -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" -d '{
+    "definition_name": "agent-council",
+    "input": {"proposal": "<待评审的技术方案文本,数百字>"} }'
+# 挂起 WAITING_APPROVAL 后在 /ui/ 审批;批准 → 按仲裁结论出 decision_report 或 revision_plan
+```
+
+**真模型(思考型)注意事项**——桩测试发现不了,真 key 首跑即踩(2026-09-28 智谱
+glm-5.3 实测):
+
+- llm 节点声明了 outputs 时,prompt 必须写明 JSON 键名与类型(本仓示例的
+  「以 JSON 对象返回:键 X 为…」句式)。模型不会猜声明形状,缺契约 = 键名自由
+  发挥 → `bad_llm_output` 重试耗尽 fail-fast;
+- **不要给思考型模型设 `max_tokens`**:上限框住的是思考+正文总预算,预算内
+  思考未结束响应 content 为空 → `bad_llm_output: ... not a JSON object: EOF`。
+  容量控制用 prompt 篇幅约束(「N 字以内」),超时控制用 `BRAID_LLM_TIMEOUT`。
+
+本示例暂无守护测试(doc-compliance 有);DSL schema 变更时需人工复跑本节走链。
+
 幂等提示:触发可带 `Idempotency-Key` 头(重放 200 回显原执行);审批重放同为 200 回显(UI 双击安全)。
 完整走链文档(含驳回/合规不过的事件序表)见 [docs/examples/doc-compliance-review.md](docs/examples/doc-compliance-review.md)。
 
