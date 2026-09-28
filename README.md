@@ -160,6 +160,8 @@ EOF
 #    每个进程都是前台常驻,少一个都是静默失败——执行停 PENDING 缺 relay/worker,
 #    审计看不到新行缺 reaper)
 #    每个终端:set -a; source deploy/.env; set +a
+#    (值含 () {} " , : 等——如 DSN、JSON 单价表/白名单——必须整体加单引号,
+#     否则 source 解析中断、后续键静默失效;详见 deploy/.env.example 文件头)
 go run ./cmd/api      # 终端 1:127.0.0.1:8081,REST + Web 审批页(/ui/)+ /healthz + /metrics
 go run ./cmd/relay    # 终端 2:outbox → Asynq 投递
 go run ./cmd/worker   # 终端 3:节点执行(连 LLM 端点)

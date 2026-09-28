@@ -6,3 +6,5 @@
 .handoff/
 .worktrees/
 .testenv
+# local run logs (dev stack host processes; see README run steps)
+log/
