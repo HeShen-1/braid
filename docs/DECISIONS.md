@@ -37,7 +37,7 @@
   9. 并行公约:engine 包同一时刻单 worktree 持有;migrations 序号独占(第二个迁移任务必须基于已合并 master);go.mod 冲突合并后必须 go mod tidy + 三件套重跑;ROADMAP 勾选写各自 PR,相邻行冲突后者 rebase(纯文档);活进程联调(dev 栈)仅主仓,worktree 只跑测试;t13 栈 tmpfs 契约下 `docker compose restart` 即全清测试 schema。
   10. 已知坑:auto-memory/longhand 按主 checkout 路径键控,worktree 新路径记忆断档;Claude 侧解法 = symlink worktree 的项目 memory 目录到主仓(归专属增强节)。
 - 理由:并行是 handoff 自认缺口,且 ROADMAP 今日即有 4 个就绪任务(T2.3/T2.5/T2.6/T5.1);issue 化把执行状态从单文件勾选行外化为 git/gh 可见状态;本地 AI reviewer 保住密钥纪律;b 是 c 的子集与地基,先 b 后 c 零返工;cwd 哈希推导 schema 比 env 注入更不易漏,Redis 槽位显式分配比哈希更安全。
-- 影响:docs/AGENTS.md(真源分层/PR 单通道/并行公约/fork 语义/命令节槽位表)、docs/ROADMAP.md(顶部迁移说明 + 新增测试隔离任务)、internal/db/sqltest(DSN env + wtKey helper)、internal/db/migrate_test.go、internal/relay/run_test.go、internal/redistest(仅契约注释)、deploy/migrate-test.docker-compose.yml(c 升级时)、~/.agents/skills/handoff(fork/dispatch 模式)、.github/workflows(零密钥 CI)。前置约束:T2.5 开工前必须先钉死 T2.3 落地的确定性 TaskID 契约(ROADMAP 未标注的语义耦合,写进 T2.5 issue body)。
+- 影响:AGENTS.md(根;原文误书 docs/ 前缀,该路径从未存在,2026-09-28 修正失效引用)(真源分层/PR 单通道/并行公约/fork 语义/命令节槽位表)、docs/ROADMAP.md(顶部迁移说明 + 新增测试隔离任务)、internal/db/sqltest(DSN env + wtKey helper)、internal/db/migrate_test.go、internal/relay/run_test.go、internal/redistest(仅契约注释)、deploy/migrate-test.docker-compose.yml(c 升级时)、~/.agents/skills/handoff(fork/dispatch 模式)、.github/workflows(零密钥 CI)。前置约束:T2.5 开工前必须先钉死 T2.3 落地的确定性 TaskID 契约(ROADMAP 未标注的语义耦合,写进 T2.5 issue body)。
 - 实施顺序:⓪ 全历史扫密 → ① 建私有仓推送 → ② 零密钥 CI → ③ AGENTS/ROADMAP 修订 → ④ 建 issue(M2 剩余 + T5.1)→ ⑤ handoff v2 + 三端冒烟 → ⑥ 测试隔离 env 化(TDD,排 ROADMAP 正经任务)→ ⑦ 首次并行试跑(主仓 T2.3 ∥ fork t5.1)。⓪–⑤ 可与主仓 T2.3 单线穿插;首对 fork 前第 ⑥ 步必须落地。
 
 ## D-2026-09-22-conditional-auto-merge

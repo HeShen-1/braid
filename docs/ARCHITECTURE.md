@@ -7,7 +7,7 @@
 
 - 企业级 Agent 工作流编排平台:可视化 DAG(P1)、人在回路、全链路审计、工具权限隔离。
 - **修正后的差异化认知**(审计结论):HITL + 审计在 2026 年已是 n8n/Dify/Temporal 标配,不是卖点;真正的护城河是工具沙箱的安全审查级实现、审计防篡改、合规交付深度。
-- 交付形态:私有化,单二进制 + docker-compose。
+- 交付形态:私有化,一镜像四入口(api/worker/relay/reaper 四二进制,同一代码库交付)+ docker-compose。
 
 ## 1. 已锁定的 18 项决策
 
@@ -26,9 +26,9 @@
 | Q11 | 数据流 | 显式数据流:`{{nodes.<id>.output.<field>}}` 引用,无共享黑板 |
 | Q12 | 审批触达 | 内置 Web 登录 + 极简待办/审批页 + SMTP;IM 卡片 P1 |
 | Q13 | 用户体系 | P0 内置用户/角色 + JWT + bcrypt;`IdentityProvider` 接口桩,OIDC/LDAP P1 |
-| Q14 | 交付打包 | 单二进制 + compose(编排 MySQL/Redis/Asynqmon),golang-migrate;Helm P1 |
+| Q14 | 交付打包 | 一镜像四入口 + compose(编排 MySQL/Redis;Asynqmon 仅 dev 观测栈),golang-migrate;Helm P1 |
 | Q15 | 人力 | 个人开发 |
-| Q16 | 引擎底座 | **自研**(不用 Temporal/Hatchet):单二进制交付红利 + 全链路自主可控、行为可验证;Temporal 作对照读物 |
+| Q16 | 引擎底座 | **自研**(不用 Temporal/Hatchet):一镜像四入口交付红利 + 全链路自主可控、行为可验证;Temporal 作对照读物 |
 | Q17 | 画布 | 维持 P1,DSL 预留画布元数据(节点 id/位置);启动售卖前提为售前 P0 |
 | Q18 | 工具协议 | P0 内部 registry 薄接口;P1 双向 MCP(暴露为 MCP server + 消费外部 MCP 工具) |
 
@@ -38,9 +38,9 @@
 
 - Go + Gin;MySQL(真相源);**Redis 双实例**:队列实例(noeviction + AOF everysec + 水线告警)与热缓存实例(allkeys-lru 可用)物理分离,compose 默认值 + 启动自检;
 - Asynq:执行器,**MaxRetry=1**,重试权威收归平台节点层;`v0.26.0(2026-02)` 维持慢节奏,收敛到内部接口后 pin 版本;
-- LLM:自研薄 `LLMClient` 封装,go-openai 退到一个适配器(无 extra_body,国产模型必需参数发不出);平台原语只用 Chat Completions,**不用 Responses API**(与多供应商/私有化/本地审计冲突);
-- tiktoken-go:离线 loader(`pkoukk/tiktoken-go-loader`)+ 词表随安装包分发 + 启动预构建 DSL 引用的全部 tokenizer(失败拒绝启动);计费真相源 = API 返回 usage,tiktoken 仅预算估算,未知模型 fallback 标 `estimated=true`;
-- 可观测:Prometheus + Zap + **OpenTelemetry**(trace_id 贯穿并写入审计行);golang-migrate。
+- LLM:自研薄 `LLMClient` 封装,OpenAI 兼容适配器手写 net/http、零 SDK(不引 go-openai——其无 extra_body 字段,国产模型必需参数发不出,平台经 `Request.ExtraBody` 顶层合并);平台原语只用 Chat Completions,**不用 Responses API**(与多供应商/私有化/本地审计冲突);
+- tiktoken-go:自研内嵌 BpeLoader(go:embed 词表随二进制 + SHA-256 校验,零额外依赖)+ 词表随安装包分发 + 启动预构建 DSL 引用的全部 tokenizer(失败拒绝启动);计费真相源 = API 返回 usage,tiktoken 仅预算估算,未知模型 fallback 标 `estimated=true`;
+- 可观测:Prometheus + log/slog(标准库结构化日志)+ **OpenTelemetry**(trace_id 贯穿并写入审计行);golang-migrate。
 
 明确不用:Redis 分布式锁做状态迁移(改 MySQL CAS);Asynq 默认重试语义;Responses API 做平台原语。
 

@@ -50,7 +50,8 @@ human_review ◀── summary ◀────(主线)              report_revis
 cp deploy/.env.example deploy/.env   # 首次
 # 编辑 deploy/.env,至少打开:
 #   BRAID_MYSQL_DSN / BRAID_REDIS_QUEUE_ADDR / BRAID_AUTH_JWT_SECRET
-#   BRAID_LLM_BASE_URL / BRAID_LLM_API_KEY(OpenAI 兼容端点)
+#   BRAID_LLM_BASE_URL / BRAID_LLM_API_KEY / BRAID_LLM_PRICE_TABLE
+#   (OpenAI 兼容端点 + 模型单价表;worker 缺 PRICE_TABLE 启动即败)
 #   (BRAID_TOOL_TOKEN_SECRET 可选:缺省 = 进程内随机,P0 同进程校验自洽)
 #   BRAID_FILEREAD_DIRS=["/abs/path/to/braid/docs/examples"]   # file_read 白名单
 docker compose -f deploy/dev.docker-compose.yml up -d
@@ -131,7 +132,7 @@ SELECT id, event_type, node_id, actor_type, actor_id
 可见性滞后(T6.1 异步批量):表中高频四类(`node.state_changed` /
 `branch.evaluated` / `llm.call.completed` / `tool.call.completed`)先同事务
 写入 `audit_pending` 暂存表,由 reaper 周期搬运(默认间隔 1s,
-`BRAID_AUDIT_FLUSH_INTERVAL` 可调)——对账查询前若刚跑完执行,等 ≤ 该间隔
+`BRAID_REAPER_AUDIT_FLUSH_INTERVAL` 可调)——对账查询前若刚跑完执行,等 ≤ 该间隔
 再查;`execution.triggered` 与 `approval.*` 系同步直写,无滞后。
 
 ## 守护测试
