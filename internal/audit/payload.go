@@ -171,6 +171,28 @@ type ToolCallDeniedPayload struct {
 // 台账双缺)。字段镜像 LLMCallCompletedPayload——这是该调用唯一留下的
 // 台账痕迹,对账/告警按本行计数;ObservedAttempt 记录收口冲突时观测到的
 // attempt 终态(恒 DEAD,防未来语义漂移时静默)。
+// ExecutionRolledBackPayload 是 execution.rolled_back(T9.2 回滚决定事务,
+// D-2026-09-28-t92 决策 9)的事件体。只含 id/码/枚举(D-t26 §4 纪律);
+// 自由文本理由不入 payload。from_status 是回滚前执行终态(白名单仅 FAILED,
+// 冗余列作对账锚);reset_count = 本轮重置行数(含实例行);rerun_target
+// 区分目标重跑(RerunNode)与重评估(Reset 后由 advance 重派)两种形态。
+type ExecutionRolledBackPayload struct {
+	TargetNodeID string `json:"target_node_id"`
+	FromStatus   string `json:"from_status"`  // 回滚前执行状态(白名单仅 FAILED)
+	ResetCount   int    `json:"reset_count"`  // ResetNodeToPending 命中行数(含实例行)
+	RerunTarget  bool   `json:"rerun_target"` // true = RerunNode 快照读回重跑;false = advance 重评估派发
+}
+
+// RollbackDeniedPayload 是 rollback.denied(回滚请求被拒,T9.2)的事件体。
+// 拒绝面归审计(镜像 approval.decision_denied 的独立小事务先例)。reason
+// 是错误分面枚举:not_rollbackable | blocked_inflight | bad_node_id |
+// no_resume_target | role_denied;blocked 携阻塞节点清单上限(截断如实计数)。
+type RollbackDeniedPayload struct {
+	Reason       string `json:"reason"`
+	TargetNodeID string `json:"target_node_id,omitempty"`
+	BlockedCount int    `json:"blocked_count,omitempty"`
+}
+
 type LLMCallDiscardedPayload struct {
 	NodeID           string `json:"node_id"`
 	Model            string `json:"model"`
