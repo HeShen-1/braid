@@ -1,0 +1,15 @@
+{
+  "dsl": "1.0",
+  "name": "parallel-wf",
+  "inputs": [{"name": "reviews", "type": "array", "required": true}],
+  "nodes": [
+    {"id": "fan", "type": "parallel", "parallel": {
+      "foreach": "{{inputs.reviews}}",
+      "body": {"type": "branch",
+        "cases": [{"when": {"left": "{{inputs.reviews}}", "op": "exists"}, "next": "post"}],
+        "default": "post"}
+    }},
+    {"id": "post", "type": "llm", "prompt": {"template": "t"}}
+  ],
+  "edges": [{"from": "fan", "to": "post"}]
+}

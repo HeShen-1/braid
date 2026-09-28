@@ -109,9 +109,10 @@
     "reference": {
       "oneOf": [
         { "$ref": "#/$defs/inputRef" },
-        { "$ref": "#/$defs/nodeRef" }
+        { "$ref": "#/$defs/nodeRef" },
+        { "$ref": "#/$defs/itemRef" }
       ],
-      "description": "纯引用位置(workflow outputs、branch.when.left、user_data.ref)必须整体是一个引用,形态钉死:{{inputs.<name>}} 或 {{nodes.<id>.output.<field>}}。"
+      "description": "纯引用位置(workflow outputs、branch.when.left、user_data.ref)必须整体是一个引用,形态钉死:{{inputs.<name>}} / {{nodes.<id>.output.<field>}} / {{item[.<field>]}}。item 形态仅 parallel body 语境合法,语境闸在 T1.2 语义校验。"
     },
     "inputRef": {
       "type": "string",
@@ -150,7 +151,8 @@
         { "$ref": "#/$defs/llmNode" },
         { "$ref": "#/$defs/toolNode" },
         { "$ref": "#/$defs/branchNode" },
-        { "$ref": "#/$defs/approvalNode" }
+        { "$ref": "#/$defs/approvalNode" },
+        { "$ref": "#/$defs/parallelNode" }
       ]
     },
     "llmNode": {
@@ -312,6 +314,78 @@
         "timeout_hours": { "type": "number", "minimum": 0.1, "maximum": 2160, "default": 72, "description": "缺省 72h;平台级默认可配(Q9,T4.3)。" },
         "on_timeout": { "enum": ["escalate", "fail"], "default": "escalate", "description": "escalate=升级通知并保持等待;fail=显式失败。永不自动通过。" },
         "instructions": { "type": "string", "maxLength": 4000 },
+        "outputs": { "$ref": "#/$defs/nodeOutputs" }
+      }
+    },
+    "parallelNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "parallel"],
+      "description": "并行节点(T9.1 Scatter-Gather,D-2026-09-28-t91):foreach 集合展开 fan-out + gather 汇聚。节点无 retry(控制器不产生 attempt;实例重试由 body.retry 承载);输出契约固定 results:array(body 输出对象、输入序),不可声明。",
+      "properties": {
+        "id": { "$ref": "#/$defs/identifier" },
+        "type": { "const": "parallel" },
+        "title": { "type": "string", "maxLength": 200 },
+        "description": { "type": "string", "maxLength": 2000 },
+        "parallel": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["foreach", "body"],
+          "properties": {
+            "foreach": { "$ref": "#/$defs/inputRef", "description": "T9.1 钉 {{inputs.<name>}} 纯引用且声明 type=array({{nodes.*}} 来源 P1 停车场);实例数 = 触发时数组长度(平台上限内)。" },
+            "on_failure": { "enum": ["fail_fast", "wait_all"], "default": "fail_fast", "description": "fail_fast=任一实例终败即收敛(既有全局语义);wait_all=全部实例终态后再判。两值下执行终态同为 FAILED,差异仅收敛时机。" },
+            "body": { "$ref": "#/$defs/parallelBody" }
+          }
+        }
+      }
+    },
+    "parallelBody": {
+      "oneOf": [
+        { "$ref": "#/$defs/llmBodyNode" },
+        { "$ref": "#/$defs/toolBodyNode" }
+      ],
+      "description": "fan-out 单节点模板:无 id(实例共享父 node_id)、不可 parallel(不可嵌套)。"
+    },
+    "itemRef": {
+      "type": "string",
+      "pattern": "^\\{\\{item(\\.[a-z][a-z0-9_]{0,63})?\\}\\}$",
+      "description": "元素引用,仅 parallel body 语境合法(语义校验语境闸);空字段 = 整个元素。"
+    },
+    "llmBodyNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "prompt"],
+      "description": "llm fan-out 模板:镜像 llmNode 去 id(与 llmNode 的字段约束须同步改)。",
+      "properties": {
+        "type": { "const": "llm" },
+        "retry": { "$ref": "#/$defs/retry" },
+        "model": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "temperature": { "type": "number", "minimum": 0, "maximum": 2 },
+        "max_tokens": { "type": "integer", "minimum": 1, "maximum": 200000 },
+        "response_format": { "enum": ["text", "json"] },
+        "prompt": { "$ref": "#/$defs/prompt" },
+        "outputs": { "$ref": "#/$defs/nodeOutputs" }
+      }
+    },
+    "toolBodyNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "tool", "inputs"],
+      "description": "tool fan-out 模板:镜像 toolNode 去 id(与 toolNode 的字段约束须同步改);inputs 值内 item 引用由语义扫描钉形态。",
+      "properties": {
+        "type": { "const": "tool" },
+        "retry": { "$ref": "#/$defs/retry" },
+        "tool": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{0,63}$",
+          "description": "已注册工具名;白名单校验同 toolNode。"
+        },
+        "inputs": {
+          "type": "object",
+          "maxProperties": 64,
+          "propertyNames": { "$ref": "#/$defs/notNetworkKey" },
+          "additionalProperties": { "$ref": "#/$defs/toolInputValue" }
+        },
         "outputs": { "$ref": "#/$defs/nodeOutputs" }
       }
     }

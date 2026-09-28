@@ -481,6 +481,8 @@ func TestValidCorpusParsesClean(t *testing.T) {
 					typed = n.Branch != nil
 				case "approval":
 					typed = n.Approval != nil
+				case "parallel":
+					typed = n.Parallel != nil
 				}
 				if !typed {
 					t.Fatalf("node %q type %q has no decoded concrete struct", n.ID, n.Type)
