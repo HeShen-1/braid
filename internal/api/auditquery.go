@@ -1,15 +1,19 @@
 // 审计查询面(T6.3):GET /api/v1/audit —— 三维度过滤(execution/trace/人)
-// + event_at 时间范围 + 分页。契约与拍板见 D-2026-09-25-t63-audit-query-api:
+// + event_at 时间范围 + keyset 分页(T12.2,D-t63 #5 收敛路径:游标 =
+// 展示序 (event_at,id) 排他下界,响应携 next_cursor,offset/total 退役)。
 // 可见性 = 仅读 audit_log(高频四类 ≤ AuditFlushInterval 滞后);actor 维度
 // admin-only(参数条件闸);三维度互斥恰一,无全量翻页面。
 package api
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -128,9 +132,69 @@ func parseAuditTimeRange(c *gin.Context) (from, to *time.Time, ok bool) {
 	return from, to, true
 }
 
+// encodeAuditCursor 游标线格式:base64(RawURL,查询参数安全)"v1:<unixmill>:<id>"
+// ——版本前缀留演化位(增维时不静默改义);unixmill 与 event_at 的
+// DATETIME(3) 毫秒精度对齐,epoch 毫秒是绝对值,不受 DSN loc 影响。
+func encodeAuditCursor(cur AuditCursor) string {
+	raw := fmt.Sprintf("v1:%d:%d", cur.EventAt.UnixMilli(), cur.ID)
+	return base64.RawURLEncoding.EncodeToString([]byte(raw))
+}
+
+// parseAuditCursor 游标解析:base64 / 版本 / 两数值逐项校验,任一失配
+// 400 bad_cursor 面(坏游标是明确的坏请求,不是空结果)。id ≥ 1、mill ≥ 0
+// (1970 侧游标合法——语义只是「全序之下的所有行」)。
+func parseAuditCursor(raw string) (*AuditCursor, bool) {
+	dec, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, false
+	}
+	parts := strings.Split(string(dec), ":")
+	if len(parts) != 3 || parts[0] != "v1" {
+		return nil, false
+	}
+	mill, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || mill < 0 {
+		return nil, false
+	}
+	id, err := strconv.ParseUint(parts[2], 10, 64)
+	if err != nil || id == 0 {
+		return nil, false
+	}
+	return &AuditCursor{EventAt: time.UnixMilli(mill).UTC(), ID: id}, true
+}
+
+// parseAuditPageParams 解析审计分页参数:limit 与 parsePageParams 同域
+// 单源(缺省 20/上界 100);cursor 可选(缺省 = 首页);offset 已随 keyset
+// 契约退役——携带即 400 bad_offset(契约收口:静默忽略会让旧客户端在
+// 不知情下拿到恒首页)。
+func parseAuditPageParams(c *gin.Context) (limit int, cursor *AuditCursor, ok bool) {
+	limit = defaultPageLimit
+	if raw := c.Query("limit"); raw != "" {
+		n, err := strconv.Atoi(raw)
+		if err != nil || n < 1 || n > maxPageLimit {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad_limit"})
+			return 0, nil, false
+		}
+		limit = n
+	}
+	if raw := c.Query("offset"); raw != "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_offset"})
+		return 0, nil, false
+	}
+	if raw := c.Query("cursor"); raw != "" {
+		cur, ok := parseAuditCursor(raw)
+		if !ok {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "bad_cursor"})
+			return 0, nil, false
+		}
+		cursor = cur
+	}
+	return limit, cursor, true
+}
+
 // listAuditEvents:GET /audit —— 维度互斥校验(400)→ actor 维度 admin 闸
-// (403)→ 执行维度钉分区(404)→ 查询 → items + page envelope(与
-// definitions/executions 列表同构)。
+// (403)→ 执行维度钉分区(404)→ 查询 → items + next_cursor(keyset 契约,
+// 与 definitions/executions 的 page envelope 有意分叉)。
 func (s *Server) listAuditEvents(c *gin.Context) {
 	execRaw := c.Query("execution_id")
 	traceRaw := c.Query("trace_id")
@@ -189,14 +253,15 @@ func (s *Server) listAuditEvents(c *gin.Context) {
 		return
 	}
 	aq.From, aq.To = from, to
-	limit, offset, ok := parsePageParams(c)
+	limit, cursor, ok := parseAuditPageParams(c)
 	if !ok {
 		return
 	}
 	if aq.ExecutionID != 0 {
 		// 钉分区:execution 行直读 exec_date(DATE_FORMAT 单源公式),
 		// 单分区裁剪 + idx_audit_exec;缺行 404(与 GET /executions/:id
-		// 同面)。
+		// 同面)。exec_date 不可变,钉分区读与审计查询分语句无撕裂面
+		// (keyset 契约下无 total,COUNT 一致快照诉求已退役)。
 		exec, err := s.st.GetExecution(c.Request.Context(), s.dbh, aq.ExecutionID)
 		if err != nil {
 			mapStoreError(c, err)
@@ -204,22 +269,14 @@ func (s *Server) listAuditEvents(c *gin.Context) {
 		}
 		aq.ExecDate = exec.ExecDate
 	}
-	// 一致快照(对抗审计 sql/concurrency MEDIUM×2):COUNT 与页行同事务
-	// (RR 快照在首语句建立)——消掉同响应内 total/items 撕裂(1s flush
-	// 节奏下 total 低报会让客户端早停漏行)。与 execstore「读路径无事务」
-	// 先例的有意分叉:审计是证据链,撕裂后果重于人触发级写入面。跨页
-	// OFFSET 漂移仍在(登记 D-t63 已知边界,收敛路径 = keyset 分页)。
+	// 语句级超时保留(无分区谓词的 trace/actor 维度是最重每请求查询
+	// 形态,长查询持 audit_log 共享 MDL 会与 janitor 分区 DDL 互锁,
+	// 见 auditQueryTimeout 注释);读路径无事务(keyset 单语句,镜像
+	// execstore 先例)。
 	qCtx, cancel := context.WithTimeout(c.Request.Context(), auditQueryTimeout)
 	defer cancel()
-	var (
-		items []AuditEvent
-		total int
-	)
-	if err := WithTx(qCtx, s.dbh, func(tx DBTX) error {
-		var err error
-		items, total, err = s.st.ListAuditEvents(qCtx, tx, aq, limit, offset)
-		return err
-	}); err != nil {
+	items, next, err := s.st.ListAuditEvents(qCtx, s.dbh, aq, cursor, limit)
+	if err != nil {
 		mapStoreError(c, err)
 		return
 	}
@@ -227,8 +284,12 @@ func (s *Server) listAuditEvents(c *gin.Context) {
 	for _, e := range items {
 		out = append(out, toAuditEventDTO(e))
 	}
+	nextCursor := ""
+	if next != nil {
+		nextCursor = encodeAuditCursor(*next)
+	}
 	c.JSON(http.StatusOK, gin.H{
-		"items": out,
-		"page":  gin.H{"limit": limit, "offset": offset, "total": total},
+		"items":       out,
+		"next_cursor": nextCursor,
 	})
 }

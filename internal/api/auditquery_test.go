@@ -7,6 +7,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"database/sql"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -121,17 +122,15 @@ func auditItems(t *testing.T, body map[string]any) []map[string]any {
 	return out
 }
 
-func auditTotal(t *testing.T, body map[string]any) int {
+// auditNextCursor 取响应 next_cursor("" = 尾页,无更多行;keyset 契约,
+// D-t63 #5 兑现)。
+func auditNextCursor(t *testing.T, body map[string]any) string {
 	t.Helper()
-	page, ok := body["page"].(map[string]any)
+	cur, ok := body["next_cursor"].(string)
 	if !ok {
-		t.Fatalf("page = %T, want object", body["page"])
+		t.Fatalf("next_cursor = %T, want string", body["next_cursor"])
 	}
-	total, ok := page["total"].(float64)
-	if !ok {
-		t.Fatalf("total = %T, want number", page["total"])
-	}
-	return int(total)
+	return cur
 }
 
 // TestHTTPAuditQueryByExecution 维度 1:exec_date 钉分区 + execution_id
@@ -163,8 +162,8 @@ func TestHTTPAuditQueryByExecution(t *testing.T) {
 		t.Fatalf("query by execution = %d %v, want 200", code, body)
 	}
 	items := auditItems(t, body)
-	if len(items) != 2 || auditTotal(t, body) != 2 {
-		t.Fatalf("items = %d total = %d, want 2/2", len(items), auditTotal(t, body))
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2", len(items))
 	}
 	// DESC:后插的 branch.evaluated 在前(event_at DESC, id DESC tie-break)。
 	if items[0]["event_type"] != audit.EventBranchEvaluated {
@@ -206,8 +205,8 @@ func TestHTTPAuditQueryByExecution(t *testing.T) {
 	// 维度独立:execB 只回自己的行。
 	code, body = doJSON(t, r, http.MethodGet,
 		fmt.Sprintf("/api/v1/audit?execution_id=%d", execB), author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 1 {
-		t.Fatalf("query execB = %d total %v, want 200/1", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 1 {
+		t.Fatalf("query execB = %d %v, want 200/1 row", code, body)
 	}
 	if items := auditItems(t, body); items[0]["event_type"] != audit.EventToolCallCompleted {
 		t.Fatalf("execB event_type = %v", items[0]["event_type"])
@@ -258,8 +257,8 @@ func TestHTTPAuditQueryByTrace(t *testing.T) {
 		t.Fatalf("query by trace = %d %v, want 200", code, body)
 	}
 	items := auditItems(t, body)
-	if len(items) != 2 || auditTotal(t, body) != 2 {
-		t.Fatalf("items = %d total = %d, want 2/2", len(items), auditTotal(t, body))
+	if len(items) != 2 {
+		t.Fatalf("items = %d, want 2", len(items))
 	}
 	for _, m := range items {
 		if m["trace_id"] != auditTestTrace {
@@ -273,8 +272,8 @@ func TestHTTPAuditQueryByTrace(t *testing.T) {
 	// 无行 trace:200 空面。
 	code, body = doJSON(t, r, http.MethodGet,
 		"/api/v1/audit?trace_id="+auditTestTraceEmpty, author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 0 || len(auditItems(t, body)) != 0 {
-		t.Fatalf("empty trace = %d total %v, want 200/0", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 0 {
+		t.Fatalf("empty trace = %d %v, want 200/0 rows", code, body)
 	}
 	// 400:非 32 hex 小写。
 	for _, bad := range []string{"xyz", "0123456789ABCDEF0123456789ABCDEF", "0123456789abcdef0123456789abcde"} {
@@ -319,8 +318,8 @@ func TestHTTPAuditQueryByActorRoleGate(t *testing.T) {
 
 	admin := sign(auth.RoleAdmin)
 	code, body = doJSON(t, r, http.MethodGet, "/api/v1/audit?actor_id=bob", admin, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 1 {
-		t.Fatalf("admin by actor = %d total %v, want 200/1", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 1 {
+		t.Fatalf("admin by actor = %d %v, want 200/1 row", code, body)
 	}
 	if items := auditItems(t, body); items[0]["actor_id"] != "bob" {
 		t.Fatalf("actor_id = %v, want bob", items[0]["actor_id"])
@@ -328,8 +327,8 @@ func TestHTTPAuditQueryByActorRoleGate(t *testing.T) {
 
 	// admin 查无行人:200 空面。
 	code, body = doJSON(t, r, http.MethodGet, "/api/v1/audit?actor_id=carol", admin, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 0 {
-		t.Fatalf("admin unknown actor = %d total %v, want 200/0", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 0 {
+		t.Fatalf("admin unknown actor = %d %v, want 200/0 rows", code, body)
 	}
 	// 400:超宽(DDL actor_id VARCHAR(128)),admin 同面。
 	code, body = doJSON(t, r, http.MethodGet, "/api/v1/audit?actor_id="+long, admin, nil)
@@ -352,8 +351,8 @@ func TestHTTPAuditQueryByActorRoleGate(t *testing.T) {
 		})
 	}
 	code, body = doJSON(t, r, http.MethodGet, "/api/v1/audit?actor_id=GPT-4o", admin, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 1 {
-		t.Fatalf("case-fold probe = %d total %v, want 200/1", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 1 {
+		t.Fatalf("case-fold probe = %d %v, want 200/1 row", code, body)
 	}
 }
 
@@ -362,6 +361,7 @@ func TestHTTPAuditQueryByActorRoleGate(t *testing.T) {
 func TestHTTPAuditQueryValidation(t *testing.T) {
 	r, _, sign := newTestServer(t)
 	author := sign(auth.RoleAuthor)
+	b64 := func(s string) string { return base64.RawURLEncoding.EncodeToString([]byte(s)) }
 	cases := []struct {
 		name    string
 		query   string
@@ -376,8 +376,14 @@ func TestHTTPAuditQueryValidation(t *testing.T) {
 			"&from=2026-09-25T10:00:00Z&to=2026-09-25T09:00:00Z", "bad_time_range"},
 		{"zero limit", "/api/v1/audit?trace_id=" + auditTestTrace + "&limit=0", "bad_limit"},
 		{"limit over max", "/api/v1/audit?trace_id=" + auditTestTrace + "&limit=101", "bad_limit"},
+		// offset 已随 keyset 契约退役(T12.2):携带即 400,契约收口不留
+		// 静默兼容面。
 		{"negative offset", "/api/v1/audit?trace_id=" + auditTestTrace + "&offset=-1", "bad_offset"},
-		{"offset over max", "/api/v1/audit?trace_id=" + auditTestTrace + "&offset=10001", "bad_offset"},
+		{"offset supplied", "/api/v1/audit?trace_id=" + auditTestTrace + "&offset=2", "bad_offset"},
+		{"cursor not base64", "/api/v1/audit?trace_id=" + auditTestTrace + "&cursor=!!!", "bad_cursor"},
+		{"cursor bad version", "/api/v1/audit?trace_id=" + auditTestTrace + "&cursor=" + b64("v2:1:1"), "bad_cursor"},
+		{"cursor bad time", "/api/v1/audit?trace_id=" + auditTestTrace + "&cursor=" + b64("v1:x:1"), "bad_cursor"},
+		{"cursor zero id", "/api/v1/audit?trace_id=" + auditTestTrace + "&cursor=" + b64("v1:100:0"), "bad_cursor"},
 	}
 	for _, tc := range cases {
 		code, body := doJSON(t, r, http.MethodGet, tc.query, author, nil)
@@ -419,28 +425,28 @@ func TestHTTPAuditQueryTimeRangeAndPaging(t *testing.T) {
 
 	// 范围包住全部落行时刻。
 	code, body := doJSON(t, r, http.MethodGet, base+"&from="+lo+"&to="+hi, author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 3 {
-		t.Fatalf("range covering = %d total %v, want 200/3", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 3 {
+		t.Fatalf("range covering = %d %v, want 200/3 rows", code, body)
 	}
 	// to 在落行前:空(event_at = DB NOW(3),恒 now 侧)。
 	code, body = doJSON(t, r, http.MethodGet, base+"&to="+past, author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 0 {
-		t.Fatalf("range excluding = %d total %v, want 200/0", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 0 {
+		t.Fatalf("range excluding = %d %v, want 200/0 rows", code, body)
 	}
 	// from==to 闭区间接受(单点区间,空窗 200 面)。
 	code, body = doJSON(t, r, http.MethodGet, base+"&from="+past+"&to="+past, author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 0 {
-		t.Fatalf("point range = %d total %v, want 200/0", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 0 {
+		t.Fatalf("point range = %d %v, want 200/0 rows", code, body)
 	}
 
-	// 分页:DESC 顺序逐页。
+	// 分页(keyset 契约):DESC 顺序逐页,next_cursor 链走。
 	code, body = doJSON(t, r, http.MethodGet, base+"&limit=2", author, nil)
 	if code != http.StatusOK {
 		t.Fatalf("page1 = %d %v", code, body)
 	}
 	items := auditItems(t, body)
-	if len(items) != 2 || auditTotal(t, body) != 3 {
-		t.Fatalf("page1 items = %d total = %d, want 2/3", len(items), auditTotal(t, body))
+	if len(items) != 2 {
+		t.Fatalf("page1 items = %d, want 2", len(items))
 	}
 	wantOrder := []string{audit.EventToolCallCompleted, audit.EventBranchEvaluated}
 	for i, want := range wantOrder {
@@ -448,12 +454,19 @@ func TestHTTPAuditQueryTimeRangeAndPaging(t *testing.T) {
 			t.Fatalf("page1[%d].event_type = %v, want %s", i, items[i]["event_type"], want)
 		}
 	}
-	code, body = doJSON(t, r, http.MethodGet, base+"&limit=2&offset=2", author, nil)
+	cur := auditNextCursor(t, body)
+	if cur == "" {
+		t.Fatalf("page1 next_cursor empty with 3 rows at limit=2")
+	}
+	code, body = doJSON(t, r, http.MethodGet, base+"&limit=2&cursor="+cur, author, nil)
 	if code != http.StatusOK {
 		t.Fatalf("page2 = %d %v", code, body)
 	}
 	if items := auditItems(t, body); len(items) != 1 || items[0]["event_type"] != audit.EventNodeStateChanged {
 		t.Fatalf("page2 = %v, want [node.state_changed]", items)
+	}
+	if auditNextCursor(t, body) != "" {
+		t.Fatalf("page2 next_cursor = %q, want empty tail", auditNextCursor(t, body))
 	}
 
 	// 闭区间 + 列选 + id tie-break 锚(对抗审计 tests MEDIUM×2 / LOW):raw
@@ -492,8 +505,8 @@ VALUES (?, ?, ?, ?, ?, 'user', 'anchor', '{}')`,
 	}
 	fixed := fixedAt.Format(time.RFC3339Nano)
 	code, body = doJSON(t, r, http.MethodGet, base+"&from="+fixed+"&to="+fixed, author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 2 {
-		t.Fatalf("closed-boundary probe = %d total %v, want 200/2", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 2 {
+		t.Fatalf("closed-boundary probe = %d %v, want 200/2 rows", code, body)
 	}
 	anchorItems := auditItems(t, body)
 	if anchorItems[0]["id"] != strconv.FormatUint(anchorHigh, 10) ||
@@ -503,8 +516,59 @@ VALUES (?, ?, ?, ?, ?, 'user', 'anchor', '{}')`,
 	}
 	above := fixedAt.Add(time.Millisecond).Format(time.RFC3339Nano)
 	code, body = doJSON(t, r, http.MethodGet, base+"&from="+above+"&to="+above, author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 0 {
-		t.Fatalf("above-boundary probe = %d total %v, want 200/0", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 0 {
+		t.Fatalf("above-boundary probe = %d %v, want 200/0 rows", code, body)
+	}
+}
+
+// TestHTTPAuditKeysetStableUnderInserts D-t63 #5 兑现锚:OFFSET 跨页漂移
+// (登记过的已知边界)在 keyset 契约下闭合——页间新插行(event_at 更新,
+// 全序位于已取页之上)不扰动未取页:OFFSET 形态下新行把第 2 页窗口下移,
+// 首插行重复出现;keyset 游标把新行留在已取侧,第 2 页恰为余下旧行。
+func TestHTTPAuditKeysetStableUnderInserts(t *testing.T) {
+	r, dbh, sign := newTestServer(t)
+	ids := seedIDs(t)
+	author := sign(auth.RoleAuthor)
+	exec := seedAuditExec(t, dbh, ids, uniqName("aud-ks"))
+	for _, evt := range []string{
+		audit.EventNodeStateChanged, audit.EventBranchEvaluated, audit.EventToolCallCompleted,
+	} {
+		appendAuditRow(t, dbh, ids, audit.Event{
+			EventType: evt, ExecutionID: exec,
+			ActorType: audit.ActorSystem, ActorID: "scheduler",
+		})
+	}
+	base := fmt.Sprintf("/api/v1/audit?execution_id=%d", exec)
+
+	code, body := doJSON(t, r, http.MethodGet, base+"&limit=2", author, nil)
+	if code != http.StatusOK {
+		t.Fatalf("page1 = %d %v", code, body)
+	}
+	if got := auditItems(t, body); len(got) != 2 {
+		t.Fatalf("page1 items = %d, want 2", len(got))
+	}
+	cur := auditNextCursor(t, body)
+	if cur == "" {
+		t.Fatalf("page1 next_cursor empty with more rows remaining")
+	}
+
+	// 页间插入:OFFSET 契约下第 2 页(offset=2)会重复 branch.evaluated;
+	// keyset 游标下新行在游标上侧,天然排除。
+	appendAuditRow(t, dbh, ids, audit.Event{
+		EventType: audit.EventNodeDeadlineExtended, ExecutionID: exec,
+		ActorType: audit.ActorSystem, ActorID: "scheduler",
+	})
+
+	code, body = doJSON(t, r, http.MethodGet, base+"&limit=2&cursor="+cur, author, nil)
+	if code != http.StatusOK {
+		t.Fatalf("page2 = %d %v", code, body)
+	}
+	items := auditItems(t, body)
+	if len(items) != 1 || items[0]["event_type"] != audit.EventNodeStateChanged {
+		t.Fatalf("page2 = %v, want [node.state_changed](首插行;无重复、无新行混入)", items)
+	}
+	if auditNextCursor(t, body) != "" {
+		t.Fatalf("page2 next_cursor = %q, want empty tail", auditNextCursor(t, body))
 	}
 }
 
@@ -545,8 +609,8 @@ func TestHTTPAuditQueryUsageColumns(t *testing.T) {
 
 	code, body := doJSON(t, r, http.MethodGet,
 		fmt.Sprintf("/api/v1/audit?execution_id=%d", exec), author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 2 {
-		t.Fatalf("usage query = %d total %v, want 200/2", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 2 {
+		t.Fatalf("usage query = %d %v, want 200/2 rows", code, body)
 	}
 	m := auditItems(t, body)[1] // DESC 序:pii 行最新在前,llm 行第二
 	if pi := auditItems(t, body)[0]; pi["pii_masked"] != true {
@@ -592,8 +656,8 @@ func TestHTTPAuditVisibilityFlushSemantics(t *testing.T) {
 	q := fmt.Sprintf("/api/v1/audit?execution_id=%d", exec)
 
 	code, body := doJSON(t, r, http.MethodGet, q, author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 0 {
-		t.Fatalf("baseline = %d total %v, want 200/0", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 0 {
+		t.Fatalf("baseline = %d %v, want 200/0 rows", code, body)
 	}
 
 	staged := enqueueAuditRow(t, dbh, ids, audit.Event{
@@ -601,8 +665,8 @@ func TestHTTPAuditVisibilityFlushSemantics(t *testing.T) {
 		ActorType: audit.ActorSystem, ActorID: "scheduler",
 	})
 	code, body = doJSON(t, r, http.MethodGet, q, author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 0 {
-		t.Fatalf("staged visible before flush = %d total %v, want 200/0", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 0 {
+		t.Fatalf("staged visible before flush = %d %v, want 200/0 rows", code, body)
 	}
 
 	moved, err := audit.FlushAll(context.Background(), dbh, 500, 10)
@@ -610,8 +674,8 @@ func TestHTTPAuditVisibilityFlushSemantics(t *testing.T) {
 		t.Fatalf("FlushAll = %+v, %v, want Flushed=1/<nil>", moved, err)
 	}
 	code, body = doJSON(t, r, http.MethodGet, q, author, nil)
-	if code != http.StatusOK || auditTotal(t, body) != 1 {
-		t.Fatalf("after flush = %d total %v, want 200/1", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) != 1 {
+		t.Fatalf("after flush = %d %v, want 200/1 row", code, body)
 	}
 	items := auditItems(t, body)
 	if items[0]["id"] != strconv.FormatUint(staged, 10) {
@@ -646,8 +710,8 @@ func TestHTTPAuditTriggeredImmediatelyVisible(t *testing.T) {
 
 	code, body = doJSON(t, r, http.MethodGet,
 		"/api/v1/audit?execution_id="+execID, author, nil)
-	if code != http.StatusOK || auditTotal(t, body) < 1 {
-		t.Fatalf("query after trigger = %d total %v, want 200/≥1", code, body)
+	if code != http.StatusOK || len(auditItems(t, body)) < 1 {
+		t.Fatalf("query after trigger = %d %v, want 200/≥1 row", code, body)
 	}
 	found := false
 	for _, m := range auditItems(t, body) {
