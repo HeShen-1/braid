@@ -220,3 +220,58 @@ func TestConfigFromEnvInfra(t *testing.T) {
 		}
 	})
 }
+
+// TestConfigFromEnvCrossValidatesProducerQueues 队列旋钮启动交叉校验
+// (T12.2,D-t43 §7 蒸发回收):生产方三族(api 续跑 / reaper 重投+通知 /
+// scheduler 常量 default)任一不入消费键集 = 启动即败(「入队到未 serve
+// 的队列永挂 pending」从 .env.example 注释契约升级为执法)。变异自查:
+// 校验丢 → missing_default / resume_not_served / reaper_not_served 红。
+func TestConfigFromEnvCrossValidatesProducerQueues(t *testing.T) {
+	t.Run("defaults all served", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(string) string { return "" })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv defaults err = %v", err)
+		}
+		if _, ok := c.Queues["default"]; !ok {
+			t.Fatalf("default queue missing from default config")
+		}
+	})
+	t.Run("missing default fails", func(t *testing.T) {
+		env := map[string]string{"BRAID_WORKER_QUEUES": "approval:1"}
+		_, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "BRAID_API_RESUME_QUEUE") {
+			t.Fatalf("err = %v, want producer-queue error naming BRAID_API_RESUME_QUEUE", err)
+		}
+	})
+	t.Run("resume queue not served fails", func(t *testing.T) {
+		env := map[string]string{
+			"BRAID_WORKER_QUEUES":    "default:1",
+			"BRAID_API_RESUME_QUEUE": "resume",
+		}
+		_, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "resume") {
+			t.Fatalf("err = %v, want error naming unserved queue %q", err, "resume")
+		}
+	})
+	t.Run("reaper queue not served fails", func(t *testing.T) {
+		env := map[string]string{
+			"BRAID_WORKER_QUEUES":    "default:1",
+			"BRAID_REAPER_QUEUE":     "reaper",
+			"BRAID_API_RESUME_QUEUE": "default",
+		}
+		_, err := ConfigFromEnv(func(k string) string { return env[k] })
+		if err == nil || !strings.Contains(err.Error(), "reaper") {
+			t.Fatalf("err = %v, want error naming unserved queue %q", err, "reaper")
+		}
+	})
+	t.Run("all producer queues served passes", func(t *testing.T) {
+		env := map[string]string{
+			"BRAID_WORKER_QUEUES":    "default:1,resume:2,reaper:1",
+			"BRAID_API_RESUME_QUEUE": "resume",
+			"BRAID_REAPER_QUEUE":     "reaper",
+		}
+		if _, err := ConfigFromEnv(func(k string) string { return env[k] }); err != nil {
+			t.Fatalf("ConfigFromEnv fully served err = %v", err)
+		}
+	})
+}
