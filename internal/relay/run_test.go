@@ -19,8 +19,12 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"log/slog"
+	"strings"
 
 	"braid/internal/db/sqltest"
+	"braid/internal/tracing/tracingtest"
 )
 
 const relaySchema = "braid_relay_test"
@@ -500,4 +504,121 @@ func runRelay(t *testing.T, db *sql.DB, eq Enqueuer, cfg Config, stop func() boo
 		case <-time.After(5 * time.Millisecond):
 		}
 	}
+}
+
+// captureExporter 等共享工具见 internal/tracing/tracingtest(parent/outcome
+// 断言需要 ReadOnlySpan 面,生产导出器不回读)。
+
+// TestDeliverSpanContinuesPayloadTrace(D-t121 #4):payload 自描述链上下文 →
+// relay.deliver span 的 remote parent = (trace_id, span_id) 真值——投递 span
+// 真续发射事务的链;outcome 属性随结局落值。无 trace 载荷臂:span 自成根
+// (观测面孤儿根,非审计域);坏形态 trace 载荷臂:warn 留痕 + 自成根 +
+// 行照常投递(观察面不拒收)。变异自查:不注入 parent → parent 断言红;
+// 误读 trace_id 列(而非 payload)→ linked 臂红(plain 行未种 trace 列,
+// 列读变异下与自成根同形——击杀面在 linked 臂);删 warn → warn 断言红。
+func TestDeliverSpanContinuesPayloadTrace(t *testing.T) {
+	f := newRFixture(t)
+	const (
+		traceX = "4bf92f3577b34da6a3ce929d0e0e4736"
+		spanS  = "00f067aa0ba902b7"
+	)
+	queue := "q" + fmt.Sprint(newID())
+	seedRow := func(payload string) (id uint64, taskID string) {
+		id, taskID = newID(), fmt.Sprintf("att:%d:1", newID())
+		mustExec(t, f.db, `INSERT INTO outbox
+			(id, execution_id, event_type, task_id, queue, payload, status, deliver_attempts, available_at)
+			VALUES (?,?, 'node.task_enqueue', ?, ?, ?, 'PENDING', 0, NOW(3))`,
+			id, f.execID, taskID, queue, payload)
+		return id, taskID
+	}
+	idLinked, taskLinked := seedRow(fmt.Sprintf(`{"outbox_id":%d,"trace_id":%q,"span_id":%q}`, newID(), traceX, spanS))
+	idPlain, _ := seedRow(`{"outbox_id":1}`)
+	idBad, _ := seedRow(`{"trace_id":"NOTHEXATALL"}`)
+
+	tp, rec := tracingtest.New()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	var logBuf lockedBuf
+	logger := slog.New(slog.NewTextHandler(&logBuf, nil))
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = Run(ctx, Deps{DB: f.db, Enqueuer: &stubEnq{}, Tracer: tp.Tracer("braid/relay"), Logger: logger}, testCfg())
+	}()
+	eventually(t, 5*time.Second, "all rows dispatched", func() bool {
+		s1, _, _, _ := f.outboxRow(idLinked)
+		s2, _, _, _ := f.outboxRow(idPlain)
+		s3, _, _, _ := f.outboxRow(idBad)
+		return s1 == "DISPATCHED" && s2 == "DISPATCHED" && s3 == "DISPATCHED"
+	})
+	cancel()
+	<-done
+	if out := logBuf.String(); !strings.Contains(out, "relay.trace_payload_invalid") {
+		t.Fatalf("missing relay.trace_payload_invalid warn:\n%s", out)
+	}
+
+	var linked, plain sdktrace.ReadOnlySpan
+	for _, s := range rec.Snapshot() {
+		if s.Name() != "relay.deliver" {
+			continue
+		}
+		switch {
+		case s.SpanContext().TraceID().String() == traceX:
+			linked = s
+		case !s.Parent().SpanID().IsValid():
+			plain = s // 无链上下文载荷:自成根
+		}
+	}
+	if linked == nil {
+		t.Fatal("relay.deliver span for linked row missing")
+	}
+	if got := linked.SpanContext().TraceID().String(); got != traceX {
+		t.Fatalf("deliver span trace = %s, want payload trace %s (must continue, not fork)", got, traceX)
+	}
+	if got := linked.Parent().SpanID().String(); got != spanS {
+		t.Fatalf("deliver span parent = %s, want payload span %s (real parent)", got, spanS)
+	}
+	var outcome, gotTask string
+	for _, kv := range linked.Attributes() {
+		switch string(kv.Key) {
+		case "relay.outcome":
+			outcome = string(kv.Value.String())
+		case "outbox.task_id":
+			gotTask = string(kv.Value.String())
+		}
+	}
+	if gotTask != taskLinked {
+		t.Fatalf("deliver span task_id attr = %q, want %q", gotTask, taskLinked)
+	}
+	if outcome != "dispatched" {
+		t.Fatalf("deliver span outcome = %q, want dispatched", outcome)
+	}
+	// 无 trace 载荷臂:自成根(trace ≠ 链值、无 parent)。
+	if plain == nil {
+		t.Fatal("self-rooted deliver span for plain row missing")
+	}
+	if plain.Parent().SpanID().IsValid() {
+		t.Fatalf("plain row span parent = %s, want none (no trace context)", plain.Parent().SpanID())
+	}
+}
+
+// lockedBuf 是并发安全日志缓冲(slog handler 写入,relay Run goroutine 与
+// 测试断言两侧并发)。
+type lockedBuf struct {
+	mu  sync.Mutex
+	buf strings.Builder
+}
+
+func (b *lockedBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

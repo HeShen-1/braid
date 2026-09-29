@@ -1,78 +1,72 @@
 package worker
 
-// T6.2 消费半边:asynq 任务 payload 自描述携带 trace_id(outbox 事件发射
-// 时塞入,relay 直投不感知),middleware 在 handler 之前 extract,经
-// ContextWithRemoteSpanContext 注入后起段根 span——当段链续接 payload 的
-// trace(trace id 不变),下游 executor / 调度事务 / audit 落行从同一 ctx
-// 取值(D-2026-09-27-t62-otel-trace)。
+// OTel 消费半边(T6.2 + D-2026-09-29-t121-otel-p1):asynq 任务 payload 自
+// 描述携带 trace_id(+span_id;outbox 事件发射时塞入,relay 直投不感知),
+// middleware 在 handler 之前 extract,经 ContextWithRemoteSpanContext 注入后
+// 起段根 span(span 名 = task type)——当段链续接 payload 的 trace,下游
+// executor / 调度事务 / audit 落行从同一 ctx 取值。
 //
-// trace 传播是观测面不是业务面:payload 无 trace / 形态坏 = 零注入照常执行
-// (形态坏 slog warn 留痕),绝不拒收业务任务。
+// span_id 到场即真 parent(D-t121 #3:段根 span 的 parent 从 P0 伪上游节点
+// 变真发射 span);缺席 = legacy payload 滚动升级窗,派生回退;坏形态 =
+// warn 留痕后派生(观察面不拒收业务任务)。
+//
+// 孤儿链口径短路(D-t121 #5):payload 无有效链上下文(trace 缺席/坏形态/
+// 载荷非对象)→ 零注入、零 span、任务照常执行——P0「无 trace 仍自起段根
+// span」废止,审计不再出现单行孤儿链 id(approval.notified 行回归 NULL
+// 如实化,生产面唯一无 trace 任务 = approval.notify,发射面钉缺席)。
 
 import (
 	"context"
-	"encoding/json"
 	"log/slog"
 
 	"github.com/hibiken/asynq"
 	"go.opentelemetry.io/otel/trace"
+
+	"braid/internal/tracing"
 )
 
-// taskTraceProbe 是 payload 的 trace 探针形状:四类事件 payload 都以
-// trace_id 键携带(omitempty 缺席 = 无 trace 上下文发射)。单字段解析不做
-// 全量反序列化——payload 其余字段归各 handler 的严格 Unmarshal。
-type taskTraceProbe struct {
-	TraceID string `json:"trace_id"`
-}
-
 // traceMiddleware 包裹每个任务:extract payload trace → remote parent 注入
-// → 段根 span(span 名 = task type)。Tracer nil = 观测关闭,直通。
-// 返回 asynq ServeMux.Use 的裸函数形状(func(Handler) Handler)。
+// → 段根 span(span 名 = task type);无有效链上下文 → 短路零 span。
+// Tracer nil = 观测关闭,直通。返回 asynq ServeMux.Use 的裸函数形状
+// (func(Handler) Handler)。
 func traceMiddleware(tracer trace.Tracer, log *slog.Logger) func(asynq.Handler) asynq.Handler {
 	return func(next asynq.Handler) asynq.Handler {
 		return asynq.HandlerFunc(func(ctx context.Context, t *asynq.Task) error {
 			if tracer == nil {
 				return next.ProcessTask(ctx, t)
 			}
-			ctx = withTaskTrace(ctx, t, log)
-			ctx, span := tracer.Start(ctx, t.Type())
+			pctx, linked := withTaskTrace(ctx, t, log)
+			if !linked {
+				// 孤儿链口径短路:零 span,不伪造链(观察面不拒收业务任务)。
+				return next.ProcessTask(ctx, t)
+			}
+			ctx, span := tracer.Start(pctx, t.Type())
 			defer span.End()
 			return next.ProcessTask(ctx, t)
 		})
 	}
 }
 
-// withTaskTrace 把 payload trace_id 注入为 remote span context。
-//
-// SpanID 自 trace id 前 8 字节确定性派生:SDK 判定 remote parent 有效需要
-// 非零 SpanID,而 P0 传播协议只携 trace_id(审计/查询面的唯一契约值)。
-// 伪 parent span id 在 P1 协议携带真 span id 时消解;off/stdout 导出面下
-// 无实害(导出的 span 树里它只是一个不存在的上游节点)。
-func withTaskTrace(ctx context.Context, t *asynq.Task, log *slog.Logger) context.Context {
-	var probe taskTraceProbe
-	if err := json.Unmarshal(t.Payload(), &probe); err != nil {
-		return ctx // 载荷非对象/坏 JSON:消费面各自响亮处理,trace 面零注入降级
+// withTaskTrace 把 payload 链上下文注入为 remote span context(契约单源
+// internal/tracing.PayloadSpanContext:span_id 真值/派生回退/坏形态三臂
+// 见其注释)。返回 (ctx, true) = 注入成功(调用方起段根 span);
+// (ctx, false) = 无有效链上下文(调用方短路零 span)。
+func withTaskTrace(ctx context.Context, t *asynq.Task, log *slog.Logger) (context.Context, bool) {
+	p, _ := tracing.ExtractPayloadTrace(t.Payload())
+	if p.TraceID == "" {
+		return ctx, false
 	}
-	if probe.TraceID == "" {
-		return ctx
-	}
-	tid, err := trace.TraceIDFromHex(probe.TraceID)
-	if err != nil {
+	sc, ok, badSpan := tracing.PayloadSpanContext(p.TraceID, p.SpanID)
+	if !ok {
 		taskID, _ := asynq.GetTaskID(ctx)
 		// 合法值恒 32 hex;截断防队列写者塞超长字符串膨胀单行日志
-		//(review LOW:体积面,无注入——slog 转义在)。
-		bad := probe.TraceID
-		if len(bad) > 64 {
-			bad = bad[:64]
-		}
-		log.Warn("worker.trace_payload_invalid", "task_id", taskID, "trace_id", bad)
-		return ctx
+		//(体积面,无注入——slog 转义在;单源 tracing.TruncateID)。
+		log.Warn("worker.trace_payload_invalid", "task_id", taskID, "trace_id", tracing.TruncateID(p.TraceID))
+		return ctx, false
 	}
-	var sid [8]byte
-	copy(sid[:], tid[:8])
-	sc := trace.NewSpanContext(trace.SpanContextConfig{
-		TraceID: tid, SpanID: trace.SpanID(sid), TraceFlags: trace.FlagsSampled,
-		Remote: true, // 传播边界上的 parent 是 remote(review LOW:规范位)
-	})
-	return trace.ContextWithRemoteSpanContext(ctx, sc)
+	if badSpan {
+		taskID, _ := asynq.GetTaskID(ctx)
+		log.Warn("worker.span_payload_invalid", "task_id", taskID, "span_id", tracing.TruncateID(p.SpanID))
+	}
+	return trace.ContextWithRemoteSpanContext(ctx, sc), true
 }

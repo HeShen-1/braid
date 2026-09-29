@@ -82,6 +82,11 @@ type NodeTaskPayload struct {
 	// 携带,relay 直投不感知;worker middleware extract 注入 ctx 续 span)。
 	// omitempty:无 trace 上下文的发射面(测试路径)键缺席 = 消费侧零注入。
 	TraceID string `json:"trace_id,omitempty"`
+	// SpanID 是发射事务当段活跃 span id(D-t121 #3:零迁移钉死,只进 payload
+	// 不落列):worker middleware 以它为 remote parent 真值,段根 span 的
+	// parent 从伪上游节点变真发射 span。omitempty 同 TraceID;reaper 重派
+	// 两处显式拷 trace 时不携(原 span 不在 DB,派生回退近似,P0 同形)。
+	SpanID string `json:"span_id,omitempty"`
 }
 
 // ExecStartPayload 是 execution.start 事件的自描述体。
@@ -90,6 +95,9 @@ type ExecStartPayload struct {
 	// TraceID = 触发请求 root trace(InstantiateParams.TraceID 直传,
 	// workflow_execution.trace_id 同值单源;T6.2)。
 	TraceID string `json:"trace_id,omitempty"`
+	// SpanID = 触发请求当段 span id(D-t121 #3:与 TraceID 同一请求 ctx
+	// 提取;消费侧 remote parent 真值)。omitempty 同 TraceID。
+	SpanID string `json:"span_id,omitempty"`
 }
 
 // ResumePayload 是 execution.resume 事件的自描述体(outbox 契约:仅 id 引用;
@@ -104,6 +112,9 @@ type ResumePayload struct {
 	// TraceID = 决策请求 trace(段首新链 Z;挂起前主链 X 经决策行
 	// linked_trace_id 串联——T6.2 trace link;reaper 死信网重投拷原行值)。
 	TraceID string `json:"trace_id,omitempty"`
+	// SpanID = 决策请求当段 span id(D-t121 #3:续跑段根的真 parent;
+	// reaper 死信网重投显式拷 trace 处不携——派生回退近似,P0 同形)。
+	SpanID string `json:"span_id,omitempty"`
 }
 
 // ApprovalNotifyPayload 是 approval.notify 事件的自描述体(T4.3 起有发射点:
@@ -121,9 +132,10 @@ type ApprovalNotifyPayload struct {
 	// <round>)与消费侧去重锚(approval.notified 行 payload)同源;回滚
 	// 重挂后第二轮升级是新的通知意图(D-t92 决策 7),两半都必须携轮。
 	Round int `json:"round"`
-	// TraceID:T6.2 边界——notify 链 P0 无段 trace(发射面 reaper tick 无
-	// span 上下文,approval.notified 行 trace NULL),D-t62 登记;P1 若
-	// 回读 root 续链在此扩。
+	// TraceID:T6.2 边界——notify 链无段 trace(发射面 reaper tick 无 span
+	// 上下文,approval.notified 行 trace NULL),D-t62 登记;P1 若回读 root
+	// 续链在此扩。span_id 同钉缺席(D-t121 #5 孤儿链口径:消费侧无链上下文
+	// 零 span 短路,不携假 parent)。
 	TraceID string `json:"trace_id,omitempty"`
 }
 
@@ -461,7 +473,8 @@ VALUES (?,?,?,0,?,'PENDING',?,1)`,
 			}
 		}
 		return s.appendEvent(ctx, q, execID, EventTypeExecutionStart,
-			fmt.Sprintf("exec:%d", execID), ExecStartPayload{ExecutionID: execID, TraceID: p.TraceID})
+			fmt.Sprintf("exec:%d", execID), ExecStartPayload{
+				ExecutionID: execID, TraceID: p.TraceID, SpanID: spanIDFromCtx(ctx)})
 	})
 	if err != nil {
 		return 0, err
@@ -1619,7 +1632,7 @@ func (st *execState) appendNodeTask(row *nodeRow) error {
 		fmt.Sprintf("att:%d:%d", row.id, row.attempts),
 		NodeTaskPayload{
 			ExecutionID: st.execID, NodeExecutionID: row.id, AttemptNo: row.attempts,
-			TraceID: traceIDFromCtx(st.ctx),
+			TraceID: traceIDFromCtx(st.ctx), SpanID: spanIDFromCtx(st.ctx),
 		})
 }
 
@@ -1629,6 +1642,16 @@ func (st *execState) appendNodeTask(row *nodeRow) error {
 func traceIDFromCtx(ctx context.Context) string {
 	if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
 		return sc.TraceID().String()
+	}
+	return ""
+}
+
+// spanIDFromCtx 提取当段活跃 span id(D-t121 #3:payload 携真 span id,
+// 消费侧 remote parent 用真值——段根 span 的 parent 从 P0 伪上游节点变真
+// 发射 span;空 = 无 span 上下文,payload 键缺席)。
+func spanIDFromCtx(ctx context.Context) string {
+	if sc := trace.SpanContextFromContext(ctx); sc.HasSpanID() {
+		return sc.SpanID().String()
 	}
 	return ""
 }

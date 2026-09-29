@@ -33,6 +33,7 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"go.opentelemetry.io/otel/trace"
 
 	"braid/internal/api"
 	"braid/internal/audit"
@@ -266,6 +267,10 @@ func TestFaultWorkerKillMidRunConvergesTraceIntact(t *testing.T) {
 	}
 	r, err := reaper.New(reaper.Deps{
 		DB: d, Sched: mustE2ESched(t, d, queue), IDs: reapIDs,
+		// D-t121 #4:e2e 侧挂真 tracer——「span 恒不进发射 ctx」的解耦由
+		// 本测试全链面断言钉死(spans 在场时非空 trace 仍恒 = X;若解耦
+		// 破坏,reaper 自生行携 tick trace ⇒ 断言红)。
+		Tracer: e2eReaperTracer(t),
 	}, reaper.Config{
 		ScanInterval:   200 * time.Millisecond,
 		DeadGrace:      time.Second,
@@ -588,4 +593,17 @@ SELECT SUM(trace_id IS NOT NULL AND trace_id NOT IN (?, ?)),
 	if linkedRows != 1 {
 		t.Fatalf("linked 非空行 = %d, want 恰 1(decided 段首单点)", linkedRows)
 	}
+}
+
+// e2eReaperTracer 给 faultinject 的 reaper 挂 off 导出 tracer(span/trace
+// id 照生成、真实存在于 ctx 链——全链面断言「spans 在场时非空 trace 仍恒
+// = X」的靶,D-t121 #4 解耦钉死)。
+func e2eReaperTracer(t *testing.T) trace.Tracer {
+	t.Helper()
+	prov, err := tracing.NewProvider(tracing.Config{Exporter: tracing.ExporterOff, ServiceName: "braid-reaper-e2e"})
+	if err != nil {
+		t.Fatalf("trace provider: %v", err)
+	}
+	t.Cleanup(func() { _ = prov.Shutdown(context.Background()) })
+	return prov.Tracer("braid/reaper")
 }

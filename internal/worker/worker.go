@@ -139,10 +139,11 @@ type Deps struct {
 	// Metrics 是观测面(T6.4):nil = 关闭(测试默认)。notify 结果计数 +
 	// asynq archived 死信 gauge(探测 goroutine 随 Run 生命周期)。
 	Metrics *metrics.WorkerSet
-	// Tracer 是 OTel 消费半边(T6.2):nil = 关闭(测试默认,payload 内
-	// trace_id 不 extract,ctx 无 span,audit 落 NULL——与 api Tracing(nil)
-	// 同口径)。非 nil 时每任务起段根 span(remote parent = payload 携带的
-	// trace,续链不新开 trace;D-2026-09-27-t62-otel-trace)。
+	// Tracer 是 OTel 消费半边(T6.2 + D-t121):nil = 关闭(测试默认,payload
+	// 内 trace_id 不 extract,ctx 无 span,audit 落 NULL——与 api Tracing(nil)
+	// 同口径)。非 nil 时:payload 携有效链上下文 → 段根 span(remote parent =
+	// payload 的 trace+span,续链不新开 trace,span id 真值/派生回退见
+	// tracemw.go);无有效链上下文 → 孤儿链口径短路零 span。
 	Tracer trace.Tracer
 }
 

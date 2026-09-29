@@ -24,6 +24,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"braid/internal/tracing"
 )
 
 // newTestClient 起httptest 端点 + 指向它的适配器(退避毫秒级,重试即时)。
@@ -414,5 +416,44 @@ func TestConcurrentChatCompletionNoRace(t *testing.T) {
 	}
 	if got := calls.Load(); got != workers*rounds {
 		t.Fatalf("calls = %d, want %d", got, workers*rounds)
+	}
+}
+
+// D-t121 #2:W3C traceparent 外发注入——ctx 携有效 span context 时,出站
+// 请求带 W3C 头(trace-span-flags 与当段一致);无 span ctx 时零写(观测面
+// 不造链)。变异自查:去掉 Inject → 有头臂红;误用 Extract → 无头臂红。
+func TestChatCompletionInjectsTraceparent(t *testing.T) {
+	prov, err := tracing.NewProvider(tracing.Config{Exporter: tracing.ExporterOff, ServiceName: "test"})
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	t.Cleanup(func() { _ = prov.Shutdown(context.Background()) })
+	sctx, span := prov.Tracer("braid/worker").Start(context.Background(), "node.task_enqueue:llm")
+	defer span.End()
+
+	var gotParent, gotParentNone string
+	c, _ := newTestClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		gotParent = r.Header.Get("traceparent")
+		writeJSON(w, 200, okBody())
+	})
+	if _, err := c.ChatCompletion(sctx, baseReq()); err != nil {
+		t.Fatalf("ChatCompletion() = %v", err)
+	}
+	sc := span.SpanContext()
+	want := "00-" + sc.TraceID().String() + "-" + sc.SpanID().String() + "-01"
+	if gotParent != want {
+		t.Fatalf("traceparent = %q, want %q", gotParent, want)
+	}
+
+	// 无 span ctx 臂:零写(无链上下文不造头)。
+	c2, _ := newTestClient(t, nil, func(w http.ResponseWriter, r *http.Request) {
+		gotParentNone = r.Header.Get("traceparent")
+		writeJSON(w, 200, okBody())
+	})
+	if _, err := c2.ChatCompletion(context.Background(), baseReq()); err != nil {
+		t.Fatalf("ChatCompletion() = %v", err)
+	}
+	if gotParentNone != "" {
+		t.Fatalf("traceparent = %q without span ctx, want absent", gotParentNone)
 	}
 }

@@ -26,7 +26,7 @@
 
 ## M12 可观测与运维(M9 后可与 M10 并行)
 
-- [ ] T12.1 OTel P1 — M — 验收:Jaeger exporter(env 切换,off/stdout 保留);W3C traceparent 外发注入(llm/http 出站带);relay/reaper 进程 span 补齐(现两进程零观测);任务协议携真 span id(payload 可伪造的内部信任边界按 D-t62 修订注收口);notify 消费侧 middleware 短路(孤儿链口径)
+- [x] T12.1 OTel P1 — M — 验收:Jaeger exporter(env 切换,off/stdout 保留);W3C traceparent 外发注入(llm/http 出站带);relay/reaper 进程 span 补齐(现两进程零观测);任务协议携真 span id(payload 可伪造的内部信任边界按 D-t62 修订注收口);notify 消费侧 middleware 短路(孤儿链口径)
 - [ ] T12.2 运维加固批 — M — 验收六项:审计查询 keyset 分页(D-t63 #5)、BRAID_DB_MAX_OPEN 软上限护栏(#67 系)、BRAID_SMTP_CA_FILE env 化(D-t45 §7 蒸发回收)、队列旋钮启动交叉校验(D-t43 §7 蒸发回收)、Redispatches{attempt_failed} 词表发射(D-t64 留位)、按 approver 扇出投递(D-t45 #2:用户资料 email 列 + 逐人收件);一项不落逐项验收
 
 ## M13 生态(MCP)

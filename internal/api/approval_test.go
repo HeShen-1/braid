@@ -15,6 +15,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -31,6 +32,7 @@ import (
 	"braid/internal/db/sqltest"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
+	"braid/internal/tracing/tracingtest"
 )
 
 // signSubject 签发指定主体的 token(approval 测试需要 carol/bob 等多主体,
@@ -507,4 +509,47 @@ func TestScopedIdempotencyKeyFraming(t *testing.T) {
 	if scopedIdempotencyKey("a", "b", "c") == scopedIdempotencyKey("ab", "", "c") {
 		t.Fatal("length-framing collision")
 	}
+}
+
+// TestResumePayloadSpanIDEmitted(D-t121 #3 发射面半边,review HIGH 修):
+// 决策请求 ctx 携 span 时,execution.resume payload 的 span_id == 该 span
+// id(续跑段根的真 parent)。删掉 appendResumeEvent 的 SpanID 接线 → 红。
+// 断言 trace 链(SpanContext 整对)由 nodes e2e 真链层承担,这里钉发射值。
+func TestResumePayloadSpanIDEmitted(t *testing.T) {
+	r, dbh, _ := newTestServer(t)
+	execID, nodeID := seedSuspendedApproval(t, dbh, "WAITING_APPROVAL", "WAITING_APPROVAL", "carol")
+	carol := signSubject(t, "carol", auth.RoleApprover)
+
+	tp, _ := tracingtest.New()
+	t.Cleanup(func() { _ = tp.Shutdown(context.Background()) })
+	sctx, span := tp.Tracer("braid/test").Start(context.Background(), "decide")
+	defer span.End()
+	want := span.SpanContext().SpanID().String()
+
+	req := httptest.NewRequest(http.MethodPost, decisionPath(execID),
+		bytes.NewReader([]byte(`{"decision":"approve","comment":"可以"}`)))
+	req = req.WithContext(sctx)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer "+carol)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("decide = %d %s, want 201", w.Code, w.Body.String())
+	}
+
+	var payload []byte
+	taskID := fmt.Sprintf("resume:%d:boss:2", execID)
+	if err := dbh.QueryRow(`SELECT payload FROM outbox WHERE task_id=?`, taskID).Scan(&payload); err != nil {
+		t.Fatalf("read resume event: %v", err)
+	}
+	var rp struct {
+		SpanID string `json:"span_id"`
+	}
+	if err := json.Unmarshal(payload, &rp); err != nil {
+		t.Fatalf("resume payload: %v", err)
+	}
+	if rp.SpanID != want {
+		t.Fatalf("resume payload span_id = %q, want decision span %q", rp.SpanID, want)
+	}
+	_ = nodeID
 }

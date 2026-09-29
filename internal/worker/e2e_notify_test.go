@@ -37,6 +37,7 @@ import (
 	"braid/internal/redistest"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
+	"braid/internal/tracing"
 )
 
 // seedWaitingApprovalEscalated 造 reaper 升级事务后的业务链种子(worker 包
@@ -157,7 +158,15 @@ func TestApprovalNotifySMTPDelivery(t *testing.T) {
 	}}
 	cfg := DefaultConfig()
 	cfg.RetryDelay = 50 * time.Millisecond
-	queue := startWorkerOpt(t, d, ex, cfg, e2eNotifier(t, d, f))
+	// D-t121 #5:worker 挂真 tracer(off 导出)——approval.notify payload 不携
+	// trace(发射面钉缺席)⇒ 消费侧孤儿链短路零 span ⇒ approval.notified 行
+	// trace_id NULL(如实化口径;P0 的孤儿链 id 形态废止)。
+	prov, err := tracing.NewProvider(tracing.Config{Exporter: tracing.ExporterOff, ServiceName: "braid-worker-notify-e2e"})
+	if err != nil {
+		t.Fatalf("trace provider: %v", err)
+	}
+	t.Cleanup(func() { _ = prov.Shutdown(context.Background()) })
+	queue := startWorkerOptTraced(t, d, ex, cfg, e2eNotifier(t, d, f), prov.Tracer("braid/worker"))
 	insp := asynq.NewInspector(redistest.MustOpt(t))
 	t.Cleanup(func() { _ = insp.Close() })
 
@@ -183,15 +192,20 @@ func TestApprovalNotifySMTPDelivery(t *testing.T) {
 		}
 	}
 
-	// ② 送达审计行落库(去重锚的写半边)。
+	// ② 送达审计行落库(去重锚的写半边)+ D-t121 #5:trace_id 恒 NULL
+	// (worker 挂 tracer 时孤儿链短路零 span,如实化口径)。
 	var notified int
-	if err := d.QueryRow(`SELECT COUNT(*) FROM audit_log
+	var notifiedTrace sql.NullString
+	if err := d.QueryRow(`SELECT COUNT(*), COALESCE(MAX(trace_id), '') FROM audit_log
 		WHERE execution_id=? AND node_execution_id=? AND event_type=?`,
-		execID, nodeExecID, audit.EventApprovalNotified).Scan(&notified); err != nil {
+		execID, nodeExecID, audit.EventApprovalNotified).Scan(&notified, &notifiedTrace); err != nil {
 		t.Fatalf("count notified rows: %v", err)
 	}
 	if notified != 1 {
 		t.Fatalf("approval.notified rows = %d, want 1", notified)
+	}
+	if notifiedTrace.String != "" {
+		t.Fatalf("approval.notified trace_id = %q, want NULL/'' (orphan short-circuit, D-t121 #5)", notifiedTrace.String)
 	}
 
 	// ③ 同 TaskID 重投(完成即删后的新投递 = asynq at-least-once 重复面):

@@ -361,6 +361,8 @@ SELECT (SELECT COUNT(*) FROM outbox
 			"hint", "resume event in flight; re-checked next tick")
 		return errSkip
 	}
+	// SpanID 刻意不携(D-t121 #3):原发射 span 不在 DB,只有 trace 可拷;
+	// 消费侧派生回退近似段 parent(P0 同形),重投 = 原事件重放同一真相。
 	raw, err := json.Marshal(scheduler.ResumePayload{
 		ExecutionID: execID, NodeExecutionID: nodeExecID,
 		DecisionID: decisionID, AttemptNo: attempts + 1,

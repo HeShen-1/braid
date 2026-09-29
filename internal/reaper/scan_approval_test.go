@@ -386,6 +386,14 @@ func TestApprovalDecidedDeadEventRedispatchesWithTrace(t *testing.T) {
 	if rp.TraceID != z {
 		t.Fatalf("重投 payload trace_id = %q, want 原行 %q(段链不换)", rp.TraceID, z)
 	}
+	// D-t121 #3 反向臂:重投 payload 恒不携 span_id(键缺席)。
+	var rawMap map[string]any
+	if err := json.Unmarshal(rows[1].payload, &rawMap); err != nil {
+		t.Fatalf("redispatch payload raw: %v", err)
+	}
+	if _, ok := rawMap["span_id"]; ok {
+		t.Fatalf("redispatch payload carries span_id %q, want key absent (D-t121 #3)", rawMap["span_id"])
+	}
 	var colTrace sql.NullString
 	if err := d.QueryRow(
 		`SELECT trace_id FROM outbox WHERE task_id=? AND status='PENDING'`, taskID).
