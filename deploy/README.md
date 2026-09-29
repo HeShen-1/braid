@@ -259,3 +259,31 @@ openssl pkeyutl -verify -pubin -inkey <(openssl pkey -in toolpkg_key.pem -pubout
 golden 向量已入 `internal/tools/toolpackage_test.go` 持续验证)。部署后
 api/worker 启动即验,失败 = 拒启(错误带分量定位,不含密钥材料)。换钥 =
 新钥重签 + 全部署点同步换三键(无过渡双钥;轮换策略需要时 D- 拍板)。
+
+## 9. 沙箱 egress 默认拒绝拓扑(T10.2)
+
+`BRAID_TOOL_SANDBOX=docker` 下 http 工具容器的出网通道(与 §7 镜像同一
+沙箱面;file_read 恒 `--network none` 不变):
+
+- **内网**:worker 启动时幂等创建 `--internal` docker 网络(缺省名
+  `braid-sbx-egress`,`BRAID_TOOL_SANDBOX_EGRESS_NETWORK` 可覆写;daemon
+  ≥ 20.10,internal 隔离语义下限)。容器在内网上唯一可达面 = 网关地址,
+  直连外网/宿主其他地址在网络层结构性拒绝——默认拒绝由拓扑保证,不是
+  进程内策略保证。
+- **代理**:worker 进程内 CONNECT-only 代理,绑内网网关
+  `BRAID_TOOL_SANDBOX_EGRESS_PORT`(缺省 9210;0 = 内核指派)。策略:
+  host(:port) 白名单单源派生自 `BRAID_HTTP_ENDPOINTS`(或验签工具包,
+  §8),端口级管控在此收口;DNS 全在代理侧解析,任一解析 IP 落 SSRF
+  禁段整体拒(fail-closed),拨已解析 IP(DNS rebinding 无二次解析窗)。
+  明文 http 不转发(CONNECT-only),端到端 TLS 在容器与目标之间,代理
+  零明文可见。
+- **地址流**:worker 启动自算代理地址并写
+  `BRAID_TOOL_SANDBOX_EGRESS_ADDR`(进程内传递,非手配键),经 stdin
+  信封进容器——容器 env 恒无 `BRAID_*` 键(§7 §5 白名单不变量)。
+- **运维**:多 worker 副本同网同名会撞端口拒启(单 worker 现状);网络
+  属 daemon 持久对象,worker 重启幂等复用(daemon 重启若变更网关,worker
+  下次启动重读重绑)。拒绝姿态拆毁形态(同名网络非 `--internal`)启动
+  即拒。
+- **t14.4(Helm)前置契约**:k8s 化时「网关 + 进程内代理」对应
+  egress NetworkPolicy + 代理 sidecar/独立端点;env 键词表与
+  `EgressAllowFromEndpoints` 单源在此两处复用,不再新增拓扑键。

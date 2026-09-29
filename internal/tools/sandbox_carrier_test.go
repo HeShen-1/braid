@@ -60,7 +60,7 @@ func shimArgv(t *testing.T, dir string) []string {
 	return strings.Split(text, "\n")
 }
 
-// carrierCfg 测试基线配置(与 argv golden 同值)。
+// carrierCfg 测试基线配置(与 argv golden 同值;egress 网络位 T10.2)。
 var carrierCfg = sandboxConfig{
 	Docker:         true,
 	Image:          "braid-tool-sandbox:1",
@@ -68,6 +68,7 @@ var carrierCfg = sandboxConfig{
 	CPUs:           "0.5",
 	PidsLimit:      64,
 	MaxConcurrency: 8,
+	EgressNetwork:  sandboxEgressNetworkDefault,
 }
 
 var sandboxNameRe = regexp.MustCompile(`^braid-sbx-(http|file_read)-[0-9a-f]{16}$`)
@@ -92,7 +93,7 @@ func expectedRunArgv(name, tool, mount string) string {
 		" --memory 256m --memory-swap 256m --cpus 0.5 --pids-limit 64" +
 		" --ulimit nofile=1024:1024 --cap-drop ALL --security-opt no-new-privileges" +
 		" --user 65532:65532 --init --log-driver json-file --log-opt max-size=5m --log-opt max-file=1"
-	net := " --network bridge"
+	net := " --network " + sandboxEgressNetworkDefault // T10.2:http 经 egress 内网
 	if tool == "file_read" {
 		net = " --network none"
 		if mount != "" {

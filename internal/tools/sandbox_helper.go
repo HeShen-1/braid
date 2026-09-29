@@ -42,8 +42,18 @@ package tools
 //	braid-sandbox-exec selftest zombies <n>       派生 n 个「孤儿子进程」后扫 /proc Z 状态
 //	                                              (#15 tini 收割 e2e;zombie-child/exit0
 //	                                              是其内部子模式)
+//	braid-sandbox-exec selftest egress-dial <proxy> <authority>
+//	                                              原始 CONNECT 探测(T10.2 e2e):拨代理、
+//	                                              写 CONNECT、回读状态行原样打印(成功
+//	                                              与拒答都 exit 0——探针报告形态,e2e
+//	                                              断言状态行)
+//	braid-sandbox-exec selftest raw-dial <ip:port>
+//	                                              裸 TCP 拨号探测(T10.2 e2e):连通打
+//	                                              "connected <addr>",失败打 "failed <err>"
+//	                                              (两者都 exit 0;e2e 断言拒绝形态)
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -261,13 +271,25 @@ func rebuildSandboxTool(tool string, config json.RawMessage) (Tool, error) {
 	case "http":
 		var cfg struct {
 			Endpoints map[string]string `json:"endpoints"`
+			Proxy     string            `json:"proxy"`
 		}
 		if len(config) > 0 {
 			if err := json.Unmarshal(config, &cfg); err != nil {
 				return nil, fmt.Errorf("http config not valid JSON: %w", err)
 			}
 		}
-		return NewHTTPTool(HTTPConfig{Endpoints: cfg.Endpoints})
+		// T10.2 egress 代理跳接:信封 proxy 字段 → Guard.ProxyURL(词形
+		// 与宿主 env 键共用 parseEgressProxyURL 单门);坏词形落
+		// tool_failed 信封可观测,不带容器内 panic(no-envelope 形态)。
+		var guard GuardConfig
+		if cfg.Proxy != "" {
+			u, err := parseEgressProxyURL(cfg.Proxy)
+			if err != nil {
+				return nil, fmt.Errorf("http config: %w", err)
+			}
+			guard.ProxyURL = u
+		}
+		return NewHTTPTool(HTTPConfig{Endpoints: cfg.Endpoints, Guard: guard})
 	case "file_read":
 		var cfg struct {
 			Dirs []string `json:"dirs"`
@@ -299,7 +321,7 @@ func writeSandboxEnvelope(w io.Writer, resp SandboxResponse) error {
 // 非零退出,探针没有信封契约)。
 func runSandboxSelftest(ctx context.Context, argv []string, stdin io.Reader, stdout io.Writer) error {
 	if len(argv) < 1 {
-		return fmt.Errorf("selftest requires a mode: dump-env | alloc <MiB> | serve <ip:port> <cert> <key> | spin <s> | forkchain <d> <max> | fds <max> | spam-stderr <MiB> | zombies <n>")
+		return fmt.Errorf("selftest requires a mode: dump-env | alloc <MiB> | serve <ip:port> <cert> <key> | spin <s> | forkchain <d> <max> | fds <max> | spam-stderr <MiB> | zombies <n> | egress-dial <proxy> <authority> | raw-dial <ip:port>")
 	}
 	switch argv[0] {
 	case "dump-env":
@@ -379,6 +401,21 @@ func runSandboxSelftest(ctx context.Context, argv []string, stdin io.Reader, std
 			return fmt.Errorf("selftest zombies: want integer n in [1, 64], got %q", argv[1])
 		}
 		return sandboxSelftestZombies(n, stdout)
+	case "egress-dial":
+		// 原始 CONNECT 探测(T10.2 e2e):不做 TLS、不带工具策略——只把
+		// 代理拒答的状态行原样报给 e2e 断言(非白名 CONNECT 拒绝面)。
+		// 成功(2xx)也立即断连:探针不消费隧道。
+		if len(argv) != 3 {
+			return fmt.Errorf("selftest egress-dial requires <proxy host:port> <authority host:port>")
+		}
+		return sandboxSelftestEgressDial(ctx, argv[1], argv[2], stdout)
+	case "raw-dial":
+		// 裸 TCP 拨号探测(T10.2 e2e):egress 内网内直连非网关地址必须
+		// 失败——「直连被拒」的网络层结构性断言原语。
+		if len(argv) != 2 {
+			return fmt.Errorf("selftest raw-dial requires <ip:port>")
+		}
+		return sandboxSelftestRawDial(ctx, argv[1], stdout)
 	case "zombie-child", "exit0":
 		// zombies 探针的内部子模式:zombie-child 派生一个 exit0 孙进程后
 		// 立即自退(孙进程成为孤儿 → 转交给 PID 1);exit0 立即退出。
@@ -388,8 +425,45 @@ func runSandboxSelftest(ctx context.Context, argv []string, stdin io.Reader, std
 		}
 		return nil
 	default:
-		return fmt.Errorf("selftest unknown mode %q (want dump-env | alloc | serve | spin | forkchain | fds | spam-stderr | zombies)", argv[0])
+		return fmt.Errorf("selftest unknown mode %q (want dump-env | alloc | serve | spin | forkchain | fds | spam-stderr | zombies | egress-dial | raw-dial)", argv[0])
 	}
+}
+
+// sandboxSelftestEgressDial 原始 CONNECT 探针(文件头 egress-dial 条目):
+// 拨代理 → 单条 CONNECT → 回读状态行打印即断。10s 硬期限(探针无信封
+// 契约,e2e 侧另有时限)。
+func sandboxSelftestEgressDial(ctx context.Context, proxy, authority string, stdout io.Writer) error {
+	d := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", proxy)
+	if err != nil {
+		return fmt.Errorf("selftest egress-dial: dial %s: %w", proxy, err)
+	}
+	defer func() { _ = conn.Close() }()
+	_ = conn.SetDeadline(time.Now().Add(10 * time.Second))
+	if _, err := fmt.Fprintf(conn, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", authority, authority); err != nil {
+		return fmt.Errorf("selftest egress-dial: write CONNECT: %w", err)
+	}
+	line, err := bufio.NewReader(io.LimitReader(conn, 4096)).ReadString('\n')
+	if err != nil {
+		return fmt.Errorf("selftest egress-dial: read status: %w", err)
+	}
+	_, werr := fmt.Fprintf(stdout, "%s", line)
+	return werr
+}
+
+// sandboxSelftestRawDial 裸 TCP 探针(文件头 raw-dial 条目):连通/失败
+// 都如实打印后正常退出——探针报告形态,e2e 断言期望侧(内网直连必须
+// 落 failed)。
+func sandboxSelftestRawDial(ctx context.Context, addr string, stdout io.Writer) error {
+	d := net.Dialer{Timeout: 10 * time.Second}
+	conn, err := d.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		_, werr := fmt.Fprintf(stdout, "failed %s: %v\n", addr, err)
+		return werr
+	}
+	_ = conn.Close()
+	_, werr := fmt.Fprintf(stdout, "connected %s\n", addr)
+	return werr
 }
 
 // sandboxSelftestServe 宿主侧 TLS server(T10 裁决:监听形态 = 显式 IP

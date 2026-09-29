@@ -52,12 +52,16 @@ func TestSandboxArgvGolden(t *testing.T) {
 		}
 	})
 
-	t.Run("http gets network bridge and no mounts", func(t *testing.T) {
+	t.Run("http gets egress network and no mounts", func(t *testing.T) {
+		// T10.2 换装:bridge → egress 内网(值 = 解析期已填的 cfg 字段,
+		// 这里显式设值钉死 golden;空值形态见下方响亮败用例)。
+		cfg := cfg
+		cfg.EgressNetwork = "braid-sbx-egress"
 		args, err := buildSandboxRunArgv(cfg, "braid-sbx-1-2-abcd1234", "http", nil)
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
-		// 全序列 golden(与 file_read 用例同款):共享硬化前缀 + bridge
+		// 全序列 golden(与 file_read 用例同款):共享硬化前缀 + egress
 		// 网位逐字钉死,顺带结构性排除 -e/--env-file/--env 与 --mount——
 		// 信任材料的 env 通道被 argv 层封死(基线 §5 / T7 私 CA 契约
 		// 「运行期零通道」的 env 半边机械锚)。
@@ -77,13 +81,22 @@ func TestSandboxArgvGolden(t *testing.T) {
 			"--user", "65532:65532",
 			"--init",
 			"--log-driver", "json-file", "--log-opt", "max-size=5m", "--log-opt", "max-file=1",
-			"--network", "bridge",
+			"--network", "braid-sbx-egress",
 			"--entrypoint", "/usr/local/bin/braid-sandbox-exec",
 			"braid-tool-sandbox:1",
 			"http",
 		}, " ")
 		if got := strings.Join(args, " "); got != want {
 			t.Fatalf("argv =\n%s\nwant\n%s", got, want)
+		}
+	})
+
+	t.Run("http without egress network fails loud", func(t *testing.T) {
+		// 直接构造零值配置(绕过 env 解析的装配缺陷形态):绝不静默回落
+		// bridge——过渡网位已随 T10.2 死,缺网络名 = 配置面断了。
+		_, err := buildSandboxRunArgv(cfg, "braid-sbx-1-2-abcd1234", "http", nil)
+		if err == nil || !strings.Contains(err.Error(), "egress network") {
+			t.Fatalf("err = %v, want loud egress network requirement", err)
 		}
 	})
 }

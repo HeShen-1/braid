@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"syscall"
 	"time"
 )
@@ -58,6 +59,12 @@ type GuardConfig struct {
 	Resolver    *net.Resolver     // nil → net.DefaultResolver;测试注入假解析器(可控 DNS)
 	IPForbidden func(net.IP) bool // 仅测试注入:nil → ipForbidden。非 nil 即**整体替换**默认禁段(含放行环回/metadata),生产装配误带此缝将静默放行全部禁段且无报错——恒零值
 	TLS         *tls.Config       // 测试/T3.5 注入私有根证书;不放宽校验
+	// ProxyURL 是显式 egress 代理(T10.2;仅沙箱 docker 模式由信封装配,
+	// off 模式恒 nil = 逐字节现状)。非 nil 时 https 拨号经 DialTLSContext
+	// 手工 CONNECT 隧道(egress.go);Transport.Proxy 字段仍恒 nil——env
+	// 代理变量(HTTP(S)_PROXY)旁路红线不因显式代理而松动(基线 §4b)。
+	// 词形契约:http://host:port(明文说代理;端口必显式)。
+	ProxyURL *url.URL
 }
 
 // NewGuardedClient 构造 http 工具专用 http.Client(ARCHITECTURE §3.4
@@ -70,9 +77,10 @@ type GuardConfig struct {
 //     CheckRedirect 注释),并自管跳数上限。
 //
 // 边界归属(供 T3.5 装配对齐):
-//   - Proxy 恒 nil(不拾取 HTTP(S)_PROXY——经代理的请求绕过本地拨号
-//     复核,env 代理是默认可用的 SSRF 旁路);egress 默认拒绝代理的网络层
-//     方案属 P1。
+//   - Proxy 字段恒 nil(不拾取 HTTP(S)_PROXY——经 env 代理的请求绕过
+//     本地拨号复核,是默认可用的 SSRF 旁路);T10.2 的 egress 默认拒绝
+//     代理走显式 ProxyURL → DialTLSContext 手工 CONNECT 隧道(egress.go),
+//     全程零 env 代理变量消费(基线 §4b 反旁路红线维持)。
 //   - 超时:本层只带 DefaultTransport 基线旋钮(拨号/TLS 握手/空闲连接),
 //     整体耗时由 **request ctx 强制带 attempt deadline** 约束——硬契约。
 //   - 响应体限额归工具实现:本层不读 body,T3.5 须 io.LimitReader + 声明
@@ -105,6 +113,16 @@ func NewGuardedClient(cfg GuardConfig) *http.Client {
 		TLSHandshakeTimeout: 10 * time.Second, // DefaultTransport 基线
 		IdleConnTimeout:     90 * time.Second, // 同上
 		MaxIdleConns:        100,              // 同上
+	}
+	if cfg.ProxyURL != nil {
+		// T10.2 egress 隧道:https 拨号唯一路径改走代理(见 GuardConfig.
+		// ProxyURL 注释);词形在缝入口即判,坏值是装配缺陷——响亮现
+		// (NewSandboxLimiter 同款 panic 惯例,上游 env/信封解析已同门
+		// 校验,此处是不可达背板)。
+		if cfg.ProxyURL.Scheme != "http" || cfg.ProxyURL.Hostname() == "" || cfg.ProxyURL.Port() == "" {
+			panic(fmt.Sprintf("tools: GuardConfig.ProxyURL must be http://host:port, got %q", cfg.ProxyURL.String()))
+		}
+		tr.DialTLSContext = egressTunnelDialContext(cfg.ProxyURL, cfg.TLS)
 	}
 	return &http.Client{
 		Transport: &httpsOnlyTransport{rt: tr},

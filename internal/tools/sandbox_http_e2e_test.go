@@ -1,27 +1,37 @@
 package tools
 
-// hermetic http e2e(T10.1 T10,真 docker):http 经生产装配构造器全链路
-// 跑通。验收面 = 基线 §2 #11(网络姿态按载体拆分)+ #12(env 从零构造)
-// 的「失控即红」证明:
-//   - 正向:容器内守卫客户端拨段内地址,TLS 信任仅来自 e2e 镜像构建期
-//     CA append(私 CA 单通道,基线 §3);
-//   - 负向:SSRF 禁段(环回/metadata/bridge 网关)在容器内拨号层被拒,
-//     哨兵跨信封保真——host-only 检查(DNS rebinding TOCTOU)在此红;
-//   - file_read 姿态(network none)对可达地址必败:none 漂移为 bridge
-//     时同信封同 CA 会成功到达 serve,失败断言即翻红;
+// hermetic http e2e(T10.1 T10 起,T10.2 换装到 egress 拓扑;真 docker):
+// http 经生产装配构造器全链路跑通。验收面 = 基线 §2 #11(网络姿态按载体
+// 拆分)+ #12(env 从零构造)+ T10.2 egress 默认拒绝面的「失控即红」证明:
+//   - 正向:容器 → 网关代理 CONNECT 隧道 → 段内目标,TLS 信任仅来自 e2e
+//     镜像构建期 CA append(私 CA 单通道,基线 §3;代理零明文可见);
+//   - 负向(SSRF 三连):禁段端点(环回/metadata/私网 IP)在**代理侧**
+//     IP 门被拒,哨兵经 reason-phrase 标记 → 隧道拨号器 → 信封跨进程
+//     保真(errors.Is 命中 runner 既有映射)——检查只在容器内(或只在
+//     宿主)在此红;
+//   - egress 默认拒绝(网络层结构性):内网直连非网关地址必败;网关上
+//     的代理是唯一可达面(对照组 connected);
+//   - 非白名 CONNECT:代理 403 host 标记(egress-dial 探针原始断言);
+//   - file_read 姿态(network none)对可达地址必败:none 漂移时同信封
+//     同 CA 会成功到达 serve,失败断言即翻红;
 //   - dump-env:容器 env 键集合恰 {PATH,LANG,HOSTNAME,HOME},worker
-//     ambient 凭证键值双缺席(白名单构造 = 从未放入)。
+//     ambient 凭证键值双缺席(白名单构造 = 从未放入;T10.2 代理地址走
+//     stdin 信封不走 env——BRAID_* 家族结构性缺席含新键)。
 //
-// 拓扑(T10 裁决):TLS server = 宿主侧 selftest serve 子进程,绑槽位
-// 独占的 198.19.0.x/32 lo alias(alias 装配经 net=host + NET_ADMIN 容器
-// 执行 busybox ip——唯一前提 docker,本地/CI 同路径免 root;槽位分 IP
-// 消并行 lane 竞态,198.18.0.0/15 是守卫禁段外放行段,D-2026-09-23-
-// ssrf-extra-ranges 维持放行)。镜像 sandboxBuildE2EImage 恒重建(CA
-// ephemeral),tag = e2e-t<slot>(不覆写 prod 缺省引用;收尾 rmi + 删自加
-// alias + serve stdin 关闭)。watch:fake-ip 型 TUN 代理若自配 198.18.0.0/15
-// 档(本机现为 198.18.0.0/30,与 198.19.0.x 不相交)会覆盖本段选段——
-// present 探测只查 lo 检不出双接口同址,届时需要重选段(与「守卫扩禁
-// 同步重选段」同一联动条款)。
+// 拓扑(T10 裁决 + T10.2 换装):TLS server = 宿主侧 selftest serve 子进程,
+// 绑槽位独占的 198.19.0.x/32 lo alias(alias 装配经 net=host + NET_ADMIN
+// 容器执行 busybox ip——唯一前提 docker,本地/CI 同路径免 root;槽位分
+// IP 消并行 lane 竞态,198.18.0.0/15 是守卫禁段外放行段,D-2026-09-23-
+// ssrf-extra-ranges 维持放行)。T10.2:egress 内网 = 槽位独占 --internal
+// 网络 braid-sbx-egress-t<slot>,代理 = 测试进程内真 EgressProxy 绑网关
+// (allow 集经 EgressAllowFromEndpoints 从下方 endpoints 单源派生),
+// http 容器唯一可达面 = 网关代理(本机 docker 29.1.3 实证:internal 网
+// 容器→网关可达、→他宿主 IP/外网结构性不可达)。镜像 sandboxBuildE2EImage
+// 恒重建(CA ephemeral),tag = e2e-t<slot>(不覆写 prod 缺省引用;收尾
+// rmi + 删自加 alias + rm 自建网络 + serve stdin 关闭)。watch:fake-ip 型
+// TUN 代理若自配 198.18.0.0/15 档(本机现为 198.18.0.0/30,与 198.19.0.x
+// 不相交)会覆盖本段选段——present 探测只查 lo 检不出双接口同址,届时
+// 需要重选段(与「守卫扩禁同步重选段」同一联动条款)。
 
 import (
 	"bufio"
@@ -35,6 +45,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -186,7 +197,33 @@ func TestSandboxE2EHTTP(t *testing.T) {
 		t.Fatalf("sanity resp = %d %q, want 200 %q", resp.StatusCode, body, sandboxServeMarker+" /assembly-sanity")
 	}
 
-	// 载体:多别名 endpoints(hermetic 正向 + 三条禁段负向)。
+	// T10.2 egress 拓扑:槽位独占 --internal 网络 + 测试进程内真代理绑
+	// 网关(allow 集 = EgressAllowFromEndpoints 对下方 endpoints 单源派生,
+	// 生产禁段 ipForbidden 不注入——禁段端点必须在代理侧被拒)。
+	netName := "braid-sbx-egress-t" + strconv.Itoa(slot)
+	gwIP := sandboxEgressE2ENetwork(t, netName)
+	eps := map[string]string{
+		"hermetic": epBase,
+		"loopback": "https://127.0.0.1:1",
+		"metadata": "https://169.254.169.254",
+		"gateway":  "https://172.17.0.1",
+	}
+	allow, err := EgressAllowFromEndpoints(eps)
+	if err != nil {
+		t.Fatalf("EgressAllowFromEndpoints: %v", err)
+	}
+	proxyLn, err := net.Listen("tcp", net.JoinHostPort(gwIP, "0"))
+	if err != nil {
+		t.Fatalf("bind egress proxy on gateway %s: %v", gwIP, err)
+	}
+	t.Cleanup(func() { _ = proxyLn.Close() })
+	proxy := NewEgressProxy(EgressConfig{Allow: allow})
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- proxy.Serve(proxyLn) }()
+	proxyURL := &url.URL{Scheme: "http", Host: proxyLn.Addr().String()}
+
+	// 载体:多别名 endpoints(hermetic 正向 + 三条禁段负向)+ egress
+	// 网络位与代理地址(worker 生产装配同构:addr 进信封,不进容器 env)。
 	carrier, err := newSandboxCarrierHTTP(sandboxConfig{
 		Docker:         true,
 		Image:          e2eTag,
@@ -194,12 +231,9 @@ func TestSandboxE2EHTTP(t *testing.T) {
 		CPUs:           "0.5",
 		PidsLimit:      64,
 		MaxConcurrency: 8,
-	}, map[string]string{
-		"hermetic": epBase,
-		"loopback": "https://127.0.0.1:1",
-		"metadata": "https://169.254.169.254",
-		"gateway":  "https://172.17.0.1",
-	}, newSandboxLimiter(8))
+		EgressNetwork:  netName,
+		EgressAddr:     proxyURL,
+	}, eps, newSandboxLimiter(8))
 	if err != nil {
 		t.Fatalf("newSandboxCarrierHTTP: %v", err)
 	}
@@ -220,6 +254,7 @@ func TestSandboxE2EHTTP(t *testing.T) {
 		Memory:    "256m",
 		CPUs:      "0.5",
 		PidsLimit: 64, MaxConcurrency: 8,
+		EgressNetwork: netName,
 	}
 
 	t.Run("hermetic https via build-time CA trust", func(t *testing.T) {
@@ -245,22 +280,65 @@ func TestSandboxE2EHTTP(t *testing.T) {
 		}
 	})
 
-	// SSRF 禁段三连:环回(容器自身)、metadata 链路本地、bridge 网关
-	// (= 宿主网络面)。守卫若只在宿主侧检查(或被容器内剥除),拨号会
-	// 以 connection refused / no route 落 tool_failed 而非哨兵——分类
-	// 漂移即红;gateway 别名另证「拨号确实发生在容器内」(宿主进程拨
-	// 172.17.0.1 恒 refused,与哨兵可区分)。
+	// SSRF 禁段三连:环回、metadata 链路本地、docker0 网关(宿主网络面
+	// 私网 IP)。T10.2 换装后执法点 = 代理侧 IP 门(容器不再直拨目标):
+	// 拒答 reason-phrase 标记 → 隧道拨号器 egressDenialError → 哨兵跨
+	// 信封保真——标记映射/信封码/宿主重抛任一环漂移,errors.Is 即不命中
+	// (分类漂移即红,基线 §4d 回归锚)。
 	for _, c := range []struct{ alias, why string }{
-		{"loopback", "container loopback"},
+		{"loopback", "loopback 127.0.0.1"},
 		{"metadata", "link-local metadata 169.254.169.254"},
-		{"gateway", "bridge gateway (host netns surface)"},
+		{"gateway", "docker0 gateway 172.17.0.1 (private)"},
 	} {
 		t.Run("ssrf blocked: "+c.why, func(t *testing.T) {
 			if _, err := call(t, c.alias, "/probe"); !errors.Is(err, ErrSSRFBlocked) {
-				t.Fatalf("err = %v, want ErrSSRFBlocked (in-container guard enforcement)", err)
+				t.Fatalf("err = %v, want ErrSSRFBlocked (proxy-side IP gate, sentinel crossing envelope)", err)
 			}
 		})
 	}
+
+	// T10.2 验收:非白名 CONNECT 被拒(代理默认拒绝面;egress-dial 探针
+	// 原始断言,不经工具策略层——证明的是网络层策略面本身)。
+	t.Run("non-allowlisted CONNECT denied by proxy", func(t *testing.T) {
+		argv, err := buildSandboxRunArgv(cfg, "t102-connect-deny-t"+strconv.Itoa(slot), "http", nil)
+		if err != nil {
+			t.Fatalf("build argv: %v", err)
+		}
+		if argv[len(argv)-1] != "http" {
+			t.Fatalf("builder tail contract drifted: %q", argv[len(argv)-1])
+		}
+		argv = append(argv[:len(argv)-1], "selftest", "egress-dial", proxyURL.Host, "evil.example:443")
+		out, err := exec.Command(sandboxDockerBin, argv...).Output()
+		if err != nil {
+			t.Fatalf("docker run (egress-dial): %v\n%s", err, out)
+		}
+		if line, ok := strings.CutPrefix(strings.TrimSpace(string(out)), "HTTP/1.1 "); !ok || !strings.HasPrefix(line, "403 "+egressReasonHostBlocked) {
+			t.Fatalf("egress-dial out = %q, want 403 %s", strings.TrimSpace(string(out)), egressReasonHostBlocked)
+		}
+	})
+
+	// T10.2 验收:egress 内网直连结构性拒绝(默认拒绝的网络层证明)——
+	// 容器拨段内目标(hermetic alias,宿主持有)必败;对照:同容器拨
+	// 网关上的代理端口连通(网关 = 唯一可达面)。
+	t.Run("direct egress blocked, gateway proxy is the only face", func(t *testing.T) {
+		probe := func(t *testing.T, name, addr, wantPrefix string) {
+			t.Helper()
+			argv, err := buildSandboxRunArgv(cfg, "t102-"+name+"-t"+strconv.Itoa(slot), "http", nil)
+			if err != nil {
+				t.Fatalf("build argv: %v", err)
+			}
+			argv = append(argv[:len(argv)-1], "selftest", "raw-dial", addr)
+			out, err := exec.Command(sandboxDockerBin, argv...).Output()
+			if err != nil {
+				t.Fatalf("docker run (%s): %v\n%s", name, err, out)
+			}
+			if !strings.HasPrefix(strings.TrimSpace(string(out)), wantPrefix) {
+				t.Fatalf("%s out = %q, want prefix %q", name, out, wantPrefix)
+			}
+		}
+		probe(t, "direct", net.JoinHostPort(aliasIP.String(), port), "failed ")
+		probe(t, "gateway", proxyURL.Host, "connected ")
+	})
 
 	t.Run("file_read posture is network none", func(t *testing.T) {
 		// argv 手术:builder 出 file_read 形态(--network none + 全硬化
@@ -418,6 +496,47 @@ func sandboxSlotNumber(t *testing.T) int {
 		t.Fatalf("BRAID_TEST_REDIS_DB %q invalid as slot number (want 0..15)", raw)
 	}
 	return n
+}
+
+// sandboxEgressE2ENetwork 幂等确保槽位独占的 --internal egress 测试网并
+// 返回网关 IP。所有权 = 本进程 create 成功才注册 rm 清理(复用非自建
+// 残留 = 前轮崩溃泄漏或同槽位公约违例,登记且不动——lo alias 同款纪律);
+// 复用网络必须验 Internal=true(非 internal 复用 = 拒绝姿态被拆毁)。
+func sandboxEgressE2ENetwork(t *testing.T, name string) string {
+	t.Helper()
+	created := false
+	if err := exec.Command(sandboxDockerBin, "network", "inspect", name).Run(); err != nil {
+		if out, cerr := exec.Command(sandboxDockerBin, "network", "create", "--internal", name).CombinedOutput(); cerr != nil {
+			// 竞态下他者已建:复检在场即续行(存在性由 inspect 裁决)。
+			if ierr := exec.Command(sandboxDockerBin, "network", "inspect", name).Run(); ierr != nil {
+				t.Fatalf("create egress network %s: %v\n%s", name, cerr, out)
+			}
+		} else {
+			created = true
+		}
+	}
+	if created {
+		t.Cleanup(func() {
+			if err := exec.Command(sandboxDockerBin, "network", "rm", name).Run(); err != nil {
+				t.Logf("cleanup: rm egress network %s: %v", name, err)
+			}
+		})
+	} else {
+		t.Logf("egress network %s already present (leaked from a crashed run or same-slot sibling); reusing without cleanup", name)
+	}
+	internal, err := exec.Command(sandboxDockerBin, "network", "inspect", "--format", "{{.Internal}}", name).Output()
+	if err != nil || strings.TrimSpace(string(internal)) != "true" {
+		t.Fatalf("egress network %s not --internal (inspect: %v %q)", name, err, internal)
+	}
+	gwOut, err := exec.Command(sandboxDockerBin, "network", "inspect", "--format", "{{(index .IPAM.Config 0).Gateway}}", name).Output()
+	if err != nil {
+		t.Fatalf("read egress network gateway: %v", err)
+	}
+	gw := strings.TrimSpace(string(gwOut))
+	if net.ParseIP(gw) == nil {
+		t.Fatalf("egress network gateway %q not an IP", gw)
+	}
+	return gw
 }
 
 // sandboxHermeticAliasIP 槽位独占的 hermetic 地址 198.19.0.<slot+1>(段内、

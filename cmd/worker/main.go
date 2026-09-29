@@ -209,6 +209,20 @@ func run(ctx context.Context) error {
 	// P0 校验点在同进程调用门,自洽;P1 工具回调平台时经部署配置显式
 	// 供给)+ 执行时授权器(发布期白名单之外的调用现场再校验,拒绝落
 	// tool.call.denied 审计;默认策略 author|admin,system 触发哨兵放行)。
+	// T10.2 egress 启动段先行(装配依赖其地址):docker 模式下幂等建
+	// --internal 内网 + 网关上起默认拒绝 CONNECT 代理,地址写回
+	// BRAID_TOOL_SANDBOX_EGRESS_ADDR 供下方装配单读(信封 proxy 字段与
+	// 代理 allow 集同源);off = nil 零接触。
+	egressAddr, err := tools.SandboxEgressStartup(ctx, os.Getenv)
+	if err != nil {
+		return fmt.Errorf("worker: sandbox egress startup: %w", err)
+	}
+	if egressAddr != nil {
+		if err := os.Setenv("BRAID_TOOL_SANDBOX_EGRESS_ADDR", egressAddr.String()); err != nil {
+			return fmt.Errorf("worker: sandbox egress addr handoff: %w", err)
+		}
+		slog.Info("worker: sandbox egress proxy serving", "addr", egressAddr.String())
+	}
 	builtins, err := tools.BuiltinToolsFromEnv(os.Getenv)
 	if err != nil {
 		return fmt.Errorf("worker: builtin tools: %w", err)
