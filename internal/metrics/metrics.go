@@ -128,6 +128,9 @@ type ReaperSet struct {
 	FlushRows             *prometheus.CounterVec
 	FlushPoison           prometheus.Counter
 	FlushDuration         prometheus.Histogram
+	ChainVerifyRows       prometheus.Counter
+	ChainBrokenTotal      prometheus.Counter
+	ChainBrokenHeads      prometheus.Gauge
 	AuditPendingRows      prometheus.Gauge
 	AuditPendingOldest    prometheus.Gauge
 	OutboxRows            *prometheus.GaugeVec
@@ -249,6 +252,18 @@ func NewSet() (*Set, *prometheus.Registry) {
 				Name:    "braid_audit_flush_duration_seconds",
 				Help:    "Audit flush batch wall time.",
 				Buckets: prometheus.DefBuckets,
+			}),
+			ChainVerifyRows: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_audit_chain_verify_rows_total",
+				Help: "Audit hash-chain rows re-walked by the verify job (T9.3; incremental watermark advances).",
+			}),
+			ChainBrokenTotal: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_audit_chain_broken_total",
+				Help: "Chains newly latched broken by verification (first sighting only; tamper/deletion/tail-loss/partition-move). Appends for those executions are refused until manual reset.",
+			}),
+			ChainBrokenHeads: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_audit_chain_broken_heads",
+				Help: "Chain heads currently latched broken (evidence integrity; alert face for T9.3).",
 			}),
 			AuditPendingRows: f.NewGauge(prometheus.GaugeOpts{
 				Name: "braid_audit_pending_rows",

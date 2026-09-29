@@ -41,10 +41,10 @@ import (
 )
 
 // flushColsPerRow 是 INSERT 每行占位符数。batch 上界由 prepared statement
-// 占位符预算推出:MySQL 上限 65535,21×3100 = 65100 留余量(T6.2 加
-// linked_trace_id 列后 20→21,3200 会超限;reaper Validate 同步收口;
-// COUNT/DELETE 语句各 2/1 占位符每行,远低)。
-const flushColsPerRow = 21
+// 占位符预算推出:MySQL 上限 65535,23×2800 = 64400 留余量(T9.3 加
+// prev_hash/row_hash 两列后 21→23,3100 会超限 71300;reaper Validate
+// 同步收口 3100→2800;COUNT/DELETE 语句各 2/1 占位符每行,远低)。
+const flushColsPerRow = 23
 
 // FlushResult 是单批搬运的可观测快照(reaper 循环聚合计数/测试断言)。
 type FlushResult struct {
@@ -59,6 +59,8 @@ type FlushResult struct {
 // flushRow 是 audit_pending 读形状。event_at 经 CAST(AS CHAR) 直出字符串:
 // 不经 driver time.Location 解析往返(D-t26-F1 同判;字符串回插由服务端解析,
 // 毫秒精度原样)。cost_amount 走 NullString:DECIMAL 精度不经浮点。
+// prev_hash/row_hash = T9.3 链列(逐行链写入即算,本表纯运输,flush 原样
+// 搬运不重算——串链与搬运解耦)。
 type flushRow struct {
 	id          uint64
 	eventAt     string
@@ -80,17 +82,22 @@ type flushRow struct {
 	costCurr    sql.NullString
 	costEst     bool
 	payload     []byte
+	prevHash    string
+	rowHash     sql.NullString
 }
 
 const flushSelect = `
 SELECT id, CAST(event_at AS CHAR), event_type, execution_id,
        node_execution_id, node_id, attempt_id, actor_type, actor_id, trace_id,
        linked_trace_id, pii_masked, model, prompt_tokens, completion_tokens,
-       total_tokens, cost_amount, cost_currency, cost_estimated, payload
+       total_tokens, cost_amount, cost_currency, cost_estimated, payload,
+       prev_hash, row_hash
   FROM audit_pending`
 
 // linked_trace_id 已随 T6.2 接线进搬运面(Enqueue/Append/flush 三处同步
-// 加列,0004 建列防漏的兑现;D-2026-09-27-t62-otel-trace)。
+// 加列,0004 建列防漏的兑现;D-2026-09-27-t62-otel-trace)。prev_hash/
+// row_hash 随 T9.3 进搬运面(Enqueue/Append/flush 三处同步加列,0008 建列;
+// D-2026-09-29-t93)。
 
 // Flush 搬运 afterID 之后的一批暂存审计行到 audit_log(单批语义:LIMIT batch,
 // 余量留驻,调用方 FlushAll 循环翻页至排空)。afterID=0 即从队头。步骤:
@@ -118,7 +125,8 @@ func Flush(ctx context.Context, db *sql.DB, afterID uint64, batch int) (FlushRes
 			if err := rows.Scan(&r.id, &r.eventAt, &r.eventType, &r.executionID,
 				&r.nodeExecID, &r.nodeID, &r.attemptID, &r.actorType, &r.actorID,
 				&r.traceID, &r.linkedTrace, &r.piiMasked, &r.model, &r.promptTok, &r.complTok,
-				&r.totalTok, &r.costAmount, &r.costCurr, &r.costEst, &r.payload); err != nil {
+				&r.totalTok, &r.costAmount, &r.costCurr, &r.costEst, &r.payload,
+				&r.prevHash, &r.rowHash); err != nil {
 				return fmt.Errorf("audit: flush scan: %w", err)
 			}
 			batchRows = append(batchRows, r)
@@ -212,11 +220,11 @@ func Flush(ctx context.Context, db *sql.DB, afterID uint64, batch int) (FlushRes
 			if i > 0 {
 				ph.WriteByte(',')
 			}
-			ph.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			ph.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 			args = append(args,
 				r.id, execDates[r.executionID], r.eventAt, r.eventType, r.executionID,
 				r.nodeExecID, r.nodeID, r.attemptID, r.actorType, r.actorID, r.traceID,
-				r.linkedTrace, r.piiMasked, r.payload,
+				r.linkedTrace, r.piiMasked, r.payload, r.prevHash, r.rowHash,
 				r.model, r.promptTok, r.complTok, r.totalTok, r.costAmount, r.costCurr,
 				r.costEst)
 		}
@@ -224,7 +232,7 @@ func Flush(ctx context.Context, db *sql.DB, afterID uint64, batch int) (FlushRes
 INSERT INTO audit_log
   (id, exec_date, event_at, event_type, execution_id, node_execution_id,
    node_id, attempt_id, actor_type, actor_id, trace_id, linked_trace_id,
-   pii_masked, payload,
+   pii_masked, payload, prev_hash, row_hash,
    model, prompt_tokens, completion_tokens, total_tokens,
    cost_amount, cost_currency, cost_estimated)
 VALUES `+ph.String(), args...)

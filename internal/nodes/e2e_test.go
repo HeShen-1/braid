@@ -386,6 +386,7 @@ func cleanupNodesE2E(t *testing.T, d *sql.DB, execID, defID uint64) {
 		`DELETE FROM outbox WHERE execution_id=?`,
 		`DELETE FROM node_attempt WHERE execution_id=?`,
 		`DELETE FROM audit_pending WHERE execution_id=?`, // T6.1 暂存面(漏删 ⇒ ghost 累积)
+		`DELETE FROM chain_heads WHERE execution_id=?`,   // T9.3 链锚(漏删 ⇒ 孤儿头被校验作业误闩)
 		`DELETE FROM approval_decision WHERE execution_id=?`,
 		`DELETE FROM node_execution WHERE execution_id=?`,
 		`DELETE FROM workflow_execution WHERE id=?`,

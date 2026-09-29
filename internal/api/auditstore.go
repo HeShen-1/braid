@@ -12,8 +12,9 @@ import (
 	"time"
 )
 
-// AuditEvent 是 audit_log 一行的查询面模型。prev_hash / row_hash P1 启链时
-// 再进;linked_trace_id 不在查询面(无索引,T6.2 接线时定——D-t63 #4)。
+// AuditEvent 是 audit_log 一行的查询面模型。prev_hash / row_hash 已随
+// T9.3 启链进查询面(D-t63 #4「启链时加」兑现;RowHash nil = 存量未启链
+// 行);linked_trace_id 仍不在查询面(无索引,T6.2 接线时定——D-t63 #4)。
 type AuditEvent struct {
 	ID          uint64
 	ExecDate    string
@@ -28,6 +29,8 @@ type AuditEvent struct {
 	ActorID     string
 	TraceID     *string
 	PIIMasked   bool
+	PrevHash    string  // T9.3:前驱行 row_hash;'' = 链首(或存量未启链行)
+	RowHash     *string // T9.3:本行规范化哈希;nil = 存量未启链行(校验跳过)
 	// usage/cost 冗余列组(llm.call.completed|discarded 双词;与 node_attempt 双录)。
 	Model            *string
 	PromptTokens     *uint32
@@ -52,14 +55,16 @@ type AuditQuery struct {
 	From, To    *time.Time
 }
 
-// auditCols 全量投影(剔除 prev_hash/row_hash/linked_trace_id,见模型注释)。
+// auditCols 全量投影(剔除 linked_trace_id,见模型注释;prev_hash/row_hash
+// 已随 T9.3 启链进投影——D-t63 #4)。
 // exec_date 由 DATE_FORMAT 直出字符串(与 execCols 同式单源):DATE 列直扫
 // *string 在 parseTime DSN 下经 driver 变 time.Time → RFC3339Nano,与
 // GET /executions/:id 审计指针(executionAuditPointer)的 "YYYY-MM-DD"
 // 线格式漂移;字符串往返日期语义完全留在 DB 端(writer.go 同判)。
 const auditCols = `id, DATE_FORMAT(exec_date, '%Y-%m-%d'), event_at, created_at,
  event_type, execution_id, node_execution_id, node_id, attempt_id, actor_type,
- actor_id, trace_id, pii_masked, model, prompt_tokens, completion_tokens,
+ actor_id, trace_id, pii_masked, prev_hash, row_hash,
+ model, prompt_tokens, completion_tokens,
  total_tokens, cost_amount, cost_currency, cost_estimated, payload`
 
 // auditPredicate 单源构造 WHERE:维度三选一 + event_at 闭区间。COUNT 与页行
@@ -136,6 +141,7 @@ func scanAuditEvent(r rowScanner) (AuditEvent, error) {
 		nodeID   sql.NullString
 		attempt  sql.NullInt64
 		traceID  sql.NullString
+		rowHash  sql.NullString
 		model    sql.NullString
 		prompt   sql.NullInt64
 		compl    sql.NullInt64
@@ -146,7 +152,8 @@ func scanAuditEvent(r rowScanner) (AuditEvent, error) {
 	)
 	if err := r.Scan(&e.ID, &e.ExecDate, &e.EventAt, &e.CreatedAt, &e.EventType,
 		&e.ExecutionID, &nodeExec, &nodeID, &attempt, &e.ActorType, &e.ActorID,
-		&traceID, &e.PIIMasked, &model, &prompt, &compl, &totalTok,
+		&traceID, &e.PIIMasked, &e.PrevHash, &rowHash,
+		&model, &prompt, &compl, &totalTok,
 		&costAmt, &costCur, &e.CostEstimated, &payload); err != nil {
 		return AuditEvent{}, err
 	}
@@ -154,6 +161,7 @@ func scanAuditEvent(r rowScanner) (AuditEvent, error) {
 	e.NodeID = nullStringPtr(nodeID)
 	e.AttemptID = nullInt64ToUint64(attempt)
 	e.TraceID = nullStringPtr(traceID)
+	e.RowHash = nullStringPtr(rowHash)
 	e.Model = nullStringPtr(model)
 	if prompt.Valid {
 		v := uint32(prompt.Int64) // INT UNSIGNED ≤ 2^32-1,int64 无损承载

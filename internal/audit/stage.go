@@ -71,20 +71,30 @@ func Enqueue(ctx context.Context, q engine.DBTX, evt Event) error {
 			costArg, currencyArg = evt.Usage.CostAmount, evt.Usage.CostCurrency
 		}
 	}
+	// 串链(T9.3,逐行链写入即算):chain_heads 行锁 → 断链拒 → hash;
+	// 暂存行带着 hash 运输,flush 纯搬运(串链与搬运解耦,flush 不取
+	// head 锁)。链语义与直写半边(writer.go)同源(appendChain 单点)。
+	prevHash, rowHash, err := appendChain(ctx, q, evt, payload, piiMasked)
+	if err != nil {
+		return err
+	}
 	_, err = q.ExecContext(ctx, `
 INSERT INTO audit_pending
   (id, event_at, event_type, execution_id, node_execution_id, node_id,
    attempt_id, actor_type, actor_id, trace_id, linked_trace_id, pii_masked,
-   payload,
+   payload, prev_hash, row_hash,
    model, prompt_tokens, completion_tokens, total_tokens,
    cost_amount, cost_currency, cost_estimated)
-VALUES (?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+VALUES (?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		evt.ID, evt.EventType, evt.ExecutionID,
 		nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace,
-		linked, piiMasked, payload,
+		linked, piiMasked, payload, prevHash, rowHash,
 		model, pt, ct, tt, costArg, currencyArg, usageEstimated(evt.Usage))
 	if err != nil {
 		return fmt.Errorf("audit: enqueue %d (%s): %w", evt.ID, evt.EventType, err)
+	}
+	if err := advanceChainHead(ctx, q, evt.ExecutionID, evt.ID, rowHash); err != nil {
+		return err
 	}
 	return nil
 }

@@ -23,7 +23,10 @@ func TestFlushOnceDrainsStagedAudit(t *testing.T) {
 	})
 	// seedReap 提供最小执行链(判死扫描不在本测试面,只要 execution 行)。
 	sd := seedReap(t, d, 0, 0, 1)
-	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, sd.execID) })
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, sd.execID)
+		_, _ = d.Exec(`DELETE FROM chain_heads WHERE execution_id=?`, sd.execID) // T9.3 链锚(Enqueue 建链)
+	})
 
 	id, err := mustTestIDs(t).Next()
 	if err != nil {
@@ -78,7 +81,10 @@ func TestAuditFlushLoopWiring(t *testing.T) {
 		JanitorInterval:    time.Hour,
 	})
 	sd := seedReap(t, d, 0, 0, 1)
-	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, sd.execID) })
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, sd.execID)
+		_, _ = d.Exec(`DELETE FROM chain_heads WHERE execution_id=?`, sd.execID) // T9.3 链锚(Enqueue 建链)
+	})
 
 	id, err := mustTestIDs(t).Next()
 	if err != nil {

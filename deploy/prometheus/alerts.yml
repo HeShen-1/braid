@@ -156,3 +156,17 @@ groups:
         annotations:
           summary: "回滚拒绝风暴({{ $value }} 次/15m)"
           description: "自动化重试未按分面退避,或权限/目标配置错误(role_denied/bad_node_id 为主)。查 rollback.denied 审计行的 reason 分布与调用方退避实现。"
+
+  # T9.3 审计哈希链(D-2026-09-29-t93):证据完整性执法面。断链闩已
+  # fail-closed(该执行 Append/Enqueue 即拒),本告警 = 人工介入的值守线
+  # ——critical 家族(证据丢失/篡改面,同死信分级判据)。
+  - name: braid-audit-chain
+    rules:
+      - alert: AuditChainBroken
+        expr: sum(braid_audit_chain_broken_heads) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} 条审计哈希链断链(闩已落定,写路径已拒)"
+          description: "四族判据之一命中:行篡改/行删除/链尾丢失/分区挪移(D-t93 #5)。该执行新审计写入已被拒绝(fail-closed),需人工取证后复位 chain_heads.broken_at。字源 braid_audit_chain_broken_heads(reaper 第七作业 gauge)。"

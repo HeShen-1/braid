@@ -75,10 +75,12 @@ func TestEnqueueInvalidEventRejectedBeforeDB(t *testing.T) {
 	execID := seedExec(t, d)
 	stageCleanup(t, d, execID)
 
-	err := Enqueue(context.Background(), d, Event{
-		ID: 0, EventType: EventNodeStateChanged, ExecutionID: execID, // zero id
-		NodeExecID: 1, NodeID: "n1", ActorType: ActorWorker, ActorID: "w1",
-		Payload: json.RawMessage(`{}`),
+	err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		return Enqueue(context.Background(), q, Event{
+			ID: 0, EventType: EventNodeStateChanged, ExecutionID: execID, // zero id
+			NodeExecID: 1, NodeID: "n1", ActorType: ActorWorker, ActorID: "w1",
+			Payload: json.RawMessage(`{}`),
+		})
 	})
 	if !errors.Is(err, ErrInvalidEvent) {
 		t.Fatalf("Enqueue(zero id) = %v, want ErrInvalidEvent", err)
@@ -191,10 +193,12 @@ func TestEnqueueSanitizesBeforeStaging(t *testing.T) {
 	execID := seedExec(t, d)
 	stageCleanup(t, d, execID)
 
-	if err := Enqueue(context.Background(), d, Event{
-		ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: execID,
-		NodeExecID: 1, NodeID: "n1", ActorType: ActorWorker, ActorID: "w1",
-		Payload: json.RawMessage(`{"user_data":{"email":"a@b.c"},"from":"PENDING"}`),
+	if err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		return Enqueue(context.Background(), q, Event{
+			ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: execID,
+			NodeExecID: 1, NodeID: "n1", ActorType: ActorWorker, ActorID: "w1",
+			Payload: json.RawMessage(`{"user_data":{"email":"a@b.c"},"from":"PENDING"}`),
+		})
 	}); err != nil {
 		t.Fatalf("Enqueue: %v", err)
 	}

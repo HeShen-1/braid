@@ -53,6 +53,8 @@ type auditEventDTO struct {
 	ActorID          string          `json:"actor_id"`
 	TraceID          *string         `json:"trace_id"`
 	PIIMasked        bool            `json:"pii_masked"`
+	PrevHash         string          `json:"prev_hash"` // T9.3:'' = 链首/存量未启链行
+	RowHash          *string         `json:"row_hash"`  // T9.3:nil = 存量未启链行(D-t63 #4 兑现)
 	Model            *string         `json:"model"`
 	PromptTokens     *uint32         `json:"prompt_tokens"`
 	CompletionTokens *uint32         `json:"completion_tokens"`
@@ -86,6 +88,8 @@ func toAuditEventDTO(e AuditEvent) auditEventDTO {
 		ActorID:          e.ActorID,
 		TraceID:          e.TraceID,
 		PIIMasked:        e.PIIMasked,
+		PrevHash:         e.PrevHash,
+		RowHash:          e.RowHash,
 		Model:            e.Model,
 		PromptTokens:     e.PromptTokens,
 		CompletionTokens: e.CompletionTokens,

@@ -63,6 +63,7 @@ func TestMain(m *testing.M) {
 		_, _ = d.Exec(`DELETE FROM audit_log`)
 		_, _ = d.Exec(`DELETE FROM outbox`)
 		_, _ = d.Exec(`DELETE FROM audit_pending`) // T6.1 暂存面(全清 schema 级助手)
+		_, _ = d.Exec(`DELETE FROM chain_heads`)   // T9.3 链锚(同上;残头会被第七作业判破污染断言)
 		_, _ = d.Exec(`DELETE FROM login_audit`)   // T7.1 保留期清理面(清扫卫生对称)
 		_, _ = d.Exec(`DELETE FROM node_attempt`)
 		_, _ = d.Exec(`DELETE FROM node_execution`)
@@ -158,6 +159,7 @@ func seedReap(t *testing.T, d *sql.DB, heartbeatStale, deadlinePast time.Duratio
 		_, _ = d.Exec(`DELETE FROM audit_log WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM outbox WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID) // T6.1 暂存面
+		_, _ = d.Exec(`DELETE FROM chain_heads WHERE execution_id=?`, execID)   // T9.3 链锚
 		_, _ = d.Exec(`DELETE FROM node_attempt WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM node_execution WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)
@@ -191,6 +193,7 @@ func seedExecRow(t *testing.T, d *sql.DB, status string, stale time.Duration) (u
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM outbox WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID) // T6.1 暂存面
+		_, _ = d.Exec(`DELETE FROM chain_heads WHERE execution_id=?`, execID)   // T9.3 链锚
 		_, _ = d.Exec(`DELETE FROM node_attempt WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM node_execution WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)

@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"braid/internal/audit"
+	"braid/internal/engine"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 )
@@ -166,10 +167,14 @@ SELECT n.execution_id, n.node_id, n.status, n.deadline_at, n.input_snapshot,
 	if err != nil {
 		return fmt.Errorf("notify: marshal approval.notified payload: %w", err)
 	}
-	if err := audit.Append(ctx, s.deps.DB, audit.Event{
-		ID: auditID, EventType: audit.EventApprovalNotified,
-		ExecutionID: execID, NodeExecID: nodeExecID, NodeID: nodeID,
-		ActorType: audit.ActorWorker, ActorID: s.deps.WorkerID, Payload: raw,
+	// T9.3:串链协议要求调用方事务(裸池句柄 = 锚定/读尾/落行/推头四语句
+	// 散落 autocommit ⇒ 链叉);"独立小事务"从注释变为事实。
+	if err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		return audit.Append(ctx, q, audit.Event{
+			ID: auditID, EventType: audit.EventApprovalNotified,
+			ExecutionID: execID, NodeExecID: nodeExecID, NodeID: nodeID,
+			ActorType: audit.ActorWorker, ActorID: s.deps.WorkerID, Payload: raw,
+		})
 	}); err != nil {
 		return fmt.Errorf("notify: append approval.notified node %d: %w", nodeExecID, err)
 	}

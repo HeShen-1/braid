@@ -79,6 +79,7 @@ func seedParallelReap(t *testing.T, d *sql.DB, onFailureSlot string, deadIdx int
 		_, _ = d.Exec(`DELETE FROM audit_log WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM outbox WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID)
+		_, _ = d.Exec(`DELETE FROM chain_heads WHERE execution_id=?`, execID) // T9.3 链锚
 		_, _ = d.Exec(`DELETE FROM node_attempt WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM node_execution WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)

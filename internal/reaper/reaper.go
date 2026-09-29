@@ -158,11 +158,12 @@ func (r *Reaper) runJobs(ctx, spanParent context.Context) error {
 		name string
 		fn   func(context.Context) error
 	}{
-		{"scan_attempts", r.scanAttempts},     // ① attempt 判死 → reapAttempt
-		{"scan_nodes", r.scanNodes},           // ② deadline/分支B + ③ 孤儿 → reapAttempt
-		{"scan_execs", r.scanExecs},           // ④a PENDING 判死 + ④b 终态补判
-		{"scan_approvals", r.scanApprovals},   // ⑤ WAITING_APPROVAL 超时/孤儿(T4.3)
-		{"collect_metrics", r.collectMetrics}, // T6.4 gauge 快照(只读,错误隔离同上)
+		{"scan_attempts", r.scanAttempts},          // ① attempt 判死 → reapAttempt
+		{"scan_nodes", r.scanNodes},                // ② deadline/分支B + ③ 孤儿 → reapAttempt
+		{"scan_execs", r.scanExecs},                // ④a PENDING 判死 + ④b 终态补判
+		{"scan_approvals", r.scanApprovals},        // ⑤ WAITING_APPROVAL 超时/孤儿(T4.3)
+		{"collect_metrics", r.collectMetrics},      // T6.4 gauge 快照(只读,错误隔离同上)
+		{"verify_audit_chain", r.verifyAuditChain}, // T9.3 链校验第七作业(断链=结局不报错,见 verifyjob.go)
 	}
 	var firstErr error
 	for _, j := range jobs {

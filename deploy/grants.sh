@@ -42,6 +42,7 @@ GRANT SELECT, INSERT          ON braid.workflow_execution TO 'braid_api'@'%';
 GRANT SELECT, INSERT          ON braid.node_execution     TO 'braid_api'@'%';
 GRANT SELECT, INSERT          ON braid.approval_decision  TO 'braid_api'@'%';
 GRANT SELECT, INSERT          ON braid.audit_log          TO 'braid_api'@'%';
+GRANT SELECT, INSERT, UPDATE (last_id, last_row_hash) ON braid.chain_heads TO 'braid_api'@'%'; -- T9.3 哈希链锚:列级最小授权——api 写路径只推链尾两列;闩/水位列(broken_*/verified_*)不可写 = 「闩复位=人工」的权限面承载
 GRANT INSERT                  ON braid.login_audit        TO 'braid_api'@'%';
 GRANT SELECT                  ON braid.users              TO 'braid_api'@'%';
 GRANT SELECT                  ON braid.user_role          TO 'braid_api'@'%';
@@ -58,6 +59,7 @@ GRANT SELECT, INSERT, UPDATE  ON braid.node_attempt        TO 'braid_worker'@'%'
 GRANT SELECT                  ON braid.approval_decision   TO 'braid_worker'@'%';
 GRANT SELECT, INSERT          ON braid.audit_log           TO 'braid_worker'@'%';
 GRANT INSERT                  ON braid.audit_pending       TO 'braid_worker'@'%';
+GRANT SELECT, INSERT, UPDATE (last_id, last_row_hash) ON braid.chain_heads TO 'braid_worker'@'%'; -- T9.3:列级最小授权同 api(写路径只推链尾两列)
 GRANT INSERT                  ON braid.outbox              TO 'braid_worker'@'%';
 GRANT SELECT                  ON braid.users               TO 'braid_worker'@'%';
 GRANT SELECT                  ON braid.user_role           TO 'braid_worker'@'%';
@@ -79,6 +81,7 @@ GRANT SELECT, UPDATE          ON braid.node_attempt        TO 'braid_reaper'@'%'
 GRANT SELECT                  ON braid.approval_decision   TO 'braid_reaper'@'%';
 GRANT SELECT, INSERT, ALTER, DROP ON braid.audit_log       TO 'braid_reaper'@'%';
 GRANT SELECT, DELETE          ON braid.audit_pending       TO 'braid_reaper'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON braid.chain_heads  TO 'braid_reaper'@'%'; -- T9.3:同步 Append 发射面(attempt.reaped 等)head 懒建 + 校验作业水位/断链闩 UPDATE + janitor 分区回收级联解除链义务(DELETE)
 GRANT SELECT, INSERT, DELETE  ON braid.outbox              TO 'braid_reaper'@'%';
 -- login_audit 的 SELECT 服务 DELETE 的 WHERE 谓词列(event_at 保留期条件);
 -- 无 SELECT 则 purge 报 1143(演练实证,MySQL 权限规则:UPDATE/DELETE 的
