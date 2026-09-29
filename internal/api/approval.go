@@ -481,13 +481,15 @@ func (s *Server) appendResumeEvent(ctx context.Context, tx DBTX,
 	execID, nodeExecID uint64, nodeID string, attempt uint16, decisionID uint64) error {
 	// TraceID = 决策请求 trace Z(T6.2 段首新链:worker 消费侧 extract 续
 	// span,续跑段行 trace_id=Z;主链 X 经决策行 linked_trace_id 串联)。
-	var segTrace string
-	if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
+	// SpanID = 同请求当段 span id(D-t121 #3:续跑段根的真 parent)。
+	var segTrace, segSpan string
+	if sc := trace.SpanContextFromContext(ctx); sc.IsValid() {
 		segTrace = sc.TraceID().String()
+		segSpan = sc.SpanID().String()
 	}
 	raw, err := json.Marshal(scheduler.ResumePayload{
 		ExecutionID: execID, NodeExecutionID: nodeExecID,
-		DecisionID: decisionID, AttemptNo: attempt, TraceID: segTrace,
+		DecisionID: decisionID, AttemptNo: attempt, TraceID: segTrace, SpanID: segSpan,
 	})
 	if err != nil {
 		return fmt.Errorf("api: marshal execution.resume payload: %w", err)
