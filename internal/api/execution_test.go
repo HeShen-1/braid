@@ -30,6 +30,7 @@ import (
 func cleanExecutionChain(t *testing.T, dbh *sql.DB) {
 	t.Helper()
 	for _, table := range []string{
+		"chain_heads", // T9.3 链锚(api 触发/审批测试经 audit.Append 建链)
 		"audit_pending", "audit_log", "outbox", "node_attempt", "approval_decision", "node_execution", "workflow_execution", "workflow_definition",
 	} {
 		if _, err := dbh.Exec("DELETE FROM " + table); err != nil {

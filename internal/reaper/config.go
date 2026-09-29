@@ -125,11 +125,12 @@ func (c Config) Validate() error {
 	// 100ms 硬下限:搬运是周期收敛作业,亚百毫秒 tick 只剩 DB 空转开销。
 	case c.AuditFlushInterval < 100*time.Millisecond:
 		return fmt.Errorf("reaper: audit flush interval %s < 100ms", c.AuditFlushInterval)
-	// 3100 上界 = prepared statement 占位符预算:每行 21 占位符(T6.2 加
-	// linked_trace_id),21×3100 = 65100 < MySQL 65535 上限(留余量);batch
-	// 越界则每轮 flush 必败。
-	case c.AuditFlushBatch < 1 || c.AuditFlushBatch > 3100:
-		return fmt.Errorf("reaper: audit flush batch %d out of [1,3100]", c.AuditFlushBatch)
+	// 2800 上界 = prepared statement 占位符预算:每行 23 占位符(T9.3 加
+	// prev_hash/row_hash 两列,21→23),23×2800 = 64400 < MySQL 65535 上限
+	//(留余量;旧 3100 上限对应 21 列时代,3101×23 会超限每轮 flush 必败);
+	// batch 越界则每轮 flush 必败。
+	case c.AuditFlushBatch < 1 || c.AuditFlushBatch > 2800:
+		return fmt.Errorf("reaper: audit flush batch %d out of [1,2800]", c.AuditFlushBatch)
 	case c.JanitorInterval < 5*time.Minute:
 		return fmt.Errorf("reaper: janitor interval %s < 5m", c.JanitorInterval)
 	case c.OutboxBatch < 1 || c.OutboxBatch > 10000:

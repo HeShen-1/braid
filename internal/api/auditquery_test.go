@@ -188,6 +188,21 @@ func TestHTTPAuditQueryByExecution(t *testing.T) {
 		t.Fatalf("node.state_changed payload = %v, want from=PENDING to=EXECUTING", p)
 	}
 
+	// T9.3 链列进 DTO(D-t63 #4「启链时加」兑现):DESC 序 items[1]=链首
+	// (prev_hash=""),items[0] 的 prev_hash 咬合 items[1] 的 row_hash。
+	prev0, _ := items[0]["prev_hash"].(string)
+	prev1, _ := items[1]["prev_hash"].(string)
+	row1, _ := items[1]["row_hash"].(string)
+	if prev1 != "" {
+		t.Fatalf("链首 prev_hash = %q, want \"\"", prev1)
+	}
+	if len(row1) != 64 {
+		t.Fatalf("row_hash = %q, want 64-hex", row1)
+	}
+	if prev0 != row1 {
+		t.Fatalf("items[0].prev_hash = %q, want 咬合 items[1].row_hash = %q", prev0, row1)
+	}
+
 	// 维度独立:execB 只回自己的行。
 	code, body = doJSON(t, r, http.MethodGet,
 		fmt.Sprintf("/api/v1/audit?execution_id=%d", execB), author, nil)

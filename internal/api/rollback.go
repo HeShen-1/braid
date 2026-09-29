@@ -187,9 +187,13 @@ func (s *Server) writeRollbackDeniedAudit(c *gin.Context, execID uint64, nodeID,
 		slog.Error("api: marshal rollback.denied payload", "err", err)
 		return
 	}
-	if err := audit.Append(c.Request.Context(), s.dbh, audit.Event{
-		ID: id, EventType: audit.EventRollbackDenied, ExecutionID: execID,
-		NodeID: nodeID, ActorType: audit.ActorUser, ActorID: actor, Payload: raw,
+	// T9.3:串链协议要求调用方事务(裸池句柄 ⇒ 链叉);"独立小事务"从
+	// 注释变为事实。
+	if err := engine.WithTx(c.Request.Context(), s.dbh, func(q engine.DBTX) error {
+		return audit.Append(c.Request.Context(), q, audit.Event{
+			ID: id, EventType: audit.EventRollbackDenied, ExecutionID: execID,
+			NodeID: nodeID, ActorType: audit.ActorUser, ActorID: actor, Payload: raw,
+		})
 	}); err != nil {
 		slog.Error("api: anchor rollback.denied", "err", err, "execution_id", execID)
 	}

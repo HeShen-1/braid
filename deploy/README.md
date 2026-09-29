@@ -106,6 +106,7 @@ outbox UPDATE / audit_pending INSERT)已全部收回。
 | outbox | INSERT | INSERT | SELECT,UPDATE | SELECT,INSERT,DELETE |
 | audit_log | SELECT,INSERT | SELECT,INSERT | — | SELECT,INSERT,ALTER,DROP |
 | audit_pending | — | INSERT | — | SELECT,DELETE |
+| chain_heads | SELECT,INSERT,UPDATE(last_id,last_row_hash) | SELECT,INSERT,UPDATE(last_id,last_row_hash) | — | SELECT,INSERT,UPDATE,DELETE |
 | login_audit | INSERT | — | — | SELECT,DELETE |
 | users / user_role | SELECT | SELECT | — | — |
 | schema_migrations | SELECT | SELECT | SELECT | SELECT |
@@ -116,6 +117,16 @@ outbox UPDATE / audit_pending INSERT)已全部收回。
   UPDATE/DELETE 违约即拒启;唯一豁免 = reaper 对 login_audit 的表级
   DELETE(保留期清理)。schema 级授权(`GRANT ... ON braid.*`)覆盖
   audit_log,豁免形态照拒——组件写权限必须表级精确授予。
+- **chain_heads 是簿记面不是审计面(T9.3,D-2026-09-29-t93)**:审计
+  哈希链的 per-execution 锚(head 行锁 = 串行化点,verified 轮换戳 =
+  全链复走触发锚,broken 闩 = fail-closed 执法位),UPDATE 是设计语义
+  ——不在 CheckAuditAppendOnly 断言表集 {audit_log, login_audit} 内。
+  **列级最小授权**:api/worker 的 UPDATE 限 (last_id, last_row_hash)
+  两列(写路径唯一更新面),broken_*/verified_* 对它们不可写 =
+  「闩复位 = 人工」的权限面承载;reaper 全行 UPDATE(校验轮换/落闩/
+  推链尾)+ DELETE(janitor 分区回收级联:证据窗口消亡 ⇒ 链义务解除,
+  防旧头误闩 + 头表无限增长)+ INSERT(自身是 attempt.reaped 等同步
+  Append 发射面,head 懒建可达);relay 零权限(零审计写)。
 - **audit_log 的 ALTER+DROP(reaper 专属)**:分区水位作业(ADD/DROP
   PARTITION)——MySQL 对 `DROP PARTITION` 要求 ALTER+DROP 双权限,缺
   DROP 则 janitor 回收路径 1142(T7.4 交叉审计发现,原表漏 DROP)。DROP

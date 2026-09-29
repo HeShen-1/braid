@@ -136,5 +136,8 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// T9.3 启动自检:排空待校验链头(断链闩在此落定,写路径随即拒绝;
+	// infra 失败只响亮不阻断启动——flush/janitor 职责不因此停摆)。
+	r.StartupVerify(ctx)
 	return r.Run(ctx)
 }

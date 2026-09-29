@@ -203,6 +203,24 @@ SELECT 1 FROM workflow_execution
 		}
 		r.log.Info("audit.partition_dropped", "partition", p.name)
 	}
+
+	// T9.3 级联解除链义务(每轮独立执行,不挂在本轮 DROP 结果上——对抗
+	// 审计 MEDIUM 修:DROP 成功后 DELETE 失败的分区下轮不再出现在扫描集,
+	// 挂靠式级联永不重试,滞留头会被校验按「行丢失」误闩):证据窗口随
+	// 保留期消亡 ⇒ 对应执行的 chain_heads 头随之消亡。幂等谓词每轮重放,
+	// 自然覆盖漏网轮次。终态过滤镜像分区 DROP 的活执行守卫(活执行的头
+	// 不能删:其分区被守卫保留,删头会让下一次 Append 以 prev='' 重开链,
+	// 旧链行全部沦为未装配孤儿 ⇒ 误闩)。两害同防:水位滞后旧头误闩 +
+	// 头表随执行数无限增长(执行行无清理路径,恒在场作 join 锚;exec_date
+	// = DATE(created_at) 单源)。
+	if _, err := conn.ExecContext(ctx, `
+DELETE ch FROM chain_heads ch
+  JOIN workflow_execution we ON we.id = ch.execution_id
+ WHERE we.created_at < ?
+   AND we.status NOT IN ('PENDING','RUNNING','WAITING_APPROVAL')`,
+		dropBefore.Format("2006-01-02")); err != nil {
+		return fmt.Errorf("reaper: cascade chain_heads: %w", err)
+	}
 	return nil
 }
 

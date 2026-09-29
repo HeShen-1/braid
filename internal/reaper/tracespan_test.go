@@ -42,6 +42,7 @@ func TestRunOnceSpans(t *testing.T) {
 		"reaper.scan_execs",
 		"reaper.scan_approvals",
 		"reaper.collect_metrics",
+		"reaper.verify_audit_chain", // T9.3 第七作业(t12.1 后合者 rebase 补登记,issue #86 注记 3 仲裁)
 	}
 	got := rec.Names()
 	slices.Sort(got)

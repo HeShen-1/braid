@@ -153,6 +153,7 @@ func seedExec(t *testing.T, d *sql.DB) uint64 {
 		execID, defID, name, string(make([]byte, 64)), seedExecCreatedAt)
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID) // T6.1 暂存面(防御对称)
+		_, _ = d.Exec(`DELETE FROM chain_heads WHERE execution_id=?`, execID)   // T9.3 链锚(防御对称)
 		_, _ = d.Exec(`DELETE FROM audit_log WHERE execution_id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)
 		_, _ = d.Exec(`DELETE FROM workflow_definition WHERE id=?`, defID)
@@ -229,27 +230,33 @@ func TestAppendTraceFromContextAndLinked(t *testing.T) {
 	// ctx 提取臂:evt 零 TraceID,ctx span context 落列;linked 同行落列
 	//(词表闸 ⇒ linked 组合用段首词,与生产决策行同形)。
 	id1 := nextID(t)
-	if err := Append(traceCtx(t, "4bf92f3577b34da6a3ce929d0e0e4736"), d, Event{
-		ID: id1, EventType: EventApprovalDecided, ExecutionID: execID,
-		NodeID: "n1", ActorType: ActorUser, ActorID: "u1",
-		LinkedTraceID: "fedcba9876543210fedcba9876543210",
+	if err := engine.WithTx(traceCtx(t, "4bf92f3577b34da6a3ce929d0e0e4736"), d, func(q engine.DBTX) error {
+		return Append(traceCtx(t, "4bf92f3577b34da6a3ce929d0e0e4736"), q, Event{
+			ID: id1, EventType: EventApprovalDecided, ExecutionID: execID,
+			NodeID: "n1", ActorType: ActorUser, ActorID: "u1",
+			LinkedTraceID: "fedcba9876543210fedcba9876543210",
+		})
 	}); err != nil {
 		t.Fatalf("Append(ctx trace): %v", err)
 	}
 	// 显式优先臂:ctx 带 X、evt 带 Y → 落 Y(注入位契约)。
 	id2 := nextID(t)
-	if err := Append(traceCtx(t, "4bf92f3577b34da6a3ce929d0e0e4736"), d, Event{
-		ID: id2, EventType: EventNodeStateChanged, ExecutionID: execID,
-		NodeID: "n2", ActorType: ActorWorker, ActorID: "w1",
-		TraceID: "0123456789abcdef0123456789abcdef",
+	if err := engine.WithTx(traceCtx(t, "4bf92f3577b34da6a3ce929d0e0e4736"), d, func(q engine.DBTX) error {
+		return Append(traceCtx(t, "4bf92f3577b34da6a3ce929d0e0e4736"), q, Event{
+			ID: id2, EventType: EventNodeStateChanged, ExecutionID: execID,
+			NodeID: "n2", ActorType: ActorWorker, ActorID: "w1",
+			TraceID: "0123456789abcdef0123456789abcdef",
+		})
 	}); err != nil {
 		t.Fatalf("Append(explicit trace): %v", err)
 	}
 	// 纯 background ctx 臂:无 span context → trace NULL(行为不变锚)。
 	id3 := nextID(t)
-	if err := Append(context.Background(), d, Event{
-		ID: id3, EventType: EventNodeStateChanged, ExecutionID: execID,
-		NodeID: "n3", ActorType: ActorWorker, ActorID: "w1",
+	if err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		return Append(context.Background(), q, Event{
+			ID: id3, EventType: EventNodeStateChanged, ExecutionID: execID,
+			NodeID: "n3", ActorType: ActorWorker, ActorID: "w1",
+		})
 	}); err != nil {
 		t.Fatalf("Append(no trace): %v", err)
 	}
@@ -286,10 +293,12 @@ func TestAppendMaterializesRow(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	id := nextID(t)
-	if err := Append(context.Background(), d, Event{
-		ID: id, EventType: EventNodeStateChanged, ExecutionID: execID,
-		NodeExecID: 42, NodeID: "n1", AttemptID: 99,
-		ActorType: ActorWorker, ActorID: "w1", Payload: payload,
+	if err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		return Append(context.Background(), q, Event{
+			ID: id, EventType: EventNodeStateChanged, ExecutionID: execID,
+			NodeExecID: 42, NodeID: "n1", AttemptID: 99,
+			ActorType: ActorWorker, ActorID: "w1", Payload: payload,
+		})
 	}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -319,10 +328,11 @@ func TestAppendMaterializesRow(t *testing.T) {
 	if r.actorType != ActorWorker || r.actorID != "w1" {
 		t.Fatalf("actor = %s/%s", r.actorType, r.actorID)
 	}
-	// P0 默认列:trace/linked 占位 NULL、未启链 prev_hash=''、未脱敏 0
-	// (background ctx 无 span context,行为不变锚)。
+	// 默认列:trace/linked 占位 NULL、链首 prev_hash=''(T9.3 起链仍以 ''
+	// 开头,见 chain_test 全链锚)、未脱敏 0(background ctx 无 span context,
+	// 行为不变锚)。
 	if r.traceID.Valid || r.linkedTrace.Valid || r.prevHash != "" || r.piiMasked {
-		t.Fatalf("P0 defaults violated: trace=%v linked=%v prev_hash=%q pii=%v",
+		t.Fatalf("defaults violated: trace=%v linked=%v prev_hash=%q pii=%v",
 			r.traceID, r.linkedTrace, r.prevHash, r.piiMasked)
 	}
 	var got NodeStateChangedPayload
@@ -335,9 +345,11 @@ func TestAppendMaterializesRow(t *testing.T) {
 
 	// 空 payload 规范化为 {}(DDL:无正文事件存 {});空 NodeID → NULL
 	// (执行级事件的判别锚,'' 会静默错分类——review 修)。
-	if err := Append(context.Background(), d, Event{
-		ID: nextID(t), EventType: EventBranchEvaluated, ExecutionID: execID,
-		NodeExecID: 43, ActorType: ActorWorker, ActorID: "w1",
+	if err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		return Append(context.Background(), q, Event{
+			ID: nextID(t), EventType: EventBranchEvaluated, ExecutionID: execID,
+			NodeExecID: 43, ActorType: ActorWorker, ActorID: "w1",
+		})
 	}); err != nil {
 		t.Fatalf("Append(empty payload): %v", err)
 	}
@@ -357,10 +369,12 @@ func TestAppendSanitizesPayload(t *testing.T) {
 	d := sqltest.MustOpenAt(t, testSchema)
 	execID := seedExec(t, d)
 
-	if err := Append(context.Background(), d, Event{
-		ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: execID,
-		NodeExecID: 1, NodeID: "n1", ActorType: ActorWorker, ActorID: "w1",
-		Payload: json.RawMessage(`{"user_data":{"phone":"13800000000"},"from":"PENDING"}`),
+	if err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		return Append(context.Background(), q, Event{
+			ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: execID,
+			NodeExecID: 1, NodeID: "n1", ActorType: ActorWorker, ActorID: "w1",
+			Payload: json.RawMessage(`{"user_data":{"phone":"13800000000"},"from":"PENDING"}`),
+		})
 	}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
@@ -382,10 +396,12 @@ func TestAppendSanitizesPayload(t *testing.T) {
 func TestAppendExecutionVanished(t *testing.T) {
 	d := sqltest.MustOpenAt(t, testSchema)
 	ghost := nextID(t) // 不存在的 execution
-	err := Append(context.Background(), d, Event{
-		ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: ghost,
-		NodeExecID: 1, NodeID: "n1", ActorType: ActorSystem, ActorID: "reaper:x",
-		Payload: json.RawMessage(`{}`),
+	err := engine.WithTx(context.Background(), d, func(q engine.DBTX) error {
+		return Append(context.Background(), q, Event{
+			ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: ghost,
+			NodeExecID: 1, NodeID: "n1", ActorType: ActorSystem, ActorID: "reaper:x",
+			Payload: json.RawMessage(`{}`),
+		})
 	})
 	if !errors.Is(err, engine.ErrNotFound) {
 		t.Fatalf("Append(vanished exec) = %v, want ErrNotFound", err)
@@ -575,10 +591,12 @@ func TestAppendLLMCallMaterializesRow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal payload: %v", err)
 		}
-		if err := Append(ctx, d, Event{
-			ID: nextID(t), EventType: EventLLMCallCompleted, ExecutionID: execID,
-			NodeExecID: uint64(100 + i), NodeID: "n1", AttemptID: uint64(200 + i),
-			ActorType: ActorLLM, ActorID: u.Model, Payload: raw, Usage: u,
+		if err := engine.WithTx(ctx, d, func(q engine.DBTX) error {
+			return Append(ctx, q, Event{
+				ID: nextID(t), EventType: EventLLMCallCompleted, ExecutionID: execID,
+				NodeExecID: uint64(100 + i), NodeID: "n1", AttemptID: uint64(200 + i),
+				ActorType: ActorLLM, ActorID: u.Model, Payload: raw, Usage: u,
+			})
 		}); err != nil {
 			t.Fatalf("append llm event: %v", err)
 		}

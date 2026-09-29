@@ -51,7 +51,8 @@ func TestConfigValidateBounds(t *testing.T) {
 		{"audit_flush_interval_floor", func(c *Config) { c.AuditFlushInterval = 99 * time.Millisecond }, false},
 		{"audit_flush_interval_ok", func(c *Config) { c.AuditFlushInterval = 100 * time.Millisecond }, true},
 		{"audit_flush_batch_zero", func(c *Config) { c.AuditFlushBatch = 0 }, false},
-		{"audit_flush_batch_over", func(c *Config) { c.AuditFlushBatch = 3101 }, false},
+		{"audit_flush_batch_over", func(c *Config) { c.AuditFlushBatch = 2801 }, false},
+		{"audit_flush_batch_edge", func(c *Config) { c.AuditFlushBatch = 2800 }, true}, // T9.3:23 列×2800=64400<65535 占位符预算新上界
 		{"janitor_floor", func(c *Config) { c.JanitorInterval = 4 * time.Minute }, false},
 		{"login_retention_floor", func(c *Config) { c.LoginAuditRetention = 23 * time.Hour }, false},
 		{"login_retention_ok", func(c *Config) { c.LoginAuditRetention = 24 * time.Hour }, true},

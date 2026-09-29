@@ -87,6 +87,7 @@ var engineTables = map[string]bool{
 	"outbox":              true,
 	"audit_log":           true,
 	"audit_pending":       true, // 0004(T6.1 审计异步批量 WAL 暂存表,引擎域)
+	"chain_heads":         true, // 0008(T9.3 审计哈希链 per-execution 锚,可 UPDATE 簿记面)
 }
 
 // authTables:0002 起按域分 map 登记(T5.1)——后续新增域只加自己的 map,
@@ -293,6 +294,67 @@ func TestSchemaContract(t *testing.T) {
 	}
 	if ukExecCols != 3 {
 		t.Fatalf("uk_node_exec columns = %d, want 3 (execution_id, node_id, instance_no)", ukExecCols)
+	}
+
+	// T9.3 审计哈希链契约(D-2026-09-29-t93 防回退锚):audit_pending 两列
+	// 镜像 audit_log 语义(逐行链写入即算,暂存行带 hash 运输,flush 纯搬运;
+	// 存量在途行按未启链期默认值落位);chain_heads = per-execution 锚,PK 钉
+	// 1:1,断链闩与水位可空。
+	var pendingHashCols int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM information_schema.COLUMNS
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'audit_pending'
+		   AND COLUMN_NAME IN ('prev_hash', 'row_hash')
+		   AND COLUMN_TYPE = 'char(64)' AND CHARACTER_SET_NAME = 'ascii'`).Scan(&pendingHashCols); err != nil {
+		t.Fatalf("audit_pending hash columns: %v", err)
+	}
+	if pendingHashCols != 2 {
+		t.Fatalf("audit_pending prev_hash/row_hash char(64) ascii 列 = %d, want 2", pendingHashCols)
+	}
+	var pendingRowHashNullable string
+	if err := d.QueryRow(
+		`SELECT IS_NULLABLE FROM information_schema.COLUMNS
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'audit_pending'
+		   AND COLUMN_NAME = 'row_hash'`).Scan(&pendingRowHashNullable); err != nil {
+		t.Fatalf("audit_pending.row_hash nullable: %v", err)
+	}
+	if pendingRowHashNullable != "YES" {
+		t.Fatalf("audit_pending.row_hash IS_NULLABLE=%q, want YES(镜像 audit_log:NULL=未启链期)", pendingRowHashNullable)
+	}
+
+	var headPKCols int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM information_schema.STATISTICS
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chain_heads'
+		   AND INDEX_NAME = 'PRIMARY' AND NON_UNIQUE = 0`).Scan(&headPKCols); err != nil {
+		t.Fatalf("chain_heads PK: %v", err)
+	}
+	if headPKCols != 1 {
+		t.Fatalf("chain_heads PK columns = %d, want 1 (execution_id)", headPKCols)
+	}
+	headNullable := map[string]string{}
+	headRows, err := d.Query(
+		`SELECT COLUMN_NAME, IS_NULLABLE FROM information_schema.COLUMNS
+		 WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'chain_heads'
+		   AND COLUMN_NAME IN ('broken_at', 'broken_reason', 'verified_at', 'last_row_hash')`)
+	if err != nil {
+		t.Fatalf("chain_heads columns: %v", err)
+	}
+	for headRows.Next() {
+		var name, isNil string
+		if err := headRows.Scan(&name, &isNil); err != nil {
+			t.Fatalf("scan chain_heads: %v", err)
+		}
+		headNullable[name] = isNil
+	}
+	_ = headRows.Close()
+	for _, col := range []string{"broken_at", "broken_reason", "verified_at"} {
+		if headNullable[col] != "YES" {
+			t.Fatalf("chain_heads.%s IS_NULLABLE=%q, want YES", col, headNullable[col])
+		}
+	}
+	if headNullable["last_row_hash"] != "NO" {
+		t.Fatalf("chain_heads.last_row_hash IS_NULLABLE=%q, want NO(head 存在即有链尾)", headNullable["last_row_hash"])
 	}
 }
 

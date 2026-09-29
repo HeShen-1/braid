@@ -252,3 +252,31 @@ tests:
             exp_annotations:
               summary: "回滚拒绝风暴(45 次/15m)"
               description: "自动化重试未按分面退避,或权限/目标配置错误(role_denied/bad_node_id 为主)。查 rollback.denied 审计行的 reason 分布与调用方退避实现。"
+
+  # T9.3 断链注入:gauge=2 持续 5m → firing;归零(或瞬时抖动)不 fire。
+  - interval: 1m
+    input_series:
+      - series: 'braid_audit_chain_broken_heads'
+        values: '0+0x2 2+0x20'
+    alert_rule_test:
+      - eval_time: 4m
+        alertname: AuditChainBroken
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: AuditChainBroken
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "2 条审计哈希链断链(闩已落定,写路径已拒)"
+              description: "四族判据之一命中:行篡改/行删除/链尾丢失/分区挪移(D-t93 #5)。该执行新审计写入已被拒绝(fail-closed),需人工取证后复位 chain_heads.broken_at。字源 braid_audit_chain_broken_heads(reaper 第七作业 gauge)。"
+
+  # T9.3 瞬时抖动(单点后归零)不告警:for 窗语义锚。
+  - interval: 1m
+    input_series:
+      - series: 'braid_audit_chain_broken_heads'
+        values: '0+0x4 1+0x3 0+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: AuditChainBroken
+        exp_alerts: []

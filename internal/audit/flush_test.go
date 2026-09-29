@@ -136,6 +136,12 @@ func TestFlushDrainsStagedToAuditLog(t *testing.T) {
 	for i := range events {
 		stageEvent(t, d, events[i])
 	}
+	// T9.3:暂存面 hash 快照(flush 前拍下,搬运断言的字源)。
+	staged1 := readStagedHashes(t, d, exec1)
+	staged2 := readStagedHashes(t, d, exec2)
+	if len(staged1) != 2 || len(staged2) != 2 {
+		t.Fatalf("staged = %d/%d, want 2/2", len(staged1), len(staged2))
+	}
 
 	res, err := Flush(ctx, d, 0, 100)
 	if err != nil {
@@ -177,10 +183,26 @@ func TestFlushDrainsStagedToAuditLog(t *testing.T) {
 		if r.eventType != evt.EventType || r.executionID != evt.ExecutionID {
 			t.Fatalf("event %d identity = %+v", evt.ID, r)
 		}
-		if r.prevHash != "" {
-			t.Fatalf("event %d prev_hash = %q, want ''(P1 前未启链)", evt.ID, r.prevHash)
+	}
+	// T9.3:链列原样搬运(flush 纯搬运不重算)——prev/row 双列与暂存快照
+	// 逐位相等。
+	assertTransported := func(execID uint64, staged []chainHashPair) {
+		t.Helper()
+		got := readAuditHashes(t, d, execID)
+		if len(got) != len(staged) {
+			t.Fatalf("exec %d rows = %d, want %d", execID, len(got), len(staged))
+		}
+		for i := range staged {
+			if got[i].id != staged[i].id || got[i].prevHash != staged[i].prevHash ||
+				!got[i].rowHash.Valid || got[i].rowHash.String != staged[i].rowHash.String {
+				t.Fatalf("exec %d row[%d] hash 搬运失真: got (%d,%s,%v) staged (%d,%s,%v)",
+					execID, i, got[i].id, got[i].prevHash, got[i].rowHash,
+					staged[i].id, staged[i].prevHash, staged[i].rowHash)
+			}
 		}
 	}
+	assertTransported(exec1, staged1)
+	assertTransported(exec2, staged2)
 	// 掩蔽行:标志与掩蔽值随列搬运。
 	masked := byID[events[3].ID]
 	if !masked.piiMasked {
@@ -421,7 +443,7 @@ func TestSelectPresentIDsDualDate(t *testing.T) {
 	e2 := Event{ID: nextID(t), EventType: EventNodeStateChanged, ExecutionID: exec2,
 		NodeExecID: 1, NodeID: "n1", ActorType: ActorWorker, ActorID: "w1", Payload: json.RawMessage(`{}`)}
 	for _, e := range []Event{e1, e2} {
-		if err := Append(ctx, d, e); err != nil {
+		if err := engine.WithTx(ctx, d, func(q engine.DBTX) error { return Append(ctx, q, e) }); err != nil {
 			t.Fatalf("append %d: %v", e.ID, err)
 		}
 	}

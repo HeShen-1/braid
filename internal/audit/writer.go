@@ -16,7 +16,9 @@
 // 铁律:本包对 audit_log 只发 INSERT;业务账号仅 INSERT/SELECT 授权由部署层
 // 承担(T7.3 安装自检断言)。payload 只含 id/码/枚举,密钥永不入内。
 //
-// P0 未启用(走 DDL 默认):prev_hash/row_hash(”/NULL,未启链期)。
+// prev_hash/row_hash 已随 T9.3 启链(D-2026-09-29-t93,逐行链写入即算):
+// appendChain(chain.go)在 chain_heads 行锁下取链尾算 hash,暂存/直写两路
+// 径同链;断链闩 = ErrChainBroken fail-closed。
 // trace_id/linked_trace_id 已随 T6.2 OTel 贯穿接线:TraceID 从 ctx span
 // context 自动提取(applyCtxTrace,显式值优先),LinkedTraceID 由审批链
 // 段首行单点显式携带。pii_masked 已随 T6.1 脱敏钩子
@@ -266,39 +268,44 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 	if err != nil {
 		return fmt.Errorf("audit: read exec_date (exec %d): %w", evt.ExecutionID, err)
 	}
-	// [2] 落行:event_at = DB 端 NOW(3)。Usage 非 nil 时同语句落 usage/cost
-	// 冗余列组(llm.call.completed|discarded 双词形状;Billed=false ⇒ cost 两列 NULL,
-	// 与 node_attempt 半边成对 CHECK 同语义)。
+	// [2] 串链(T9.3):chain_heads 行锁 → 断链拒 → prev/row hash。链语义
+	// 与暂存半边(stage.go)同源(appendChain 单点)。
+	prevHash, rowHash, err := appendChain(ctx, q, evt, payload, piiMasked)
+	if err != nil {
+		return err
+	}
+	// [3] 落行:event_at = DB 端 NOW(3)。单一 23 列语句形态(usage 组经
+	// any 归一,与 Enqueue 同形;T9.3 前的双语句分形随链列统一)。Usage
+	// 非 nil 时同语句落 usage/cost 冗余列组(llm.call.completed|discarded
+	// 双词形状;Billed=false ⇒ cost 两列 NULL,与 node_attempt 半边成对
+	// CHECK 同语义)。
+	var model, costArg, currencyArg any
+	var pt, ct, tt any
 	if evt.Usage != nil {
-		var costArg, currencyArg any
+		model, pt, ct, tt = evt.Usage.Model,
+			evt.Usage.PromptTokens, evt.Usage.CompletionTokens, evt.Usage.TotalTokens
 		if evt.Usage.Billed {
 			costArg, currencyArg = evt.Usage.CostAmount, evt.Usage.CostCurrency
 		}
-		_, err = q.ExecContext(ctx, `
+	}
+	_, err = q.ExecContext(ctx, `
 INSERT INTO audit_log
   (id, exec_date, event_at, event_type, execution_id, node_execution_id,
    node_id, attempt_id, actor_type, actor_id, trace_id, linked_trace_id,
    pii_masked, payload,
    model, prompt_tokens, completion_tokens, total_tokens,
-   cost_amount, cost_currency, cost_estimated)
+   cost_amount, cost_currency, cost_estimated, prev_hash, row_hash)
 VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?)`,
-			evt.ID, execDate, evt.EventType, evt.ExecutionID,
-			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, linked, piiMasked, payload,
-			evt.Usage.Model, evt.Usage.PromptTokens, evt.Usage.CompletionTokens,
-			evt.Usage.TotalTokens, costArg, currencyArg, evt.Usage.Estimated)
-	} else {
-		_, err = q.ExecContext(ctx, `
-INSERT INTO audit_log
-  (id, exec_date, event_at, event_type, execution_id, node_execution_id,
-   node_id, attempt_id, actor_type, actor_id, trace_id, linked_trace_id,
-   pii_masked, payload)
-VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			evt.ID, execDate, evt.EventType, evt.ExecutionID,
-			nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, linked, piiMasked, payload)
-	}
+        ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		evt.ID, execDate, evt.EventType, evt.ExecutionID,
+		nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, linked, piiMasked, payload,
+		model, pt, ct, tt, costArg, currencyArg, usageEstimated(evt.Usage), prevHash, rowHash)
 	if err != nil {
 		return fmt.Errorf("audit: append %d (%s): %w", evt.ID, evt.EventType, err)
+	}
+	// [4] 推链尾(与 [3] 同事务同存亡;行锁在本事务内)。
+	if err := advanceChainHead(ctx, q, evt.ExecutionID, evt.ID, rowHash); err != nil {
+		return err
 	}
 	return nil
 }
