@@ -93,6 +93,7 @@ func touchAll(s *Set) {
 	s.LLM.Calls.WithLabelValues(CallSucceeded)
 	s.Reaper.Reaped.WithLabelValues(CodeStaleAttempt)
 	s.Reaper.Redispatches.WithLabelValues(TriggerReaped)
+	s.Reaper.Redispatches.WithLabelValues(TriggerAttemptFailed) // T12.2:scheduler 侧发射上岗,惰性 family 必须显式实例化
 	s.Reaper.ScanBacklog.WithLabelValues(ScanAttempt)
 	s.Reaper.FlushBatches.WithLabelValues(FlushOK)
 	s.Reaper.FlushRows.WithLabelValues(FlushKindFlushed)

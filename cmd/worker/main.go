@@ -183,7 +183,10 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("worker: snowflake: %w", err)
 	}
-	sched, err := scheduler.New(scheduler.Deps{DB: mysqlDB, IDs: ids, Logger: slog.Default(), Metrics: mset.LLM})
+	// Metrics 适配 = metrics.Set(T12.2 起:LLM 丢弃 + Redispatches{attempt_failed}
+	// 双发射;原 mset.LLM 单方法注入已随 Set 适配方法收编)。接线验证纪律
+	// (D-t64 两次漏接教训):grep 可见此行即接线面。
+	sched, err := scheduler.New(scheduler.Deps{DB: mysqlDB, IDs: ids, Logger: slog.Default(), Metrics: mset})
 	if err != nil {
 		return fmt.Errorf("worker: scheduler: %w", err)
 	}

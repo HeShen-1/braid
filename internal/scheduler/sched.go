@@ -148,10 +148,13 @@ const (
 	ReasonApprovalEscalated = "escalated"
 )
 
-// MetricsSink 是调度器的指标缝(T6.4):由 cmd 装配注入(生产 = metrics 适配
-// 器,测试默认 nil = 观测关闭)。窄面:本包唯一发射点 = Complete 让位丢弃。
+// MetricsSink 是调度器的指标缝(T6.4;T12.2 扩重派发射):由 cmd 装配注入
+// (生产 = metrics.Set 适配方法,测试默认 nil = 观测关闭)。发射点两处:
+// Complete 让位丢弃(llm.call.discarded)+ Complete 重试再派发
+// (Redispatches{attempt_failed},D-t64 留位兑现)。
 type MetricsSink interface {
 	IncLLMCallDiscarded()
+	IncNodeRedispatched()
 }
 
 // Deps 是运行依赖。Router 为 nil 用 CondRouter;Queue 为空用 "default"(必须在
@@ -846,6 +849,13 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 				n.version = newVer
 				n.attempts++
 				n.workerID = sql.NullString{String: req.WorkerID, Valid: true}
+				// D-t64 留位兑现(T12.2):Redispatches{attempt_failed} 词表
+				// 第三值上岗——审计行 node.redispatched 是持久孪生,此处是
+				// 指标半边。事务提交前递增与 reaper 裁决计数同判(回滚重试
+				// 窗至多 +1,rate 型告警不敏,方向保守)。
+				if s.deps.Metrics != nil {
+					s.deps.Metrics.IncNodeRedispatched()
+				}
 				if err := st.auditRow(audit.EventNodeRedispatched, n, 0, audit.NodeRedispatchedPayload{
 					NodeID: n.nodeID, AttemptNo: n.attempts, Trigger: audit.TriggerAttemptFailed,
 					InstanceNo: n.instanceNo,
