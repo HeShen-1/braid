@@ -31,6 +31,12 @@ import (
 // 白名单是唯一防线(schemaSuffixRe 同款纪律)。
 var sandboxImageRefRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/:-]*(@sha256:[0-9a-f]{64})?$`)
 
+// sandboxImageDefault 缺省镜像引用(deploy/README.md §7 同源登记)。
+// sandbox_image_test.go 的 e2e tag 守卫引用本常量:--target sandbox-e2e
+// 恒不得构建进缺省引用(防 ephemeral CA 镜像滞留 daemon 被 prod Probe
+// 放行,基线 §3)。
+const sandboxImageDefault = "braid-tool-sandbox:1"
+
 // sandboxMemoryRe docker 内存旗标值域:纯数字或数字+单位(b/k/m/g/t)。
 var sandboxMemoryRe = regexp.MustCompile(`^[0-9]+[bkmgt]?$`)
 
@@ -66,7 +72,7 @@ func sandboxConfigFromEnv(getenv func(string) string) (sandboxConfig, error) {
 
 	cfg.Image = getenv("BRAID_TOOL_SANDBOX_IMAGE")
 	if cfg.Image == "" {
-		cfg.Image = "braid-tool-sandbox:1"
+		cfg.Image = sandboxImageDefault
 	}
 	if !sandboxImageRefRe.MatchString(cfg.Image) {
 		return sandboxConfig{}, fmt.Errorf("tools: BRAID_TOOL_SANDBOX_IMAGE=%q: invalid image reference (want repo[:tag][@sha256:<digest>], no leading dash)", cfg.Image)

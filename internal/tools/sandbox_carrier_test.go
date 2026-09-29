@@ -591,7 +591,7 @@ info) echo 24.0.7 ;;
 image) exit 1 ;;
 *) exit 9 ;;
 esac
-`, "docker build -f deploy/sandbox.Dockerfile -t braid-tool-sandbox:1 ."},
+`, "CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o braid-sandbox-exec ./cmd/braid-sandbox-exec && docker build -f deploy/sandbox.Dockerfile -t braid-tool-sandbox:1 ."},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

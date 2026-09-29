@@ -368,7 +368,7 @@ func SandboxProbe(ctx context.Context, dockerBin, image string) error {
 	imgCtx, cancel := context.WithTimeout(ctx, sandboxProbeTimeout)
 	defer cancel()
 	if err := exec.CommandContext(imgCtx, dockerBin, "image", "inspect", image).Run(); err != nil {
-		return fmt.Errorf("tools: sandbox probe: image %q not present locally (daemon never pulls); run docker build -f deploy/sandbox.Dockerfile -t %s . then restart worker", image, image)
+		return fmt.Errorf("tools: sandbox probe: image %q not present locally (daemon never pulls); build from repo root, then restart worker: CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o braid-sandbox-exec ./cmd/braid-sandbox-exec && docker build -f deploy/sandbox.Dockerfile -t %s . (canonical command: deploy/README.md §7)", image, image)
 	}
 	return nil
 }
