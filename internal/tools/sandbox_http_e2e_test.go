@@ -40,9 +40,30 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
+
+// serveErrSink 互斥包裹的 stderr 缓冲:exec 的 stderr 拷贝 goroutine 与
+// 测试 Fatal 路径的读取并发,bytes.Buffer 非并发安全(PR #85 review,
+// 竞态面仅此诊断读取)。
+type serveErrSink struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *serveErrSink) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *serveErrSink) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
 
 // TestSandboxE2EHTTP 真 docker 全链路 hermetic http e2e(子用例共享同一
 // 套装配:镜像/alias/serve/载体)。
@@ -113,7 +134,7 @@ func TestSandboxE2EHTTP(t *testing.T) {
 	}
 	// serve stderr 收进缓冲:listen/证书装载失败时 listening 行读不到,
 	// 缓冲里的病因随 Fatal 一并呈现(诊断面,审计处置)。
-	serveErrBuf := &bytes.Buffer{}
+	serveErrBuf := &serveErrSink{}
 	serveCmd.Stderr = serveErrBuf
 	if err := serveCmd.Start(); err != nil {
 		t.Fatalf("start serve: %v", err)

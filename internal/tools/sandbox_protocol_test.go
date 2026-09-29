@@ -161,6 +161,27 @@ func TestSandboxEnvelopeNoHTMLEscape(t *testing.T) {
 			t.Fatalf("round trip = %s err=%v", enc, err)
 		}
 	})
+	t.Run("inputs map path same discipline", func(t *testing.T) {
+		// PR #85 review MEDIUM 回归锚:载体对 call.Inputs(map 形态,
+		// runner.go Call.Inputs)曾走裸 json.Marshal——map 序列化同样受
+		// escapeHTML=true 放大(1B→6B);钉住该路径必须走信封族编码器。
+		dense := strings.Repeat("<&>", 64*1024) // 192KiB 载荷
+		enc, err := marshalSandboxEnvelope(map[string]any{"body": dense})
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		if max := len(dense) + 256; len(enc) > max {
+			t.Fatalf("inputs map encode = %d bytes, want <= %d (no amplification)", len(enc), max)
+		}
+		// 对照锚:裸 Marshal 的 6× 放大在场(载荷密度自证,防上界断言空心)。
+		bare, err := json.Marshal(map[string]any{"body": dense})
+		if err != nil {
+			t.Fatalf("bare marshal: %v", err)
+		}
+		if amp := len(bare) / len(dense); amp < 5 {
+			t.Fatalf("bare Marshal amplification = %dx, want >= 5x (payload lost density?)", amp)
+		}
+	})
 }
 
 func TestSandboxCodeForError(t *testing.T) {

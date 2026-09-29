@@ -48,7 +48,7 @@
   - **append 语义**:append 进 `/etc/ssl/certs/ca-certificates.crt` **只增不减**(基座束保留——clobber 式整体替换会静默断掉全部公网 https 出站,且失败形态不指向根因);helper 的 Go 系统池即按「文件字节 → AppendCertsFromPEM」读取(root.go loadOnDiskRoots,该文件是 alpine 上的探测首项),hash symlink 农场是 OpenSSL 消费者需求,不需要。
   - **e2e 镜像引用**:独立 tag,不得覆写 prod 缺省引用 `braid-tool-sandbox:1`(防 ephemeral CA 镜像滞留 daemon 被 prod Probe 放行),测试收尾清理;e2e 选段 198.19.x 依赖 DECISIONS 待议项 D-2026-09-23-ssrf-extra-ranges「198.18.0.0/15 维持放行」,扩禁须同步重选段。
   - **机械锚**:构建期半边(context 唯一成员 + append ⇒ 信任)由 internal/tools/sandbox_ca_test.go 钉死;env 半边由 argv 全序列 golden(结构性无 `-e`/`--env-file`/`--env`)钉死;容器内 env 实证(dump-env e2e)T10 落地。
-- **离线口径(D-t72 同纪律)**:运行时 daemon **永不 pull**——daemon 本地无镜像 = 响亮失败,错误消息携带构建命令;镜像引用经 env 配置,构造期校验。
+- **离线口径(D-t72 同纪律)**:运行时 daemon **永不 pull**——daemon 本地无镜像 = 响亮失败,错误消息携带构建命令;镜像引用经 env 配置,构造期校验。残余(PR review 登记):「永不 pull」由 worker 启动 Probe 保证;启动后镜像被删(prune / 并行 lane rmi)的运维窗内,docker run 缺省 pull policy=missing 会先对 registry 发起 pull 尝试再失败——`--pull never` 需 CLI ≥20.10,高于声明的 daemon 下限,随 §9-9 一并留待下限抬升时收口。
 - **helper 生产二进制含 selftest 子命令家族**(dump-env / alloc / serve / spin / forkchain / fds / spam-stderr / zombies 及内部子模式 zombie-child、exit0;全枚举单点真源 = `sandbox_helper.go` 文件头):argv 词表可达但 carrier 永不发出;容器内攻击者本可自行分配内存/起服务/自旋/派生进程/开 fd/写自身 stderr,无新能力面(T11 审计复核成立:无探针做网络 I/O 或消费 cap,资源执法面是容器配置、由 inspect 矩阵落盘钉死)——以 argv 构造器单测(词表外值构造期拒)为回归锚。
 
 ## 4. 网络姿态与 t10.2 合成面
@@ -98,3 +98,4 @@
 6. **worker kill -9 后在飞容器存活至 watchdog deadline**(有界非零;label 化供启动清扫/P1 reaper 收口)。
 7. **CA 信任束内容**:alpine ca-certificates-bundle 内任何 CA 静默扩大容器内中间人能力;束内容随镜像构建固定,运行期不改,入镜像评审。
 8. **daemon 版本漂移**:CI 与 prod daemon 版本不对齐;启动 Probe 含版本下限检查,不满足响亮失败。
+9. **post-Probe 镜像丢失运维窗**(PR review 登记,§3 离线口径残余):镜像在 worker 启动后被删时,后续每次工具调用按 docker run 缺省 policy=missing 先发起 registry pull 尝试再失败(offline 环境下是拨号失败,online 环境下是意外拉取);`--pull never` 关闭该窗但需 CLI ≥20.10,高于 Probe 声明的 daemon 下限——待 CLI 下限抬升时随 argv 构造器一并收口。

@@ -85,6 +85,11 @@ func sandboxConfigFromEnv(getenv func(string) string) (sandboxConfig, error) {
 	if !sandboxMemoryRe.MatchString(cfg.Memory) {
 		return sandboxConfig{}, fmt.Errorf("tools: BRAID_TOOL_SANDBOX_MEMORY=%q: want <digits>[b|k|m|g|t]", cfg.Memory)
 	}
+	// 正则放行 "0"/"00"/"0m",而 docker 对 --memory 0 = 不设限——恰是
+	// 基线 #4 要防的威胁,须显式拒零(镜像 CPUS 分支同款纪律)。
+	if n, err := strconv.ParseInt(strings.TrimRight(cfg.Memory, "bkmgt"), 10, 64); err != nil || n <= 0 {
+		return sandboxConfig{}, fmt.Errorf("tools: BRAID_TOOL_SANDBOX_MEMORY=%q: want positive <digits>[b|k|m|g|t]", cfg.Memory)
+	}
 
 	cfg.CPUs = getenv("BRAID_TOOL_SANDBOX_CPUS")
 	if cfg.CPUs == "" {

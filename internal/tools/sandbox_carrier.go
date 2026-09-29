@@ -173,7 +173,10 @@ func (c *sandboxCarrier) Run(ctx context.Context, call Call) (Result, error) {
 		return Result{}, fmt.Errorf("tools: %s: %w", c.name, err)
 	}
 
-	inputs, err := json.Marshal(call.Inputs)
+	// 信封族编码器而非裸 json.Marshal(PR #85 review):裸 Marshal 对
+	// <>& 做 \u00XX 转义(1B→6B),8MiB inputs 最坏放大 48MiB 打爆
+	// helper 16MiB 请求上限,off 模式同载荷成功 = 跨模式分叉。
+	inputs, err := marshalSandboxEnvelope(call.Inputs)
 	if err != nil {
 		return Result{}, fmt.Errorf("tools: %s: marshal inputs: %w", c.name, err)
 	}
