@@ -8,3 +8,5 @@
 .testenv
 # local run logs (dev stack host processes; see README run steps)
 log/
+# sandbox image host-build artifact (deploy/README.md §7)
+/braid-sandbox-exec

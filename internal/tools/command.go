@@ -46,8 +46,11 @@ type CommandSpec struct {
 // 环境白名单(验收:沙箱环境不含平台主凭证):子进程 env 从零构造,
 // 仅 PATH(可执行解析)/ LANG / BRAID_TOOL_TOKEN(scoped token 传递)/
 // BRAID_ATTEMPT_KEY(幂等键传递)四类可见——构造式白名单,父进程的任何
-// 其他环境变量(含 DSN、LLM key、HMAC 密钥)结构性不可达。P1 Docker
-// 载体沿用同一 env 契约。
+// 其他环境变量(含 DSN、LLM key、HMAC 密钥)结构性不可达。Docker 载体
+// (D-2026-09-28-t101 #2)对 env 契约显式 delta:env 收缩至 PATH/LANG
+// (HOSTNAME/HOME 为 daemon 自管注入、无 unset 通道),token/attempt/
+// config/inputs 改走 stdin JSON 信封——`-e` 旗标值进 /proc/<pid>/cmdline
+// (宿主全局可读)且 docker inspect 可读,禁止经 env 恢复凭证通道。
 type CommandTool struct {
 	spec CommandSpec
 }

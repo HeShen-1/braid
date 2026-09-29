@@ -203,14 +203,25 @@ func run(ctx context.Context) error {
 	// T3.2/T3.5 工具运行时装配 + T5.2 执行时 RBAC 门:registry(内置
 	// http/file_read 按配置注册,未配置即不注册——空 = 一切 tool 节点
 	// tool_not_found 收口;api 与 worker 经 BuiltinToolsFromEnv 单源装配,
-	// 注册集与发布白名单一致)+ scoped token 签发器(BRAID_TOOL_TOKEN_SECRET
-	// 缺省 = 进程内随机,重启即轮换——P0 校验点在同进程调用门,自洽;P1
-	// 工具回调平台时经部署配置显式供给)+ 执行时授权器(发布期白名单之外
-	// 的调用现场再校验,拒绝落 tool.call.denied 审计;默认策略 author|admin,
-	// system 触发哨兵放行)。
+	// 注册集与发布白名单一致;T10.1:mode=docker 时装配缝同名换装
+	// sandboxCarrier,off = 进程内 builtin 逐字节现状)+ scoped token
+	// 签发器(BRAID_TOOL_TOKEN_SECRET 缺省 = 进程内随机,重启即轮换——
+	// P0 校验点在同进程调用门,自洽;P1 工具回调平台时经部署配置显式
+	// 供给)+ 执行时授权器(发布期白名单之外的调用现场再校验,拒绝落
+	// tool.call.denied 审计;默认策略 author|admin,system 触发哨兵放行)。
 	builtins, err := tools.BuiltinToolsFromEnv(os.Getenv)
 	if err != nil {
 		return fmt.Errorf("worker: builtin tools: %w", err)
+	}
+	// T10.1 沙箱启动接线:mode=docker 时 Probe 部署性前移(缺 bin/daemon
+	// 不可达/镜像缺失 = 拒启,绝不静默回落 local)+ label 清扫(cancel 窗
+	// 僵尸与 kill -9 孤儿兜底);off = 无操作零 docker 接触(dev 栈照跑)。
+	swept, err := tools.SandboxStartupCheck(ctx, os.Getenv)
+	if err != nil {
+		return fmt.Errorf("worker: sandbox startup check: %w", err)
+	}
+	if len(swept) > 0 {
+		slog.Warn("worker: sandbox startup swept orphaned containers", "count", len(swept), "ids", swept)
 	}
 	toolReg, err := tools.NewRegistry(builtins...)
 	if err != nil {

@@ -140,3 +140,48 @@ outbox UPDATE / audit_pending INSERT)已全部收回。
 api 的 `/metrics` 恒挂 `BRAID_API_ADDR`(与 /healthz 同回环绑定);worker/
 relay/reaper 经 `BRAID_METRICS_ADDR`(空 = 不启)。无认证 exposition,
 只绑回环或留内网(反代只转发 /api/v1 与 /ui/)。
+
+## 7. 工具沙箱镜像(T10.1)
+
+`braid-tool-sandbox:1`(缺省引用,`BRAID_TOOL_SANDBOX_IMAGE` 可覆写)是
+file_read/http 的容器载体镜像;worker `BRAID_TOOL_SANDBOX=docker` 启动时
+SandboxProbe 要求镜像在场——**daemon 永不 pull**,缺失即拒启(错误消息
+携带构建命令)。
+
+**构建**(context = repo 根;宿主构建 + COPY-only,测试路径免拉 golang
+镜像;**需 BuildKit**——builder stage 非 prod 祖先,BuildKit 按依赖跳过
+之;legacy builder 线性执行全部 stage,缺省构建会在 sandbox-e2e 的
+CA COPY 处中止(repo 根 context 无 ephemeral CA 成员)——即缺 buildx 时
+缺省构建必败。行为依引擎版本而异(docker-ce 23+ 缺插件可回退 daemon 侧
+BuildKit),统一口径 = 装 buildx:docker-ce 自带;Ubuntu docker.io 源缺装
+`sudo apt install docker-buildx`,或无 sudo 时用户级安装
+`~/.docker/cli-plugins/docker-buildx`)。两步以 `&&` 链接执行——repo 根
+的 `braid-sandbox-exec` 产物跨分支留存(.gitignore 已忽略),漏跑 go
+build 会把陈旧二进制静默打进镜像:
+
+```
+CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' \
+  -o braid-sandbox-exec ./cmd/braid-sandbox-exec \
+&& docker build -f deploy/sandbox.Dockerfile -t braid-tool-sandbox:1 .
+```
+
+`deploy/sandbox.Dockerfile` 三 stage:build(源构建纪律真源,非 prod
+祖先,缺省构建不执行)、sandbox-e2e(hermetic e2e 专用 `--target
+sandbox-e2e`,独立 tag 不覆写缺省引用,测试收尾 `docker rmi`)、prod
+(缺省 target = 最后 stage,零注入)。基座 alpine:3.22 与 builder
+golang:1.27-alpine 均按 digest 钉死(钉法先例 = dev.docker-compose.yml
+asynqmon 条目);运行层二进制恒从 build context COPY 宿主产物(与根
+Dockerfile 的 in-image 源构建区分)。拓扑不变量由
+`internal/tools/sandbox_image_test.go` 机械锚钉死(锚红 = 拓扑被意外
+改动;显式变更随变更同步更新锚)。
+
+**企业私 CA 通道(同通道重建镜像)**:信任集扩张只经镜像构建,运行期
+零通道——容器 env 白名单恰 PATH/LANG(`SSL_CERT_FILE`/`SSL_CERT_DIR`
+被白名单结构性挡死)、stdin 信封、挂载均不承载 CA。企业私 CA 接入 =
+在运行层 stage COPY 企业 CA 证书 PEM 并 `cat >>
+/etc/ssl/certs/ca-certificates.crt` **append(只增不减,基座束保留——
+clobber 式整体替换会静默断全部公网 https 出站)**,操作先于 USER 65532;
+注入形态参照 sandbox-e2e stage,随后重建 `braid-tool-sandbox:1` 重新
+部署。禁止经任何运行期通道(env/挂载/信封)注入 CA;该变更会触发上述
+机械锚(prod 段唯一 COPY = helper 二进制、零束操作、零 ENV 由锚钉死),
+属预期,锚随显式变更同步更新。
