@@ -82,11 +82,13 @@ func TestConfigFromEnv(t *testing.T) {
 			"BRAID_SMTP_NOTIFY_TO":    "ops@example.com",
 			"BRAID_APPROVAL_BASE_URL": "https://braid.example.com",
 		}, true, nil},
-		{"host without notify_to", map[string]string{
+		// T12.2 契约翻转:NotifyTo 从「Host 设则必填」放宽为可选 ops 副本
+		// 通道(纯扇出形态合法;零可解析收件人的响亮失败在发送期,sender 侧)。
+		{"host without notify_to (pure fan-out, legal since T12.2)", map[string]string{
 			"BRAID_SMTP_HOST":         "smtp.example.com",
 			"BRAID_SMTP_FROM":         "braid@example.com",
 			"BRAID_APPROVAL_BASE_URL": "https://braid.example.com",
-		}, true, nil},
+		}, false, nil},
 		{"host without base url", map[string]string{
 			"BRAID_SMTP_HOST":      "smtp.example.com",
 			"BRAID_SMTP_FROM":      "braid@example.com",

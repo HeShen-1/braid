@@ -6,13 +6,15 @@ import (
 	"fmt"
 )
 
-// DBTX 是 auth 持久化原语的最小依赖面(ExecContext + QueryRowContext),
-// 与 engine.DBTX 同形但独立定义:auth 不 import engine(包分层纪律,
-// engine 是单 worktree 持有的受保护包)。roles 经 JSON_ARRAYAGG 单行
-// 聚合读取,登录路径无多行扫描;*sql.DB / *sql.Tx / *sql.Conn 均满足。
+// DBTX 是 auth 持久化原语的最小依赖面(ExecContext + QueryRowContext +
+// QueryContext),与 engine.DBTX 同形但独立定义:auth 不 import engine
+// (包分层纪律,engine 是单 worktree 持有的受保护包)。roles 经
+// JSON_ARRAYAGG 单行聚合读取;多行扫描仅 EmailsByUsernames(T12.2 扇出
+// 解析);*sql.DB / *sql.Tx / *sql.Conn 均满足。
 type DBTX interface {
 	ExecContext(ctx context.Context, query string, args ...any) (sql.Result, error)
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
 }
 
 // WithTx 在单事务内执行 fn:Commit/Rollback 只此一处,fn 出错与 panic

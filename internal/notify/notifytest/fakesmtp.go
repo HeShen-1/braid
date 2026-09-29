@@ -142,6 +142,25 @@ func (s *SMTP) LastAuth(t TB) string {
 	return s.auths[len(s.auths)-1]
 }
 
+// Messages 返回全部已捕获邮件的 DATA 原文副本(扇出场景 = 多封,LastMessage
+// 只见最后一封;T12.2 逐人收件断言面)。
+func (s *SMTP) Messages() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]string, len(s.messages))
+	copy(out, s.messages)
+	return out
+}
+
+// RcptsAll 返回全部邮件的信封收件人副本(与 Messages 下标对齐)。
+func (s *SMTP) RcptsAll() [][]string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([][]string, len(s.rcpts))
+	copy(out, s.rcpts)
+	return out
+}
+
 // selfSignedCert 生成一次性自签证书(IP SAN 127.0.0.1)。
 func selfSignedCert() (tls.Certificate, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)

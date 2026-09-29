@@ -17,9 +17,10 @@
 // 边界:发送成功与审计 INSERT 之间崩溃 ⇒ 重投重发一封(至多一次重复,
 // 恰好一次锚仍在 reaper 侧 escalated_at 意图层)。
 //
-// 收件面:P0 无用户 email 列(0002 users 表 Q13 钦定登录名=主体字符串),
-// 收件人 = 部署配置的固定通知邮箱(BRAID_SMTP_NOTIFY_TO);DSL approvers
-// 名单进邮件正文当上下文。按 approver 扇出投递归 P1 用户资料面。
+// 收件面(T12.2,D-t45 #2 兑现):快照 approvers(用户名)→ users.email
+// 逐人收件(一人一封);BRAID_SMTP_NOTIFY_TO 降为 ops 副本/兜底通道;无
+// 邮箱的 approver 名字保留正文、由 ops 副本兜底。零可解析收件人 = 发送面
+// 响亮失败(归 worker 死信告警),不静默。
 package notify
 
 import (
@@ -36,8 +37,9 @@ import (
 // Config 是 SMTP 通知的全部可调参数(relay/llm/config.go 同款四件套;字段名
 // 即配置键,T7.1 已换装收编)。Password 仅经 env 注入,不进代码/
 // 日志/审计(铁律)。Host 空 = 整组未配置(合法:worker 保留 T4.3 占位
-// log-only 降级面,dev 栈无 SMTP 可用);Host 非空则 From/NotifyTo/
-// ApprovalBaseURL 必填——半配置启动即败,优于静默半瘫。
+// log-only 降级面,dev 栈无 SMTP 可用);Host 非空则 From/ApprovalBaseURL
+// 必填——半配置启动即败,优于静默半瘫;NotifyTo 可选(T12.2 起为 ops
+// 副本通道,零可解析收件人由发送期响亮失败兜底)。
 type Config struct {
 	// Host 是 SMTP 服务器主机名;空 = 未配置(调用方降级,Validate 放行)。
 	Host string
@@ -50,8 +52,10 @@ type Config struct {
 	Password string
 	// From 是信封+信头发件人(MAIL FROM / From:)。
 	From string
-	// NotifyTo 是通知收件人列表(逗号分隔 env 解析;P0 固定通知邮箱面,
-	// approver 扇出归 P1)。
+	// NotifyTo 是 ops 副本/兜底收件人列表(逗号分隔 env 解析;T12.2 扇出
+	// 后为可选通道:设则每封升级通知追加一封 ops 副本——可见性保底,行为
+	// 向后兼容;未配 email 的 approver 由本副本兜底可见)。纯扇出形态
+	// (空)合法,但零可解析收件人时发送面响亮失败(归 worker 死信告警)。
 	NotifyTo []string
 	// ApprovalBaseURL 是审批链接前缀(内置 Web 审批页/API 同形路径
 	// /executions/<id>/approvals/<node_id> 的宿主根);尾斜杠规范化后存。
@@ -105,8 +109,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("notify: port %d out of [1,65535]", c.Port)
 	case !mailAddrRe.MatchString(c.From):
 		return fmt.Errorf("notify: from %q not an address", c.From)
-	case len(c.NotifyTo) == 0:
-		return fmt.Errorf("notify: notify_to empty (>=1 recipient required when smtp host set)")
+	// NotifyTo 可选(T12.2 扇出后为 ops 副本通道,非唯一收件面);零可解析
+	// 收件人的发送期响亮失败在 sender 侧(配置期不可判——approvers 快照
+	// 是运行期数据)。
 	case c.Timeout <= 0 || c.Timeout > 2*time.Minute:
 		return fmt.Errorf("notify: timeout %s out of (0,2m]", c.Timeout)
 	case c.Password != "" && c.Username == "":

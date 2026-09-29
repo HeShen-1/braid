@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -21,6 +22,10 @@ func (panickyDBTX) ExecContext(context.Context, string, ...any) (sql.Result, err
 
 func (panickyDBTX) QueryRowContext(context.Context, string, ...any) *sql.Row {
 	panic("auth: unexpected QueryRowContext call")
+}
+
+func (panickyDBTX) QueryContext(context.Context, string, ...any) (*sql.Rows, error) {
+	panic("auth: unexpected QueryContext call")
 }
 
 func countRows(t *testing.T, d *sql.DB, table string) int {
@@ -111,17 +116,18 @@ func TestCreateUserInvalidInput(t *testing.T) {
 		name string
 		p    CreateUserParams
 	}{
-		{"uppercase username", CreateUserParams{"Alice", hash, []Role{RoleAdmin}}},
-		{"reserved username system", CreateUserParams{"system", hash, []Role{RoleAdmin}}},
-		{"username with space", CreateUserParams{"a b", hash, []Role{RoleAdmin}}},
-		{"username leading digit", CreateUserParams{"1abc", hash, []Role{RoleAdmin}}},
-		{"empty username", CreateUserParams{"", hash, []Role{RoleAdmin}}},
-		{"username over 128", CreateUserParams{strings.Repeat("a", 129), hash, []Role{RoleAdmin}}},
-		{"plaintext hash", CreateUserParams{"alice", strings.Repeat("x", 60), []Role{RoleAdmin}}},
-		{"short hash", CreateUserParams{"alice", "$2a$06", []Role{RoleAdmin}}},
-		{"empty roles", CreateUserParams{"alice", hash, nil}},
-		{"unknown role", CreateUserParams{"alice", hash, []Role{Role("root")}}},
-		{"duplicate roles", CreateUserParams{"alice", hash, []Role{RoleAdmin, RoleAdmin}}},
+		{"uppercase username", CreateUserParams{Username: "Alice", PasswordHash: hash, Roles: []Role{RoleAdmin}}},
+		{"reserved username system", CreateUserParams{Username: "system", PasswordHash: hash, Roles: []Role{RoleAdmin}}},
+		{"username with space", CreateUserParams{Username: "a b", PasswordHash: hash, Roles: []Role{RoleAdmin}}},
+		{"username leading digit", CreateUserParams{Username: "1abc", PasswordHash: hash, Roles: []Role{RoleAdmin}}},
+		{"empty username", CreateUserParams{Username: "", PasswordHash: hash, Roles: []Role{RoleAdmin}}},
+		{"username over 128", CreateUserParams{Username: strings.Repeat("a", 129), PasswordHash: hash, Roles: []Role{RoleAdmin}}},
+		{"plaintext hash", CreateUserParams{Username: "alice", PasswordHash: strings.Repeat("x", 60), Roles: []Role{RoleAdmin}}},
+		{"short hash", CreateUserParams{Username: "alice", PasswordHash: "$2a$06", Roles: []Role{RoleAdmin}}},
+		{"empty roles", CreateUserParams{Username: "alice", PasswordHash: hash, Roles: nil}},
+		{"unknown role", CreateUserParams{Username: "alice", PasswordHash: hash, Roles: []Role{Role("root")}}},
+		{"duplicate roles", CreateUserParams{Username: "alice", PasswordHash: hash, Roles: []Role{RoleAdmin, RoleAdmin}}},
+		{"bad email shape", CreateUserParams{Username: "alice", PasswordHash: hash, Email: &[]string{"no-at-sign"}[0], Roles: []Role{RoleAdmin}}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -290,5 +296,131 @@ func TestFindByUsernameAggregation(t *testing.T) {
 	}
 	if len(rec.Roles) != 0 {
 		t.Fatalf("roles = %v, want empty", rec.Roles)
+	}
+}
+
+// TestEmailDomainPinned(T12.2):email 域双闸的库端半边——坏形态直插必须
+// 3819(chk_user_email 失效即红);合法形态与 NULL 放行。Go 侧半边 =
+// TestCreateUserInvalidInput 的 email 臂 + TestEmailsByUsernames 的域拒绝臂。
+func TestEmailDomainPinned(t *testing.T) {
+	d := newDB(t)
+	shapeOKHash := "$2a$04$" + strings.Repeat(".", 53)
+	// 坏形态:无 @ / 空白侧 / 双 @。
+	for i, bad := range []string{
+		"not-an-address",
+		" leading@example.com",
+		"a@b@example.com",
+	} {
+		if _, err := d.Exec(`INSERT INTO users (id, username, password_hash, email) VALUES (?, ?, ?, ?)`,
+			uint64(9000+i), fmt.Sprintf("badmail%d", i), shapeOKHash, bad); err == nil {
+			t.Fatalf("坏 email %q 直插被放行(chk_user_email 失效?)", bad)
+		} else if num := mysqlErrNum(t, err); num != 3819 {
+			t.Fatalf("email %q err no = %d, want 3819", bad, num)
+		}
+	}
+	// 合法形态 + NULL 放行(NULL = 未配置,扇出侧缺席处理)。
+	if _, err := d.Exec(`INSERT INTO users (id, username, password_hash, email) VALUES (?, ?, ?, ?)`,
+		9100, "goodmail", shapeOKHash, "good@example.com"); err != nil {
+		t.Fatalf("合法 email 直插被拒: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO users (id, username, password_hash, email) VALUES (?, ?, ?, NULL)`,
+		9101, "nullmail", shapeOKHash); err != nil {
+		t.Fatalf("NULL email 直插被拒: %v", err)
+	}
+}
+
+// TestCreateUserWithEmail(T12.2):Email 参数三态——合法入库、nil 入 NULL、
+// 坏形态前置拒绝(不触 DB,panickyDBTX 构造性证明)。
+func TestCreateUserWithEmail(t *testing.T) {
+	d := newDB(t)
+	hash, err := HashPassword("valid-password-01", 4)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	email := "alice@example.com"
+	if err := WithTx(context.Background(), d, func(q DBTX) error {
+		return CreateUser(context.Background(), q, newIDs(), CreateUserParams{
+			Username: "alice", PasswordHash: hash, Email: &email, Roles: []Role{RoleApprover},
+		})
+	}); err != nil {
+		t.Fatalf("CreateUser with email: %v", err)
+	}
+	var got sql.NullString
+	if err := d.QueryRow(`SELECT email FROM users WHERE username='alice'`).Scan(&got); err != nil {
+		t.Fatalf("select email: %v", err)
+	}
+	if !got.Valid || got.String != email {
+		t.Fatalf("email = %+v, want %q", got, email)
+	}
+
+	if err := WithTx(context.Background(), d, func(q DBTX) error {
+		return CreateUser(context.Background(), q, newIDs(), CreateUserParams{
+			Username: "bob", PasswordHash: hash, Roles: []Role{RoleApprover},
+		})
+	}); err != nil {
+		t.Fatalf("CreateUser without email: %v", err)
+	}
+	if err := d.QueryRow(`SELECT email FROM users WHERE username='bob'`).Scan(&got); err != nil {
+		t.Fatalf("select bob email: %v", err)
+	}
+	if got.Valid {
+		t.Fatalf("bob email = %q, want NULL", got.String)
+	}
+
+	bad := "not-an-address"
+	err = CreateUser(context.Background(), panickyDBTX{}, newIDs(), CreateUserParams{
+		Username: "carol", PasswordHash: hash, Email: &bad,
+	})
+	if err == nil || !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("bad email err = %v, want ErrInvalidInput", err)
+	}
+}
+
+// TestEmailsByUsernames(T12.2 扇出解析原语):命中/缺席语义(无账号、
+// email NULL = 缺席)、字节精确(大小写折叠防线)、域拒绝、空名单零触 DB。
+func TestEmailsByUsernames(t *testing.T) {
+	d := newDB(t)
+	hash, err := HashPassword("valid-password-01", 4)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	seed := func(name string, email *string) {
+		t.Helper()
+		if err := WithTx(context.Background(), d, func(q DBTX) error {
+			return CreateUser(context.Background(), q, newIDs(), CreateUserParams{
+				Username: name, PasswordHash: hash, Email: email, Roles: []Role{RoleApprover},
+			})
+		}); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+	aliceMail := "alice@example.com"
+	seed("alice", &aliceMail) // 有邮箱
+	seed("bob", nil)          // 账号在、邮箱未配
+	// carol 无账号(DSL 发布期不判存在性,运行面缺席 = 扇出侧跳过)。
+
+	got, err := EmailsByUsernames(context.Background(), d, []string{"alice", "bob", "carol"})
+	if err != nil {
+		t.Fatalf("EmailsByUsernames: %v", err)
+	}
+	if len(got) != 1 || got["alice"] != aliceMail {
+		t.Fatalf("got = %v, want {alice: %q} only(bob NULL/carol 缺席)", got, aliceMail)
+	}
+
+	// 大小写变体("Alice")在域预检即响亮报错——域内串恒小写,不存在
+	// 大小写折叠等价对,域拒绝已覆盖该面;SQL 侧 COLLATE utf8mb4_bin
+	// 谓词是纵深防御(username 列排序规则由 TestRoleEnumVocabPinned 钉死)。
+	if _, err := EmailsByUsernames(context.Background(), d, []string{"Alice"}); err == nil {
+		t.Fatalf("case-variant accepted silently, want loud domain error")
+	}
+
+	// 域拒绝:名单坏形态响亮报错(不静默漏配)。
+	if _, err := EmailsByUsernames(context.Background(), d, []string{"Bad!"}); err == nil {
+		t.Fatalf("bad username accepted, want error")
+	}
+
+	// 空名单:零触 DB(构造性证明)。
+	if got, err = EmailsByUsernames(context.Background(), panickyDBTX{}, nil); err != nil || len(got) != 0 {
+		t.Fatalf("empty list = (%v, %v), want (map{}, nil)", got, err)
 	}
 }

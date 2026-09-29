@@ -224,16 +224,16 @@ func TestSchemaContract(t *testing.T) {
 		}
 	}
 
-	// CHECK 约束齐备:9 个(definition 1 + node 3 + attempt 2 + audit 1 + users 2;
-	// node +1 = 0006 chk_node_instance)
+	// CHECK 约束齐备:10 个(definition 1 + node 3 + attempt 2 + audit 1 + users 3;
+	// node +1 = 0006 chk_node_instance;users +1 = 0009 chk_user_email)
 	var checks int
 	if err := d.QueryRow(
 		`SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
 		 WHERE CONSTRAINT_SCHEMA = DATABASE()`).Scan(&checks); err != nil {
 		t.Fatalf("check constraints: %v", err)
 	}
-	if checks != 9 {
-		t.Fatalf("check constraints = %d, want 9", checks)
+	if checks != 10 {
+		t.Fatalf("check constraints = %d, want 10", checks)
 	}
 
 	// T6.1 对账索引存在
