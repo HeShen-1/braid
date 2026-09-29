@@ -78,6 +78,11 @@ type Config struct {
 	// 锁定响应与限流同形 429(防枚举 oracle,见 loginlimit.go)。
 	LoginMaxFailures int
 	LoginLockout     time.Duration
+	// TokenBinding 是 token 绑定模式(T11.3,D-2026-09-29-t113 #1):
+	// off|ua|ua_ip24 闭集,缺省 off(签发不带 bnd claim、校验零介入,
+	// 零行为变化)。模式开启 = 全量换发语义:存量无 claim token 一律
+	// 401 token_binding_mismatch(fail-closed;存量损失 ≤ token TTL 24h)。
+	TokenBinding TokenBindingMode
 	// TrustedProxies 是受信代理 CIDR 列表(BRAID_API_TRUSTED_PROXIES,
 	// 逗号分隔;空 = 不信任任何代理 = ClientIP 恒 RemoteAddr,fail-closed
 	// 现状)。登录防御/审计以 ClientIP 为键:反代公开面必须把代理内网
@@ -108,6 +113,7 @@ func DefaultConfig() Config {
 		LoginRateWindow:   DefaultLoginRateWindow,
 		LoginMaxFailures:  DefaultLoginMaxFailures,
 		LoginLockout:      DefaultLoginLockout,
+		TokenBinding:      TokenBindingOff,
 		Pool:              db.DefaultPoolConfig(),
 		ReadHeaderTimeout: DefaultReadHeaderTimeout,
 		ReadTimeout:       DefaultReadTimeout,
@@ -141,6 +147,11 @@ func (c Config) Validate() error {
 	}
 	if c.LoginLockout <= 0 {
 		return fmt.Errorf("api: login lockout %s <= 0", c.LoginLockout)
+	}
+	// token 绑定闭集(T11.3):词表外值启动即败(空串 = off 同义,字面
+	// 构造零值合法)。
+	if !validTokenBinding(c.TokenBinding) {
+		return fmt.Errorf("api: token binding %q violates closed vocab off|ua|ua_ip24", c.TokenBinding)
 	}
 	for _, cidr := range c.TrustedProxies {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
@@ -211,6 +222,12 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 			return c, fmt.Errorf("api: BRAID_API_LOGIN_LOCKOUT=%q: want duration > 0", raw)
 		}
 		c.LoginLockout = d
+	}
+	if raw := getenv("BRAID_API_TOKEN_BINDING"); raw != "" {
+		if !validTokenBinding(TokenBindingMode(raw)) {
+			return c, fmt.Errorf("api: BRAID_API_TOKEN_BINDING=%q: want off|ua|ua_ip24", raw)
+		}
+		c.TokenBinding = TokenBindingMode(raw)
 	}
 	if raw := getenv("BRAID_API_TRUSTED_PROXIES"); raw != "" {
 		for _, cidr := range strings.Split(raw, ",") {

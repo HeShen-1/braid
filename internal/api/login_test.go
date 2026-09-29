@@ -12,16 +12,22 @@ package api
 
 import (
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
+	"github.com/gin-gonic/gin"
 	"golang.org/x/crypto/bcrypt"
 
 	"braid/internal/auth"
+	"braid/internal/db/sqltest"
 	"braid/internal/snowflake"
+	"braid/internal/tools"
 )
 
 // loginTestIDs 登录面测试的雪花源(节点 8;节点号分配见 approval_test.go
@@ -173,4 +179,136 @@ func TestLogUsernameBounded(t *testing.T) {
 			t.Fatalf("缺长度事实: %q", got)
 		}
 	})
+}
+
+// newBoundLoginServer 是登录签发→中间件校验闭环的绑定模式 server
+// (T11.3;防御旋钮放宽同 newTestServer)。
+func newBoundLoginServer(t *testing.T, mode TokenBindingMode) (*gin.Engine, *sql.DB) {
+	t.Helper()
+	dbh := sqltest.MustOpenAt(t, "braid_api_test")
+	cleanExecutionChain(t, dbh)
+	ids, err := snowflake.New(1)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	reg, err := tools.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	gin.SetMode(gin.TestMode)
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
+		LoginMaxFailures: 100000, LoginLockout: time.Minute,
+		TokenBinding: mode}
+	return NewServer(cfg, dbh, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{DB: dbh}).Router(), dbh
+}
+
+// boundLogin 用给定 UA 登录 carol,返回签出的 token(t13 面)。
+func boundLogin(t *testing.T, r *gin.Engine, ua string) string {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/auth/login",
+		strings.NewReader(`{"username":"carol","password":"correct-horse-battery"}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", ua)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("login code=%d body=%q", w.Code, w.Body.String())
+	}
+	var out struct {
+		Token string `json:"token"`
+	}
+	if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.Token == "" {
+		t.Fatalf("no token: %q err=%v", w.Body.String(), err)
+	}
+	return out.Token
+}
+
+// boundAuthedGet 对真实 server router 发带 UA/RemoteAddr/Bearer 的读面
+// 请求,返回状态码与错误码(doJSONHeaders 无 RemoteAddr 控制,ip24 模式
+// 需要它)。
+func boundAuthedGet(r *gin.Engine, path, token, ua, remoteAddr string) (int, string) {
+	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req.Header.Set("User-Agent", ua)
+	if remoteAddr != "" {
+		req.RemoteAddr = remoteAddr
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	var body struct {
+		Error string `json:"error"`
+	}
+	_ = json.Unmarshal(w.Body.Bytes(), &body)
+	return w.Code, body.Error
+}
+
+// seedBoundUser 清库 + 种 carol(三种模式的 server 共用)。
+func seedBoundUser(t *testing.T, dbh *sql.DB) {
+	t.Helper()
+	for _, q := range []string{"DELETE FROM user_role", "DELETE FROM users"} {
+		if _, err := dbh.Exec(q); err != nil {
+			t.Fatalf("cleanup %q: %v", q, err)
+		}
+	}
+	seedUser(t, dbh, "carol", auth.RoleAuthor)
+}
+
+// TestLoginIssuesBoundToken:两种开启模式的签发→校验 HTTP 闭环(D-t113
+// #1)。ua_ip24 半边把签发点的 IP 接线钉进闭环——对抗审计 MEDIUM:该模式
+// 原先在两签发点零 HTTP 覆盖,签发侧 IP 误传的变异全绿、上线即全断。
+func TestLoginIssuesBoundToken(t *testing.T) {
+	const ua = "braid-it/1.0"
+
+	t.Run("ua", func(t *testing.T) {
+		r, dbh := newBoundLoginServer(t, TokenBindingUA)
+		seedBoundUser(t, dbh)
+		tok := boundLogin(t, r, ua)
+		if code, errc := boundAuthedGet(r, "/api/v1/executions", tok, ua, ""); code != http.StatusOK {
+			t.Fatalf("同 UA 读面 = %d %s", code, errc)
+		}
+		// 异 UA:外泄重放形态。
+		code, errc := boundAuthedGet(r, "/api/v1/executions", tok, "curl/8.0", "")
+		if code != http.StatusUnauthorized || errc != "token_binding_mismatch" {
+			t.Fatalf("异 UA = %d %s, want 401 token_binding_mismatch", code, errc)
+		}
+	})
+
+	t.Run("ua_ip24", func(t *testing.T) {
+		r, dbh := newBoundLoginServer(t, TokenBindingUAIP24)
+		seedBoundUser(t, dbh)
+		// 登录请求 RemoteAddr = httptest 缺省 192.0.2.1:token 绑
+		// 192.0.2.0/24 段(签发点 IP 接线的真锚)。
+		tok := boundLogin(t, r, ua)
+		if code, errc := boundAuthedGet(r, "/api/v1/executions", tok, ua, "192.0.2.99:777"); code != http.StatusOK {
+			t.Fatalf("同 /24 读面 = %d %s", code, errc)
+		}
+		code, errc := boundAuthedGet(r, "/api/v1/executions", tok, ua, "192.0.3.1:777")
+		if code != http.StatusUnauthorized || errc != "token_binding_mismatch" {
+			t.Fatalf("跨 /24 = %d %s, want 401 token_binding_mismatch", code, errc)
+		}
+		// UA 漂移在 ip24 模式同样失配。
+		if code, _ := boundAuthedGet(r, "/api/v1/executions", tok, "curl/8.0", "192.0.2.1:777"); code != http.StatusUnauthorized {
+			t.Fatalf("ip24 模式 UA 漂移未拒: code=%d", code)
+		}
+	})
+}
+
+// TestLoginOffModeIssuesUnboundToken:off(缺省)签发面在 api 装配层的
+// 语义锚——签出 token 不带 bnd claim 且读面可用(对抗审计 LOW:该语义
+// 原先只在 auth 单元层被锚)。
+func TestLoginOffModeIssuesUnboundToken(t *testing.T) {
+	r, dbh := newBoundLoginServer(t, TokenBindingOff)
+	seedBoundUser(t, dbh)
+	tok := boundLogin(t, r, "braid-it/1.0")
+	claims, err := auth.ParseToken(testSecret, tok)
+	if err != nil {
+		t.Fatalf("ParseToken: %v", err)
+	}
+	if claims.Binding != "" {
+		t.Fatalf("off 模式签出 token 携 bnd = %q, want 无 claim", claims.Binding)
+	}
+	if code, errc := boundAuthedGet(r, "/api/v1/executions", tok, "curl/8.0", ""); code != http.StatusOK {
+		t.Fatalf("off 模式读面 = %d %s(零介入,UA 无关)", code, errc)
+	}
 }

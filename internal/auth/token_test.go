@@ -1,6 +1,8 @@
 package auth
 
 import (
+	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -235,5 +237,119 @@ func TestRequireRole(t *testing.T) {
 	}
 	if !errors.Is(RequireRole(c, Role("root")), ErrInvalidInput) {
 		t.Fatalf("未知角色入参未前置拒绝")
+	}
+}
+
+// ---- token 绑定(T11.3,D-2026-09-29-t113-auth-depth #1)----
+
+// testBinding 是格式合法的绑定值(22 字符 base64url 词域,与 api 侧
+// bindingFingerprint 的产出同形:SHA-256 前 16 字节的 base64url 无 padding)。
+const testBinding = "ABCDEFGHIJKLMNOPQRSTUV"
+
+func mustSign(t *testing.T, secret string, ttl time.Duration, username string, roles []Role) string {
+	t.Helper()
+	tok, err := SignToken(secret, ttl, username, roles)
+	if err != nil {
+		t.Fatalf("SignToken: %v", err)
+	}
+	return tok
+}
+
+func TestSignTokenWithBindingRoundTrip(t *testing.T) {
+	tok, err := SignTokenWithBinding(testSecret, time.Hour, "alice", []Role{RoleAdmin}, testBinding)
+	if err != nil {
+		t.Fatalf("SignTokenWithBinding: %v", err)
+	}
+	c, err := ParseToken(testSecret, tok)
+	if err != nil {
+		t.Fatalf("ParseToken: %v", err)
+	}
+	if c.Binding != testBinding {
+		t.Fatalf("bnd = %q, want %q", c.Binding, testBinding)
+	}
+}
+
+// 空 binding = 不携带 claim(等价 SignToken):off 模式签发面走同一出口,
+// 不产出空串 claim 的歧义形态。
+func TestSignTokenWithBindingEmptyOmitsClaim(t *testing.T) {
+	tok, err := SignTokenWithBinding(testSecret, time.Hour, "alice", []Role{RoleAdmin}, "")
+	if err != nil {
+		t.Fatalf("SignTokenWithBinding: %v", err)
+	}
+	c, err := ParseToken(testSecret, tok)
+	if err != nil {
+		t.Fatalf("ParseToken: %v", err)
+	}
+	if c.Binding != "" {
+		t.Fatalf("bnd = %q, want 空(off 模式零绑定语义)", c.Binding)
+	}
+	// omitempty 变异锚:裸 payload 必须无 "bnd" 键。解析值断言杀不死
+	// 「删 omitempty」变异("bnd":"" 与缺席同解析为空串);对抗审计
+	// 阵亡补验条(验证者 429,主会话串行核实成立)。
+	if payloadHasBndKey(t, tok) {
+		t.Fatal("空 binding token 的 payload 含 bnd 键(omitempty 被删)")
+	}
+	// 既有 SignToken 出口零变化:行为与空 binding 完全一致(不做字节级
+	// 比较——iat 跨秒边界会让两 token 合法地不同,断言语义即可)。
+	tok2 := mustSign(t, testSecret, time.Hour, "alice", []Role{RoleAdmin})
+	c2, err := ParseToken(testSecret, tok2)
+	if err != nil {
+		t.Fatalf("ParseToken(SignToken): %v", err)
+	}
+	if c2.Binding != "" {
+		t.Fatalf("SignToken 产出携带 bnd = %q, want 无 claim", c2.Binding)
+	}
+	if payloadHasBndKey(t, tok2) {
+		t.Fatal("SignToken token 的 payload 含 bnd 键")
+	}
+}
+
+// payloadHasBndKey 解开 JWT 中段,报告 payload 是否携带 bnd 键
+// (omitempty 的直接锚——不依赖解析层语义)。
+func payloadHasBndKey(t *testing.T, tok string) bool {
+	t.Helper()
+	seg := strings.Split(tok, ".")[1]
+	raw, err := base64.RawURLEncoding.DecodeString(seg)
+	if err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatalf("parse payload: %v", err)
+	}
+	_, ok := m["bnd"]
+	return ok
+}
+
+// 签发面格式闸:坏形态 binding 前置拒绝(不产出带垃圾 claim 的 token——
+// 防签发面 bug 把不可校验值送进消费面)。22 长度坏词域用例单独锚词域
+// 分量:长度异常用例被 {22} 短路,删掉正则的词域部分它们照绿(对抗审计
+// MEDIUM)。
+func TestSignTokenWithBindingRejectsBadFormat(t *testing.T) {
+	bad := []string{
+		"short",                        // 长度不足
+		strings.Repeat("x", 23),        // 超长
+		strings.Repeat("+", 22),        // 恰 22 但词域外(+:base64 标准词域)
+		"ABCDEFGHIJKLMNOPQRSTUV+wxy==", // 非 base64url 词域(含 +/=;长度 28,长度分量主导)
+	}
+	for _, b := range bad {
+		if _, err := SignTokenWithBinding(testSecret, time.Hour, "alice", []Role{RoleAdmin}, b); !errors.Is(err, ErrInvalidInput) {
+			t.Fatalf("binding %q: err = %v, want ErrInvalidInput", b, err)
+		}
+	}
+}
+
+// 消费面 fail-closed(变异锚:删掉 ParseToken 的 binding 格式闸,本测试
+// 红——正确密钥签发但携垃圾 claim 的 token 必须在解析层拒绝,而非把
+// 不可比对的值交给 middleware 层)。
+func TestParseBindingFormatFailClosed(t *testing.T) {
+	c := validClaims("alice", []Role{RoleAdmin})
+	c.Binding = "garbage!"
+	tok, err := signClaims(testSecret, c)
+	if err != nil {
+		t.Fatalf("signClaims: %v", err)
+	}
+	if _, err := ParseToken(testSecret, tok); !errors.Is(err, ErrTokenInvalid) {
+		t.Fatalf("垃圾 bnd claim 被接受: %v", err)
 	}
 }

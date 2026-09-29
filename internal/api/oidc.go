@@ -118,7 +118,10 @@ func (s *Server) oidcCallback(c *gin.Context) {
 	}
 	s.loginAuditEvent(c.Request.Context(), loginEventSucceeded, ip, user.Username, "")
 	ttl := auth.DefaultTokenTTL
-	token, err := auth.SignToken(s.cfg.JWTSecret, ttl, user.Username, user.Roles)
+	// token 绑定(T11.3):与口令登录同契约——按当前模式携 bnd claim,
+	// 指纹取回调请求的 UA/IP(与后续 API 调用同一浏览器会话)。
+	token, err := auth.SignTokenWithBinding(s.cfg.JWTSecret, ttl, user.Username, user.Roles,
+		bindingFingerprint(s.cfg.TokenBinding, c.Request.UserAgent(), ip))
 	if err != nil {
 		// 词表外角色/密钥问题:响亮 500 不伪造成功(login.go 同判)。
 		slog.Error("api: oidc sign token", "err", err)
