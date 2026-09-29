@@ -33,6 +33,8 @@ import (
 	"strconv"
 	"strings"
 	"unicode/utf8"
+
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // DefaultMaxHTTPBody 是响应体读取上限(与 CommandTool DefaultMaxStdout
@@ -224,6 +226,10 @@ func (h *HTTPTool) Run(ctx context.Context, call Call) (Result, error) {
 	if call.IdempotencyKey != "" { // AGENTS 铁律:外部调用幂等键传递面
 		req.Header.Set("Idempotency-Key", call.IdempotencyKey)
 	}
+	// D-t121 #2:W3C traceparent 外发注入(otel API 包,只注入头不加 span;
+	// ctx 无有效 span context 时 Inject 零写,观测面不造链)。非凭证类:
+	// 重定向跨宿逐跳保留(ssrf.go 剥凭证注释锚),与幂等键头同判。
+	propagation.TraceContext{}.Inject(ctx, propagation.HeaderCarrier(req.Header))
 	resp, err := h.client.Do(req)
 	if err != nil {
 		return Result{}, err // url.Error 包装;哨兵经 %w 链可 errors.Is

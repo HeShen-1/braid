@@ -20,6 +20,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"braid/internal/tracing"
 )
 
 // httpReqRecord 记录一次到达请求的观测面(断言锚:方法/查询/头/体/宿主)。
@@ -594,5 +596,92 @@ func TestHTTPToolBodyCapStreaming(t *testing.T) {
 	}
 	if elapsed >= 700*time.Millisecond {
 		t.Fatalf("Run took %v — client waited for EOF instead of stopping at max+1 (LimitReader mutation)", elapsed)
+	}
+}
+
+// D-t121 #2:W3C traceparent 外发注入——Run ctx 携有效 span context 时出站
+// 请求带 W3C 头;无 span ctx 时零写。变异自查:去掉 Inject → 有头臂红;
+// 误在无 span ctx 造头 → 无头臂红。
+func TestHTTPToolInjectsTraceparent(t *testing.T) {
+	prov, err := tracing.NewProvider(tracing.Config{Exporter: tracing.ExporterOff, ServiceName: "test"})
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	t.Cleanup(func() { _ = prov.Shutdown(context.Background()) })
+	sctx, span := prov.Tracer("braid/worker").Start(context.Background(), "node.task_enqueue:tool")
+	defer span.End()
+
+	rec := &httpRecorder{}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(r)
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+	tool := newHTTPTestTool(t,
+		map[string]string{"docs_api": srv.URL},
+		GuardConfig{IPForbidden: allowOnly("127.0.0.1"), TLS: tlsSeam(srv, "")},
+	)
+
+	call := Call{Inputs: map[string]any{"name": "docs_api", "path": "/probe"}, IdempotencyKey: "att:7:1"}
+	if _, err := tool.Run(sctx, call); err != nil {
+		t.Fatalf("Run with span ctx: %v", err)
+	}
+	sc := span.SpanContext()
+	want := "00-" + sc.TraceID().String() + "-" + sc.SpanID().String() + "-01"
+	if got := rec.byPath("/probe")[0].Header.Get("traceparent"); got != want {
+		t.Fatalf("traceparent = %q, want %q", got, want)
+	}
+
+	if _, err := tool.Run(context.Background(), call); err != nil {
+		t.Fatalf("Run without span ctx: %v", err)
+	}
+	reqs := rec.byPath("/probe")
+	if len(reqs) != 2 {
+		t.Fatalf("/probe reached %d times, want 2", len(reqs))
+	}
+	if got := reqs[1].Header.Get("traceparent"); got != "" {
+		t.Fatalf("traceparent = %q without span ctx, want absent", got)
+	}
+}
+
+// D-t121 #2 跨跳臂:traceparent 在重定向每跳保留(非凭证类,与幂等键同判
+// ——ssrf.go 剥凭证注释锚的契约)。同宿 https 跳转,两跳头断言同值。
+func TestHTTPToolTraceparentSurvivesRedirects(t *testing.T) {
+	prov, err := tracing.NewProvider(tracing.Config{Exporter: tracing.ExporterOff, ServiceName: "test"})
+	if err != nil {
+		t.Fatalf("provider: %v", err)
+	}
+	t.Cleanup(func() { _ = prov.Shutdown(context.Background()) })
+	sctx, span := prov.Tracer("braid/worker").Start(context.Background(), "node.task_enqueue:tool")
+	defer span.End()
+
+	rec := &httpRecorder{}
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rec.record(r)
+		if r.URL.Path == "/hop1" {
+			w.Header().Set("Location", "/hop2")
+			w.WriteHeader(http.StatusFound)
+			return
+		}
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(srv.Close)
+	tool := newHTTPTestTool(t,
+		map[string]string{"docs_api": srv.URL},
+		GuardConfig{IPForbidden: allowOnly("127.0.0.1"), TLS: tlsSeam(srv, "")},
+	)
+	call := Call{Inputs: map[string]any{"name": "docs_api", "path": "/hop1"}, IdempotencyKey: "att:7:1"}
+	if _, err := tool.Run(sctx, call); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	want := "00-" + span.SpanContext().TraceID().String() + "-" + span.SpanContext().SpanID().String() + "-01"
+	for _, p := range []string{"/hop1", "/hop2"} {
+		reqs := rec.byPath(p)
+		if len(reqs) != 1 {
+			t.Fatalf("%s reached %d times, want 1", p, len(reqs))
+		}
+		if got := reqs[0].Header.Get("traceparent"); got != want {
+			t.Fatalf("traceparent at %s = %q, want %q (kept across hops)", p, got, want)
+		}
 	}
 }

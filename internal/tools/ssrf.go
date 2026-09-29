@@ -117,8 +117,9 @@ func NewGuardedClient(cfg GuardConfig) *http.Client {
 			}
 			// 每跳剥凭证:同宿重定向 stdlib 会保留 Authorization/Cookie,
 			// 防护语义逐跳剥离,不依赖其跨宿启发式;仅剥这两项,其余头
-			// (含 T3.5 幂等键头)跨跳保留——凭证只放 Authorization/Cookie
-			// 是 T3.5 装配红线,自定义凭证头不在此列。
+			// (含 T3.5 幂等键头、D-t121 #2 的 W3C traceparent 头)跨跳保留
+			// ——凭证只放 Authorization/Cookie 是 T3.5 装配红线,自定义凭证
+			// 头不在此列(traceparent 非凭证类,与幂等键同判)。
 			// URL userinfo 同步清空:stdlib send() 对每跳用 req.URL.User
 			// 派生 Basic 凭证,时点晚于本函数,不清则剥头被绕过
 			// (Location 携带 userinfo 是攻击者可自择字段)。

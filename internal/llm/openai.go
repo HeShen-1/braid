@@ -10,6 +10,8 @@ import (
 	"math/rand/v2"
 	"net/http"
 	"time"
+
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // jitter 是退避抖动幅度(±比例),固定 0.2(relay 同款;非运维旋钮不暴露 env)。
@@ -188,6 +190,10 @@ func (c *OpenAICompat) call(ctx context.Context, req Request, body []byte) (Resp
 	hreq.Header.Set("Accept", "application/json")
 	hreq.Header.Set("Authorization", "Bearer "+c.cfg.APIKey)
 	hreq.Header.Set("Idempotency-Key", req.IdempotencyKey)
+	// D-t121 #2:W3C traceparent 外发注入(otel API 包,只注入头不加 span——
+	// 既有 Observability 计时面不替代;重试同 ctx 同头)。ctx 无有效 span
+	// context 时 Inject 零写(观测面不造链)。
+	propagation.TraceContext{}.Inject(ectx, propagation.HeaderCarrier(hreq.Header))
 	hresp, err := c.hc.Do(hreq)
 	if err != nil {
 		return Response{}, fmt.Errorf("llm: do: %w", err)
