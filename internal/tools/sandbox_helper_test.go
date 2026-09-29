@@ -8,10 +8,14 @@ package tools
 //     tool_failed 信封改写;
 //   - 其余工具错误 → tool_failed 信封;请求信封层失败(畸形/超限/空/
 //     工具名不符/配置重建失败)→ tool_failed 信封(可观测诊断)。
-// selftest:dump-env(凭证不可见 e2e 探针)+ alloc(8MiB 步长资源探针)。
+// selftest:dump-env(凭证不可见 e2e 探针)+ alloc(8MiB 步长资源探针)
+//   + serve(宿主侧 TLS server)+ T11 资源探针家族(spin/forkchain/fds/
+//   spam-stderr/zombies——自再执行类经真 helper 二进制子进程,不进程内
+//   重入测试二进制)。
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
@@ -28,8 +32,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -500,6 +506,188 @@ func TestSandboxHelperSelftest(t *testing.T) {
 			t.Fatalf("err = %v, want mode rejection", err)
 		}
 	})
+
+	// T11 资源探针:spin 可进程内测;forkchain/zombies 会 /proc/self/exe
+	// 自再执行(进程内跑 = 测试二进制重入),spam-stderr 要真实 stderr
+	// 通道——三者一律经真 helper 二进制子进程(与 e2e 镜像内同一二进制)。
+	t.Run("spin burns at least the requested wall seconds", func(t *testing.T) {
+		var out strings.Builder
+		start := time.Now()
+		if err := RunSandboxHelper(context.Background(), []string{"selftest", "spin", "1"}, strings.NewReader(""), &out, nil); err != nil {
+			t.Fatalf("helper: %v", err)
+		}
+		if elapsed := time.Since(start); elapsed < time.Second {
+			t.Fatalf("spin returned after %v, want >= 1s", elapsed)
+		}
+		if !strings.Contains(out.String(), "spun 1s") {
+			t.Fatalf("out = %q, want spin report", out.String())
+		}
+	})
+
+	spinBad := []string{"0", "-1", "banana", "301"}
+	for _, s := range spinBad {
+		t.Run("spin rejects "+s, func(t *testing.T) {
+			err := RunSandboxHelper(context.Background(), []string{"selftest", "spin", s}, strings.NewReader(""), &strings.Builder{}, nil)
+			if err == nil || !strings.Contains(err.Error(), "spin") {
+				t.Fatalf("err = %v, want spin bound rejection", err)
+			}
+		})
+	}
+
+	t.Run("fds stops at a lowered nofile rlimit with emfile", func(t *testing.T) {
+		// 进程内安全(纯 open 循环,无自再执行):把软限降到 64,循环必须
+		// 在 ≤64 处 EMFILE 停止并正常退出(软失败语义)。计数下限不设:
+		// 测试进程预持 fd 数(早前用例的 listener/pipe)≥ 限时首开即
+		// EMFILE、n=0,执法面由 stop=emfile 锚定。
+		var rl syscall.Rlimit
+		if err := syscall.Getrlimit(syscall.RLIMIT_NOFILE, &rl); err != nil {
+			t.Fatalf("getrlimit: %v", err)
+		}
+		saved := rl
+		if rl.Cur > 64 {
+			rl.Cur = 64
+			if err := syscall.Setrlimit(syscall.RLIMIT_NOFILE, &rl); err != nil {
+				t.Fatalf("setrlimit: %v", err)
+			}
+		}
+		defer func() {
+			_ = syscall.Setrlimit(syscall.RLIMIT_NOFILE, &saved)
+		}()
+		var out strings.Builder
+		if err := RunSandboxHelper(context.Background(), []string{"selftest", "fds", "4096"}, strings.NewReader(""), &out, nil); err != nil {
+			t.Fatalf("helper: %v", err)
+		}
+		report := out.String()
+		if !strings.Contains(report, "stop=emfile") {
+			t.Fatalf("report = %q, want stop=emfile under rlimit 64", report)
+		}
+		var n int
+		if _, err := fmt.Sscanf(report, "fds=%d", &n); err != nil || n < 0 || n > 64 {
+			t.Fatalf("report = %q, want 0 <= fds count <= 64 (err=%v)", report, err)
+		}
+	})
+
+	fdsBad := []string{"0", "banana", "1000001"}
+	for _, a := range fdsBad {
+		t.Run("fds rejects "+a, func(t *testing.T) {
+			err := RunSandboxHelper(context.Background(), []string{"selftest", "fds", a}, strings.NewReader(""), &strings.Builder{}, nil)
+			if err == nil || !strings.Contains(err.Error(), "fds") {
+				t.Fatalf("err = %v, want fds bound rejection", err)
+			}
+		})
+	}
+
+	// helperBin 构建一次、三处子用例复用(全仓「每进程构建一次」口径:
+	// 镜像侧 sandboxEnsuredImages 同款 memo 理由,CI 20min 预算)。目录由
+	// 父测试持有——子用例的 t.TempDir() 在其结束时删除,跨子用例 memo
+	// 会悬空路径。
+	helperDir := t.TempDir()
+	var helperBinOnce string
+	helperBin := func(t *testing.T) string {
+		t.Helper()
+		if helperBinOnce == "" {
+			sandboxBuildHelperBinary(t, helperDir)
+			helperBinOnce = filepath.Join(helperDir, "braid-sandbox-exec")
+		}
+		return helperBinOnce
+	}
+
+	t.Run("forkchain reaches depth cap without eagain on host", func(t *testing.T) {
+		// 宿主(挂载层级根 pids.max = max/不可读)→ 链走到 max 有界收口
+		// stop=cap(非真炸弹的设计半边);EAGAIN/budget 终止半边只在容器
+		// e2e 可证(pids-limit 执法)。期望从 sandboxPidsBudget 自身推导,
+		// 消除环境耦合:套件跑在带数值 pids 限额的外层容器内时,budget
+		// 收口(depth < 3)是正确行为,不是失败。
+		out, err := exec.Command(helperBin(t), "selftest", "forkchain", "0", "3").CombinedOutput()
+		if err != nil {
+			t.Fatalf("forkchain subprocess: %v\n%s", err, out)
+		}
+		var depth int
+		var stop string
+		if _, perr := fmt.Sscanf(string(out), "forkchain depth=%d stop=%s", &depth, &stop); perr != nil {
+			t.Fatalf("forkchain report = %q, want 'forkchain depth=N stop=…'", out)
+		}
+		_, lim, budgetOK := sandboxPidsBudget()
+		tightBudget := budgetOK && lim > 0 && lim <= 3+sandboxHelperPidsMargin
+		switch stop {
+		case "cap":
+			if depth != 3 {
+				t.Fatalf("stop=cap at depth %d, want 3", depth)
+			}
+		case "budget", "eagain":
+			if !tightBudget {
+				t.Fatalf("stop=%s at depth %d with unbounded host pids budget, want stop=cap depth=3 (report %q)", stop, depth, out)
+			}
+		default:
+			t.Fatalf("stop = %q, want cap|budget|eagain (report %q)", stop, out)
+		}
+	})
+
+	forkchainBad := [][]string{{"0"}, {"1", "0"}, {"2", "1"}, {"0", "banana"}, {"-1", "3"}, {"0", "1001"}}
+	for _, a := range forkchainBad {
+		t.Run("forkchain rejects "+strings.Join(a, " "), func(t *testing.T) {
+			argv := append([]string{"selftest", "forkchain"}, a...)
+			err := RunSandboxHelper(context.Background(), argv, strings.NewReader(""), &strings.Builder{}, nil)
+			if err == nil || !strings.Contains(err.Error(), "forkchain") {
+				t.Fatalf("err = %v, want forkchain bound rejection", err)
+			}
+		})
+	}
+
+	t.Run("spam-stderr writes the requested bytes plus tail sentinel", func(t *testing.T) {
+		var stdout, stderr bytes.Buffer
+		cmd := exec.Command(helperBin(t), "selftest", "spam-stderr", "2")
+		cmd.Stdout = &stdout
+		cmd.Stderr = &stderr
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("spam-stderr subprocess: %v", err)
+		}
+		if want := 2<<20 + len("braid-e2e-stderr-spam-done 2\n"); stderr.Len() != want {
+			t.Fatalf("stderr bytes = %d, want %d", stderr.Len(), want)
+		}
+		if !strings.HasSuffix(stderr.String(), "braid-e2e-stderr-spam-done 2\n") {
+			t.Fatalf("stderr tail = %q, want sentinel line last (rotation keeps the tail)", stderr.Bytes()[stderr.Len()-60:])
+		}
+		if !strings.Contains(stdout.String(), "spammed 2 MiB to stderr") {
+			t.Fatalf("stdout = %q, want spam report", stdout.String())
+		}
+	})
+
+	spamBad := []string{"0", "513", "banana"}
+	for _, a := range spamBad {
+		t.Run("spam-stderr rejects "+a, func(t *testing.T) {
+			err := RunSandboxHelper(context.Background(), []string{"selftest", "spam-stderr", a}, strings.NewReader(""), &strings.Builder{}, nil)
+			if err == nil || !strings.Contains(err.Error(), "spam-stderr") {
+				t.Fatalf("err = %v, want spam-stderr bound rejection", err)
+			}
+		})
+	}
+
+	t.Run("zombies reports a scan count on host", func(t *testing.T) {
+		// 宿主 PID 1(systemd)收割孤儿 → 计数 0;断言只锚「扫描真跑 +
+		// 报告词形」——tini 收割语义的 0 断言属容器 e2e(--init 在场才
+		// 是被测面)。等待子进程收口的窗口给足(僵尸转交是异步的)。
+		var out bytes.Buffer
+		cmd := exec.Command(helperBin(t), "selftest", "zombies", "4")
+		cmd.Stdout = &out
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("zombies subprocess: %v (%s)", err, out.String())
+		}
+		var z int
+		if _, err := fmt.Sscanf(out.String(), "zombies=%d", &z); err != nil || z < 0 {
+			t.Fatalf("out = %q, want zombies=<int> report (err=%v)", out.String(), err)
+		}
+	})
+
+	zombiesBad := []string{"0", "65", "banana"}
+	for _, a := range zombiesBad {
+		t.Run("zombies rejects "+a, func(t *testing.T) {
+			err := RunSandboxHelper(context.Background(), []string{"selftest", "zombies", a}, strings.NewReader(""), &strings.Builder{}, nil)
+			if err == nil || !strings.Contains(err.Error(), "zombies") {
+				t.Fatalf("err = %v, want zombies bound rejection", err)
+			}
+		})
+	}
 
 	t.Run("no argv", func(t *testing.T) {
 		err := RunSandboxHelper(context.Background(), nil, strings.NewReader(""), &strings.Builder{}, nil)

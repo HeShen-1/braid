@@ -31,6 +31,17 @@ package tools
 //	                                              宿主侧 TLS server(T10 hermetic http e2e:
 //	                                              显式 IP 绑定钉 hermetic 段,body = marker
 //	                                              + path 回显,stdin EOF/SIGTERM 优雅退)
+//	braid-sandbox-exec selftest spin <s>          忙等自旋至期限(#5 CPU 配额 e2e 的载荷)
+//	braid-sandbox-exec selftest forkchain <d> <max>
+//	                                              /proc/self/exe 自再执行链(#6 pids e2e:
+//	                                              每代 fork+exec 子代并 wait;budget
+//	                                              (cgroup 预算内收口)/max/EAGAIN 终止
+//	                                              并上报 depth——非真炸弹,max 有界)
+//	braid-sandbox-exec selftest fds <max>         open /dev/null 至 EMFILE/max(#7 fd e2e)
+//	braid-sandbox-exec selftest spam-stderr <MiB> 定长块写 stderr 至目标(#14 日志封顶 e2e)
+//	braid-sandbox-exec selftest zombies <n>       派生 n 个「孤儿子进程」后扫 /proc Z 状态
+//	                                              (#15 tini 收割 e2e;zombie-child/exit0
+//	                                              是其内部子模式)
 
 import (
 	"bytes"
@@ -288,7 +299,7 @@ func writeSandboxEnvelope(w io.Writer, resp SandboxResponse) error {
 // 非零退出,探针没有信封契约)。
 func runSandboxSelftest(ctx context.Context, argv []string, stdin io.Reader, stdout io.Writer) error {
 	if len(argv) < 1 {
-		return fmt.Errorf("selftest requires a mode: dump-env | alloc <MiB> | serve <ip:port> <cert> <key>")
+		return fmt.Errorf("selftest requires a mode: dump-env | alloc <MiB> | serve <ip:port> <cert> <key> | spin <s> | forkchain <d> <max> | fds <max> | spam-stderr <MiB> | zombies <n>")
 	}
 	switch argv[0] {
 	case "dump-env":
@@ -322,8 +333,62 @@ func runSandboxSelftest(ctx context.Context, argv []string, stdin io.Reader, std
 			return fmt.Errorf("selftest serve requires <ip:port> <leaf-cert.pem> <leaf-key.pem> (host-side hermetic e2e server)")
 		}
 		return sandboxSelftestServe(ctx, argv[1], argv[2], argv[3], stdin, stdout)
+	case "spin":
+		if len(argv) != 2 {
+			return fmt.Errorf("selftest spin requires <seconds>")
+		}
+		secs, err := strconv.Atoi(argv[1])
+		if err != nil || secs < 1 || secs > 300 {
+			return fmt.Errorf("selftest spin: want integer seconds in [1, 300], got %q", argv[1])
+		}
+		return sandboxSelftestSpin(ctx, secs, stdout)
+	case "forkchain":
+		if len(argv) != 3 {
+			return fmt.Errorf("selftest forkchain requires <depth> <max>")
+		}
+		depth, err1 := strconv.Atoi(argv[1])
+		max, err2 := strconv.Atoi(argv[2])
+		if err1 != nil || err2 != nil || depth < 0 || max < 1 || depth > max || max > 1000 {
+			return fmt.Errorf("selftest forkchain: want 0 <= depth <= max <= 1000 integers, got %q %q", argv[1], argv[2])
+		}
+		return sandboxSelftestForkChain(depth, max, stdout)
+	case "fds":
+		if len(argv) != 2 {
+			return fmt.Errorf("selftest fds requires <max>")
+		}
+		max, err := strconv.Atoi(argv[1])
+		if err != nil || max < 1 || max > 1000000 {
+			return fmt.Errorf("selftest fds: want integer max in [1, 1000000], got %q", argv[1])
+		}
+		return sandboxSelftestFds(max, stdout)
+	case "spam-stderr":
+		if len(argv) != 2 {
+			return fmt.Errorf("selftest spam-stderr requires <MiB>")
+		}
+		mib, err := strconv.Atoi(argv[1])
+		if err != nil || mib < 1 || mib > 512 {
+			return fmt.Errorf("selftest spam-stderr: want integer MiB in [1, 512], got %q", argv[1])
+		}
+		return sandboxSelftestSpamStderr(mib, stdout)
+	case "zombies":
+		if len(argv) != 2 {
+			return fmt.Errorf("selftest zombies requires <n>")
+		}
+		n, err := strconv.Atoi(argv[1])
+		if err != nil || n < 1 || n > 64 {
+			return fmt.Errorf("selftest zombies: want integer n in [1, 64], got %q", argv[1])
+		}
+		return sandboxSelftestZombies(n, stdout)
+	case "zombie-child", "exit0":
+		// zombies 探针的内部子模式:zombie-child 派生一个 exit0 孙进程后
+		// 立即自退(孙进程成为孤儿 → 转交给 PID 1);exit0 立即退出。
+		// 直连误用时同样安全有界(只派生一个子进程)。
+		if argv[0] == "zombie-child" {
+			return sandboxSelftestZombieChild(stdout)
+		}
+		return nil
 	default:
-		return fmt.Errorf("selftest unknown mode %q (want dump-env | alloc | serve)", argv[0])
+		return fmt.Errorf("selftest unknown mode %q (want dump-env | alloc | serve | spin | forkchain | fds | spam-stderr | zombies)", argv[0])
 	}
 }
 
@@ -416,4 +481,270 @@ func sandboxSelftestAlloc(mib int, stdout io.Writer) error {
 	_, err := fmt.Fprintf(stdout, "allocated %d MiB in %d MiB steps\n", mib, sandboxHelperSelftestAllocStep)
 	_ = held // 引用保活到函数尾:防编译器把纯写入优化掉
 	return err
+}
+
+// sandboxSelftestSpin 忙等自旋至期限(#5 CPU 配额 e2e 的载荷):不做任何
+// 工作,只烧 CPU——配额执法(cgroup CFS)把实际用量压到 quota,宿主经
+// 容器 cgroup cpu.stat 计量断言。期限用单调钟读数;每圈非阻塞探
+// ctx.Done()——docker stop 的 SIGTERM 经 cmd 层 signal ctx 传入,取消
+// 即刻有界退(否则 -t 3 宽限永远无效,必然 SIGKILL 升级收场)。
+func sandboxSelftestSpin(ctx context.Context, secs int, stdout io.Writer) error {
+	start := time.Now()
+	deadline := start.Add(time.Duration(secs) * time.Second)
+	x := 1.0
+	for time.Now().Before(deadline) {
+		select {
+		case <-ctx.Done():
+			// 环境取消非载荷失败:报告后正常退出(stop 宽限被尊重)。
+			_, err := fmt.Fprintf(stdout, "spun interrupted after %s: %v\n", time.Since(start).Round(time.Millisecond), ctx.Err())
+			return err
+		default:
+		}
+		// 浮点自反链防编译器把空循环折叠成一次判定。
+		x = x*0.999999999 + 1e-9
+	}
+	_, err := fmt.Fprintf(stdout, "spun %ds (x=%g)\n", secs, x)
+	return err
+}
+
+// sandboxSelftestForkChain /proc/self/exe 自再执行链(基线 #6):depth 代
+// fork+exec 子代(depth+1)并 wait;全链同时在场 → pids 计数随深度增长。
+// 收口三形态:cap(max 硬上界,非真炸弹)/ budget(cgroup pids 预算内
+// 收口——每代 Go runtime 启动要建 ~4-6 线程,「fork 抢到最后槽位后子代
+// 建线程 EAGAIN」是 runtime fatal throw 而非可捕获错误,预算 margin 让
+// 链在触顶前可控收口)/ eagain(真触顶兜底,fork 直接 EAGAIN 时如实
+// 上报)。子代被信号杀(OOM 竞态诊断)→ 响亮败,不伪装成链正常收口。
+func sandboxSelftestForkChain(depth, max int, stdout io.Writer) error {
+	if depth >= max {
+		_, err := fmt.Fprintf(stdout, "forkchain depth=%d stop=cap\n", depth)
+		return err
+	}
+	if cur, lim, ok := sandboxPidsBudget(); ok && lim > 0 && cur+sandboxHelperPidsMargin >= lim {
+		_, err := fmt.Fprintf(stdout, "forkchain depth=%d stop=budget pids=%d/%d\n", depth, cur, lim)
+		return err
+	}
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("selftest forkchain: resolve self exe: %w", err)
+	}
+	childArgv := []string{self, "selftest", "forkchain", strconv.Itoa(depth + 1), strconv.Itoa(max)}
+	pid, err := syscall.ForkExec(self, childArgv, &syscall.ProcAttr{Files: []uintptr{0, 1, 2}})
+	if err != nil {
+		if errors.Is(err, syscall.EAGAIN) {
+			// pids(或它处)资源触顶:链的兜底终点,如实上报。
+			_, werr := fmt.Fprintf(stdout, "forkchain depth=%d stop=eagain\n", depth)
+			if werr != nil {
+				return werr
+			}
+			return nil
+		}
+		return fmt.Errorf("selftest forkchain: fork exec depth %d: %w", depth+1, err)
+	}
+	var ws syscall.WaitStatus
+	if _, werr := syscall.Wait4(pid, &ws, 0, nil); werr != nil {
+		return fmt.Errorf("selftest forkchain: wait depth %d: %w", depth+1, werr)
+	}
+	if ws.Signaled() {
+		// budget margin 击穿或 OOM 竞态:附 pids 计数供判别真触顶与
+		// margin 不足(后者应上调 sandboxHelperPidsMargin)。
+		cur, lim, _ := sandboxPidsBudget()
+		return fmt.Errorf("selftest forkchain: child at depth %d killed by signal %d (thread-creation EAGAIN past margin, or oom? pids=%d/%d margin=%d)", depth+1, ws.Signal(), cur, lim, sandboxHelperPidsMargin)
+	}
+	if code := ws.ExitStatus(); code != 0 {
+		return fmt.Errorf("selftest forkchain: child at depth %d exited %d", depth+1, code)
+	}
+	return nil
+}
+
+// sandboxHelperPidsMargin budget 收口的预留任务数:覆盖两代子进程的
+// Go runtime 启动线程上浮(实测每代 ~4-6,GC worker 池/阻塞 syscall 撑
+// 新 M/Go 版本演进都会上浮;fork 抢到最后槽位后子代建线程 EAGAIN 是
+// runtime fatal throw,不可捕获,只能预算避开)。
+const sandboxHelperPidsMargin = 16
+
+// sandboxPidsBudget 读本 cgroup 的 pids 计数(v2 = /sys/fs/cgroup/pids.*,
+// v1 = /sys/fs/cgroup/pids/ 下同名;容器内路径即自身 cgroup)。max 文件
+// "max"(无限制)时 lim 返回 -1——预算分支不触发,链靠 cap 硬上界。
+// 两代路径都不可读(cgroup 不可观测的环境)→ ok=false,同样退化为
+// cap/eagain 决定。
+func sandboxPidsBudget() (cur, max int64, ok bool) {
+	readInt := func(path string) (int64, bool) {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			return 0, false
+		}
+		v, err := strconv.ParseInt(strings.TrimSpace(string(raw)), 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return v, true
+	}
+	for _, prefix := range []string{"/sys/fs/cgroup/", "/sys/fs/cgroup/pids/"} {
+		c, okC := readInt(prefix + "pids.current")
+		mRaw, errM := os.ReadFile(prefix + "pids.max")
+		if !okC || errM != nil {
+			continue
+		}
+		mStr := strings.TrimSpace(string(mRaw))
+		if mStr == "max" {
+			return c, -1, true
+		}
+		m, perr := strconv.ParseInt(mStr, 10, 64)
+		if perr != nil {
+			continue
+		}
+		return c, m, true
+	}
+	return 0, 0, false
+}
+
+// sandboxSelftestFds 循环 open /dev/null 至失败(基线 #7):EMFILE 是
+// ulimit 执法的预期失败形态,如实上报计数后正常退出(软失败,exit 0)。
+// 打开的 fd 全部持有到函数尾再统一关闭(计数即真实 fd 耗尽点)。
+func sandboxSelftestFds(max int, stdout io.Writer) error {
+	var held []*os.File
+	stop := "cap"
+	for len(held) < max {
+		fh, err := os.Open(os.DevNull)
+		if err != nil {
+			if errors.Is(err, syscall.EMFILE) {
+				stop = "emfile"
+				break
+			}
+			for _, f := range held {
+				_ = f.Close()
+			}
+			return fmt.Errorf("selftest fds: open #%d: %w", len(held), err)
+		}
+		held = append(held, fh)
+	}
+	n := len(held)
+	for _, f := range held {
+		_ = f.Close()
+	}
+	_, err := fmt.Fprintf(stdout, "fds=%d stop=%s\n", n, stop)
+	return err
+}
+
+// sandboxSelftestSpamStderr 定长块写 stderr 至目标(基线 #14:daemon 日志
+// 通道封顶的载荷)。块内容是确定性重复行,无新信息;写错误(如对端关
+// 闭)响亮败——载荷失真会让封顶断言失真。收尾哨兵行:last-write 必落
+// 轮转后驻留文件的尾部(轮转删头留尾),e2e 据此证明 stderr→json-file→
+// docker logs 通道确实承载了载荷(驻留总量非确定,不能当内容证据)。
+func sandboxSelftestSpamStderr(mib int, stdout io.Writer) error {
+	const spamLine = "braid-e2e-stderr-spam-line\n"
+	chunk := bytes.Repeat([]byte(spamLine), 4096/len(spamLine)+1)
+	chunk = chunk[:4096]
+	remaining := int64(mib) << 20
+	for remaining > 0 {
+		n := int64(len(chunk))
+		if remaining < n {
+			n = remaining
+		}
+		if _, err := os.Stderr.Write(chunk[:n]); err != nil {
+			return fmt.Errorf("selftest spam-stderr: write: %w", err)
+		}
+		remaining -= n
+	}
+	if _, err := fmt.Fprintf(os.Stderr, "braid-e2e-stderr-spam-done %d\n", mib); err != nil {
+		return fmt.Errorf("selftest spam-stderr: sentinel: %w", err)
+	}
+	_, err := fmt.Fprintf(stdout, "spammed %d MiB to stderr\n", mib)
+	return err
+}
+
+// sandboxSelftestZombies 派生 n 个孤儿子进程后扫 /proc Z 状态(基线
+// #15):每个孤儿经 zombie-child 双 fork 产生——child 派生 exit0 孙进程
+// 后立即自退,孙进程转交 PID 1;--init(tini)收割 → Z 归零,PID 1 不
+// 收割(如 --init 漂移)→ 孤儿僵尸永续滞留。子进程退出状态必须核验
+// (forkchain 同款纪律):zombie-child 非零退出 = 孤儿从未产生,静默吞
+// 掉会把探针失效退化成 zombies=0 = e2e 通过值(错绿),必须响亮败。
+// 聚合用沉降判据而非取最大:正确配置下孙进程「退出→转交→tini 收割」
+// 存在亚毫秒瞬态 Z 窗,任一轮观测即判会把收割延迟错当漂移(错红);
+// 轮询至归零(2s 预算)报 0,预算尽报末次计数——漂移形态僵尸永不归零,
+// 检测力不因瞬态容忍受损。
+func sandboxSelftestZombies(n int, stdout io.Writer) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("selftest zombies: resolve self exe: %w", err)
+	}
+	for i := 0; i < n; i++ {
+		argv := []string{self, "selftest", "zombie-child"}
+		pid, err := syscall.ForkExec(self, argv, &syscall.ProcAttr{Files: []uintptr{0, 1, 2}})
+		if err != nil {
+			return fmt.Errorf("selftest zombies: spawn child #%d: %w", i, err)
+		}
+		var ws syscall.WaitStatus
+		if _, werr := syscall.Wait4(pid, &ws, 0, nil); werr != nil {
+			return fmt.Errorf("selftest zombies: wait child #%d: %w", i, werr)
+		}
+		if ws.Signaled() {
+			return fmt.Errorf("selftest zombies: child #%d killed by signal %d (orphan spawn broken)", i, ws.Signal())
+		}
+		if code := ws.ExitStatus(); code != 0 {
+			return fmt.Errorf("selftest zombies: child #%d exited %d (orphan never created — must fail loud, not read as zombies=0)", i, code)
+		}
+	}
+	zombies := 0
+	for round := 0; round < 10; round++ {
+		if round > 0 {
+			time.Sleep(200 * time.Millisecond)
+		}
+		z, err := sandboxCountZombieProcesses()
+		if err != nil {
+			return fmt.Errorf("selftest zombies: scan: %w", err)
+		}
+		zombies = z
+		if z == 0 {
+			break // 沉降归零:正确配置的稳态。
+		}
+	}
+	_, werr := fmt.Fprintf(stdout, "zombies=%d\n", zombies)
+	return werr
+}
+
+// sandboxSelftestZombieChild 派生一个 exit0 孙进程后立即退出:孙进程先于
+// 本进程死亡则成为本进程的僵尸并随后者转交;晚于则直接转交——两种次序
+// 终态一致(孤儿 → PID 1)。stdout 形参与 selftest 处理器族同构,本模式
+// 无输出。
+func sandboxSelftestZombieChild(_ io.Writer) error {
+	self, err := os.Executable()
+	if err != nil {
+		return fmt.Errorf("selftest zombie-child: resolve self exe: %w", err)
+	}
+	argv := []string{self, "selftest", "exit0"}
+	pid, err := syscall.ForkExec(self, argv, &syscall.ProcAttr{Files: []uintptr{0, 1, 2}})
+	if err != nil {
+		return fmt.Errorf("selftest zombie-child: spawn: %w", err)
+	}
+	_ = pid // 不 wait:本进程立即退出,孙进程转交 PID 1 是被测面本身
+	return nil
+}
+
+// sandboxCountZombieProcesses 扫 /proc/<pid>/stat 统计 Z 状态进程数
+// (#15 的断言原语)。stat 第二字段(Comm)可含空格与括号——状态字段
+// 取「最后一个 ')' 之后的首个非空 token」(proc(5) 同款解析法)。
+func sandboxCountZombieProcesses() (int, error) {
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		return 0, err
+	}
+	zombies := 0
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		pid := e.Name()
+		if _, err := strconv.Atoi(pid); err != nil {
+			continue // 非 PID 目录
+		}
+		raw, err := os.ReadFile("/proc/" + pid + "/stat")
+		if err != nil {
+			continue // 进程退场竞态,跳过
+		}
+		if i := bytes.LastIndexByte(raw, ')'); i >= 0 && i+2 < len(raw) && raw[i+2] == 'Z' {
+			zombies++
+		}
+	}
+	return zombies, nil
 }

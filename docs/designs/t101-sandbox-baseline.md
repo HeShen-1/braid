@@ -23,17 +23,17 @@
 | 2 | tmpfs scratch | `--tmpfs /tmp:rw,noexec,nosuid,size=16m` | ro 下合法 scratch 供给;/tmp 落盘执行点:size 封顶、noexec 防落盘二进制、nosuid 防 setuid | probe 写 /tmp 至 ENOSPC 断言 ≈16MiB;复制自身到 /tmp exec → EACCES |
 | 3 | 白名单目录 ro bind(同路径) | `--mount type=bind,src=<dir>,dst=<同绝对路径>,readonly` | file_read 白名单的宿主面暴露;rw 挂载 = 容器内写宿主;路径漂移破坏双门与词形回显 | 读白名单内成功且 output.path 回显词形与宿主一致;`/etc/passwd` → `tool_path_blocked`;白名单内 symlink → 指外部 → `tool_path_blocked` |
 | 4 | 内存上限(零 swap) | `--memory 256m --memory-swap 256m` | 输入诱发内存放大拖同宿主服务入 OOM;swap 默认 2×memory 软化限额 | probe 按 8MiB 步长分配至被杀;宿主断言失败关闭(非成功、非截断成功)、worker 存活、后续调用正常 |
-| 5 | CPU 上限 | `--cpus 0.5` | 输入诱发自旋饿死同宿主 goroutine/服务 | 自旋 probe + 计量断言(daemon 侧窗口用量 ≤ 0.5+裕量,零时序敏感断言) |
-| 6 | 进程数上限 | `--pids-limit 64` | fork 炸弹/无界派生耗尽宿主 PID 空间 | `/proc/self/exe` 自再执行链(非真炸弹):每代打 depth marker,EAGAIN 时如实上报,断言 N ≤ 64+slack、宿主线程数无漂移 |
-| 7 | FD 上限 | `--ulimit nofile=1024:1024` | 输入诱发 FD 耗尽挤压宿主预算 | probe 循环 open 至失败,上报计数 ≤1024+slack,进程软失败正常退出 |
+| 5 | CPU 上限 | `--cpus 0.5` | 输入诱发自旋饿死同宿主 goroutine/服务 | 自旋 probe + cgroup cpu 记账窗口计量(窗外 docker exec 双采样;v2 cpu.stat 主路径 + v1 cpuacct 回退,两代布局都不可读 = 环境门控 skip;速率 ∈ [0.15,0.75] 分离配额执法 0.5 与漂移形态 ~1.0,nr_throttled 增长为 CFS 节流佐证;零时序敏感断言) |
+| 6 | 进程数上限 | `--pids-limit 64` | fork 炸弹/无界派生耗尽宿主 PID 空间 | `/proc/self/exe` 自再执行链(非真炸弹):链尾上报单行 depth/stop 报告(budget 收口附 pids 计数;预算 margin 防止「fork 抢到最后槽位后子代 runtime 建线程 EAGAIN = fatal throw」竞态)、EAGAIN 兜底如实上报,断言 2 ≤ depth ≤ 64(结构上界);限额漂移缺失时 pids.max=max → 链走满硬上界 stop=cap 即红。宿主无漂移以链自终止 + 零残留差分覆盖(宿主进程计数在并行环境噪声主导,不背书) |
+| 7 | FD 上限 | `--ulimit nofile=1024:1024` | 输入诱发 FD 耗尽挤压宿主预算 | probe 循环 open 至 EMFILE(软失败正常退出),断言 512 ≤ 计数 ≤ 1024(下限分离「限额远低于预期」形态);旗标在场性由 inspect 矩阵 Ulimits 全值比对独立钉死(分层依赖,单用例不背书 daemon 缺省贴界形态) |
 | 8 | cap-drop ALL | `--cap-drop ALL` | runc 默认 14 cap(NET_RAW = 桥网 ARP 伪造/内网侦察;MKNOD/SETUID 等放大任何缺陷后果) | probe 读 `/proc/self/status` CapEff/CapBnd == 0;mknod/chown → EPERM(配置+功能双锚) |
 | 9 | no-new-privileges | `--security-opt no-new-privileges` | 镜像/挂载内 setuid 位或 file caps 的 exec 链提权(与 ro 互补:ro 防写入铺垫,NNP 防执行期提权) | `/proc/self/status` NoNewPrivs == 1(标志级断言) |
 | 10 | 非 root 用户 | `--user 65532:65532` | root-in-container 对 bind mount 按宿主 uid 判权;逃逸以 root 起跑半径远大于 65532 | probe 断言 Geteuid()==65532;写挂载目录 → EACCES;读白名单内文件成功(权限矩阵健全) |
 | 11 | 网络按载体拆分 | file_read:`--network none`;http:`--network bridge`(过渡,t10.2 单点换装) | file_read 零出网需求——none 是零成本纵深;http 出网执法完全依赖守卫随行(见 §4) | file_read 容器内拨任意地址 → unreachable;http 容器内 `https://127.0.0.1` / `https://169.254.169.254` → `tool_ssrf_blocked`(守卫在容器内执法的证明) |
 | 12 | env 从零构造 | 容器 env 仅 `PATH` / `LANG=C.UTF-8`;token、attempt_key、工具 config、inputs 全走 stdin 信封(GATE 1 拍板) | worker ambient env(DSN/LLM key/HMAC secret/代理变量)经 env 通道泄漏;`-e` 旗标把值写进 docker argv(`/proc/<pid>/cmdline` 宿主全局可读);docker inspect 对 daemon 可达主体可读 | command_test.go:14-46 双向断言模式上移:t.Setenv 假主凭证,容器内序列化全量 env,正半边(两成员在场)+ 负半边(假凭证键名与值双缺席);结构性防再入:所有 `BRAID_TOOL_SANDBOX*` 键永不进容器 env(构造式白名单天然成立 + 断言) |
 | 13 | 生命周期绑定 ctx | `--rm` + ctx.Done → `docker stop -t 3 <name>`(5s 有界)+ helper 内 watchdog(信封携相对剩余毫秒,与宿主 ctx 同单调钟锚;期限后 +grace 硬退兜底)+ worker 启动按 label 清扫 | cancel 窗僵尸容器占资源;worker kill -9 孤儿;时钟步进把 helper 期限提前致宿主误分类(绝对秒锚缝,T5 审计收口) | 短超时触发 cancel → 15s 内 label 查询容器清零;kill -9 残余窗 = watchdog 有界自灭,登记残余 |
-| 14 | daemon 日志封顶 | `--log-driver json-file --log-opt max-size=5m --log-opt max-file=1` | 工具无界 stderr 经 daemon 日志通道填宿主盘(stdout 已 16MiB 信封封顶,此为独立防线) | probe 写 50MB stderr;inspect LogConfig 配置断言 + 宿主侧日志文件 ≤ cap |
-| 15 | tini 作 PID 1 | `--init` | 工具进程派生子进程后退出 → 孤儿僵尸堆积顶满 pids limit(与 #6 的复合失败) | inspect `HostConfig.Init`;probe 派生即退子进程后自身退出,扫 `/proc/*/stat` Z 状态为空;pids 上限触顶用例复合 |
+| 14 | daemon 日志封顶 | `--log-driver json-file --log-opt max-size=5m --log-opt max-file=1` | 工具无界 stderr 经 daemon 日志通道填宿主盘(stdout 已 16MiB 信封封顶,此为独立防线) | probe 写 52MiB stderr(非 5m 整倍数——整倍数轮转可清空驻留);inspect LogConfig 配置断言 + docker logs 双流合并截留 ≤ 5m+128KiB(容器 stderr 流走 CLI stderr,单收 stdout 是假绿;slack 依据 = daemon stdio copier 读块粒度)+ 尾部哨兵行在场(轮转删头留尾,哨兵必驻留 = 通道承载证明;宿主侧文件路径需 root,非测试可达面) |
+| 15 | tini 作 PID 1 | `--init` | 工具进程派生子进程后退出 → 孤儿僵尸堆积顶满 pids limit(与 #6 的复合失败) | inspect `HostConfig.Init`;probe 双 fork 孤儿派生,沉降轮询扫描 `/proc/*/stat` Z=0(瞬态收割窗容忍);负向对照 = 剥 `--init`(PID 1 = helper 自身不收割)断言孤儿僵尸滞留 >0——漂移红路径 + 探针检测力自证,并兑现复合形态半边(孤儿僵尸 × PID 1 不收割;堆积顶满 pids 的完整形态由 #6 链自终止 + 零残留分解覆盖) |
 
 资源档位(256m / 0.5 / 64 / 1024)是基线提案值,生产终值按真实工作负载在 P1 评审定档;全部经 env 可配(`BRAID_TOOL_SANDBOX_MEMORY/CPUS/PIDS`,构造期正则校验响亮败;键家族统一 `BRAID_TOOL_SANDBOX*`,防再入不变量 = 该家族结构性不进容器 env)。
 
@@ -49,7 +49,7 @@
   - **e2e 镜像引用**:独立 tag,不得覆写 prod 缺省引用 `braid-tool-sandbox:1`(防 ephemeral CA 镜像滞留 daemon 被 prod Probe 放行),测试收尾清理;e2e 选段 198.19.x 依赖 DECISIONS 待议项 D-2026-09-23-ssrf-extra-ranges「198.18.0.0/15 维持放行」,扩禁须同步重选段。
   - **机械锚**:构建期半边(context 唯一成员 + append ⇒ 信任)由 internal/tools/sandbox_ca_test.go 钉死;env 半边由 argv 全序列 golden(结构性无 `-e`/`--env-file`/`--env`)钉死;容器内 env 实证(dump-env e2e)T10 落地。
 - **离线口径(D-t72 同纪律)**:运行时 daemon **永不 pull**——daemon 本地无镜像 = 响亮失败,错误消息携带构建命令;镜像引用经 env 配置,构造期校验。
-- **helper 生产二进制含 selftest 子命令**(alloc/serve/dump-env):argv 词表可达但 carrier 永不发出;容器内攻击者本可自行分配内存/起服务,无新能力面——以 argv 构造器单测(词表外值构造期拒)为回归锚。
+- **helper 生产二进制含 selftest 子命令家族**(dump-env / alloc / serve / spin / forkchain / fds / spam-stderr / zombies 及内部子模式 zombie-child、exit0;全枚举单点真源 = `sandbox_helper.go` 文件头):argv 词表可达但 carrier 永不发出;容器内攻击者本可自行分配内存/起服务/自旋/派生进程/开 fd/写自身 stderr,无新能力面(T11 审计复核成立:无探针做网络 I/O 或消费 cap,资源执法面是容器配置、由 inspect 矩阵落盘钉死)——以 argv 构造器单测(词表外值构造期拒)为回归锚。
 
 ## 4. 网络姿态与 t10.2 合成面
 
