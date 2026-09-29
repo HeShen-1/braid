@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"braid/internal/audit"
+	"braid/internal/auth"
 	"braid/internal/db/sqltest"
 	"braid/internal/notify/notifytest"
 	"braid/internal/snowflake"
@@ -408,5 +409,138 @@ func TestNotifyApprovalContextDefects(t *testing.T) {
 	}
 	if got := len(notifiedRows(t, d, execID)); got != 0 {
 		t.Fatalf("approval.notified rows = %d, want 0", got)
+	}
+}
+
+// seedFanoutUser 造扇出解析面种子账号(email 为 nil = 未配置)。
+func seedFanoutUser(t *testing.T, d *sql.DB, name string, email *string) {
+	t.Helper()
+	hash, err := auth.HashPassword("fanout-password-1", 4)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	ids, err := snowflake.New(3)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	if err := auth.WithTx(context.Background(), d, func(q auth.DBTX) error {
+		return auth.CreateUser(context.Background(), q, ids, auth.CreateUserParams{
+			Username: name, PasswordHash: hash, Email: email, Roles: []auth.Role{auth.RoleApprover},
+		})
+	}); err != nil {
+		t.Fatalf("seed user %s: %v", name, err)
+	}
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE ur FROM user_role ur JOIN users u ON u.id=ur.user_id WHERE u.username LIKE 'fanout-%'`)
+		_, _ = d.Exec(`DELETE FROM users WHERE username LIKE 'fanout-%'`)
+	})
+}
+
+// newFanoutSender:newTestSender 的可变体(扇出用例需覆写 NotifyTo)。
+func newFanoutSender(t *testing.T, d *sql.DB, f *notifytest.SMTP, mutate func(*Config)) *Sender {
+	t.Helper()
+	ids, err := snowflake.New(4)
+	if err != nil {
+		t.Fatalf("sender snowflake: %v", err)
+	}
+	cfg := DefaultConfig()
+	cfg.Host = "127.0.0.1"
+	cfg.Port = f.Port()
+	cfg.From = "braid@test.example"
+	cfg.NotifyTo = []string{"ops@test.example"}
+	cfg.ApprovalBaseURL = "https://braid.test.example"
+	cfg.StartTLS = false
+	cfg.Timeout = 5 * time.Second
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	s, err := NewSender(Deps{DB: d, IDs: ids, WorkerID: "test-worker"}, cfg)
+	if err != nil {
+		t.Fatalf("NewSender: %v", err)
+	}
+	return s
+}
+
+// TestNotifyApprovalFanOutPerApprover(T12.2,D-t45 #2 兑现):逐人收件——
+// carol(有邮箱)得一封本人 To 的邮件,dave(未配邮箱)不单独发信但名字
+// 保留正文;ops 副本(NOTIFY_TO)追加一封;approval.notified 锚恒一行且
+// payload 不含任何地址(D-t45 #1 铁律)。变异自查:逐人换单封多 RCPT →
+// Count/To 断言红;地址进 payload → payload 断言红;ops 副本丢 → Count 红。
+func TestNotifyApprovalFanOutPerApprover(t *testing.T) {
+	d := sqltest.MustOpenAt(t, notifySchema)
+	f := notifytest.Start(t)
+	execID, nodeExecID, _ := seedApprovalEscalated(t, d)
+	// seedApprovalEscalated 快照 approvers = ["carol","dave"]:改名入
+	// fanout- 前缀(seedFanoutUser 清理域)。
+	if _, err := d.Exec(`UPDATE node_execution SET input_snapshot = JSON_SET(input_snapshot,
+		'$.approvers', JSON_ARRAY('fanout-carol','fanout-dave')) WHERE id=?`, nodeExecID); err != nil {
+		t.Fatalf("rewire approvers: %v", err)
+	}
+	carolMail := "fanout-carol@example.com"
+	seedFanoutUser(t, d, "fanout-carol", &carolMail)
+	seedFanoutUser(t, d, "fanout-dave", nil)
+	s := newFanoutSender(t, d, f, nil)
+
+	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1); err != nil {
+		t.Fatalf("NotifyApproval: %v", err)
+	}
+
+	msgs := f.Messages()
+	rcpts := f.RcptsAll()
+	if len(msgs) != 2 {
+		t.Fatalf("messages = %d, want 2(carol 逐人一封 + ops 副本一封)", len(msgs))
+	}
+	// 逐人封:To = 本人,信封恰一收件人。
+	if !strings.Contains(msgs[0], "To: fanout-carol@example.com") {
+		t.Errorf("per-approver To header missing: %s", msgs[0])
+	}
+	if len(rcpts[0]) != 1 || rcpts[0][0] != carolMail {
+		t.Errorf("per-approver envelope = %v, want [%s]", rcpts[0], carolMail)
+	}
+	// ops 副本:To = NOTIFY_TO;dave 名字保留正文(兜底可见)。
+	if !strings.Contains(msgs[1], "To: ops@test.example") {
+		t.Errorf("ops copy To header missing: %s", msgs[1])
+	}
+	for i, m := range msgs {
+		if !strings.Contains(m, "fanout-dave") {
+			t.Errorf("message %d lacks unresolved approver name in body", i)
+		}
+	}
+	// 送达锚:恰一行,payload 键集 = {node_id, reason, round}——零地址。
+	rows := notifiedRows(t, d, execID)
+	if len(rows) != 1 {
+		t.Fatalf("approval.notified rows = %d, want 1", len(rows))
+	}
+	var keys map[string]any
+	if err := json.Unmarshal(rows[0].payload, &keys); err != nil {
+		t.Fatalf("payload: %v", err)
+	}
+	if len(keys) != 3 {
+		t.Fatalf("payload keys = %v, want exactly node_id/reason/round (no addresses)", keys)
+	}
+	if strings.Contains(string(rows[0].payload), "@") {
+		t.Fatalf("payload carries an address: %s", rows[0].payload)
+	}
+}
+
+// TestNotifyApprovalNoRecipientsResolvable:纯扇出形态(NOTIFY_TO 空)+
+// 零 approver 可解析邮箱(无账号或未配邮箱皆同) = 响亮失败(不静默吞、
+// 不落 notified 行——worker 侧 asynq 重试一次后死信,T6.4 告警接住)。
+// 不种任何账号:approvers(carol/dave)无账号 = 缺席语义的正路。
+func TestNotifyApprovalNoRecipientsResolvable(t *testing.T) {
+	d := sqltest.MustOpenAt(t, notifySchema)
+	f := notifytest.Start(t)
+	execID, nodeExecID, _ := seedApprovalEscalated(t, d)
+	s := newFanoutSender(t, d, f, func(c *Config) { c.NotifyTo = nil })
+
+	err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1)
+	if err == nil || !strings.Contains(err.Error(), "no recipients resolvable") {
+		t.Fatalf("err = %v, want no-recipients error", err)
+	}
+	if got := f.Count(); got != 0 {
+		t.Fatalf("messages = %d, want 0", got)
+	}
+	if got := len(notifiedRows(t, d, execID)); got != 0 {
+		t.Fatalf("approval.notified rows = %d, want 0(失败不落锚,重投可完整重试)", got)
 	}
 }

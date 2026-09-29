@@ -14,7 +14,7 @@ env 旋钮全表与逐键注释见同目录 `.env.example`;换装点纪律 = 四
 
 | 键 | 默认 | 语义 |
 |----|------|------|
-| `BRAID_DB_MAX_OPEN` | 25 | 单进程最大打开连接数 |
+| `BRAID_DB_MAX_OPEN` | 25 | 单进程最大打开连接数(软上限 100:超限收敛到 100 + 启动 warn,见下方公式锚) |
 | `BRAID_DB_MAX_IDLE` | 25 | 空闲保留上限(校验 0 ≤ idle ≤ open) |
 | `BRAID_DB_CONN_MAX_LIFETIME` | 5m | 单连接最长复用时长(消化 MySQL wait_timeout 与 LB 轮转陈旧连接) |
 
@@ -36,6 +36,12 @@ MySQL 侧:单实例默认 `max_connections` = 151(MySQL 8.0 出厂值;dev compos
 不走进程池)。默认 100 + 30 = 130 < 151,余 21。扩容入口副本数时同轮检
 MySQL 侧,并遵守**只升不降**:`max_connections` 下调会杀既有连接(含在途
 事务),必须停机窗口内操作。
+
+单进程软上限(T12.2,`db.MaxOpenSoftCap` = 100):`BRAID_DB_MAX_OPEN`
+配置值超过 100 时解析层收敛到 100 并打启动 warn(自伤型误配护栏——单
+进程超过全 fleet 默认预算即越过公式默认头寸)。真要单进程 >100 = 同轮
+抬 MySQL `max_connections` 并自核上方公式;改上限值属部署契约变更,走
+DECISIONS D- 条目。
 
 池饱和观测(T6.4 指标面 + T7.1 池观测,四入口 30s 常量周期采集):
 

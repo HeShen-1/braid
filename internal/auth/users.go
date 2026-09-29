@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/go-sql-driver/mysql"
 )
@@ -23,6 +24,14 @@ var usernameRe = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,127}$`)
 // audit 归因/对账面制造「系统行为 vs 人」的混淆——域层拒绝(双闸:
 // 此处 + chk_user_username 的 username <> 'system')。
 var reservedUsernames = map[string]bool{"system": true}
+
+// emailRe 与 DDL chk_user_email(0009)是用户资料邮箱域的双闸(同则逐字,
+// POSIX [:space:] 形态使两字面字节一致,免 MySQL 字符串反斜杠歧义;
+// usernameRe/chk_user_username 先例)。形态与 notify 收件址约束同语义
+// (恰一 @、两侧非空、无空白);nil = 未配置(可空列)。
+var emailRe = regexp.MustCompile(`^[^@[:space:]]+@[^@[:space:]]+$`)
+
+func validEmail(s string) bool { return emailRe.MatchString(s) }
 
 func validUsername(s string) bool {
 	return !reservedUsernames[s] && usernameRe.MatchString(s)
@@ -42,10 +51,12 @@ const (
 )
 
 // User 是登录路径读齐的用户视图:身份 + 授权快照 + 状态。不含密码哈希
-// (哈希只进 Authenticate 内部比对,不出包)。
+// (哈希只进 Authenticate 内部比对,不出包)。Email 是资料邮箱(T12.2
+// 扇出投递解析面;nil = 未配置)。
 type User struct {
 	ID       uint64
 	Username string
+	Email    *string
 	Roles    []Role // 升序排序(确定性 claims);空仅见于无授权行的旁路数据
 	Status   Status
 }
@@ -63,6 +74,7 @@ type userRecord struct {
 type CreateUserParams struct {
 	Username     string
 	PasswordHash string
+	Email        *string // 可选资料邮箱(T12.2;nil = 未配置)
 	Roles        []Role
 }
 
@@ -72,6 +84,9 @@ func (p CreateUserParams) validate() error {
 	}
 	if !validHashShape(p.PasswordHash) {
 		return fmt.Errorf("%w: password hash not bcrypt-shaped", ErrInvalidInput)
+	}
+	if p.Email != nil && !validEmail(*p.Email) {
+		return fmt.Errorf("%w: email %q not address-shaped", ErrInvalidInput, *p.Email)
 	}
 	return validRoles(p.Roles)
 }
@@ -88,8 +103,8 @@ func CreateUser(ctx context.Context, q DBTX, ids IDGen, p CreateUserParams) erro
 		return fmt.Errorf("auth: user id: %w", err)
 	}
 	if _, err := q.ExecContext(ctx,
-		`INSERT INTO users (id, username, password_hash) VALUES (?, ?, ?)`,
-		uid, p.Username, p.PasswordHash,
+		`INSERT INTO users (id, username, password_hash, email) VALUES (?, ?, ?, ?)`,
+		uid, p.Username, p.PasswordHash, p.Email,
 	); err != nil {
 		return mapDup(fmt.Errorf("auth: insert user %q: %w", p.Username, err))
 	}
@@ -118,6 +133,49 @@ func mapDup(err error) error {
 	return err
 }
 
+// EmailsByUsernames 批量解析用户名 → 资料邮箱(T12.2 扇出投递的解析
+// 原语,消费方 = notify sender:快照 approvers 名单 → 逐人收件)。只回
+// 已配置邮箱的映射:无账号 / email NULL 的名字缺席(扇出侧以缺席 = 无
+// 邮箱处理,名字保留正文 + ops 副本兜底)。空名单返回空映射(不触 DB);
+// 用户名经 usernameRe 预检——名单来自 DSL 快照(发布期已过同则词域闸),
+// 坏形态在此响亮报错而非静默漏配。utf8mb4_bin 精确等值(列继承表默认
+// ai_ci,大小写折叠会把互异主体并进同一行——D-t63 actor 谓词同判)。
+func EmailsByUsernames(ctx context.Context, q DBTX, usernames []string) (map[string]string, error) {
+	if len(usernames) == 0 {
+		return map[string]string{}, nil
+	}
+	for _, name := range usernames {
+		if !validUsername(name) {
+			return nil, fmt.Errorf("auth: username %q not in domain", name)
+		}
+	}
+	placeholders := strings.TrimSuffix(strings.Repeat("?,", len(usernames)), ",")
+	args := make([]any, len(usernames))
+	for i, name := range usernames {
+		args[i] = name
+	}
+	rows, err := q.QueryContext(ctx,
+		`SELECT username, email FROM users
+		  WHERE email IS NOT NULL AND username COLLATE utf8mb4_bin IN (`+placeholders+`)`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("auth: resolve emails: %w", err)
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck // 只读路径,关闭错误无处置义
+	out := make(map[string]string, len(usernames))
+	for rows.Next() {
+		var name, email string
+		if err := rows.Scan(&name, &email); err != nil {
+			return nil, fmt.Errorf("auth: scan email row: %w", err)
+		}
+		out[name] = email
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("auth: iterate email rows: %w", err)
+	}
+	return out, nil
+}
+
 // findByUsername 两段 QueryRow 读齐登录所需:user 行点查(uk_user_username
 // 精确定位,utf8mb4_bin 无折叠)+ roles 经 JSON_ARRAYAGG 单行聚合
 // (聚合无 GROUP BY 恒单行,空集得 []——DBTX 维持最小两方法面)。
@@ -126,9 +184,9 @@ func mapDup(err error) error {
 func findByUsername(ctx context.Context, q DBTX, username string) (userRecord, error) {
 	var rec userRecord
 	err := q.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, status FROM users WHERE username = ?`,
+		`SELECT id, username, password_hash, status, email FROM users WHERE username = ?`,
 		username,
-	).Scan(&rec.ID, &rec.Username, &rec.passwordHash, &rec.Status)
+	).Scan(&rec.ID, &rec.Username, &rec.passwordHash, &rec.Status, &rec.Email)
 	if errors.Is(err, sql.ErrNoRows) {
 		return rec, fmt.Errorf("%w: %q", errUserNotFound, username)
 	}

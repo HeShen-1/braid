@@ -151,6 +151,36 @@ func TestAuditTrailBranchAndSkip(t *testing.T) {
 	}
 }
 
+// TestCompleteRetryEmitsRedispatchMetric(T12.2,D-t64 留位兑现):
+// 重试预算内的 AttemptFailed → RedispatchNode 再派发,Redispatches
+// {attempt_failed} 恰好一次(词表第三值上岗;持久孪生 = node.redispatched
+// 审计行,见 TestAuditTrailRetryAndExhaust);预算耗尽分支不发射(终败
+// 语义归 reaper 侧 node_failures 族,非重派)。变异自查:发射丢 → 第一次
+// Load 红;发射挪到耗尽分支 → 第二次 Load 红。
+func TestCompleteRetryEmitsRedispatchMetric(t *testing.T) {
+	s, d := newSched(t)
+	counter := &discardCounter{}
+	s.deps.Metrics = counter
+	_, execID := inst(t, s, d, retryDSL, `{}`)
+	if err := s.Start(context.Background(), execID, "sched-test"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	a := waitNodeStatus(t, d, execID, "a", engine.NodeExecuting)
+
+	att1 := seedAttempt(t, d, execID, a.id, 1)
+	mustComplete(t, s, execID, a.id, att1, engine.AttemptFailed, nil)
+	if got := counter.redispatches.Load(); got != 1 {
+		t.Fatalf("IncNodeRedispatched = %d, want 1 (retry branch)", got)
+	}
+
+	att2 := seedAttempt(t, d, execID, a.id, 2)
+	mustComplete(t, s, execID, a.id, att2, engine.AttemptFailed, nil)
+	waitExecStatus(t, d, execID, engine.WorkflowFailed)
+	if got := counter.redispatches.Load(); got != 1 {
+		t.Fatalf("IncNodeRedispatched = %d after exhaustion, want 1 (exhaust branch must not emit)", got)
+	}
+}
+
 // TestAuditTrailRetryAndExhaust:重试路径 node.redispatched(status-preserving,
 // 无 state_changed 行)+ 耗尽 fail(带 code 与 attempt 锚)。
 func TestAuditTrailRetryAndExhaust(t *testing.T) {

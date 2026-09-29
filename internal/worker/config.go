@@ -147,7 +147,58 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if c.Pool, err = db.ParsePoolConfig(getenv); err != nil {
 		return c, err
 	}
-	return c, c.Validate()
+	if err := c.Validate(); err != nil {
+		return c, err
+	}
+	if err := crossValidateProducerQueues(getenv, c.Queues); err != nil {
+		return c, err
+	}
+	return c, nil
+}
+
+// crossValidateProducerQueues 是「消费键集必须覆盖全部生产方队列」的启动
+// 执法(T12.2,D-t43 §7 蒸发回收:reaper 队列漏改 = 重投/通知事件落无
+// worker 消费的队列,relay 投递成功标 DISPATCHED、任务永挂、每 DispatchStale
+// 窗空转一轮)。镜像 reaper crossValidateWorkerTimings 先例:同机同 env
+// compose 部署形态下读他进程配置键(键名与默认值与 internal/api、
+// internal/reaper 同步维护,worker 不 import 两者,依赖方向单向)。
+// 生产方三族:
+//
+//	api       → BRAID_API_RESUME_QUEUE(默认 "default";审批续跑 execution.resume)
+//	reaper    → BRAID_REAPER_QUEUE(默认 "default";死信网重投 + approval.notify)
+//	scheduler → 常量 "default" 无 env(驻 worker 进程,cmd 不设 Deps.Queue)
+//
+// 任一生产队列不在 BRAID_WORKER_QUEUES 键集 → 启动即败(.env.example 的
+// 「必须在 BRAID_WORKER_QUEUES 内」注释契约在此变成执法;坏值形态的生产
+// 键同样不落键集,自然触发)。已知边界:多舰队故意按队列拆分 worker 组
+// (各自消费子集)= 不支持面——Q14 单实例口径,拆分部署须每组配置全
+// 队列超集。
+func crossValidateProducerQueues(getenv func(string) string, queues map[string]int) error {
+	producers := []struct {
+		envKey string
+		def    string
+		desc   string
+	}{
+		{"BRAID_API_RESUME_QUEUE", "default", "api approval-resume events"},
+		{"BRAID_REAPER_QUEUE", "default", "reaper redispatch/notify events"},
+	}
+	for _, p := range producers {
+		q := getenv(p.envKey)
+		if q == "" {
+			q = p.def
+		}
+		if _, ok := queues[q]; !ok {
+			return fmt.Errorf("worker: producer queue %q (%s, from %s) not in BRAID_WORKER_QUEUES; tasks enqueued there hang forever (add it to BRAID_WORKER_QUEUES or repoint %s)",
+				q, p.desc, p.envKey, p.envKey)
+		}
+	}
+	// scheduler 节点任务族恒投常量 "default"(sched.go Deps.Queue 空值兜底,
+	// 无 env 面):键集去掉 default = 整族永挂,同闸执法。
+	if _, ok := queues["default"]; !ok {
+		return fmt.Errorf("worker: scheduler node-task events are enqueued to constant queue %q but it is not in BRAID_WORKER_QUEUES; node tasks would hang forever (keep %q in BRAID_WORKER_QUEUES)",
+			"default", "default")
+	}
+	return nil
 }
 
 func envDuration(getenv func(string) string, key string, def time.Duration) (time.Duration, error) {

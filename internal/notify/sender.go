@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"braid/internal/audit"
+	"braid/internal/auth"
 	"braid/internal/engine"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
@@ -147,15 +148,57 @@ SELECT n.execution_id, n.node_id, n.status, n.deadline_at, n.input_snapshot,
 		return fmt.Errorf("notify: approval snapshot node %d: %w", nodeExecID, err)
 	}
 
-	// [3] 渲染 + [4] 发送(外部调用,ctx/Timeout 双兜底)。
+	// [3] 收件面解析(T12.2,D-t45 #2 兑现):快照 approvers(用户名)→
+	// users.email 逐人收件;无邮箱/无账号的 approver 名字保留正文(渲染
+	// 上下文不变),由 ops 副本(若配)兜底可见。地址不入日志/审计(D-t45
+	// #1 铁律不变)。
+	emails, err := auth.EmailsByUsernames(ctx, s.deps.DB, snap.Approvers)
+	if err != nil {
+		return fmt.Errorf("notify: resolve approver emails node %d: %w", nodeExecID, err)
+	}
+	// 逐人发送(快照名单去重保序——重复名单项不重发)。
+	seen := make(map[string]bool, len(snap.Approvers))
+	var unique []string
+	for _, name := range snap.Approvers {
+		if !seen[name] {
+			seen[name] = true
+			unique = append(unique, name)
+		}
+	}
+
+	// [4] 渲染 + 发送(外部调用,ctx/Timeout 双兜底;一人一封 = 每封独立
+	// SMTP 会话,量级 = 审批升级事件,隔离优于连接复用)。
 	subject, body := s.render(execID, nodeID, nodeStatus, deadline, defName, defVersion, snap, reason)
-	msg := s.buildMessage(subject, body)
-	if err := s.send(ctx, msg); err != nil {
-		return err
+	delivered := 0
+	for _, name := range unique {
+		email, ok := emails[name]
+		if !ok {
+			continue
+		}
+		msg := s.buildMessage(subject, body, email)
+		if err := s.send(ctx, msg, []string{email}); err != nil {
+			return err // 响亮失败 ⇒ 重投重发(有界双发,D-t45 #1 已知边界族)
+		}
+		delivered++
+	}
+	// ops 副本:可见性保底(向后兼容 P0 形态);未配 email 的 approver
+	// 在此兜底可见。
+	if len(s.cfg.NotifyTo) > 0 {
+		msg := s.buildMessage(subject, body, strings.Join(s.cfg.NotifyTo, ", "))
+		if err := s.send(ctx, msg, s.cfg.NotifyTo); err != nil {
+			return err
+		}
+		delivered++
+	}
+	if delivered == 0 {
+		return fmt.Errorf("notify: no recipients resolvable for node %d (%d approvers, none with email; BRAID_SMTP_NOTIFY_TO unset)",
+			nodeExecID, len(unique))
 	}
 	s.log.Info("notify.sent",
 		"execution_id", execID, "node_execution_id", nodeExecID,
-		"node_id", nodeID, "reason", reason, "recipients", len(s.cfg.NotifyTo))
+		"node_id", nodeID, "reason", reason,
+		"approvers", len(unique), "approver_emails", len(emails),
+		"ops_copy", len(s.cfg.NotifyTo) > 0)
 
 	// [5] 送达审计行(去重锚的写半边;失败上抛 ⇒ 重投重发一封,见包注释
 	// 已知边界)。
@@ -217,12 +260,13 @@ func (s *Sender) approvalLink(execID uint64, nodeID string) string {
 	return fmt.Sprintf("%s/executions/%d/approvals/%s", s.cfg.ApprovalBaseURL, execID, nodeID)
 }
 
-// buildMessage 组 RFC 5322 信头 + 正文。中文主题走 B 编码字(RFC 2047);
-// 正文 UTF-8 纯文本(地址仅 ASCII,无需编码)。
-func (s *Sender) buildMessage(subject, body string) []byte {
+// buildMessage 组 RFC 5322 信头 + 正文。To 由调用方给定(逐人收件 = 本人
+// 地址;ops 副本 = NotifyTo 列表)。中文主题走 B 编码字(RFC 2047);正文
+// UTF-8 纯文本(地址仅 ASCII,无需编码)。
+func (s *Sender) buildMessage(subject, body, to string) []byte {
 	var b bytes.Buffer
 	fmt.Fprintf(&b, "From: %s\r\n", s.cfg.From)
-	fmt.Fprintf(&b, "To: %s\r\n", strings.Join(s.cfg.NotifyTo, ", "))
+	fmt.Fprintf(&b, "To: %s\r\n", to)
 	fmt.Fprintf(&b, "Subject: %s\r\n", encodeHeaderWord(subject))
 	fmt.Fprintf(&b, "Date: %s\r\n", time.Now().Format(time.RFC1123Z))
 	b.WriteString("MIME-Version: 1.0\r\n")
@@ -259,7 +303,7 @@ func encodeHeaderWord(s string) string {
 // ——明文+认证组合是配置错误,Validate 之外由标准库兜底)。DATA 已被接受
 // (w.Close 成功)后 QUIT 失败不构成发送失败:置之不理仅 warn——否则必然
 // 重发一封且去重锚缺席(review MEDIUM②)。
-func (s *Sender) send(ctx context.Context, msg []byte) error {
+func (s *Sender) send(ctx context.Context, msg []byte, rcpts []string) error {
 	addr := net.JoinHostPort(s.cfg.Host, strconv.Itoa(s.cfg.Port))
 	// 单一预算(对抗审计 LOW⑤):拨号时长计入总预算——start 锚点先取,
 	// 会话 deadline = start+Timeout(而非拨号后再给满一整个 Timeout),
@@ -295,9 +339,14 @@ func (s *Sender) send(ctx context.Context, msg []byte) error {
 	if err := c.Mail(s.cfg.From); err != nil {
 		return fmt.Errorf("notify: mail from: %w", err)
 	}
-	for _, to := range s.cfg.NotifyTo {
+	for i, to := range rcpts {
 		if err := c.Rcpt(to); err != nil {
-			return fmt.Errorf("notify: rcpt %s: %w", to, err)
+			// 错误串不带收件地址(orch-review MEDIUM:扇出后 rcpts 携
+			// users.email 用户资料,进 asynq 错误存储/日志 = PII 落观测
+			// 面,违背「地址不入日志/审计」不变量);序号定位足够——上游
+			// worker 包装已带 node/task 上下文。底层 err 的服务器应答
+			// 文本可能回显地址,属远端可控文本,不在本层收敛。
+			return fmt.Errorf("notify: rcpt rejected (recipient %d of %d): %w", i+1, len(rcpts), err)
 		}
 	}
 	w, err := c.Data()

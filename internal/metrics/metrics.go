@@ -186,6 +186,19 @@ type Set struct {
 	DBPool   *DBPoolSet
 }
 
+// IncLLMCallDiscarded satisfies the scheduler MetricsSink seam (T6.4).
+func (s *Set) IncLLMCallDiscarded() { s.LLM.IncLLMCallDiscarded() }
+
+// IncNodeRedispatched satisfies the scheduler MetricsSink seam addition
+// (T12.2, D-t64 reserved-vocabulary activation): the in-worker scheduler
+// emits trigger=attempt_failed on its retry branch. The family name says
+// "reaper" for historical reasons (D-t64 coined it around the reaper set);
+// attempt_failed children surface on the WORKER process exposition, which is
+// where the scheduler runs — by design, not drift.
+func (s *Set) IncNodeRedispatched() {
+	s.Reaper.Redispatches.WithLabelValues(TriggerAttemptFailed).Inc()
+}
+
 // NewSet builds a Set registered into a fresh Registry and returns both.
 // A fresh registry per process keeps tests hermetic (no global registration).
 func NewSet() (*Set, *prometheus.Registry) {
@@ -218,7 +231,7 @@ func NewSet() (*Set, *prometheus.Registry) {
 			}, []string{"code"}),
 			Redispatches: f.NewCounterVec(prometheus.CounterOpts{
 				Name: "braid_reaper_redispatches_total",
-				Help: "Node redispatches, by trigger.",
+				Help: "Node redispatches, by trigger (reaper verdicts; attempt_failed is emitted by the in-worker scheduler).",
 			}, []string{"trigger"}),
 			NodeFailures: f.NewCounter(prometheus.CounterOpts{
 				Name: "braid_reaper_node_failures_total",

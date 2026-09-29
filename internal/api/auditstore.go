@@ -102,36 +102,54 @@ func auditPredicate(aq AuditQuery) (string, []any) {
 	return " WHERE " + strings.Join(conds, " AND "), args
 }
 
-// ListAuditEvents 按维度过滤列审计行,返回 (当前页, 满足条件的总行数),
-// 顺序 event_at DESC, id DESC(最新在前,snowflake tie-break;与既有列表
-// 面同向)。LIMIT/OFFSET 上界由 handler 侧 parsePageParams 钉死。
-func (s *Store) ListAuditEvents(ctx context.Context, q DBTX, aq AuditQuery, limit, offset int) ([]AuditEvent, int, error) {
+// AuditCursor keyset 游标(T12.2,D-t63 #5 预登记收敛路径):值 = 展示序
+// (event_at DESC, id DESC)上一页最后一行的 (event_at, id),语义 = 全序中
+// 的排他下界。与 D-t93 哈希链序(prev_hash 链接序)无关——分页序是稳定
+// 展示序,不是因果/链序(id 序≠链序,D-t93 #3);游标不依赖任何 hash 列。
+type AuditCursor struct {
+	EventAt time.Time
+	ID      uint64
+}
+
+// ListAuditEvents 按维度过滤列审计行,keyset 语义:cursor 非空时只返回
+// (event_at,id) 全序中严格位于 cursor 之下的行;顺序 event_at DESC,
+// id DESC。尾页判定 = 取 limit+1 行(多出即有后续,裁回 limit 并回传下一
+// 页游标;nil = 无更多行)。响应不携 total:COUNT 与页行同事务的一致快照
+// 诉求随 OFFSET 契约一并退役(D-t63 #5——total 低报早停/跨页漂移两个
+// 已知边界都由游标语义闭合),读路径回到 execstore「无事务」先例。
+func (s *Store) ListAuditEvents(ctx context.Context, q DBTX, aq AuditQuery, cursor *AuditCursor, limit int) ([]AuditEvent, *AuditCursor, error) {
 	where, args := auditPredicate(aq)
-	var total int
-	if err := q.QueryRowContext(ctx,
-		"SELECT COUNT(*) FROM audit_log"+where, args...).Scan(&total); err != nil {
-		return nil, 0, fmt.Errorf("api: count audit events: %w", err)
+	if cursor != nil {
+		// DESC 全序排他下界:同行刻毫秒按 id 递降续走(id 全局唯一,元组
+		// 严格全序;访问路径 = 维度索引 + 残差过滤,深页严格优于 OFFSET)。
+		where += " AND (event_at < ? OR (event_at = ? AND id < ?))"
+		args = append(args, cursor.EventAt, cursor.EventAt, cursor.ID)
 	}
 	rows, err := q.QueryContext(ctx,
 		"SELECT "+auditCols+" FROM audit_log"+where+
-			" ORDER BY event_at DESC, id DESC LIMIT ? OFFSET ?",
-		append(args, limit, offset)...)
+			" ORDER BY event_at DESC, id DESC LIMIT ?",
+		append(args, limit+1)...)
 	if err != nil {
-		return nil, 0, fmt.Errorf("api: list audit events: %w", err)
+		return nil, nil, fmt.Errorf("api: list audit events: %w", err)
 	}
 	defer rows.Close() //nolint:errcheck // 只读路径,关闭错误无处置义
 	var out []AuditEvent
 	for rows.Next() {
 		e, err := scanAuditEvent(rows)
 		if err != nil {
-			return nil, 0, fmt.Errorf("api: scan audit event: %w", err)
+			return nil, nil, fmt.Errorf("api: scan audit event: %w", err)
 		}
 		out = append(out, e)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, 0, fmt.Errorf("api: iterate audit events: %w", err)
+		return nil, nil, fmt.Errorf("api: iterate audit events: %w", err)
 	}
-	return out, total, nil
+	if len(out) > limit {
+		out = out[:limit]
+		last := out[len(out)-1]
+		return out, &AuditCursor{EventAt: last.EventAt, ID: last.ID}, nil
+	}
+	return out, nil, nil
 }
 
 func scanAuditEvent(r rowScanner) (AuditEvent, error) {
