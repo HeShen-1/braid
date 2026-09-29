@@ -767,3 +767,55 @@ func TestSandboxHelperUsesPinnedEncoder(t *testing.T) {
 		t.Fatalf("envelope lines != 1: %q", out.String())
 	}
 }
+
+// TestSandboxSelftestEgressDialRaw(T10.2):egress-dial/raw-dial 探针的报告
+// 形态——两探针都 exit 0,e2e 按打印行断言(拒答/直连拒绝的网络层证据)。
+func TestSandboxSelftestEgressDialRaw(t *testing.T) {
+	echoAddr := startEchoTarget(t)
+	echoHost, echoPort := targetAddrHostPort(t, echoAddr)
+	proxyAddr := startEgressProxy(t, EgressConfig{
+		Allow:       map[string]map[int]struct{}{echoHost: {echoPort: {}}},
+		IPForbidden: allowAllForbiddenOff,
+	})
+
+	run := func(t *testing.T, argv ...string) string {
+		t.Helper()
+		var out bytes.Buffer
+		if err := RunSandboxHelper(context.Background(), argv, strings.NewReader(""), &out, nil); err != nil {
+			t.Fatalf("RunSandboxHelper(%v): %v", argv, err)
+		}
+		return out.String()
+	}
+
+	t.Run("egress-dial allowlisted authority reports status line", func(t *testing.T) {
+		got := run(t, "selftest", "egress-dial", proxyAddr, echoAddr)
+		if !strings.HasPrefix(got, "HTTP/1.1 200 ") {
+			t.Fatalf("out = %q, want 200 status line", got)
+		}
+	})
+	t.Run("egress-dial non-allowlisted authority reports denial line", func(t *testing.T) {
+		got := run(t, "selftest", "egress-dial", proxyAddr, "evil.example:443")
+		if !strings.HasPrefix(got, "HTTP/1.1 403 "+egressReasonHostBlocked) {
+			t.Fatalf("out = %q, want 403 %s", got, egressReasonHostBlocked)
+		}
+	})
+	t.Run("egress-dial requires two args", func(t *testing.T) {
+		var out bytes.Buffer
+		err := RunSandboxHelper(context.Background(), []string{"selftest", "egress-dial", proxyAddr}, strings.NewReader(""), &out, nil)
+		if err == nil || !strings.Contains(err.Error(), "egress-dial requires") {
+			t.Fatalf("err = %v, want usage rejection", err)
+		}
+	})
+	t.Run("raw-dial reachable reports connected", func(t *testing.T) {
+		got := run(t, "selftest", "raw-dial", echoAddr)
+		if got != "connected "+echoAddr+"\n" {
+			t.Fatalf("out = %q, want connected line", got)
+		}
+	})
+	t.Run("raw-dial unreachable reports failed and exits zero", func(t *testing.T) {
+		got := run(t, "selftest", "raw-dial", "127.0.0.1:1")
+		if !strings.HasPrefix(got, "failed 127.0.0.1:1:") {
+			t.Fatalf("out = %q, want failed line", got)
+		}
+	})
+}

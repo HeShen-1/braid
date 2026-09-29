@@ -25,11 +25,25 @@ var sandboxContainerNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,12
 // 选项分隔符(注入面),空白/控制字符一并拒;目录不可为根("/")本身。
 var sandboxMountDirRe = regexp.MustCompile(`^/[A-Za-z0-9_./-]*[A-Za-z0-9_-]$`)
 
-// sandboxSandboxableTools 可入沙箱的工具词表(http 桥网出网/file_read 零
-// 出网,网络位按工具钉死——基线 §4)。
-var sandboxSandboxableTools = map[string]string{
-	"http":      "bridge", // 过渡口径,t10.2 单点换装(SandboxSpec 网络位)
-	"file_read": "none",
+// sandboxSandboxableTools 可入沙箱的工具词表(网络位按工具钉死:
+// file_read 恒 none 零出网;http 经 cfg.EgressNetwork 内网出网,T10.2
+// 换装点 = SandboxSpec 网络字段,基线 §4)。
+var sandboxSandboxableTools = map[string]struct{}{
+	"http":      {},
+	"file_read": {},
+}
+
+// sandboxNetworkFor 工具 → docker --network 位:file_read 恒 "none";
+// http 恒 egress 内网名(docker 模式解析期已填默认,空值 = 调用方绕过
+// 解析的装配缺陷,响亮败——绝不静默回落 bridge:过渡网位已随 T10.2 死)。
+func sandboxNetworkFor(cfg sandboxConfig, tool string) (string, error) {
+	if tool == "file_read" {
+		return "none", nil
+	}
+	if cfg.EgressNetwork == "" || !sandboxNetworkRe.MatchString(cfg.EgressNetwork) {
+		return "", fmt.Errorf("tools: sandbox http carrier requires egress network (BRAID_TOOL_SANDBOX_EGRESS_NETWORK, default %q)", sandboxEgressNetworkDefault)
+	}
+	return cfg.EgressNetwork, nil
 }
 
 // buildSandboxRunArgv 构造 docker run 参数(不含 docker 二进制名本身)。
@@ -41,9 +55,12 @@ func buildSandboxRunArgv(cfg sandboxConfig, name, tool string, mounts []string) 
 	if !sandboxContainerNameRe.MatchString(name) {
 		return nil, fmt.Errorf("tools: sandbox container name %q invalid (want ^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$)", name)
 	}
-	network, ok := sandboxSandboxableTools[tool]
-	if !ok {
+	if _, ok := sandboxSandboxableTools[tool]; !ok {
 		return nil, fmt.Errorf("tools: sandbox tool %q not in vocabulary (want http|file_read)", tool)
+	}
+	network, err := sandboxNetworkFor(cfg, tool)
+	if err != nil {
+		return nil, err
 	}
 	for _, d := range mounts {
 		if !sandboxMountDirRe.MatchString(d) {
@@ -80,6 +97,9 @@ func buildSandboxRunArgv(cfg sandboxConfig, name, tool string, mounts []string) 
 			args = append(args, "--mount", "type=bind,src="+d+",dst="+d+",readonly")
 		}
 	} else {
+		// http:T10.2 网络位换装——bridge → egress 内网(--internal,worker
+		// 启动段幂等创建),容器唯一可达面 = 网关上的代理监听,直连在
+		// 网络层结构性默认拒绝(egress.go 文件头)。
 		args = append(args, "--network", network)
 	}
 	args = append(args,

@@ -13,13 +13,17 @@ package tools
 //	BRAID_TOOL_SANDBOX_CPUS            docker 旗标原样,默认 0.5
 //	BRAID_TOOL_SANDBOX_PIDS            整数 1..4096,默认 64
 //	BRAID_TOOL_SANDBOX_MAX_CONCURRENCY 并发容器上界 1..1000,默认 8
+//	BRAID_TOOL_SANDBOX_EGRESS_NETWORK  egress 内网名(docker 网络名值域),默认 braid-sbx-egress(T10.2)
+//	BRAID_TOOL_SANDBOX_EGRESS_ADDR     egress 代理地址 http://host:port(worker 启动自算自写,装配单读;
+//	                                   api 进程不执行工具,缺省 nil = 信封不带 proxy 字段)
 //
 // off 模式对沙箱键零消费(零 docker 代码路径):api 进程永不触 docker 的
 // 结构保证。键家族 BRAID_TOOL_SANDBOX* 结构性不进容器 env(防 helper 再入
-// wrap,基线 §5)。
+// wrap,基线 §5;T10.2 的代理地址经 stdin 信封 Config 下发,不经 env)。
 
 import (
 	"fmt"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
@@ -43,6 +47,14 @@ var sandboxMemoryRe = regexp.MustCompile(`^[0-9]+[bkmgt]?$`)
 // sandboxCPUsRe docker cpus 旗标值域:小数十进制,语义上须 >0。
 var sandboxCPUsRe = regexp.MustCompile(`^[0-9]+(\.[0-9]+)?$`)
 
+// sandboxNetworkRe docker 网络名值域(egress 内网名最终落 docker argv
+// --network 位,镜像引用同款纪律:拒前导 dash/空白/逗号等旗标注入形)。
+var sandboxNetworkRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+
+// sandboxEgressNetworkDefault 缺省 egress 内网名(deploy/README §egress
+// 同源登记;worker 启动幂等创建 --internal 网络,见 SandboxStartupCheck)。
+const sandboxEgressNetworkDefault = "braid-sbx-egress"
+
 // sandboxConfig 沙箱载体配置(不可变值对象;docker 二进制解析不在构造——
 // 构造保持纯配置惰性,worker 侧 Probe 负责 LookPath/daemon/镜像检查)。
 type sandboxConfig struct {
@@ -52,6 +64,12 @@ type sandboxConfig struct {
 	CPUs           string
 	PidsLimit      int
 	MaxConcurrency int
+	// EgressNetwork http 载体的 --network 位(T10.2 换装:bridge → egress
+	// 内网;docker 模式解析期恒非空,缺省 sandboxEgressNetworkDefault)。
+	EgressNetwork string
+	// EgressAddr egress 代理地址(信封 proxy 字段原料;api 装配恒 nil,
+	// worker 由启动段自写 env 后装配非 nil——见文件头 env 词表)。
+	EgressAddr *url.URL
 }
 
 // sandboxConfigFromEnv 解析并校验沙箱 env 词表;off 模式(含未设)不读
@@ -110,6 +128,23 @@ func sandboxConfigFromEnv(getenv func(string) string) (sandboxConfig, error) {
 	cfg.MaxConcurrency = sandboxIntFromEnv(getenv, "BRAID_TOOL_SANDBOX_MAX_CONCURRENCY", 8, 1, 1000)
 	if cfg.MaxConcurrency == 0 {
 		return sandboxConfig{}, fmt.Errorf("tools: BRAID_TOOL_SANDBOX_MAX_CONCURRENCY: want integer in [1, 1000]")
+	}
+
+	// T10.2 egress 段:内网名(值域过 argv 注入面防线)+ 代理地址(词形
+	// 单门 parseEgressProxyURL;空 = 未设——worker 启动段恒写,api 恒空)。
+	cfg.EgressNetwork = strings.TrimSpace(getenv("BRAID_TOOL_SANDBOX_EGRESS_NETWORK"))
+	if cfg.EgressNetwork == "" {
+		cfg.EgressNetwork = sandboxEgressNetworkDefault
+	}
+	if !sandboxNetworkRe.MatchString(cfg.EgressNetwork) {
+		return sandboxConfig{}, fmt.Errorf("tools: BRAID_TOOL_SANDBOX_EGRESS_NETWORK=%q: invalid docker network name (want ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$)", cfg.EgressNetwork)
+	}
+	if raw := strings.TrimSpace(getenv("BRAID_TOOL_SANDBOX_EGRESS_ADDR")); raw != "" {
+		u, err := parseEgressProxyURL(raw)
+		if err != nil {
+			return sandboxConfig{}, fmt.Errorf("tools: BRAID_TOOL_SANDBOX_EGRESS_ADDR: %w", err)
+		}
+		cfg.EgressAddr = u
 	}
 	return cfg, nil
 }

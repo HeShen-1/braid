@@ -105,13 +105,20 @@ func newSandboxCarrier(name string, cfg sandboxConfig, toolConfig json.RawMessag
 
 // newSandboxCarrierHTTP / newSandboxCarrierFileRead 装配缝构造器(T6):
 // 把装配期已解析的工具配置序列化为信封 Config 原料,词形与 helper
-// rebuildSandboxTool 消费面同构({"endpoints":…}/{"dirs":…})。编码复用
-// marshalSandboxEnvelope(SetEscapeHTML(false),信封纪律内层同款):dirs 里
-// 合法的 &<> 保持字面量,不被默认 Marshal 落成 \uXXXX 词形。
+// rebuildSandboxTool 消费面同构({"endpoints":…,"proxy":…}/{"dirs":…})。
+// 编码复用 marshalSandboxEnvelope(SetEscapeHTML(false),信封纪律内层同款):
+// dirs 里合法的 &<> 保持字面量,不被默认 Marshal 落成 \uXXXX 词形。
+// proxy 字段(T10.2)源自 cfg.EgressAddr:worker 装配恒在(api 侧 nil =
+// omitted;api 不执行工具,信封永不发出)。
 func newSandboxCarrierHTTP(cfg sandboxConfig, eps map[string]string, limiter *sandboxLimiter) (*sandboxCarrier, error) {
+	proxy := ""
+	if cfg.EgressAddr != nil {
+		proxy = cfg.EgressAddr.String()
+	}
 	tc, err := marshalSandboxEnvelope(struct {
 		Endpoints map[string]string `json:"endpoints"`
-	}{Endpoints: eps})
+		Proxy     string            `json:"proxy,omitempty"`
+	}{Endpoints: eps, Proxy: proxy})
 	if err != nil {
 		return nil, fmt.Errorf("marshal http endpoints: %w", err)
 	}
