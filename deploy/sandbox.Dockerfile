@@ -42,6 +42,9 @@ COPY sandbox-e2e-ca.crt /tmp/sandbox-e2e-ca.crt
 RUN cat /tmp/sandbox-e2e-ca.crt >> /etc/ssl/certs/ca-certificates.crt \
     && rm /tmp/sandbox-e2e-ca.crt \
     && adduser -D -u 65532 braid
+# env 从零构造的两成员之一(基线 §5:PATH 来自基座,LANG 由镜像 ENV 提供;
+# T10 dump-env e2e 实证 T8 缺此行 = 文档与实现的漂移点,红后补)。
+ENV LANG=C.UTF-8
 USER 65532
 ENTRYPOINT ["/usr/local/bin/braid-sandbox-exec"]
 
@@ -54,5 +57,7 @@ ENTRYPOINT ["/usr/local/bin/braid-sandbox-exec"]
 FROM alpine:3.22@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
 COPY braid-sandbox-exec /usr/local/bin/braid-sandbox-exec
 RUN adduser -D -u 65532 braid
+# env 两成员契约同 sandbox-e2e 段(基线 §5;两平行段零继承,各自声明)。
+ENV LANG=C.UTF-8
 USER 65532
 ENTRYPOINT ["/usr/local/bin/braid-sandbox-exec"]

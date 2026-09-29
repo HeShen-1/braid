@@ -11,11 +11,22 @@ package tools
 // selftest:dump-env(凭证不可见 e2e 探针)+ alloc(8MiB 步长资源探针)。
 
 import (
+	"bufio"
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"encoding/json"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
+	"math/big"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -388,10 +399,98 @@ func TestSandboxHelperSelftest(t *testing.T) {
 		})
 	}
 
-	t.Run("serve reserved for T10 with loud error", func(t *testing.T) {
-		err := RunSandboxHelper(context.Background(), []string{"selftest", "serve"}, strings.NewReader(""), &strings.Builder{}, nil)
-		if err == nil || !strings.Contains(err.Error(), "T10") {
-			t.Fatalf("err = %v, want reserved-mode error", err)
+	t.Run("serve hosts TLS with marker+path echo and exits on stdin EOF", func(t *testing.T) {
+		// 单测绑 127.0.0.1(免 alias 免特权);叶对不走 generateSandboxCA
+		// ——该 CA 已被 NameConstraints 钉死 198.18/15 段(T10 裁决),
+		// 段外 IP 的叶会拒。serve 机制与 CA 无绑定:任何合法叶对可服务,
+		// 分离点即在此。hermetic 段上的真 CA 链路由 e2e 证明。
+		certPEM, keyPEM := sandboxServeUnitTestLeaf(t)
+		dir := t.TempDir()
+		certPath := filepath.Join(dir, "leaf.crt")
+		keyPath := filepath.Join(dir, "leaf.key")
+		if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
+			t.Fatalf("write leaf cert: %v", err)
+		}
+		if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+			t.Fatalf("write leaf key: %v", err)
+		}
+
+		stdinR, stdinW := io.Pipe()
+		outR, outW, err := os.Pipe()
+		if err != nil {
+			t.Fatalf("pipe: %v", err)
+		}
+		t.Cleanup(func() { // os.Pipe 是真实 fd,不关则每 run 泄 2 个
+			_ = outR.Close()
+			_ = outW.Close()
+		})
+		done := make(chan error, 1)
+		go func() {
+			done <- RunSandboxHelper(context.Background(),
+				[]string{"selftest", "serve", "127.0.0.1:0", certPath, keyPath},
+				stdinR, outW, nil)
+		}()
+
+		line, err := bufio.NewReader(outR).ReadString('\n')
+		if err != nil {
+			t.Fatalf("read listening line: %v", err)
+		}
+		addr := strings.TrimSpace(strings.TrimPrefix(line, "listening "))
+		if host, _, err := net.SplitHostPort(addr); err != nil || host != "127.0.0.1" {
+			t.Fatalf("listening line = %q, want host 127.0.0.1 (err=%v)", line, err)
+		}
+
+		pool := x509.NewCertPool()
+		if !pool.AppendCertsFromPEM(certPEM) {
+			t.Fatal("unit leaf not loadable into pool")
+		}
+		client := &http.Client{Transport: &http.Transport{
+			TLSClientConfig: &tls.Config{RootCAs: pool},
+		}}
+		t.Cleanup(client.CloseIdleConnections)
+		resp, err := client.Get("https://" + addr + "/unit/probe")
+		if err != nil {
+			t.Fatalf("GET hermetic server: %v", err)
+		}
+		body, err := io.ReadAll(resp.Body)
+		_ = resp.Body.Close()
+		if err != nil {
+			t.Fatalf("read body: %v", err)
+		}
+		if resp.StatusCode != http.StatusOK || string(body) != sandboxServeMarker+" /unit/probe" {
+			t.Fatalf("resp = %d %q, want 200 %q", resp.StatusCode, body, sandboxServeMarker+" /unit/probe")
+		}
+
+		// stdin EOF = 主停机信号:helper 必须有界返回(零孤儿)。
+		if err := stdinW.Close(); err != nil {
+			t.Fatalf("close stdin: %v", err)
+		}
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("serve session: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("serve did not exit on stdin EOF within 5s")
+		}
+	})
+
+	t.Run("serve rejects wildcard and non-IP hosts", func(t *testing.T) {
+		for _, host := range []string{"0.0.0.0:0", "[::]:0", "localhost:0"} {
+			err := RunSandboxHelper(context.Background(),
+				[]string{"selftest", "serve", host, "cert.pem", "key.pem"},
+				strings.NewReader(""), &strings.Builder{}, nil)
+			if err == nil || !strings.Contains(err.Error(), "explicit") {
+				t.Fatalf("host %q: err = %v, want explicit-IP rejection", host, err)
+			}
+		}
+	})
+
+	t.Run("serve rejects wrong argv shape", func(t *testing.T) {
+		err := RunSandboxHelper(context.Background(), []string{"selftest", "serve"},
+			strings.NewReader(""), &strings.Builder{}, nil)
+		if err == nil || !strings.Contains(err.Error(), "requires") {
+			t.Fatalf("err = %v, want argv shape rejection", err)
 		}
 	})
 
@@ -417,6 +516,42 @@ func mustJSON(t *testing.T, v any) string {
 		t.Fatalf("marshal: %v", err)
 	}
 	return string(b)
+}
+
+// sandboxServeUnitTestLeaf 自签叶对(127.0.0.1 SAN,ServerAuth):serve 单测
+// 的服务身份。刻意不走去 generateSandboxCA——该 CA 的 NameConstraints 已
+// 把可签 IP 钉死在 198.18/15 段(T10 裁决),单测绑 127.0.0.1 免 alias 免
+// 特权,段外叶必被拒;serve 机制消费任意合法叶对,与 CA 策略正交。
+func sandboxServeUnitTestLeaf(t *testing.T) (certPEM, keyPEM []byte) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate unit leaf key: %v", err)
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		t.Fatalf("generate serial: %v", err)
+	}
+	now := time.Now()
+	tmpl := &x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{Organization: []string{"braid"}, CommonName: "braid-serve-unit"},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.Add(time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IPAddresses:  []net.IP{net.ParseIP("127.0.0.1")},
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		t.Fatalf("create unit leaf: %v", err)
+	}
+	keyDER, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("marshal unit leaf key: %v", err)
+	}
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}),
+		pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: keyDER})
 }
 
 // TestSandboxHelperUsesPinnedEncoder:helper 信封必须经 EncodeSandboxResponse

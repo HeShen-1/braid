@@ -16,27 +16,37 @@ package tools
 //     不符/配置重建失败/inputs 非对象)→ tool_failed 信封(诊断可观测,
 //     宿主侧落 error_message)。
 //
-// env 白名单(基线 §5):容器 env 仅镜像 ENV 的 PATH/LANG 两项,helper
-// 结构性不读 ambient env(工具重建只消费信封 Config;唯一例外 = selftest
-// dump-env 探针,它就是把 env 序列化给 e2e 断言的)。
+// env 白名单(基线 §5):构造面 = 镜像 ENV 的 PATH/LANG 两项;docker
+// daemon 另自管注入 HOSTNAME/HOME(平台成员,docker run 无 unset 通道,
+// 非 worker ambient——恰四键契约由 T10 dump-env e2e 钉死,D-t101 #2 注记)。
+// helper 结构性不读 ambient env(工具重建只消费信封 Config;唯一例外 =
+// selftest dump-env 探针,它就是把 env 序列化给 e2e 断言的)。
 //
 // selftest 子命令(基线 §3:argv 词表可达但 carrier 永不发出,容器内
 // 攻击者无新能力面;argv 构造器单测是回归锚):
 //
 //	braid-sandbox-exec selftest dump-env          全量 env → JSON 对象(凭证不可见 e2e)
 //	braid-sandbox-exec selftest alloc <MiB>       8MiB 步长写满分配至目标/被杀(资源 e2e)
-//	braid-sandbox-exec selftest serve             T10 hermetic http e2e 落地(宿主侧 TLS server,占位响亮报错)
+//	braid-sandbox-exec selftest serve <ip:port> <cert> <key>
+//	                                              宿主侧 TLS server(T10 hermetic http e2e:
+//	                                              显式 IP 绑定钉 hermetic 段,body = marker
+//	                                              + path 回显,stdin EOF/SIGTERM 优雅退)
 
 import (
 	"bytes"
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net"
+	"net/http"
 	"os"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -48,6 +58,9 @@ const (
 	// sandboxHelperSelftestAllocStep:alloc 探针的分配步长(基线 #4
 	// 「按 8MiB 步长分配」)。
 	sandboxHelperSelftestAllocStep = 8
+	// sandboxServeMarker:serve 响应 body 的固定前缀(e2e 断言锚;后缀
+	// 回显请求 path,证明 base_url 与 DSL path 的拼接)。
+	sandboxServeMarker = "braid-e2e-serve-ok"
 )
 
 // 测试可注入的时间量(read timeout 与 watchdog grace;生产值固定)。
@@ -75,7 +88,7 @@ func RunSandboxHelper(ctx context.Context, argv []string, stdin io.Reader, stdou
 	case "http", "file_read":
 		return runSandboxToolSession(ctx, argv[0], stdin, stdout, hardExit)
 	case "selftest":
-		return runSandboxSelftest(argv[1:], stdout)
+		return runSandboxSelftest(ctx, argv[1:], stdin, stdout)
 	default:
 		// argv 由载体白名单构造器发出;到这即错配/篡改——信封可观测报错。
 		return writeSandboxEnvelope(stdout, SandboxResponse{
@@ -273,9 +286,9 @@ func writeSandboxEnvelope(w io.Writer, resp SandboxResponse) error {
 
 // runSandboxSelftest 分派 selftest 探针模式(仅 e2e 消费;错误 = 无信封
 // 非零退出,探针没有信封契约)。
-func runSandboxSelftest(argv []string, stdout io.Writer) error {
+func runSandboxSelftest(ctx context.Context, argv []string, stdin io.Reader, stdout io.Writer) error {
 	if len(argv) < 1 {
-		return fmt.Errorf("selftest requires a mode: dump-env | alloc <MiB> | serve")
+		return fmt.Errorf("selftest requires a mode: dump-env | alloc <MiB> | serve <ip:port> <cert> <key>")
 	}
 	switch argv[0] {
 	case "dump-env":
@@ -301,15 +314,87 @@ func runSandboxSelftest(argv []string, stdout io.Writer) error {
 		}
 		return sandboxSelftestAlloc(mib, stdout)
 	case "serve":
-		// hermetic http e2e(T10)落地:归宿 = 宿主侧 TLS server(T7 契约
-		// 钉死——bridge 网容器 IP 全落禁段,可达的 198.19.x 必为宿主持有;
-		// 叶证书与私钥永不入容器,容器内 serve 被运行期零通道封死)。
-		// 材料经 T7 生成器出(sandbox_ca_test.go),argv 与监听形态 T10
-		// 定——现在占位响亮报错防误用。
-		return errors.New("selftest serve lands with T10 hermetic http e2e (host-side TLS server per T7 contract)")
+		// hermetic http e2e(T10)的宿主侧 TLS server(T7 契约:bridge 网
+		// 容器 IP 全落禁段,可达的 198.19.x 必为宿主持有;叶证书与私钥
+		// 永不入容器,容器内 serve 被运行期零通道封死——本模式只在宿主
+		// 侧被 e2e 当子进程拉起,材料经 T7 生成器出)。
+		if len(argv) != 4 {
+			return fmt.Errorf("selftest serve requires <ip:port> <leaf-cert.pem> <leaf-key.pem> (host-side hermetic e2e server)")
+		}
+		return sandboxSelftestServe(ctx, argv[1], argv[2], argv[3], stdin, stdout)
 	default:
 		return fmt.Errorf("selftest unknown mode %q (want dump-env | alloc | serve)", argv[0])
 	}
+}
+
+// sandboxSelftestServe 宿主侧 TLS server(T10 裁决:监听形态 = 显式 IP
+// 绑定,wildcard 拒——hermetic 段由地址本身钉死;port 允许 0 = 内核
+// 指派)。段约束归属:serve 只拒 wildcard,不校验 IP 是否段内——段钉扎
+// 在 CA NameConstraints 与 e2e 选址,不在监听层(单测绑 127.0.0.1 即此
+// 正交性的体现,审计登记)。协议行:绑成后向 stdout 打 "listening <ip>:<port>" 单行,测试
+// 据此组装 endpoints(port 0 时的唯一知情面);之后 stdout 不再有输出。
+// body = marker + 请求 path 回显。生命周期:stdin EOF(测试关管道)/
+// SIGTERM/ctx.Done → 2s 有界优雅退——serve 的存在与测试进程绑定,不产
+// 生孤儿。
+func sandboxSelftestServe(ctx context.Context, addr, certPath, keyPath string, stdin io.Reader, stdout io.Writer) error {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return fmt.Errorf("selftest serve: addr %q: %w", addr, err)
+	}
+	if ip := net.ParseIP(host); ip == nil || ip.IsUnspecified() {
+		return fmt.Errorf("selftest serve: addr host %q must be an explicit (non-wildcard) IP — the hermetic segment pin", host)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 0 || port > 65535 {
+		return fmt.Errorf("selftest serve: port %q invalid (want 0..65535)", portStr)
+	}
+	pair, err := tls.LoadX509KeyPair(certPath, keyPath)
+	if err != nil {
+		return fmt.Errorf("selftest serve: leaf pair: %w", err)
+	}
+	ln, err := tls.Listen("tcp", addr, &tls.Config{
+		Certificates: []tls.Certificate{pair},
+		MinVersion:   tls.VersionTLS12,
+	})
+	if err != nil {
+		return fmt.Errorf("selftest serve: listen %s: %w", addr, err)
+	}
+
+	if _, err := fmt.Fprintf(stdout, "listening %s\n", ln.Addr().String()); err != nil {
+		_ = ln.Close()
+		return fmt.Errorf("selftest serve: write protocol line: %w", err)
+	}
+
+	srv := &http.Server{
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_, _ = io.WriteString(w, sandboxServeMarker+" "+r.URL.Path)
+		}),
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	serveErr := make(chan error, 1)
+	go func() { serveErr <- srv.Serve(ln) }()
+
+	// stdin EOF = 测试侧关管道(主停机信号);SIGTERM = 外部 kill 兜底。
+	stdinDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(io.Discard, stdin)
+		close(stdinDone)
+	}()
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	defer signal.Stop(sig)
+
+	select {
+	case <-stdinDone:
+	case <-sig:
+	case <-ctx.Done():
+	case err := <-serveErr:
+		return fmt.Errorf("selftest serve: %w", err)
+	}
+	shCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_ = srv.Shutdown(shCtx)
+	return nil
 }
 
 // sandboxSelftestAlloc 按 8MiB 步长分配并逐字节写满(内核真提交,防零页

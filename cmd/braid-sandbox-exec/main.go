@@ -12,11 +12,13 @@ package main
 //	4  watchdog 硬退(挂死/孤儿兜底,理论只在宿主失联时触及)
 //
 // 退出码 3 的典型场景 = 宿主 ctx 已取消(deadline/stop),宿主按 §6 走
-// infra 分类;偶发竞态(信封 deadline 与宿主 kill 同窗)宿主 ctx 亦已
-// 火并同归 infra,分类不失真。
+// infra 分类;偶发竞态(信封 deadline 与宿主 kill 同窗)绝大多数同归
+// infra,极窄收割窗内宿主 ctx 采样仍存活会误归 tool_failed(方向 = 丢
+// 一次重试,与确定性失败不重试哲学相容,接受——T10 审计收窄措辞)。
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"syscall"
@@ -37,6 +39,10 @@ func main() {
 
 	err := tools.RunSandboxHelper(ctx, os.Args[1:], os.Stdin, os.Stdout, func() { os.Exit(exitWatchdog) })
 	if err != nil {
+		// 无信封失败的唯一诊断面:err 文本落 stderr(carrier 侧只见
+		// 退出码,ctx/读超时/IO/编码四子因全靠这行区分——T10 审计补)。
+		// 文本面 = 错误描述,无 stdin 载荷无密钥,不触铁律。
+		fmt.Fprintln(os.Stderr, err)
 		os.Exit(exitNoEnvelope)
 	}
 	os.Exit(exitEnvelopeWritten)
