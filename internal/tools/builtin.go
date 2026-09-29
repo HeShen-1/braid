@@ -21,10 +21,14 @@ package tools
 // 一批构造器,策略零复制,装配缺陷启动即现);并发信号量装配期单例,跨
 // 工具共享同一 daemon 预算。
 //
+// 工具包签名(T10.3):BRAID_TOOL_SIGNING_PUBLIC_KEY 在场即签名态——
+// 工具集唯一来源 = 验签后的清单(env 矩阵与验签原语见 toolpackage.go);
+// 整组缺省 = 下方内置 env 路径逐字节现状。两条路径汇入同一 toolSet 后
+// 走完全相同的构造/沙箱换装流(eps/dirs 值校验同门)。
+
 // JSON-in-env 先例:BRAID_LLM_PRICE_TABLE(D-2026-09-23-t31)。
 
 import (
-	"encoding/json"
 	"fmt"
 )
 
@@ -35,43 +39,39 @@ func BuiltinToolsFromEnv(getenv func(string) string) ([]Tool, error) {
 	if err != nil {
 		return nil, err
 	}
+	ts, err := resolveToolSet(getenv)
+	if err != nil {
+		return nil, err
+	}
 	var limiter *sandboxLimiter // docker 模式装配期单例;off 恒 nil(零分配)
 	if sbcfg.Docker {
 		limiter = newSandboxLimiter(sbcfg.MaxConcurrency)
 	}
 	var out []Tool
-	if raw := getenv("BRAID_HTTP_ENDPOINTS"); raw != "" {
-		eps := make(map[string]string)
-		if err := json.Unmarshal([]byte(raw), &eps); err != nil {
-			return nil, fmt.Errorf("tools: BRAID_HTTP_ENDPOINTS: want JSON object {alias: base_url}: %w", err)
-		}
-		ht, err := NewHTTPTool(HTTPConfig{Endpoints: eps}) // 值校验(docker 模式仅校验,off 注册该实例)
+	if ts.httpDeclared {
+		ht, err := NewHTTPTool(HTTPConfig{Endpoints: ts.httpEndpoints}) // 值校验(docker 模式仅校验,off 注册该实例)
 		if err != nil {
-			return nil, fmt.Errorf("tools: BRAID_HTTP_ENDPOINTS: %w", err)
+			return nil, fmt.Errorf("tools: %s: %w", ts.httpSource, err)
 		}
 		if sbcfg.Docker {
-			c, err := newSandboxCarrierHTTP(sbcfg, eps, limiter)
+			c, err := newSandboxCarrierHTTP(sbcfg, ts.httpEndpoints, limiter)
 			if err != nil {
-				return nil, fmt.Errorf("tools: BRAID_HTTP_ENDPOINTS: %w", err)
+				return nil, fmt.Errorf("tools: %s: %w", ts.httpSource, err)
 			}
 			out = append(out, c)
 		} else {
 			out = append(out, ht)
 		}
 	}
-	if raw := getenv("BRAID_FILEREAD_DIRS"); raw != "" {
-		var dirs []string
-		if err := json.Unmarshal([]byte(raw), &dirs); err != nil {
-			return nil, fmt.Errorf("tools: BRAID_FILEREAD_DIRS: want JSON array of absolute dirs: %w", err)
-		}
-		ft, err := NewFileReadTool(FileReadConfig{Dirs: dirs}) // 值校验(docker 模式仅校验,off 注册该实例)
+	if ts.filereadDeclared {
+		ft, err := NewFileReadTool(FileReadConfig{Dirs: ts.filereadDirs}) // 值校验(docker 模式仅校验,off 注册该实例)
 		if err != nil {
-			return nil, fmt.Errorf("tools: BRAID_FILEREAD_DIRS: %w", err)
+			return nil, fmt.Errorf("tools: %s: %w", ts.filereadSource, err)
 		}
 		if sbcfg.Docker {
-			c, err := newSandboxCarrierFileRead(sbcfg, dirs, limiter)
+			c, err := newSandboxCarrierFileRead(sbcfg, ts.filereadDirs, limiter)
 			if err != nil {
-				return nil, fmt.Errorf("tools: BRAID_FILEREAD_DIRS: %w", err)
+				return nil, fmt.Errorf("tools: %s: %w", ts.filereadSource, err)
 			}
 			out = append(out, c)
 		} else {
