@@ -185,3 +185,66 @@ clobber 式整体替换会静默断全部公网 https 出站)**,操作先于 USE
 部署。禁止经任何运行期通道(env/挂载/信封)注入 CA;该变更会触发上述
 机械锚(prod 段唯一 COPY = helper 二进制、零束操作、零 ENV 由锚钉死),
 属预期,锚随显式变更同步更新。
+
+## 8. 工具包签名(T10.3)
+
+工具定义的发布物 = **签名的工具定义清单**(tool package):工具名与安全
+相关配置(http 端点白名单、file_read 目录白名单)整体进签名面,Ed25519
+对清单**原始字节**签名(签什么验什么,无 canonical 重排)。发布侧持
+私钥,加载侧(api 与 worker 经 BuiltinToolsFromEnv 单源装配)持公钥
+验签;三键均 base64(StdEncoding),值不含换行:
+
+```
+BRAID_TOOL_SIGNING_PUBLIC_KEY=  # 32B Ed25519 公钥
+BRAID_TOOL_PACKAGE=             # 清单 JSON 原始字节
+BRAID_TOOL_PACKAGE_SIGNATURE=   # 64B Ed25519 签名
+```
+
+**fail closed 纪律(无降级开关;降级须 D- 拍板)**:
+
+| pubkey | package/signature | 内置工具键 | 结果 |
+|--------|-------------------|-----------|------|
+| 未设 | 全缺 | 任意 | 内置 env 路径现状(签名未部署) |
+| 未设 | 任一在场 | — | 启动败(无钥不可验) |
+| 设了 | 半配 | — | 启动败(半配置即败) |
+| 设了 | 全配 + 验签过 | 空 | 清单为唯一工具来源 |
+| 设了 | 验签/清单校验失败 | — | 启动败(验签失败即拒) |
+| 设了 | 任意 | 非空 | 启动败(unsigned 源即拒——开签名忘摘旧键 = 响亮拒绝,配置漂移防) |
+
+清单 v1(字段面封闭:未知工具/未知字段/Endpoints 与 Dirs 交叉携带/
+尾随数据/"tools" 键缺席或 null 均拒——空发布必须是显式 {};工具词表 =
+http/file_read,t13.2 MCP 接入时扩展):
+
+```json
+{"version":1,"tools":{
+  "http":{"endpoints":{"docs_api":"https://docs.example.com"}},
+  "file_read":{"dirs":["/var/braid/docs"]}
+}}
+```
+
+JSON 语义(Go encoding/json,加载侧不重排不归一):重复键 last-wins、
+字段名匹配大小写不敏感——清单确定性由签名人单源产出保证,签名绑原始
+字节。
+
+**发布命令**(openssl;私钥永不进仓/日志/部署面,公钥非秘密但仅经 env
+注入;`-w 0` 出单行 base64——env 值不含换行):
+
+```
+# 0. 清单写入 package.json(签名绑文件字节,提交前后别让编辑器改行尾)
+# 1. 密钥对(一次性;SPKI DER 44B 取尾 32B = 原始公钥)
+openssl genpkey -algorithm ed25519 -out toolpkg_key.pem
+openssl pkey -in toolpkg_key.pem -pubout -outform DER | tail -c 32 | base64 -w 0
+# 2. 签名(须 OpenSSL ≥ 3.0:pkeyutl -rawin,1.1.1 无此选项)
+openssl pkeyutl -sign -inkey toolpkg_key.pem -rawin -in package.json | base64 -w 0 > sig.b64
+# 3. BRAID_TOOL_PACKAGE 的值 = 清单字节 base64
+base64 -w 0 package.json
+# 4. 发布侧自检(签坏了在这里红,别等 api/worker 启动拒)
+openssl pkeyutl -verify -pubin -inkey <(openssl pkey -in toolpkg_key.pem -pubout) \
+  -rawin -in package.json -sigfile <(base64 -d sig.b64)
+```
+
+加载侧验证与命令行自检同门:Go `ed25519.Verify` 对 openssl
+`pkeyutl -rawin` 原始签名逐字节兼容(双向实测,且 openssl 产出的真实
+golden 向量已入 `internal/tools/toolpackage_test.go` 持续验证)。部署后
+api/worker 启动即验,失败 = 拒启(错误带分量定位,不含密钥材料)。换钥 =
+新钥重签 + 全部署点同步换三键(无过渡双钥;轮换策略需要时 D- 拍板)。
