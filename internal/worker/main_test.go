@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/hibiken/asynq"
+	"go.opentelemetry.io/otel/trace"
 
 	"braid/internal/db"
 	"braid/internal/db/sqltest"
@@ -246,13 +247,26 @@ func startWorkerOnQueue(t *testing.T, d *sql.DB, ex Executor, cfg Config, queue 
 // startWorkerOpt = startWorker + T4.5 通知面注入(nil = SMTP 未配置降级)。
 func startWorkerOpt(t *testing.T, d *sql.DB, ex Executor, cfg Config, n ApprovalNotifier) (queue string) {
 	t.Helper()
+	return startWorkerOptTraced(t, d, ex, cfg, n, nil)
+}
+
+// startWorkerOptTraced = startWorkerOpt + Tracer 注入(nil = 观测关闭;
+// e2e notify 面用:消费侧孤儿链短路在真链层可断言,D-t121 #5)。
+func startWorkerOptTraced(t *testing.T, d *sql.DB, ex Executor, cfg Config, n ApprovalNotifier, tr trace.Tracer) (queue string) {
+	t.Helper()
 	queue = nextQueue(t)
-	startWorkerOnQueueOpt(t, d, ex, cfg, queue, n)
+	startWorkerOnQueueOptTraced(t, d, ex, cfg, queue, n, tr)
 	return queue
 }
 
 // startWorkerOnQueueOpt 是全部 startWorker* 变体的实体(Notifier 注入面)。
 func startWorkerOnQueueOpt(t *testing.T, d *sql.DB, ex Executor, cfg Config, queue string, n ApprovalNotifier) {
+	t.Helper()
+	startWorkerOnQueueOptTraced(t, d, ex, cfg, queue, n, nil)
+}
+
+// startWorkerOnQueueOptTraced 是带 Tracer 的实体(其余变体经 nil 直通)。
+func startWorkerOnQueueOptTraced(t *testing.T, d *sql.DB, ex Executor, cfg Config, queue string, n ApprovalNotifier, tr trace.Tracer) {
 	t.Helper()
 	opt := redistest.MustOpt(t)
 	cfg.Queues = map[string]int{queue: 1}
@@ -283,7 +297,7 @@ func startWorkerOnQueueOpt(t *testing.T, d *sql.DB, ex Executor, cfg Config, que
 	wctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(wctx, Deps{DB: d, IDs: ids, Executor: ex, Sched: sched, Notifier: n}, cfg, opt)
+		done <- Run(wctx, Deps{DB: d, IDs: ids, Executor: ex, Sched: sched, Notifier: n, Tracer: tr}, cfg, opt)
 	}()
 	t.Cleanup(func() {
 		cancel()
