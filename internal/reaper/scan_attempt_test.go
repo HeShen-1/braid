@@ -101,6 +101,15 @@ func TestReapRedispatchNoTraceStaysZeroInjected(t *testing.T) {
 	if np.TraceID != "" {
 		t.Fatalf("无 trace 原行 → 重派 payload trace_id = %q, want 空(键缺席零注入)", np.TraceID)
 	}
+	// D-t121 #3 反向臂:重派 payload 恒不携 span_id(原发射 span 不在 DB,
+	// 携陈旧/伪造 span 违「重放同一真相」)——键必须在原文缺席。
+	var rawMap map[string]any
+	if err := json.Unmarshal(payload, &rawMap); err != nil {
+		t.Fatalf("redispatch payload raw: %v", err)
+	}
+	if _, ok := rawMap["span_id"]; ok {
+		t.Fatalf("redispatch payload carries span_id %q, want key absent (D-t121 #3)", rawMap["span_id"])
+	}
 }
 
 // TestReapBudgetBaseFreshRound:T9.2 预算基线(对抗审计 HIGH 修)——attempts-

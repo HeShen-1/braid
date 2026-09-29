@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/redis/go-redis/v9"
@@ -21,7 +22,11 @@ import (
 	"braid/internal/reaper"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
+	"braid/internal/tracing"
 )
+
+// traceShutdownGrace 是 OTel batcher 排空预算(独立停机窗,cmd/worker 同款)。
+const traceShutdownGrace = 2 * time.Second
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -106,6 +111,26 @@ func run(ctx context.Context) error {
 	} else {
 		slog.Warn("reaper: BRAID_REDIS_QUEUE_ADDR unset; running leaderless")
 	}
+
+	// T12.1:OTel trace——reaper 进程 span(tick/job/flush/janitor 计时面,
+	// span 恒不进发射 ctx,D-t121 #4);装配镜像 cmd/worker。
+	traceCfg := tracing.ConfigFromEnv(os.Getenv)
+	if err := traceCfg.Validate(); err != nil {
+		return fmt.Errorf("reaper: %w", err)
+	}
+	traceProv, err := tracing.NewProvider(tracing.Config{Exporter: traceCfg.Exporter, Endpoint: traceCfg.Endpoint, ServiceName: "braid-reaper"})
+	if err != nil {
+		return fmt.Errorf("reaper: %w", err)
+	}
+	defer func() {
+		shCtx, cancel := context.WithTimeout(context.Background(), traceShutdownGrace)
+		defer cancel()
+		if err := traceProv.Shutdown(shCtx); err != nil {
+			slog.Warn("reaper: trace provider shutdown", "err", err)
+		}
+	}()
+	slog.Info("reaper: tracing", "exporter", traceCfg.Exporter)
+	deps.Tracer = traceProv.Tracer("braid/reaper")
 
 	r, err := reaper.New(deps, cfg)
 	if err != nil {

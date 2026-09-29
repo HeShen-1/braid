@@ -430,7 +430,8 @@ SELECT COUNT(*) FROM outbox
 // appendRedispatchEvent 落重派事件(与 scheduler.appendNodeTask 同构;
 // reaper 自带雪花 ID,不 import scheduler 私有面)。原行 trace 自全状态
 // MAX 带出(redispatchResume 同式,T8.1:重放 = 原事件同一真相,重执行段
-// 不换主链;本节点无任何带 trace 原行时空 = 零注入,不伪造段链)。LIKE
+// 不换主链;本节点无任何带 trace 原行时空 = 零注入,不伪造段链)。SpanID
+// 刻意不携(D-t121 #3):原发射 span 不在 DB,消费侧派生回退近似。LIKE
 // 前缀含 ':' 定界符,与活闸同式;本行尚未 INSERT,MAX 不含自身。
 func (r *Reaper) appendRedispatchEvent(ctx context.Context, q engine.DBTX,
 	execID, nodeExecID uint64, attemptNo uint16) error {

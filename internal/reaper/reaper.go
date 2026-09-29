@@ -10,6 +10,9 @@ import (
 	"os"
 	"time"
 
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
+
 	"braid/internal/audit"
 	"braid/internal/metrics"
 	"braid/internal/scheduler"
@@ -28,6 +31,12 @@ type Deps struct {
 	// Metrics 是观测面(T6.4):nil = 关闭(测试默认)。gauge 采集器也在
 	// 其上(collect.go 每 tick SQL 快照)。
 	Metrics *metrics.ReaperSet
+	// Tracer 是 OTel 观测面(D-t121 #4):nil = 关闭(测试默认)。tick 根
+	// span + 每作业子 span + flush/janitor span——**span 恒不进发射 ctx**
+	// (作业函数收调用方原始 ctx):reaper 自生审计行保持 D-t62 如实化
+	// NULL 口径,notify 事件 outbox 行列值/payload 双写原则不被 tick trace
+	// 撬动;与 relay 的 span 入 ctx 形态分立,理由见 D- 条目。
+	Tracer trace.Tracer
 }
 
 // Reaper 是 reconciler 实例(无内部状态,字段在构造时定格)。
@@ -119,7 +128,32 @@ func (r *Reaper) leaderGate(ctx context.Context, token string, ttl time.Duration
 // 测试经 Config 字面量注入毫秒级值)。四组扫描顺序执行、逐作业错误隔离:
 // 单作业失败记日志不阻断其余(扫描面互相独立),首个错误仍上抛供调用方
 // 观测(测试断言),Run 循环只记日志。
+//
+// span 形态(D-t121 #4):Tracer 非 nil 时包 tick 根 span + 每作业子 span
+// (reaper.<job>);span 层级经独立 span ctx 链维系,**作业函数恒收调用方
+// 原始 ctx**——audit/outbox 的 applyCtxTrace 读不到 tick trace,reaper
+// 自生行保持 NULL 如实化口径(faultinject e2e「非空 trace 恒 X」钉死)。
 func (r *Reaper) RunOnce(ctx context.Context) error {
+	if r.deps.Tracer == nil {
+		return r.runJobs(ctx, nil)
+	}
+	// 返回的 span ctx 只作 job span 的层级 parent,不进任何作业调用。
+	// 错误记录在 End 之前(SDK span End 后 IsRecording=false,RecordError/
+	// SetStatus 均为静默 no-op——review 修:先记错后结束,与 job/flush/
+	// janitor 包装同序)。
+	tctx, tick := r.deps.Tracer.Start(ctx, "reaper.tick")
+	defer tick.End()
+	err := r.runJobs(ctx, tctx)
+	if err != nil {
+		tick.RecordError(err)
+		tick.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
+
+// runJobs 逐作业执行。spanParent nil = 无观测直通;非 nil = 每作业在其
+// 下开 reaper.<name> 子 span(错误入 span),作业本身仍收原始 ctx。
+func (r *Reaper) runJobs(ctx, spanParent context.Context) error {
 	jobs := []struct {
 		name string
 		fn   func(context.Context) error
@@ -132,10 +166,23 @@ func (r *Reaper) RunOnce(ctx context.Context) error {
 	}
 	var firstErr error
 	for _, j := range jobs {
-		if err := j.fn(ctx); err != nil {
-			r.log.Error("reap.job_failed", "job", j.name, "err", err)
+		jerr := func() error {
+			if spanParent == nil {
+				return j.fn(ctx)
+			}
+			_, span := r.deps.Tracer.Start(spanParent, "reaper."+j.name)
+			defer span.End()
+			err := j.fn(ctx) // 原始 ctx:span 不充当发射上下文(D-t121 #4)
+			if err != nil {
+				span.RecordError(err)
+				span.SetStatus(codes.Error, err.Error())
+			}
+			return err
+		}()
+		if jerr != nil {
+			r.log.Error("reap.job_failed", "job", j.name, "err", jerr)
 			if firstErr == nil {
-				firstErr = fmt.Errorf("reaper: %s: %w", j.name, err)
+				firstErr = fmt.Errorf("reaper: %s: %w", j.name, jerr)
 			}
 		}
 	}
@@ -191,8 +238,23 @@ func jittered(d time.Duration) time.Duration {
 const auditFlushRoundCap = 10000
 
 // flushOnce 搬运一轮暂存审计行(audit_pending → audit_log,T6.1 异步批量
-// 的消费半边)。毒行隔离与批量契约见 audit/flush.go;此处只驱动。
+// 的消费半边)。毒行隔离与批量契约见 audit/flush.go;此处只驱动。span 形态
+// 同 RunOnce(D-t121 #4:计时 span 不进发射 ctx,搬运行 trace 保持原值)。
 func (r *Reaper) flushOnce(ctx context.Context) error {
+	if r.deps.Tracer == nil {
+		return r.doFlush(ctx)
+	}
+	_, span := r.deps.Tracer.Start(ctx, "reaper.audit_flush")
+	defer span.End()
+	err := r.doFlush(ctx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
+
+func (r *Reaper) doFlush(ctx context.Context) error {
 	start := time.Now()
 	agg, err := audit.FlushAll(ctx, r.deps.DB, r.cfg.AuditFlushBatch, auditFlushRoundCap)
 	if r.m != nil {

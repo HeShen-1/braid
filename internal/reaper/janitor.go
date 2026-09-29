@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"go.opentelemetry.io/otel/codes"
 
 	"braid/internal/engine"
 )
@@ -51,8 +52,22 @@ func (r *Reaper) janitorLoop(ctx context.Context) {
 // janitorOnce 一轮维护:专用连接 + 会话级 MDL 等待封顶;分区作业与 outbox/
 // login_audit 清理错误隔离(前者失败只记日志,不阻断清理)。DDL 全程
 // autocommit(SET SESSION 后每条 ALTER 独立提交),不持行锁、不走 Transient
-// 重试。
+// 重试。span 形态同 RunOnce(D-t121 #4:计时 span 不进发射 ctx)。
 func (r *Reaper) janitorOnce(ctx context.Context) error {
+	if r.deps.Tracer == nil {
+		return r.doJanitor(ctx)
+	}
+	_, span := r.deps.Tracer.Start(ctx, "reaper.janitor")
+	defer span.End()
+	err := r.doJanitor(ctx)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
+
+func (r *Reaper) doJanitor(ctx context.Context) error {
 	conn, err := r.deps.DB.Conn(ctx)
 	if err != nil {
 		return fmt.Errorf("reaper: janitor conn: %w", err)
