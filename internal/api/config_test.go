@@ -104,6 +104,50 @@ func TestConfigFromEnv(t *testing.T) {
 	}
 }
 
+// TestConfigFromEnvTokenBinding(T11.3):三值闭集解析、缺省 off、词表外
+// env 与 Validate 双面启动即败(空串 = off 同义,字面构造零值合法)。
+func TestConfigFromEnvTokenBinding(t *testing.T) {
+	bindEnv := func(v string) func(string) string {
+		return func(k string) string {
+			switch k {
+			case "BRAID_AUTH_JWT_SECRET":
+				return testSecret
+			case "BRAID_API_TOKEN_BINDING":
+				return v
+			}
+			return ""
+		}
+	}
+	for _, v := range []string{"off", "ua", "ua_ip24"} {
+		c, err := ConfigFromEnv(bindEnv(v))
+		if err != nil {
+			t.Fatalf("BRAID_API_TOKEN_BINDING=%s: %v", v, err)
+		}
+		if c.TokenBinding != TokenBindingMode(v) {
+			t.Fatalf("binding = %q, want %q", c.TokenBinding, v)
+		}
+	}
+	c, err := ConfigFromEnv(bindEnv(""))
+	if err != nil || c.TokenBinding != TokenBindingOff {
+		t.Fatalf("缺省 = %q err=%v, want off", c.TokenBinding, err)
+	}
+	if _, err := ConfigFromEnv(bindEnv("always")); err == nil || !strings.Contains(err.Error(), "off|ua|ua_ip24") {
+		t.Fatalf("词表外 env err = %v, want vocab message", err)
+	}
+	// Validate 第二道(env 面已拦,程序化直构在此拦;DefaultConfig 无
+	// secret,先补上避免挂在密钥面)。
+	d := DefaultConfig()
+	d.JWTSecret = testSecret
+	d.TokenBinding = "yes"
+	if err := d.Validate(); err == nil || !strings.Contains(err.Error(), "off|ua|ua_ip24") {
+		t.Fatalf("Validate 词表外 err = %v", err)
+	}
+	d.TokenBinding = "" // off 同义
+	if err := d.Validate(); err != nil {
+		t.Fatalf("空串(off 同义)被拒: %v", err)
+	}
+}
+
 // TestConfigValidateSecretBoundary 钉死密钥下界与 auth.MinSecretLen 一致:
 // 32 字节恰好通过,31 字节拒绝。
 func TestConfigValidateSecretBoundary(t *testing.T) {

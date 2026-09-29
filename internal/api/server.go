@@ -148,7 +148,7 @@ func (s *Server) Router() *gin.Engine {
 	// login_audit 表,旋钮见 Config;DB 锚定升级归 P1 停车场)。
 	r.POST("/api/v1/auth/login", s.login)
 
-	authed := r.Group("/api/v1", s.traceSpan(), Authenticate(s.cfg.JWTSecret))
+	authed := r.Group("/api/v1", s.traceSpan(), Authenticate(s.cfg.JWTSecret, s.cfg.TokenBinding))
 	v1 := authed
 	v1.POST("/definitions", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.createDefinition)
 	v1.GET("/definitions", s.listDefinitions)

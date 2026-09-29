@@ -17,10 +17,13 @@ const claimsCtxKey = "braid.api.claims"
 // Bearer <token> → auth.ParseToken → claims 入 context。失败面貌:
 //   - 缺头/非 Bearer 形态 → 401 missing_token;
 //   - 过期 → 401 token_expired(auth 侧唯一单列的失败类);
-//   - 其余(篡改/错密钥/alg 混淆/词表外角色)→ 401 token_invalid。
+//   - 其余(篡改/错密钥/alg 混淆/词表外角色)→ 401 token_invalid;
+//   - 绑定模式开启(ua/ua_ip24,T11.3)下 bnd claim 与当前请求指纹
+//     失配或缺席 → 401 token_binding_mismatch(fail-closed:模式切换即
+//     全量换发,存量 token ≤24h TTL 界损失)。off = 零介入。
 //
 // 不在这里做角色判定:路由级 RequireAnyRole 组合,读面与写面各自声明。
-func Authenticate(secret string) gin.HandlerFunc {
+func Authenticate(secret string, binding TokenBindingMode) gin.HandlerFunc {
 	return func(c *gin.Context) {
 		h := c.GetHeader("Authorization")
 		const prefix = "Bearer "
@@ -41,6 +44,14 @@ func Authenticate(secret string) gin.HandlerFunc {
 				abort(c, 401, "token_invalid")
 			}
 			return
+		}
+		if binding == TokenBindingUA || binding == TokenBindingUAIP24 {
+			// 签发与校验共用 bindingFingerprint 单点(见 binding.go);
+			// 失配与缺席同面(claims.Binding 零值 "" 恒不等于指纹)。
+			if claims.Binding != bindingFingerprint(binding, c.Request.UserAgent(), c.ClientIP()) {
+				abort(c, 401, "token_binding_mismatch")
+				return
+			}
 		}
 		c.Set(claimsCtxKey, claims)
 		c.Next()

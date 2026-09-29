@@ -463,3 +463,58 @@ func TestOIDCFlowIntegration(t *testing.T) {
 		}
 	}
 }
+
+// TestOIDCCallbackIssuesBoundToken:模式开启下回调签出的 token 携 bnd
+// claim = 回调请求指纹(与口令登录同契约,D-t113 #1 两签发点);两种
+// 开启模式都锚(对抗审计:ua_ip24 签发点原先零覆盖)。nil DB = 桩构造,
+// writeLoginAudit 容忍(dbh nil 跳审计写)。
+func TestOIDCCallbackIssuesBoundToken(t *testing.T) {
+	const ua = "braid-oidc-it/1.0"
+	for _, mode := range []TokenBindingMode{TokenBindingUA, TokenBindingUAIP24} {
+		t.Run(string(mode), func(t *testing.T) {
+			ids, err := snowflake.New(1)
+			if err != nil {
+				t.Fatalf("snowflake: %v", err)
+			}
+			reg, err := tools.NewRegistry()
+			if err != nil {
+				t.Fatalf("registry: %v", err)
+			}
+			gin.SetMode(gin.TestMode)
+			srv := NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+				LoginRateLimit: 100000, LoginRateWindow: time.Minute,
+				LoginMaxFailures: 100000, LoginLockout: time.Minute,
+				TokenBinding: mode},
+				nil, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{})
+			srv.oidc = &fakeOIDC{user: auth.User{Username: "carol", Roles: []auth.Role{auth.RoleAuthor}}}
+			r := srv.Router()
+
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/auth/oidc/callback?code=c&state=s", nil)
+			req.Header.Set("User-Agent", ua)
+			req.AddCookie(&http.Cookie{Name: auth.OIDCStateCookie, Value: "state-cookie"})
+			w := httptest.NewRecorder()
+			r.ServeHTTP(w, req)
+			if w.Code != http.StatusOK {
+				t.Fatalf("callback code=%d body=%q", w.Code, w.Body.String())
+			}
+			var out struct {
+				Token string `json:"token"`
+			}
+			if err := json.Unmarshal(w.Body.Bytes(), &out); err != nil || out.Token == "" {
+				t.Fatalf("no token: %q err=%v", w.Body.String(), err)
+			}
+			claims, err := auth.ParseToken(testSecret, out.Token)
+			if err != nil {
+				t.Fatalf("ParseToken: %v", err)
+			}
+			// 回调请求 RemoteAddr = httptest 缺省 192.0.2.1(Router 的
+			// SetTrustedProxies(nil) 姿态下 ClientIP = RemoteAddr)。
+			if want := bindingFingerprint(mode, ua, "192.0.2.1"); claims.Binding != want {
+				t.Fatalf("bnd = %q, want %q(回调请求指纹,mode=%s)", claims.Binding, want, mode)
+			}
+			// 中间件「同 UA 放行/异 UA 拒」的闭环不在此重复锚(nil-DB
+			// 桩面,authed 路由触 DB;middleware_test 与 login_test 已
+			// 各自闭环)。
+		})
+	}
+}

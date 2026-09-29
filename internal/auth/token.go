@@ -3,6 +3,7 @@ package auth
 import (
 	"errors"
 	"fmt"
+	"regexp"
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
@@ -16,18 +17,33 @@ const (
 	tokenAudience = "braid-api"
 )
 
+// bindingRe 是 bnd claim 的格式域(T11.3 token 绑定):base64url 无
+// padding 恰 22 字符 = SHA-256 前 16 字节的定长编码。auth 只管格式,
+// 「值与请求指纹比对」的语义归 api 层(middleware 按当前模式复算)。
+var bindingRe = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
+
 // Claims 是 braid 的 JWT 载荷:sub(username 主体字符串,直通
 // created_by/actor_id 值域)+ roles(签发时刻的授权快照,T5.2 中间件
-// 只信 claims 不回库)+ 标准三件套 iat/exp/iss/aud。
+// 只信 claims 不回库)+ bnd(可选 token 绑定指纹,D-2026-09-29-t113:
+// 空 = 未绑定,off 模式语义)+ 标准三件套 iat/exp/iss/aud。
 type Claims struct {
-	Roles []Role `json:"roles"`
+	Roles   []Role `json:"roles"`
+	Binding string `json:"bnd,omitempty"`
 	jwt.RegisteredClaims
 }
 
 // SignToken 签发 HS256 token。ttl 必须为正(过期 token 的构造走包内
 // signClaims 出口,不给生产面留「负 TTL 合法」的脚枪)。输入先过
 // validUsername/validRoles(调用方 bug 前置拒绝,不产出坏 token)。
+// 等价于 SignTokenWithBinding(binding="")。
 func SignToken(secret string, ttl time.Duration, username string, roles []Role) (string, error) {
+	return SignTokenWithBinding(secret, ttl, username, roles, "")
+}
+
+// SignTokenWithBinding 签发携带绑定指纹的 token(T11.3):binding 非空
+// 时必须过 bindingRe(签发面 bug 前置拒绝,不产出消费面不可比对的
+// claim);空串 = 不携带 claim(off 模式两形态同一出口)。
+func SignTokenWithBinding(secret string, ttl time.Duration, username string, roles []Role, binding string) (string, error) {
 	if ttl <= 0 {
 		return "", fmt.Errorf("%w: ttl %s <= 0", ErrInvalidInput, ttl)
 	}
@@ -43,9 +59,13 @@ func SignToken(secret string, ttl time.Duration, username string, roles []Role) 
 	if err := validRoles(roles); err != nil {
 		return "", err
 	}
+	if binding != "" && !bindingRe.MatchString(binding) {
+		return "", fmt.Errorf("%w: binding violates ^[A-Za-z0-9_-]{22}$", ErrInvalidInput)
+	}
 	now := time.Now().UTC()
 	c := Claims{
-		Roles: roles,
+		Roles:   roles,
+		Binding: binding,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   username,
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -95,6 +115,12 @@ func ParseToken(secret string, token string) (Claims, error) {
 	}
 	if err := validRoles(c.Roles); err != nil {
 		return Claims{}, fmt.Errorf("%w: %v", ErrTokenInvalid, err)
+	}
+	// bnd 非空时过格式闸(fail-closed):正确密钥签发但携垃圾 claim 的
+	// token 在此拒绝,不给消费面留「不可比对的绑定值」(与 roles 词表
+	// 同判:防线针对签发面 bug + 消费面信任载荷的组合)。
+	if c.Binding != "" && !bindingRe.MatchString(c.Binding) {
+		return Claims{}, fmt.Errorf("%w: binding claim format", ErrTokenInvalid)
 	}
 	return c, nil
 }

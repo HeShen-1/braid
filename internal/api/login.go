@@ -168,7 +168,10 @@ func (s *Server) login(c *gin.Context) {
 	s.loginLimiter.record(req.Username, true)
 	s.loginAuditEvent(c.Request.Context(), loginEventSucceeded, ip, user.Username, "")
 	ttl := auth.DefaultTokenTTL
-	token, err := auth.SignToken(s.cfg.JWTSecret, ttl, user.Username, user.Roles)
+	// token 绑定(T11.3):按当前模式携 bnd claim(off = 空串不带;
+	// 与 Authenticate 校验共用 bindingFingerprint 单点,oidc 回调同契约)。
+	token, err := auth.SignTokenWithBinding(s.cfg.JWTSecret, ttl, user.Username, user.Roles,
+		bindingFingerprint(s.cfg.TokenBinding, c.Request.UserAgent(), ip))
 	if err != nil {
 		// 词表外角色/签名密钥问题:启动期 Validate 已拦密钥面,到达此处即
 		// 数据或接线异常,响亮 500 不伪造成功。
