@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 	"github.com/hibiken/asynq"
@@ -20,7 +21,11 @@ import (
 	"braid/internal/metrics"
 	"braid/internal/preflight"
 	"braid/internal/relay"
+	"braid/internal/tracing"
 )
+
+// traceShutdownGrace 是 OTel batcher 排空预算(独立停机窗,cmd/worker 同款)。
+const traceShutdownGrace = 2 * time.Second
 
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -101,10 +106,31 @@ func run(ctx context.Context) error {
 	defer eq.Close() //nolint:errcheck // 同上
 	rc := redis.NewClient(&redis.Options{Addr: addr})
 	defer rc.Close() //nolint:errcheck // 同上
+
+	// T12.1:OTel trace——relay 进程 span(relay.deliver 续 payload 链,
+	// D-t121 #4);装配镜像 cmd/worker(off = 丢弃导出器,trace id 照生成)。
+	traceCfg := tracing.ConfigFromEnv(os.Getenv)
+	if err := traceCfg.Validate(); err != nil {
+		return fmt.Errorf("relay: %w", err)
+	}
+	traceProv, err := tracing.NewProvider(tracing.Config{Exporter: traceCfg.Exporter, Endpoint: traceCfg.Endpoint, ServiceName: "braid-relay"})
+	if err != nil {
+		return fmt.Errorf("relay: %w", err)
+	}
+	defer func() {
+		shCtx, cancel := context.WithTimeout(context.Background(), traceShutdownGrace)
+		defer cancel()
+		if err := traceProv.Shutdown(shCtx); err != nil {
+			slog.Warn("relay: trace provider shutdown", "err", err)
+		}
+	}()
+	slog.Info("relay: tracing", "exporter", traceCfg.Exporter)
+
 	return relay.Run(ctx, relay.Deps{
 		DB: mysqlDB, Enqueuer: eq, Logger: slog.Default(),
 		Metrics:   mset.Relay,
 		RDB:       rc,
 		Inspector: insp,
+		Tracer:    traceProv.Tracer("braid/relay"),
 	}, cfg)
 }

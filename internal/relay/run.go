@@ -46,10 +46,14 @@ import (
 
 	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/trace"
 
 	"braid/internal/engine"
 	"braid/internal/metrics"
 	"braid/internal/outbox"
+	"braid/internal/tracing"
 )
 
 // Deps 是运行依赖。Logger 为 nil 时用 slog.Default()。
@@ -66,6 +70,11 @@ type Deps struct {
 	// Inspector 是 asynq 队列深度探测面(pending+active+retry = 消费
 	// 债务);nil = 不采。观测专用,与投递路径无共享状态。
 	Inspector *asynq.Inspector
+	// Tracer 是 OTel 观测面(D-t121 #4):nil = 关闭(测试默认)。投递
+	// span(relay.deliver)包 deliverRow 的事务段,remote parent = payload
+	// 自描述链上下文(与 worker 消费侧同源契约);relay 只投不写业务表,
+	// span 入 ctx 无审计列语义。
+	Tracer trace.Tracer
 }
 
 // Run 阻塞运行投递循环直到 ctx 取消。运行期一切错误都是轮次级的(MySQL 断连
@@ -131,8 +140,9 @@ type outboxRow struct {
 	Queue     string
 	Payload   []byte
 	Attempts  int
-	// trace_id 列本循环不读:OTel 链延续的传输形态(T6.2)未定,payload 自描述
-	// 已足够投递;读取留待 T6.2 定案。
+	// trace_id 列本循环不读:链上下文自 payload 自描述携带(D-t62 #1 钉死,
+	// D-t121 #4 起 deliverRow 只读 payload 做投递 span 的 remote parent);
+	// 列供对账/诊断,与投递路径无涉。
 }
 
 type runner struct {
@@ -162,48 +172,98 @@ SELECT id, event_type, task_id, queue, payload, deliver_attempts
 			return fmt.Errorf("relay: poll outbox: %w", scanErr)
 		}
 		hadRow = true
-
-		ectx, cancel := context.WithTimeout(ctx, r.cfg.EnqueueTimeout)
-		defer cancel()
-		// MaxRetry=1 是锁定决策。其 asynq 真实语义 = 预算 1:handler 首败后
-		// asynq 自管**一次**内部重试(server 默认 15-45s 退避,故 T2.3 worker
-		// 需显式决定 RetryDelayFunc 与平台重试的叠加),二次失败才 archived;
-		// 此后重试权威在平台节点层。task type = event_type(开放词表,
-		// T2.3 mux 按它路由)。
-		_, enqErr := r.deps.Enqueuer.EnqueueContext(ectx,
-			asynq.NewTask(row.EventType, row.Payload),
-			asynq.TaskID(row.TaskID), asynq.Queue(row.Queue), asynq.MaxRetry(1))
-		switch {
-		case enqErr == nil:
-			r.log.Info("enqueue.ok", "outbox_id", row.ID, "task_id", row.TaskID, "queue", row.Queue)
-			r.mDeliver(metrics.DeliverDispatched)
-		case errors.Is(enqErr, asynq.ErrTaskIDConflict):
-			// 冲突收敛:任务已交到过(kill -9 后重投 / 多 relay / reconciler
-			// 重入队),幂等证据而非失败。
-			r.log.Info("enqueue.conflict", "outbox_id", row.ID, "task_id", row.TaskID)
-			r.mDeliver(metrics.DeliverConflict)
-		default:
-			// 停机中断判定用自家 ctx(ectx 派生自 ctx),不解读包后的 asynq 错误:
-			// 此刻行未获结局,不计尝试、不动行,空事务提交释放锁。
-			if ctx.Err() != nil {
-				return nil
-			}
-			msg := enqErr.Error()
-			if row.Attempts+1 >= r.cfg.MaxAttempts {
-				r.log.Error("row.dead", "outbox_id", row.ID, "task_id", row.TaskID,
-					"event_type", row.EventType, "attempts", row.Attempts+1, "err", msg)
-				r.mDeliver(metrics.DeliverDead)
-				return outbox.MarkDead(ctx, q, row.ID, msg)
-			}
-			bo := r.backoff(row.Attempts + 1)
-			r.log.Warn("enqueue.fail", "outbox_id", row.ID, "task_id", row.TaskID,
-				"attempts", row.Attempts+1, "next_available_after", bo, "err", msg)
-			r.mDeliver(metrics.DeliverBackoff)
-			return outbox.RecordFailure(ctx, q, row.ID, msg, bo)
-		}
-		return outbox.MarkDispatched(ctx, q, row.ID)
+		return r.deliverRow(ctx, q, &row)
 	})
 	return hadRow, err
+}
+
+// deliverRow 对已锁定行执行入队与结局标记。Tracer 非 nil 时包 relay.deliver
+// span(D-t121 #4):remote parent = payload 自描述链上下文(span_id 真值,
+// 缺席派生回退;契约单源 internal/tracing,与 worker 消费侧同源)——投递
+// span 真续发射事务的链。span 覆盖投递事务的语句段、不含 COMMIT(闭包内
+// defer End 先于 WithTx 提交;commit 失败时行回滚重投,at-least-once 语义
+// 无损,span 以已落的结局属性为准——观测精度取舍,非语义偏差)。payload
+// 无 trace 上下文 = span 自成根(relay 观测面无审计列语义,孤儿根只是导出
+// 树里的独立投递节点,与消费侧孤儿链短路口径不同域)。只读 payload,投递
+// 语义零改动(D-t62 #1 的 relay 直投零改动哲学顺延)。
+func (r *runner) deliverRow(ctx context.Context, q engine.DBTX, row *outboxRow) error {
+	span := trace.SpanFromContext(context.Background()) // noop 占位,nil-tracer 路径零分支
+	if r.deps.Tracer != nil {
+		pctx := ctx
+		if p, ok := tracing.ExtractPayloadTrace(row.Payload); ok && p.TraceID != "" {
+			if sc, linked, badSpan := tracing.PayloadSpanContext(p.TraceID, p.SpanID); linked {
+				if badSpan {
+					r.log.Warn("relay.span_payload_invalid", "outbox_id", row.ID, "span_id", tracing.TruncateID(p.SpanID))
+				}
+				pctx = trace.ContextWithRemoteSpanContext(ctx, sc)
+			} else {
+				r.log.Warn("relay.trace_payload_invalid", "outbox_id", row.ID, "trace_id", tracing.TruncateID(p.TraceID))
+			}
+		}
+		ctx, span = r.deps.Tracer.Start(pctx, "relay.deliver")
+		defer span.End()
+		span.SetAttributes(
+			attribute.Int64("outbox.id", int64(row.ID)),
+			attribute.String("outbox.task_id", row.TaskID),
+			attribute.String("outbox.queue", row.Queue),
+			attribute.Int("outbox.attempts", row.Attempts+1),
+		)
+	}
+	err := r.enqueueAndSettle(ctx, q, row, span)
+	if err != nil {
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+	}
+	return err
+}
+
+// enqueueAndSettle 入队 + 按结局标记行(span 携带是为逐分支落 outcome
+// 属性;noop span 上 SetAttributes/RecordError 均为空操作)。
+func (r *runner) enqueueAndSettle(ctx context.Context, q engine.DBTX, row *outboxRow, span trace.Span) error {
+	ectx, cancel := context.WithTimeout(ctx, r.cfg.EnqueueTimeout)
+	defer cancel()
+	// MaxRetry=1 是锁定决策。其 asynq 真实语义 = 预算 1:handler 首败后
+	// asynq 自管**一次**内部重试(server 默认 15-45s 退避,故 T2.3 worker
+	// 需显式决定 RetryDelayFunc 与平台重试的叠加),二次失败才 archived;
+	// 此后重试权威在平台节点层。task type = event_type(开放词表,
+	// T2.3 mux 按它路由)。
+	_, enqErr := r.deps.Enqueuer.EnqueueContext(ectx,
+		asynq.NewTask(row.EventType, row.Payload),
+		asynq.TaskID(row.TaskID), asynq.Queue(row.Queue), asynq.MaxRetry(1))
+	switch {
+	case enqErr == nil:
+		r.log.Info("enqueue.ok", "outbox_id", row.ID, "task_id", row.TaskID, "queue", row.Queue)
+		r.mDeliver(metrics.DeliverDispatched)
+		span.SetAttributes(attribute.String("relay.outcome", metrics.DeliverDispatched))
+	case errors.Is(enqErr, asynq.ErrTaskIDConflict):
+		// 冲突收敛:任务已交到过(kill -9 后重投 / 多 relay / reconciler
+		// 重入队),幂等证据而非失败。
+		r.log.Info("enqueue.conflict", "outbox_id", row.ID, "task_id", row.TaskID)
+		r.mDeliver(metrics.DeliverConflict)
+		span.SetAttributes(attribute.String("relay.outcome", metrics.DeliverConflict))
+	default:
+		// 停机中断判定用自家 ctx(ectx 派生自 ctx),不解读包后的 asynq 错误:
+		// 此刻行未获结局,不计尝试、不动行,空事务提交释放锁。
+		if ctx.Err() != nil {
+			span.SetAttributes(attribute.String("relay.outcome", "shutdown_interrupted"))
+			return nil
+		}
+		msg := enqErr.Error()
+		if row.Attempts+1 >= r.cfg.MaxAttempts {
+			r.log.Error("row.dead", "outbox_id", row.ID, "task_id", row.TaskID,
+				"event_type", row.EventType, "attempts", row.Attempts+1, "err", msg)
+			r.mDeliver(metrics.DeliverDead)
+			span.SetAttributes(attribute.String("relay.outcome", metrics.DeliverDead))
+			return outbox.MarkDead(ctx, q, row.ID, msg)
+		}
+		bo := r.backoff(row.Attempts + 1)
+		r.log.Warn("enqueue.fail", "outbox_id", row.ID, "task_id", row.TaskID,
+			"attempts", row.Attempts+1, "next_available_after", bo, "err", msg)
+		r.mDeliver(metrics.DeliverBackoff)
+		span.SetAttributes(attribute.String("relay.outcome", metrics.DeliverBackoff))
+		return outbox.RecordFailure(ctx, q, row.ID, msg, bo)
+	}
+	return outbox.MarkDispatched(ctx, q, row.ID)
 }
 
 // backoff 计算第 attempts 次失败后的等待时长(指数、封顶、±Jitter 抖动)。
