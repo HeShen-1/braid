@@ -374,8 +374,11 @@ func egressTunnelDialContext(proxy *url.URL, tlsCfg *tls.Config) func(ctx contex
 				_ = raw.Close()
 			}
 		}()
-		// CONNECT 请求行 + 头读取共用一个 deadline(拨号/握手/应答三段
-		// 各 30s 基线,与守卫 DefaultTransport 旋钮同量级)。
+		// CONNECT 请求行/头读取/TLS 握手共用一个绝对 deadline(三段合计
+		// 30s 墙钟,非各 30s)。这是拨号段的唯一执法点:Transport 给
+		// custom dialer 的 ctx 是 WithoutCancel(request ctx)——attempt
+		// deadline 结构性不达拨号段,由本 deadline + Dialer.Timeout 自界
+		// (ssrf.go 硬契约注释的拨号段例外)。
 		deadline := time.Now().Add(egressDialTimeout)
 		_ = raw.SetDeadline(deadline)
 		if _, err := fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, addr); err != nil {
@@ -420,14 +423,7 @@ func egressTunnelDialContext(proxy *url.URL, tlsCfg *tls.Config) func(ctx contex
 		if serr != nil {
 			return nil, fmt.Errorf("egress tunnel: bad target addr %q: %w", addr, serr)
 		}
-		tlsConf := tlsCfg.Clone()
-		if tlsConf == nil {
-			tlsConf = &tls.Config{}
-		}
-		if tlsConf.ServerName == "" {
-			tlsConf.ServerName = host
-		}
-		tconn := tls.Client(&egressTunnelConn{Conn: raw, r: br}, tlsConf)
+		tconn := tls.Client(&egressTunnelConn{Conn: raw, r: br}, egressTunnelTLSConfig(tlsCfg, host))
 		if herr := tconn.HandshakeContext(ctx); herr != nil {
 			return nil, fmt.Errorf("egress tunnel TLS handshake %s: %w", host, herr)
 		}
@@ -445,6 +441,24 @@ type egressTunnelConn struct {
 }
 
 func (c *egressTunnelConn) Read(p []byte) (int, error) { return c.r.Read(p) }
+
+// egressTunnelTLSConfig 构造隧道上端到端 TLS 的配置:Clone 注入根(或
+// 系统根)、ServerName 取目标 host、ALPN 钉死 http/1.1——「恒 HTTP/1.1」
+// 从配置缺席的巧合升级为拨号器结构(任何来源的 NextProtos 混入 h2 都
+// 不可能协商出「h2 连接上跑 Transport 的 HTTP/1.1 persistConn」的协议
+// 错乱;Transport 对 custom dialer 不建 h2Transport。设计对抗审查
+// advisory 收口,TestEgressTunnelALPNPin 是配置锚)。
+func egressTunnelTLSConfig(tlsCfg *tls.Config, host string) *tls.Config {
+	tlsConf := tlsCfg.Clone()
+	if tlsConf == nil {
+		tlsConf = &tls.Config{}
+	}
+	if tlsConf.ServerName == "" {
+		tlsConf.ServerName = host
+	}
+	tlsConf.NextProtos = []string{"http/1.1"}
+	return tlsConf
+}
 
 // SandboxEgressStartup 是 worker 启动的 egress 段(T10.2,SandboxStartupCheck
 // 同族):docker 模式下幂等确保 --internal egress 内网 → 读网关 IP → 以

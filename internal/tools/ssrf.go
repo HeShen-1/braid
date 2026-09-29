@@ -58,7 +58,7 @@ func ipForbidden(ip net.IP) bool {
 type GuardConfig struct {
 	Resolver    *net.Resolver     // nil → net.DefaultResolver;测试注入假解析器(可控 DNS)
 	IPForbidden func(net.IP) bool // 仅测试注入:nil → ipForbidden。非 nil 即**整体替换**默认禁段(含放行环回/metadata),生产装配误带此缝将静默放行全部禁段且无报错——恒零值
-	TLS         *tls.Config       // 测试/T3.5 注入私有根证书;不放宽校验
+	TLS         *tls.Config       // 测试/T3.5 注入私有根证书;不放宽校验。docker 模式(T10.2)本字段整体经 egressTunnelDialContext Clone 消费——stdlib 对 DialTLSContext 路径**忽略** Transport.TLSClientConfig/TLSHandshakeTimeout,Transport 面旋钮在代理模式下不生效
 	// ProxyURL 是显式 egress 代理(T10.2;仅沙箱 docker 模式由信封装配,
 	// off 模式恒 nil = 逐字节现状)。非 nil 时 https 拨号经 DialTLSContext
 	// 手工 CONNECT 隧道(egress.go);Transport.Proxy 字段仍恒 nil——env
@@ -68,11 +68,16 @@ type GuardConfig struct {
 }
 
 // NewGuardedClient 构造 http 工具专用 http.Client(ARCHITECTURE §3.4
-// SSRF 三层修的运行时半边)。防三条,纵深即注释:
+// SSRF 三层修的运行时半边)。防三条,纵深即注释(执法点双模式:off 模式
+// 下 Control 拨号复核在进程内/容器内活跃;T10.2 docker 模式下 https 拨号
+// 走 custom dialer,Control 层结构性休眠,禁段执法点移至 worker 侧 egress
+// 代理(ipForbidden + 钉 IP 拨号,egress.go),容器内保留 httpsOnly/
+// CheckRedirect 剥凭证/跳数上限三层):
 //   - 仅 https:httpsOnlyTransport 在每一跳(直连首跳与每跳重定向)拒绝
 //     非 https URL——不依赖远端行为;
 //   - 拨号复核:net.Dialer.Control 在 connect 之前核对**实际拨打的 IP**,
-//     DNS rebinding 的 TOCTOU 窗口消失(检查即拨号,无第二次解析);
+//     DNS rebinding 的 TOCTOU 窗口消失(检查即拨号,无第二次解析;docker
+//     模式此不变量由代理侧「全 IP 过禁段 + 拨已解析 IP」承载);
 //   - CheckRedirect:每跳剥 Authorization/Cookie 并清 URL userinfo(见
 //     CheckRedirect 注释),并自管跳数上限。
 //
@@ -82,11 +87,15 @@ type GuardConfig struct {
 //     代理走显式 ProxyURL → DialTLSContext 手工 CONNECT 隧道(egress.go),
 //     全程零 env 代理变量消费(基线 §4b 反旁路红线维持)。
 //   - 超时:本层只带 DefaultTransport 基线旋钮(拨号/TLS 握手/空闲连接),
-//     整体耗时由 **request ctx 强制带 attempt deadline** 约束——硬契约。
+//     整体耗时由 **request ctx 强制带 attempt deadline** 约束——硬契约;
+//     拨号段例外:custom dialer 收到的 ctx 是 WithoutCancel(request ctx),
+//     attempt deadline 不达该段,由 egress.go 隧道拨号器的 Dialer.Timeout
+//     + conn deadline 自界。
 //   - 响应体限额归工具实现:本层不读 body,T3.5 须 io.LimitReader + 声明
 //     上限(attempt 内公网端点可灌任意字节)。
 //   - 恒 HTTP/1.1:自定义 Dialer 下不设 ForceAttemptHTTP2(不升级 h2);
-//     单次工具调用连接复用收益有限,建连拨号仍必经 Control。
+//     单次工具调用连接复用收益有限,建连拨号仍必经 Control;docker 模式
+//     下由隧道拨号器把 ALPN 钉死为 http/1.1(结构保证,非配置巧合)。
 func NewGuardedClient(cfg GuardConfig) *http.Client {
 	forbidden := cfg.IPForbidden
 	if forbidden == nil {
