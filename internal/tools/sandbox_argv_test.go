@@ -57,12 +57,33 @@ func TestSandboxArgvGolden(t *testing.T) {
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
-		joined := strings.Join(args, " ")
-		if !strings.Contains(joined, "--network bridge") {
-			t.Fatalf("argv missing bridge network: %s", joined)
-		}
-		if strings.Contains(joined, "--mount") {
-			t.Fatalf("http argv must not mount dirs: %s", joined)
+		// 全序列 golden(与 file_read 用例同款):共享硬化前缀 + bridge
+		// 网位逐字钉死,顺带结构性排除 -e/--env-file/--env 与 --mount——
+		// 信任材料的 env 通道被 argv 层封死(基线 §5 / T7 私 CA 契约
+		// 「运行期零通道」的 env 半边机械锚)。
+		want := strings.Join([]string{
+			"run", "--rm", "--interactive",
+			"--name", "braid-sbx-1-2-abcd1234",
+			"--label", "braid.sandbox=1",
+			"--label", "braid.tool=http",
+			"--read-only",
+			"--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
+			"--memory", "256m", "--memory-swap", "256m",
+			"--cpus", "0.5",
+			"--pids-limit", "64",
+			"--ulimit", "nofile=1024:1024",
+			"--cap-drop", "ALL",
+			"--security-opt", "no-new-privileges",
+			"--user", "65532:65532",
+			"--init",
+			"--log-driver", "json-file", "--log-opt", "max-size=5m", "--log-opt", "max-file=1",
+			"--network", "bridge",
+			"--entrypoint", "/usr/local/bin/braid-sandbox-exec",
+			"braid-tool-sandbox:1",
+			"http",
+		}, " ")
+		if got := strings.Join(args, " "); got != want {
+			t.Fatalf("argv =\n%s\nwant\n%s", got, want)
 		}
 	})
 }

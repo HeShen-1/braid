@@ -41,7 +41,13 @@
 
 - **基座**:`alpine:3.22` 按 digest 钉死(多架构 index digest)。沿用根 Dockerfile 既有裁决:「曾评估 distroless static(零 shell 零包管理器),gcr.io 在受限网络不可达且无稳定镜像代理,取舍 alpine」;基座自带 ca-certificates-bundle(https 出站必需);uid 65532 同根 Dockerfile adduser 惯例。digest 钉法先例 = dev.docker-compose.yml asynqmon 条目。
 - **busybox shell 残余(披露)**:alpine 自带 busybox;在 ro rootfs + noexec tmpfs + cap-drop ALL + non-root 下,shell 只能运行镜像内既有 applet,无法落盘执行新二进制——可接受残余,登记 §9。
-- **构建**:多阶段 `deploy/sandbox.Dockerfile`:golang:1.27-alpine builder(digest 钉,CGO_ENABLED=0 -trimpath -ldflags='-s -w',与根 Dockerfile 同纪律)→ alpine:3.22 运行层,单文件 COPY `braid-sandbox-exec`,USER 65532。测试路径 = 宿主 `go build` + COPY-only docker build(免拉 golang 镜像,CI 20min 预算友好)。
+- **构建**:多阶段 `deploy/sandbox.Dockerfile`:golang:1.27-alpine builder(digest 钉,CGO_ENABLED=0 -trimpath -ldflags='-s -w',与根 Dockerfile 同纪律)→ alpine:3.22 运行层,prod 目标单文件 COPY `braid-sandbox-exec`(e2e 目标另有 CA 注入成员,见下条),USER 65532。测试路径 = 宿主 `go build` + COPY-only docker build(免拉 golang 镜像,CI 20min 预算友好)。
+- **私 CA 注入契约(T7,构建期单通道)**:信任集扩张只经镜像构建,运行期零通道——env(§5 白名单恰 PATH/LANG;Go 侧信任源覆盖变量 `SSL_CERT_FILE`/`SSL_CERT_DIR` 同被白名单结构性挡在外)、stdin 信封(装的是工具原料,非信任锚)、挂载(白名单挂载不检视内容,承载的是不可当信任锚消费的字节)均不开 CA 通道,是 §9-7「束内容随镜像构建固定,运行期不改」的落地;将来企业私 CA 端点同通道重建镜像(deploy/README 登记,T8)。要点:
+  - **材料**:context 文件 `sandbox-e2e-ca.crt`(仅 CA 证书 PEM;材料每次测试运行临时生成)。hermetic e2e 的 TLS server 落**宿主侧**——bridge 网容器 IP 全落禁段,可达的 198.19.x 地址必为宿主持有(地址装配方式与所需特权 T10 定);叶证书与全部私钥不进 build context、不入镜像、不经任何运行期通道进容器。
+  - **Dockerfile 拓扑(T8 实现约束)**:`sandbox-e2e` 与 prod 平行 FROM 基座、不继承 prod;prod 必须是 Dockerfile 最后一个 stage(缺省 target,零注入点——SandboxProbe 提示命令不带 `--target` 且 context 是 repo 根,按缺省构建必须直接可用);运行层二进制从 build context COPY(宿主构建,builder stage 不是 prod 祖先,保 COPY-only 测试路径);CA COPY 与 append 只存在于 sandbox-e2e stage、先于 USER 65532(bundle 属 root,USER 后 append 即 Permission denied)。
+  - **append 语义**:append 进 `/etc/ssl/certs/ca-certificates.crt` **只增不减**(基座束保留——clobber 式整体替换会静默断掉全部公网 https 出站,且失败形态不指向根因);helper 的 Go 系统池即按「文件字节 → AppendCertsFromPEM」读取(root.go loadOnDiskRoots,该文件是 alpine 上的探测首项),hash symlink 农场是 OpenSSL 消费者需求,不需要。
+  - **e2e 镜像引用**:独立 tag,不得覆写 prod 缺省引用 `braid-tool-sandbox:1`(防 ephemeral CA 镜像滞留 daemon 被 prod Probe 放行),测试收尾清理;e2e 选段 198.19.x 依赖 DECISIONS 待议项 D-2026-09-23-ssrf-extra-ranges「198.18.0.0/15 维持放行」,扩禁须同步重选段。
+  - **机械锚**:构建期半边(context 唯一成员 + append ⇒ 信任)由 internal/tools/sandbox_ca_test.go 钉死;env 半边由 argv 全序列 golden(结构性无 `-e`/`--env-file`/`--env`)钉死;容器内 env 实证(dump-env e2e)T10 落地。
 - **离线口径(D-t72 同纪律)**:运行时 daemon **永不 pull**——daemon 本地无镜像 = 响亮失败,错误消息携带构建命令;镜像引用经 env 配置,构造期校验。
 - **helper 生产二进制含 selftest 子命令**(alloc/serve/dump-env):argv 词表可达但 carrier 永不发出;容器内攻击者本可自行分配内存/起服务,无新能力面——以 argv 构造器单测(词表外值构造期拒)为回归锚。
 

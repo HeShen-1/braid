@@ -25,7 +25,7 @@ package tools
 //
 //	braid-sandbox-exec selftest dump-env          全量 env → JSON 对象(凭证不可见 e2e)
 //	braid-sandbox-exec selftest alloc <MiB>       8MiB 步长写满分配至目标/被杀(资源 e2e)
-//	braid-sandbox-exec selftest serve             T10 hermetic http e2e 落地(占位响亮报错)
+//	braid-sandbox-exec selftest serve             T10 hermetic http e2e 落地(宿主侧 TLS server,占位响亮报错)
 
 import (
 	"bytes"
@@ -301,9 +301,12 @@ func runSandboxSelftest(argv []string, stdout io.Writer) error {
 		}
 		return sandboxSelftestAlloc(mib, stdout)
 	case "serve":
-		// hermetic http e2e(T10)落地:TLS 材料与监听形态依赖 T7 私 CA
-		// 与 198.19.x 网段设计,届时定契约——现在占位响亮报错防误用。
-		return errors.New("selftest serve lands with T10 hermetic http e2e (private CA + benchmark-range network)")
+		// hermetic http e2e(T10)落地:归宿 = 宿主侧 TLS server(T7 契约
+		// 钉死——bridge 网容器 IP 全落禁段,可达的 198.19.x 必为宿主持有;
+		// 叶证书与私钥永不入容器,容器内 serve 被运行期零通道封死)。
+		// 材料经 T7 生成器出(sandbox_ca_test.go),argv 与监听形态 T10
+		// 定——现在占位响亮报错防误用。
+		return errors.New("selftest serve lands with T10 hermetic http e2e (host-side TLS server per T7 contract)")
 	default:
 		return fmt.Errorf("selftest unknown mode %q (want dump-env | alloc | serve)", argv[0])
 	}

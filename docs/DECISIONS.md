@@ -137,7 +137,7 @@
   2. 198.18.0.0/15(RFC 2544 基准段,部分云 LB 内部使用);
   3. 192.0.0.0/24、0.0.0.0/8 非全零地址、240/4 剩余部分(仅广播已拒)。
 - 现状口径:上述段当前放行,TestIPForbidden 有 want=false 锚点钉住(0.1.2.3 / 240.0.0.1 / 198.18.0.1)——若拍板扩禁,同步改锚点为 want=true 即可,测试已就位。
-- 关联:T3.3 实现 internal/tools/ssrf.go;无 HTTP 拨号合法目标落在这些段的常规环境,属低概率环境依赖面。
+- 关联:T3.3 实现 internal/tools/ssrf.go;无 HTTP 拨号合法目标落在这些段的常规环境,属低概率环境依赖面。2026-09-29 增记:198.18.0.0/15 内的 198.19.x 已被 t10.1 hermetic http e2e 选作网段(docs/designs/t101-sandbox-baseline.md §3 私 CA 注入契约)——若拍板扩禁,除改 ssrf_test 锚点外须同步重选 e2e 网段并重签材料。
 
 ## D-2026-09-23-t41-approval-suspend
 - 背景:T4.1(issue #27)审批节点执行路径:worker 遇 approval 节点挂起 WAITING_APPROVAL、输入快照落库、审计记挂起事件、worker 不阻塞(Q4/L67);续跑(outbox+resume TaskID)属 T4.2、超时策略属 T4.3。勘察确认 WAITING_APPROVAL 全链已备(engine 常量/边矩阵/SuspendNode/SuspendExecution CAS、DDL ENUM、快照不变量、reaper 对 wf WAITING_APPROVAL 的合法静默排除),缺的只是 nodes 执行器 + worker/scheduler 挂起通道 + 审计词表登记——零迁移、engine 零改动。
