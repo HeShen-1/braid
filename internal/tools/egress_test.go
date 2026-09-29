@@ -975,3 +975,26 @@ func TestEgressProxyPreTunnelConnCap(t *testing.T) {
 		t.Fatalf("status = %q, want 503 %s", line, egressReasonOverloaded)
 	}
 }
+
+// TestEgressTunnelALPNPin 恒 HTTP/1.1 的结构锚(设计对抗审查 advisory):
+// 隧道 TLS 配置把 ALPN 钉死 http/1.1 且 ServerName 取目标 host——任何
+// 来源的 NextProtos(含注入配置带的 h2)都被覆写,「h2 协商连接上跑
+// HTTP/1.1 persistConn」的协议错乱结构性不可能。
+func TestEgressTunnelALPNPin(t *testing.T) {
+	cfg := egressTunnelTLSConfig(nil, "example.com")
+	if len(cfg.NextProtos) != 1 || cfg.NextProtos[0] != "http/1.1" {
+		t.Fatalf("NextProtos = %v, want [http/1.1]", cfg.NextProtos)
+	}
+	if cfg.ServerName != "example.com" {
+		t.Fatalf("ServerName = %q, want example.com", cfg.ServerName)
+	}
+	// 注入配置(测试根/h2 意外在场)也被钉:Clone 后覆写,不继承。
+	injected := &tls.Config{RootCAs: x509.NewCertPool(), NextProtos: []string{"h2"}}
+	pinned := egressTunnelTLSConfig(injected, "example.com")
+	if len(pinned.NextProtos) != 1 || pinned.NextProtos[0] != "http/1.1" {
+		t.Fatalf("pinned NextProtos = %v, want [http/1.1] (injected h2 must be overridden)", pinned.NextProtos)
+	}
+	if pinned.RootCAs == nil {
+		t.Fatal("injected RootCAs must survive the Clone")
+	}
+}

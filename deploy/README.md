@@ -290,6 +290,13 @@ api/worker 启动即验,失败 = 拒启(错误带分量定位,不含密钥材料
   属 daemon 持久对象,worker 重启幂等复用(daemon 重启若变更网关,worker
   下次启动重读重绑)。拒绝姿态拆毁形态(同名网络非 `--internal`)启动
   即拒。
+- **保证的适用域(登记,对抗审查收口)**:「结构性拒绝」限 **off-host 方向**、
+  且以 **docker 托管 iptables 的宿主** 为前提——daemon 配 `--iptables=false`、
+  firewalld 接管、或管理员把 FORWARD 链改回 ACCEPT 的旧 daemon(28 前无显式
+  DOCKER-INTERNAL DROP)窗内,拒绝强度退化为宿主转发策略。rootless daemon 不
+  支持(网关 IP 活在 rootlesskit netns,worker bind 即 EADDRNOTAVAIL 拒启,
+  形态响亮);egress 网禁用 `gateway_mode=isolated`(Docker 28+ 选项,会删宿主
+  侧网关地址,与本设计「宿主侧监听」前提互斥)。
 - **t14.4(Helm)前置契约**:k8s 化时「网关 + 进程内代理」对应
   egress NetworkPolicy + 代理 sidecar/独立端点;env 键词表与
   `EgressAllowFromEndpoints` 单源在此两处复用,不再新增拓扑键。
