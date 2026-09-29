@@ -3,6 +3,7 @@ package db
 import (
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"strconv"
 	"time"
 )
@@ -74,8 +75,32 @@ func ParsePoolConfig(getenv func(string) string) (PoolConfig, error) {
 		}
 		c.ConnMaxLifetime = d
 	}
+	// 软上限收敛(T12.2):idle 伴超限时随降——否则 clamped open 下
+	// Validate 的 idle>open 硬错误会把软上限偷换成拒启(闸值语义漂移)。
+	if c.MaxOpen > MaxOpenSoftCap {
+		effectiveIdle := c.MaxIdle
+		if effectiveIdle > MaxOpenSoftCap {
+			effectiveIdle = MaxOpenSoftCap
+		}
+		slog.Warn("db: BRAID_DB_MAX_OPEN over soft cap, clamped",
+			"configured_max_open", c.MaxOpen,
+			"effective_max_open", MaxOpenSoftCap,
+			"effective_max_idle", effectiveIdle,
+			"hint", "single-process pool exceeds the fleet default budget; raise MySQL max_connections and check deploy/README.md #1: sum of MAX_OPEN across all entrances <= max_connections - 30")
+		c.MaxOpen = MaxOpenSoftCap
+		c.MaxIdle = effectiveIdle
+	}
 	return c, c.Validate()
 }
+
+// MaxOpenSoftCap 单进程 MAX_OPEN 软上限(T12.2,#67-③ 自伤型误配护栏):
+// 锚 = deploy/README.md §1 对账表「Σ 常驻四入口默认 = 100」——单进程超过
+// 全 fleet 默认预算,即越过容量公式(Σ MAX_OPEN ≤ max_connections − 预留
+// ≥30,MySQL 默认 151)的默认头寸,误配大值可打满 max_connections 自伤。
+// 超限不拒启(软上限):收敛到上限 + 启动 warn 指向公式,生效值仍经各
+// cmd 启动 slog 与 braid_db_pool_max_open 指标可见。真要单进程 >100 =
+// 同轮抬 MySQL max_connections 并自核公式;常量属部署契约,改动走 D- 条目。
+const MaxOpenSoftCap = 100
 
 // ConfigurePool 对业务入口的 *sql.DB 施加池三值——四入口(cmd/api|worker|
 // relay|reaper)唯一施加点,值经各自 Config.Pool 注入。施加前过 Validate:

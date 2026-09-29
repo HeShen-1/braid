@@ -6,6 +6,7 @@ import (
 	"database/sql/driver"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -279,6 +280,78 @@ func TestConfigurePoolAppliesConfig(t *testing.T) {
 			t.Fatalf("opened = %d, want 1 (serial acquires reuse the idle conn)", got)
 		}
 	})
+}
+
+// TestParsePoolConfigSoftCap MAX_OPEN 软上限(T12.2,#67-③ 自伤型护栏):
+// 超限收敛 + 启动 warn 指向容量公式(软上限非拒启);上限内侧与恰好等于
+// 上限不受触;idle 伴超限时随收敛(防 clamped open 下 idle>open 硬错误把
+// 软上限偷换成拒启)。变异自查:clamp 丢 → over_cap 红;warn 丢 →
+// warn_emitted 红;idle 不随收敛 → idle_follows 红。
+func TestParsePoolConfigSoftCap(t *testing.T) {
+	tests := []struct {
+		name        string
+		env         map[string]string
+		want        PoolConfig
+		wantClamped bool
+	}{
+		{
+			name:        "over cap clamps to cap",
+			env:         map[string]string{"BRAID_DB_MAX_OPEN": "500"},
+			want:        PoolConfig{MaxOpen: MaxOpenSoftCap, MaxIdle: 25, ConnMaxLifetime: 5 * time.Minute},
+			wantClamped: true,
+		},
+		{
+			name: "at cap untouched",
+			env:  map[string]string{"BRAID_DB_MAX_OPEN": "100"},
+			want: PoolConfig{MaxOpen: 100, MaxIdle: 25, ConnMaxLifetime: 5 * time.Minute},
+		},
+		{
+			name: "under cap untouched",
+			env:  map[string]string{"BRAID_DB_MAX_OPEN": "40"},
+			want: PoolConfig{MaxOpen: 40, MaxIdle: 25, ConnMaxLifetime: 5 * time.Minute},
+		},
+		{
+			name:        "idle over clamped open follows down",
+			env:         map[string]string{"BRAID_DB_MAX_OPEN": "500", "BRAID_DB_MAX_IDLE": "300"},
+			want:        PoolConfig{MaxOpen: MaxOpenSoftCap, MaxIdle: MaxOpenSoftCap, ConnMaxLifetime: 5 * time.Minute},
+			wantClamped: true,
+		},
+		{
+			name:        "idle under clamped open untouched",
+			env:         map[string]string{"BRAID_DB_MAX_OPEN": "500", "BRAID_DB_MAX_IDLE": "50"},
+			want:        PoolConfig{MaxOpen: MaxOpenSoftCap, MaxIdle: 50, ConnMaxLifetime: 5 * time.Minute},
+			wantClamped: true,
+		},
+		{
+			name: "default untouched",
+			env:  nil,
+			want: DefaultPoolConfig(),
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var buf strings.Builder
+			old := slog.Default()
+			slog.SetDefault(slog.New(slog.NewTextHandler(&buf, nil)))
+			t.Cleanup(func() { slog.SetDefault(old) })
+
+			getenv := func(k string) string { return tt.env[k] }
+			got, err := ParsePoolConfig(getenv)
+			if err != nil {
+				t.Fatalf("ParsePoolConfig err = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("config = %+v, want %+v", got, tt.want)
+			}
+			warned := strings.Contains(buf.String(), "BRAID_DB_MAX_OPEN")
+			if warned != tt.wantClamped {
+				t.Fatalf("warn emitted = %v, want %v (log: %q)", warned, tt.wantClamped, buf.String())
+			}
+			if warned && !strings.Contains(buf.String(), "deploy/README.md") {
+				t.Fatalf("warn lacks capacity-formula hint: %q", buf.String())
+			}
+		})
+	}
 }
 
 // waitFor:轮询断言(截止内每 5ms 重试;超时 fatal)——用于 cleaner 等
