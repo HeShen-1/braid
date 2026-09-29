@@ -148,7 +148,7 @@ func run(ctx context.Context) error {
 	if err := traceCfg.Validate(); err != nil {
 		return fmt.Errorf("worker: %w", err)
 	}
-	traceProv, err := tracing.NewProvider(tracing.Config{Exporter: traceCfg.Exporter, ServiceName: "braid-worker"})
+	traceProv, err := tracing.NewProvider(tracing.Config{Exporter: traceCfg.Exporter, Endpoint: traceCfg.Endpoint, ServiceName: "braid-worker"})
 	if err != nil {
 		return fmt.Errorf("worker: %w", err)
 	}
