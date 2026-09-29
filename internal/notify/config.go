@@ -26,6 +26,7 @@ import (
 	"crypto/x509"
 	"fmt"
 	"net/url"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -58,9 +59,9 @@ type Config struct {
 	// StartTLS 控制连接后是否协商 STARTTLS;默认开(生产惯例),明文仅测试
 	// 与内网分段环境显式关闭。
 	StartTLS bool
-	// TLSRootCAs 是 STARTTLS 的证书信任池注入面(程序化,非 env):私有 CA
-	// 中继部署时由装配方注入;nil = 系统信任池(默认)。env 文件路径形态
-	// (BRAID_SMTP_CA_FILE)归后续配置化(P1 停车场)。
+	// TLSRootCAs 是 STARTTLS 的证书信任池注入面:私有 CA 中继部署经
+	// BRAID_SMTP_CA_FILE(PEM 文件路径)注入(T12.2,D-t45 §7 蒸发回收;
+	// 文件不可读/PEM 空 = 启动即败);nil = 系统信任池(默认)。
 	TLSRootCAs *x509.CertPool
 	// Timeout 是单次发送全预算(拨号+握手+传输,单一段:拨号时长计入——
 	// 会话 deadline 从拨号前锚点起算,最坏墙钟 = Timeout)。
@@ -169,7 +170,32 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 			c.NotifyTo = append(c.NotifyTo, to)
 		}
 	}
+	if raw := getenv("BRAID_SMTP_CA_FILE"); raw != "" {
+		pool, err := loadCAPEM(raw)
+		if err != nil {
+			return c, err
+		}
+		c.TLSRootCAs = pool
+	}
 	return c, c.Validate()
+}
+
+// loadCAPEM 读 PEM CA 包并构建信任池(T12.2,D-t45 §7 预登记形态落地:
+// env 文件路径 → 程序化注入面的桥)。全仓首个 env=文件路径键:读失败/
+// 零证书即败(fail-closed,半配置纪律——HOST 在场而 CA 键坏 = 部署意图
+// 明确但材料不可用,静默回退系统池会让私有 CA 中继的 STARTTLS 每发必败
+// 于 x509 验证,错误面从启动挪到生产流量期);Host 空时孤儿容忍(纯旋钮
+// 先例:PORT/TIMEOUT/STARTTLS 同待遇)。
+func loadCAPEM(path string) (*x509.CertPool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("notify: BRAID_SMTP_CA_FILE=%q: %w", path, err)
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(data) {
+		return nil, fmt.Errorf("notify: BRAID_SMTP_CA_FILE=%q: no PEM certificates parsed", path)
+	}
+	return pool, nil
 }
 
 func envInt(getenv func(string) string, key string, def int) (int, error) {
