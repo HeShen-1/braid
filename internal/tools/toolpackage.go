@@ -28,6 +28,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 )
 
 // toolPackageVersion 清单格式版本;v1 唯一支持(错版本即拒)。
@@ -104,7 +106,10 @@ func parseToolPackage(manifest []byte) (toolPackage, error) {
 	if p.Tools == nil {
 		return toolPackage{}, fmt.Errorf(`tools: tool package manifest: "tools" is required`)
 	}
-	for name, tp := range p.Tools {
+	// 遍历序确定化:多缺陷清单的报错可复现(map 随机序下每次启动
+	// 可能报出不同缺陷名,排障不可比对)。
+	for _, name := range slices.Sorted(maps.Keys(p.Tools)) {
+		tp := p.Tools[name]
 		if _, known := knownPackageTools[name]; !known {
 			return toolPackage{}, fmt.Errorf("tools: tool package declares unknown tool %q", name)
 		}
