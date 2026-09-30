@@ -1,0 +1,37 @@
+{{/* relay(prod compose relay 服务的 K8s 形态;3 键对齐,零审计写)。 */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "braid.fullname" . }}-relay
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "relay") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount.relay }} # relay 无生成器/无状态迁移面,扩副本语义最简
+  selector:
+    matchLabels:
+      {{- include "braid.selectorLabels" (dict "ctx" . "component" "relay") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "braid.selectorLabels" (dict "ctx" . "component" "relay") | nindent 8 }}
+    spec:
+      containers:
+        - name: relay
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/relay"]
+          securityContext:
+            runAsNonRoot: true
+          ports:
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: BRAID_MYSQL_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: relay-dsn
+            - name: BRAID_REDIS_QUEUE_ADDR
+              value: {{ printf "%s:6379" (include "braid.redisHost" .) | quote }}
+            - name: BRAID_METRICS_ADDR
+              value: "0.0.0.0:9090"

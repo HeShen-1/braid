@@ -110,3 +110,17 @@ jobs:
         run: >
           docker run --rm --entrypoint /bin/promtool -v "$PWD/deploy/prometheus:/rules:ro"
           prom/prometheus:v3.7.2 test rules /rules/alerts_test.yml
+
+  # T14.4:Helm chart 静态门(D-2026-09-30-t144-helm 决策 1)。与 promtool
+  # 同模式:工具经钉版镜像取用(alpine/helm / kubeconform / yq),零
+  # Secrets。断言 = helm lint + kubeconform strict(钉 K8s schema 1.31.0)
+  # + compose 对拍(交付面等价可执行化:逐组件 env 键集 / 对象清单 /
+  # Redis 契约 / 零宿主暴露 / required 执法 / values 零密钥默认),脚本
+  # 本地同口径可跑(deploy/chart/tests/verify.sh)。
+  helm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: chart static gate
+        run: deploy/chart/tests/verify.sh

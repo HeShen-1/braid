@@ -1,0 +1,87 @@
+{{/* api(prod compose api 服务的 K8s 形态)。
+     env 键集与 compose 逐键对齐(verify.sh compose 对拍断言);字面量
+     (ADDR/雪花/续跑队列)与 compose 同源,不为它们开 values 面(范围
+     纪律:新旋钮 = 新决策)。OIDC 是 compose 未接线的选通超集面
+     (T11.1 键组,开启才渲染)。无容器级探针 = compose 同口径(存活面
+     = /healthz + metrics 由外部监控探,deploy/README.md §6);启动期
+     preflight 失败 → 容器退出 → CrashLoopBackOff,升级门 = hook Jobs。 */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "braid.fullname" . }}-api
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount.api }} # >1 需外部雪花节点号分配(见 values 注释)
+  selector:
+    matchLabels:
+      {{- include "braid.selectorLabels" (dict "ctx" . "component" "api") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "braid.selectorLabels" (dict "ctx" . "component" "api") | nindent 8 }}
+    spec:
+      containers:
+        - name: api
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/api"]
+          securityContext:
+            runAsNonRoot: true # 镜像 USER 65532
+          ports:
+            - name: http
+              containerPort: 8081
+          env:
+            - name: BRAID_MYSQL_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: api-dsn
+            - name: BRAID_API_ADDR
+              value: "0.0.0.0:8081" # 容器内网绑定;公开面经反代(Service/Ingress)
+            - name: BRAID_API_SNOWFLAKE_NODE
+              value: "1" # 显式:撞号 = 业务表 PK 1062
+            - name: BRAID_API_RESUME_QUEUE
+              value: default
+            - name: BRAID_AUTH_JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: auth-jwt-secret
+            - name: BRAID_HTTP_ENDPOINTS
+              value: {{ .Values.config.httpEndpoints | quote }}
+            - name: BRAID_FILEREAD_DIRS
+              value: {{ .Values.config.filereadDirs | quote }}
+            - name: BRAID_API_TRUSTED_PROXIES
+              value: {{ .Values.config.apiTrustedProxies | quote }}
+            {{- if .Values.oidc.enabled }}
+            # OIDC(T11.1 选通面;半配置启动即败由进程承载):
+            - name: BRAID_OIDC_ISSUER
+              value: {{ required "oidc.issuer is required when oidc.enabled" .Values.oidc.issuer | quote }}
+            - name: BRAID_OIDC_CLIENT_ID
+              value: {{ required "oidc.clientId is required when oidc.enabled" .Values.oidc.clientId | quote }}
+            - name: BRAID_OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: oidc-client-secret
+            - name: BRAID_OIDC_REDIRECT_URL
+              value: {{ required "oidc.redirectUrl is required when oidc.enabled" .Values.oidc.redirectUrl | quote }}
+            - name: BRAID_OIDC_CLAIM
+              value: {{ .Values.oidc.claim | quote }}
+            {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "braid.fullname" . }}-api
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "api") | nindent 4 }}
+spec:
+  type: {{ .Values.service.type }} # 缺省 ClusterIP = 零宿主暴露(verify.sh 断言 6)
+  ports:
+    - name: http
+      port: {{ .Values.service.port }}
+      targetPort: 8081
+  selector:
+    {{- include "braid.selectorLabels" (dict "ctx" . "component" "api") | nindent 4 }}

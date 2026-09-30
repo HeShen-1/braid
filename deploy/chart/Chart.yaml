@@ -1,0 +1,6 @@
+apiVersion: v2
+name: braid
+description: braid 企业级 Agent 工作流编排平台交付栈(一镜像四入口;与 deploy/prod.docker-compose.yml 交付面等价,D-2026-09-30-t144-helm)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

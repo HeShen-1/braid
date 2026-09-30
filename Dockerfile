@@ -1,8 +1,9 @@
 # braid 交付镜像(T7.4):一个镜像四个入口(api/worker/relay/reaper),
 # compose 交付栈按 service 各自覆盖 entrypoint。
 # 构建上下文 = 仓库根:docker build -t braid . (或经 deploy/prod.docker-compose.yml
-# 的 build 段;迁移文件不在镜像内——生产迁移走 golang-migrate CLI 挂
-# internal/db/migrations,与 deploy/README.md §1 口径一致)。
+# 的 build 段)。迁移交付双面(同源 = 仓内文件):compose 栈经 host bind 挂
+# internal/db/migrations(生产迁移走 golang-migrate CLI,deploy/README.md
+# §1 口径);Helm 栈用镜像内 /delivery 烘焙面(见下方 COPY,T14.4)。
 #
 # 阶段 1:构建。alpine 工具链 + CGO_ENABLED=0(纯静态,go-sql-driver 纯 Go);
 # -trimpath -s -w 去路径与符号表。分层缓存:go.mod/go.sum 先拷先下,源码
@@ -28,6 +29,11 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/ ./cmd/...
 FROM alpine:3.22
 RUN adduser -D -u 65532 braid
 COPY --from=build /out/ /usr/local/bin/
+# 交付面烘焙(T14.4 Helm):migrations + grants.sh 随镜像走——构建期从仓内
+# 单源取用,deploy/chart 的 migrate/grants hook Job 经 initContainer 拷取。
+# compose 交付栈继续走 host bind 挂载(prod.docker-compose.yml),两不干扰。
+COPY internal/db/migrations /delivery/migrations
+COPY deploy/grants.sh /delivery/grants.sh
 # api(HTTP)/ metrics exposition;EXPOSE 仅文档性,实际监听由 BRAID_*_ADDR
 # 决定(容器内须绑 0.0.0.0,见 compose environment)。
 EXPOSE 8081 9090
