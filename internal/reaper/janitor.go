@@ -20,11 +20,20 @@ const outboxRetention = 7 * 24 * time.Hour
 
 // janitor 单 tick 的行/分区上限(量控;批间 100ms 让出复制/缓冲池水位)。
 const (
-	janitorRoundCap  = 10000 // 单清理作业的单轮行上限(outbox 与 login_audit 各自独立计;软上限——判定在整批 DELETE 后,至多超出一批)
+	janitorRoundCap  = 10000 // 单清理作业的单轮行上限(outbox/login_audit/login_throttle 各自独立计;软上限——判定在整批 DELETE 后,至多超出一批)
 	loginAuditBatch  = 500   // login_audit 单批 DELETE 上限(量级被限流钳制,不设旋钮)
 	janitorBatchGap  = 100 * time.Millisecond
 	ddlLockWaitSecs  = 5
 	partitionHorizon = 7 // 预建天数:保持 ≥7 天未来分区(验收口径)
+
+	// loginThrottleHorizon 是 login_throttle 行的 janitor 回收期:常量非
+	// 旋钮(闲置衰减是应用层判定、纪元 = window_start 的计数写入时刻,
+	// 与 janitor 无关;janitor 只兜「distinct 键长尾」的表体积——超龄
+	// 未触达行 = 死重,30d 是体积兜底不是语义前提,D-t113 #2「行空间由
+	// distinct 键限界」的执行面)。
+	loginThrottleHorizon = 30 * 24 * time.Hour
+	// loginThrottleBatch 单批 DELETE 上限(镜像 loginAuditBatch)。
+	loginThrottleBatch = 500
 )
 
 // janitorLoop 独立 goroutine:audit_log 分区水位 + outbox DISPATCHED 清理 +
@@ -80,7 +89,7 @@ func (r *Reaper) doJanitor(ctx context.Context) error {
 	if err := r.ensurePartitions(ctx, conn); err != nil {
 		r.log.Error("janitor.partitions_failed", "err", err)
 	}
-	return errors.Join(r.purgeOutbox(ctx, conn), r.purgeLoginAudit(ctx, conn))
+	return errors.Join(r.purgeOutbox(ctx, conn), r.purgeLoginAudit(ctx, conn), r.purgeLoginThrottle(ctx, conn))
 }
 
 // partitionRow 是 INFORMATION_SCHEMA 水位行。
@@ -293,6 +302,50 @@ DELETE FROM login_audit
 	}
 	if total > 0 {
 		r.log.Info("login_audit.purged", "rows", total)
+	}
+	return nil
+}
+
+// purgeLoginThrottle 批删超龄的 login_throttle 防御行(0010,T11.3):
+// 活性闲置超过 loginThrottleHorizon 即死重,回收兜表体积。**语义守卫:
+// 锁定期未满(locked_until ≥ NOW)的行永不回收**——旋钮只有下界校验,
+// LoginLockout > horizon 的(合法但荒谬)配置下,无守卫的回收会把仍在
+// 锁定期的行删掉、下次尝试重建 count=0 全新行 = 锁定提前解除(审计
+// MEDIUM);ip 行的极端宽窗口(LoginRateWindow > horizon,同样荒谬)
+// 闲置回收 = 窗口计数清零重启,方向是防御面归零非解锁,登记接受。
+// 谓词沿 idx_login_throttle_updated;Transient 容忍与轮上限语义同
+// purgeOutbox/purgeLoginAudit。授权契约:
+// reaper 账号对 login_throttle 持 SELECT+DELETE(DELETE 谓词列需 SELECT,
+// grants.sh 注记同 login_audit 先例;api 账号 SELECT/INSERT/UPDATE 无
+// DELETE——成功重置走 UPDATE,D-t113 #2)。
+func (r *Reaper) purgeLoginThrottle(ctx context.Context, conn *sql.Conn) error {
+	total := 0
+	for {
+		res, err := conn.ExecContext(ctx, `
+DELETE FROM login_throttle
+ WHERE updated_at < NOW(3) - INTERVAL ? MICROSECOND
+   AND (locked_until IS NULL OR locked_until < NOW(3))
+ LIMIT ?`,
+			loginThrottleHorizon.Microseconds(), loginThrottleBatch)
+		if err != nil {
+			if engine.Transient(err) {
+				return nil // 下轮再清:清理是收敛性作业,不重试单轮
+			}
+			return fmt.Errorf("reaper: purge login_throttle: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+		if n < int64(loginThrottleBatch) || total >= janitorRoundCap {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(janitorBatchGap):
+		}
+	}
+	if total > 0 {
+		r.log.Info("login_throttle.purged", "rows", total)
 	}
 	return nil
 }

@@ -4,8 +4,10 @@ import (
 	"database/sql"
 	"encoding/json"
 	"net/http"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"golang.org/x/crypto/bcrypt"
 
@@ -170,13 +172,19 @@ func newLoginDefenseDB(t *testing.T) *sql.DB {
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
 	for _, q := range []string{
 		"DELETE FROM login_audit",
+		// T11.3 DB 锚定:防御行随测试共享 schema,httptest 同源 IP 的
+		// 窗口残留会让紧旋钮断言(恰第 N 次 429)全体漂移。
+		"DELETE FROM login_throttle",
 		"DELETE FROM user_role", "DELETE FROM users",
 	} {
 		if _, err := dbh.Exec(q); err != nil {
 			t.Fatalf("cleanup %q: %v", q, err)
 		}
 	}
-	t.Cleanup(func() { _, _ = dbh.Exec("DELETE FROM login_audit") })
+	t.Cleanup(func() {
+		_, _ = dbh.Exec("DELETE FROM login_audit")
+		_, _ = dbh.Exec("DELETE FROM login_throttle")
+	})
 	return dbh
 }
 
@@ -244,4 +252,23 @@ func loginAuditRows(t *testing.T, dbh *sql.DB) int {
 		t.Fatalf("count: %v", err)
 	}
 	return got
+}
+
+// TestAuditUsernameMultibyteBounded:auditUsername 的 byte 截断 + UTF-8
+// 边界回退锚(审计 LOW:0010 注释引用的「同式」截断路径此前零单测)。
+func TestAuditUsernameMultibyteBounded(t *testing.T) {
+	in := strings.Repeat("张", 50) // 150 bytes > 128:截断点落「张」中段
+	got := auditUsername(in)
+	if len(got) != 126 { // 128 回退到 rune 边界 = 42×3
+		t.Fatalf("截断长度 = %d, want 126(rune 边界回退 2 bytes)", len(got))
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("截断产物非合法 UTF-8: %q", got)
+	}
+	if !strings.HasPrefix(got, strings.Repeat("张", 42)) {
+		t.Fatalf("截断丢前缀: %q", got)
+	}
+	if auditUsername("carol") != "carol" {
+		t.Fatal("短输入须原样")
+	}
 }

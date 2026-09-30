@@ -13,8 +13,9 @@
 //   - ID token 验签/nonce 不符(身份源故障)与本地库故障 → 500,不计数
 //     不审计(login.go 同判)。
 //
-// OIDC 路径不进 loginLimiter:无口令面,爆破防御在 IdP 侧;连败计数会把
-// IdP 用户锁进进程内存锁(重启才解)。
+// OIDC 路径不进 loginThrottle:无口令面,爆破防御在 IdP 侧;连败计数会把
+// IdP 用户的每次回调失败都锁进 DB 锁定行(locked_until,期满才解、跨副本
+// 共享)——协议/传输面错误与身份判定面由此不可分,拒绝面失真。
 
 package api
 
@@ -142,7 +143,7 @@ func (s *Server) oidcCallback(c *gin.Context) {
 
 // maxLogWhy 把传输面拒绝日志的 why 钳在常数:回调参数是攻击者可控输入
 // (error/code 原文、含 code 的底层错误文本),该路径刻意不进
-// loginLimiter——未截断的逐请求全量进日志 = 无上界日志放大(login.go
+// loginThrottle——未截断的逐请求全量进日志 = 无上界日志放大(login.go
 // maxLogUsername 同族缺陷,review MEDIUM)。截断 + 长度事实保留可诊断性。
 const maxLogWhy = 128
 

@@ -12,7 +12,7 @@
 // 中间件零改动、CSRF 免疫;CSP 收 XSS 面)。登录审计 = login_audit 独立表
 // (0005,append-only 账号域事实,不混入工作流事实域 audit_log);限流/账号
 // 锁定 = loginDefenseGate(IP 固定窗口 + username 连败锁,429 同形双防枚举;
-// 旋钮 Config 化,DB 锚定升级归 P1)。
+// 旋钮 Config 化;T11.3 起 DB 锚定 = login_throttle 表 0010,多副本共享)。
 package api
 
 import (
@@ -88,9 +88,16 @@ func (s *Server) loginAuditEvent(ctx context.Context, eventType, ip, username, r
 // ——拒绝路径的请求频率由攻击者控制,逐行落库即写放大;登录判定
 // (succeeded/failed)才是审计行的事实域。alreadyResponded = 调用方
 // 不得再写响应(readBodyLimited 已写 413/400,二次写 = 双写缺陷)。
+// DB 故障 → 500(防御不可用 = 登录不可用,fail-closed;认证同库,无新
+// fail-open 面,D-t113 #2);nil DB 桩面防御跳过(loginThrottle 内判)。
 func (s *Server) loginDefenseGate(c *gin.Context, ip, username string, alreadyResponded bool) bool {
 	if username == "" {
-		if _, limited := s.loginLimiter.checkIP(ip); limited {
+		limited, err := s.loginThrottle.checkIP(c.Request.Context(), ip)
+		if err != nil {
+			s.loginDefenseUnavailable(c, err, alreadyResponded)
+			return false
+		}
+		if limited {
 			s.mLogin(metrics.ResultRateLimited)
 			if !alreadyResponded {
 				c.JSON(http.StatusTooManyRequests, gin.H{"error": "too_many_attempts"})
@@ -103,7 +110,11 @@ func (s *Server) loginDefenseGate(c *gin.Context, ip, username string, alreadyRe
 		}
 		return true // 未限流且响应未写:调用方继续(自己的 400)
 	}
-	locked, limited := s.loginLimiter.check(ip, username)
+	locked, limited, err := s.loginThrottle.check(c.Request.Context(), ip, username)
+	if err != nil {
+		s.loginDefenseUnavailable(c, err, alreadyResponded)
+		return false
+	}
 	if locked || limited {
 		if locked {
 			s.mLogin(metrics.ResultLocked)
@@ -114,6 +125,17 @@ func (s *Server) loginDefenseGate(c *gin.Context, ip, username string, alreadyRe
 		return false
 	}
 	return true
+}
+
+// loginDefenseUnavailable 是防御层 DB 故障的统一面:不付 bcrypt、不计数
+// (身份源同库本就不可用)、500 响亮且日志携根因(排障须能区分 DB 断/
+// 1205 锁等待/授权缺失;响应体保持 generic)。alreadyResponded 时只拦
+// 不二写。
+func (s *Server) loginDefenseUnavailable(c *gin.Context, err error, alreadyResponded bool) {
+	slog.Error("api: login defense unavailable", "err", err)
+	if !alreadyResponded {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal"})
+	}
 }
 
 func (s *Server) login(c *gin.Context) {
@@ -150,11 +172,11 @@ func (s *Server) login(c *gin.Context) {
 			// (auth/errors.go 契约),绝不进响应;审计行携 Reason(DB 面
 			// 不对外,防枚举契约不受影响)。
 			slog.Info("api: login rejected", "username", logUsername(creds.Username), "reason", creds.Reason)
-			s.loginLimiter.record(req.Username, false)
+			s.loginThrottle.record(c.Request.Context(), req.Username, false)
 			s.loginAuditEvent(c.Request.Context(), loginEventFailed, ip, creds.Username, creds.Reason)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		case errors.Is(err, auth.ErrUserDisabled):
-			s.loginLimiter.record(req.Username, false)
+			s.loginThrottle.record(c.Request.Context(), req.Username, false)
 			s.loginAuditEvent(c.Request.Context(), loginEventFailed, ip, req.Username, "user_disabled")
 			c.JSON(http.StatusForbidden, gin.H{"error": "user_disabled"})
 		default:
@@ -165,7 +187,7 @@ func (s *Server) login(c *gin.Context) {
 		}
 		return
 	}
-	s.loginLimiter.record(req.Username, true)
+	s.loginThrottle.record(c.Request.Context(), req.Username, true)
 	s.loginAuditEvent(c.Request.Context(), loginEventSucceeded, ip, user.Username, "")
 	ttl := auth.DefaultTokenTTL
 	// token 绑定(T11.3):按当前模式携 bnd claim(off = 空串不带;

@@ -35,8 +35,10 @@ type Server struct {
 	// SignToken 契约可复用),契约见 internal/auth/identity.go。nil 响亮
 	// 拒绝,理由同 toolReg。
 	idp auth.IdentityProvider
-	// loginLimiter 登录防御层(T6.4,进程内存;构造于 NewServer)。
-	loginLimiter *loginLimiter
+	// loginThrottle 登录防御层(T6.4 落地,T11.3 DB 锚定换装:0010
+	// login_throttle 表,多副本共享;构造于 NewServer,nil DB = 零栈
+	// 桩面防御跳过)。
+	loginThrottle *loginThrottle
 	// tracer 是 OTel root span 面(T6.2;cmd/api 装配,测试默认 nil =
 	// 不起 span,请求 ctx 无 trace id,audit 落 NULL——镜像 loginMetrics
 	// 注入姿势)。span 边界 = authed 组每请求;trace id 是 audit 行与
@@ -81,7 +83,7 @@ func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry, trig
 	return &Server{
 		cfg: cfg, st: NewStore(ids), ids: ids, dbh: dbh,
 		toolReg: toolReg, trig: trig, idp: idp,
-		loginLimiter: newLoginLimiter(cfg),
+		loginThrottle: newLoginThrottle(cfg, dbh),
 	}
 }
 

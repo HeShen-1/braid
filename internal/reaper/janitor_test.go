@@ -275,3 +275,128 @@ VALUES (?, 0, 'node.task_enqueue', ?, 'reap-test', '{}', 'DISPATCHED',
 		t.Fatal("outbox 清理被 login_audit 失败阻断(errors.Join 隔离回归)")
 	}
 }
+
+// TestPurgeLoginThrottleHorizon:超龄防御行(> loginThrottleHorizon 30d)
+// 回收、保留期内行保留;行生命周期与锁定语义无关(死重回收,镜像
+// purgeLoginAudit 保留期测试形态)。
+func TestPurgeLoginThrottleHorizon(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	if _, err := d.Exec(`DELETE FROM login_throttle`); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	if _, err := d.Exec(`
+INSERT INTO login_throttle (throttle_key, kind, window_start, count, locked_until, updated_at) VALUES
+  ('u:old',   'username', NOW(3) - INTERVAL 40 DAY, 2, NULL, NOW(3) - INTERVAL 40 DAY),
+  ('u:fresh', 'username', NOW(3), 1, NULL, NOW(3))`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	conn, err := d.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := r.purgeLoginThrottle(context.Background(), conn); err != nil {
+		t.Fatalf("purgeLoginThrottle: %v", err)
+	}
+	for _, q := range []struct {
+		key  string
+		want int
+	}{
+		{"u:old", 0}, {"u:fresh", 1},
+	} {
+		var n int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM login_throttle WHERE throttle_key = ?`, q.key).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", q.key, err)
+		}
+		if n != q.want {
+			t.Fatalf("%s: %d 行残留, want %d", q.key, n, q.want)
+		}
+	}
+}
+
+// TestPurgeLoginThrottleBatchConvergence:超单批常量(500)的存量在轮内
+// 批间连搬收敛清空(镜像 login_audit 批收敛测试;审计 MEDIUM)。
+func TestPurgeLoginThrottleBatchConvergence(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	if _, err := d.Exec(`DELETE FROM login_throttle`); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	const rows = loginThrottleBatch + 10
+	var b strings.Builder
+	args := make([]any, 0, rows)
+	b.WriteString(`INSERT INTO login_throttle (throttle_key, kind, window_start, count, updated_at) VALUES `)
+	for i := 0; i < rows; i++ {
+		if i > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString("(?, 'username', NOW(3) - INTERVAL 40 DAY, 1, NOW(3) - INTERVAL 40 DAY)")
+		args = append(args, fmt.Sprintf("u:purgbatch-%d", i))
+	}
+	if _, err := d.Exec(b.String(), args...); err != nil {
+		t.Fatalf("seed batch: %v", err)
+	}
+	conn, err := d.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := r.purgeLoginThrottle(context.Background(), conn); err != nil {
+		t.Fatalf("purgeLoginThrottle: %v", err)
+	}
+	var left int
+	if err := d.QueryRow(
+		`SELECT COUNT(*) FROM login_throttle WHERE throttle_key LIKE 'u:purgbatch-%'`).Scan(&left); err != nil {
+		t.Fatalf("count left: %v", err)
+	}
+	if left != 0 {
+		t.Fatalf("批量未收敛:%d 行残留(want 0,%d 行两批内清空)", left, rows)
+	}
+}
+
+// TestPurgeLoginThrottleBoundaryAndGuard:恰界对(horizon 漂移/谓词放宽
+// 变异锚)+ 锁定期守卫(审计 MEDIUM:锁定期未满的行永不回收)。
+func TestPurgeLoginThrottleBoundaryAndGuard(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	if _, err := d.Exec(`DELETE FROM login_throttle`); err != nil {
+		t.Fatalf("cleanup: %v", err)
+	}
+	// 界对(orch-review rev4 HIGH 修订:恰 =NOW−30d 的种子在种子/purge
+	// 同毫秒量子化下严格 < 不删,实测 ~30% flake——两侧各退 1s 钉
+	// horizon ±1s 带宽,仍杀 horizon 漂移与谓词放宽变异):
+	// B−1s 必删、B+1s 必留。
+	if _, err := d.Exec(`
+INSERT INTO login_throttle (throttle_key, kind, window_start, count, updated_at) VALUES
+  ('u:edge-old',   'username', NOW(3) - INTERVAL 30 DAY - INTERVAL 1 SECOND, 1, NOW(3) - INTERVAL 30 DAY - INTERVAL 1 SECOND),
+  ('u:edge-keep',  'username', NOW(3) - INTERVAL 30 DAY + INTERVAL 1 SECOND, 1, NOW(3) - INTERVAL 30 DAY + INTERVAL 1 SECOND),
+  ('u:locked-keep','username', NOW(3) - INTERVAL 40 DAY, 0, NOW(3) - INTERVAL 40 DAY)`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := d.Exec(
+		`UPDATE login_throttle SET locked_until = NOW(3) + INTERVAL 1 HOUR WHERE throttle_key = 'u:locked-keep'`); err != nil {
+		t.Fatalf("set lock: %v", err)
+	}
+	conn, err := d.Conn(context.Background())
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	defer func() { _ = conn.Close() }()
+	if err := r.purgeLoginThrottle(context.Background(), conn); err != nil {
+		t.Fatalf("purgeLoginThrottle: %v", err)
+	}
+	for _, q := range []struct {
+		key  string
+		want int
+	}{
+		{"u:edge-old", 0},    // 界外 1s 必删
+		{"u:edge-keep", 1},   // 界内 1s 必留
+		{"u:locked-keep", 1}, // 超龄但锁定期未满:守卫保留
+	} {
+		var n int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM login_throttle WHERE throttle_key = ?`, q.key).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", q.key, err)
+		}
+		if n != q.want {
+			t.Fatalf("%s: %d 行残留, want %d", q.key, n, q.want)
+		}
+	}
+}
