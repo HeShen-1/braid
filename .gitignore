@@ -10,3 +10,6 @@
 log/
 # sandbox image host-build artifact (deploy/README.md §7)
 /braid-sandbox-exec
+# canvas frontend (D-2026-09-30-t141-canvas-pipeline): deps stay local,
+# build output lives in internal/api/web/canvas (committed for go:embed)
+web/canvas/node_modules/

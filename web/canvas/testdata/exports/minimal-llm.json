@@ -1,0 +1,34 @@
+{
+  "dsl": "1.0",
+  "name": "minimal-llm",
+  "metadata": {
+    "canvas": {
+      "nodes": {
+        "only": {
+          "position": {
+            "x": 40,
+            "y": 40
+          }
+        }
+      },
+      "viewport": {
+        "x": 0,
+        "y": 0,
+        "zoom": 1
+      }
+    }
+  },
+  "edges": [],
+  "nodes": [
+    {
+      "id": "only",
+      "type": "llm",
+      "prompt": {
+        "template": "说点什么"
+      },
+      "outputs": {
+        "text": "string"
+      }
+    }
+  ]
+}
