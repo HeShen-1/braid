@@ -230,6 +230,11 @@ type definitionRow struct {
 	version sql.NullInt64
 	dsl     []byte
 	hash    string
+	// tenant 是归属租户(D-t112):仅 loadPublishedDefinition 填充,
+	// Instantiate 以它落 workflow_execution.tenant_id——execution 租户
+	// 从定义行携带(api 触发解析已按调用方租户过滤定义,结构性保证
+	// def.tenant == exec.tenant,无需 InstantiateParams 加维)。
+	tenant uint64
 }
 
 func (s *Scheduler) loadDefinition(ctx context.Context, id uint64) (*definitionRow, error) {
@@ -255,8 +260,8 @@ func (s *Scheduler) loadDefinition(ctx context.Context, id uint64) (*definitionR
 func (s *Scheduler) loadPublishedDefinition(ctx context.Context, id uint64) (*definitionRow, error) {
 	var r definitionRow
 	err := s.deps.DB.QueryRowContext(ctx,
-		`SELECT name, version, dsl, dsl_hash FROM workflow_definition WHERE id=? AND status='PUBLISHED'`, id).
-		Scan(&r.name, &r.version, &r.dsl, &r.hash)
+		`SELECT name, version, dsl, dsl_hash, tenant_id FROM workflow_definition WHERE id=? AND status='PUBLISHED'`, id).
+		Scan(&r.name, &r.version, &r.dsl, &r.hash, &r.tenant)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, fmt.Errorf("%w: workflow_definition %d (missing or not PUBLISHED)", engine.ErrNotFound, id)
 	}
@@ -434,10 +439,10 @@ func (s *Scheduler) Instantiate(ctx context.Context, p InstantiateParams) (uint6
 		}
 		if _, err := q.ExecContext(ctx, `
 INSERT INTO workflow_execution
-  (id, definition_id, definition_name, definition_version, definition_hash,
+  (id, tenant_id, definition_id, definition_name, definition_version, definition_hash,
    status, trigger_type, triggered_by, trace_id, input, idempotency_key)
-VALUES (?,?,?,?,?, 'PENDING', ?, ?, ?, ?, ?)`,
-			execID, p.DefinitionID, def.name, def.version.Int64, def.hash,
+VALUES (?,?,?,?,?,?, 'PENDING', ?, ?, ?, ?, ?)`,
+			execID, def.tenant, p.DefinitionID, def.name, def.version.Int64, def.hash,
 			triggerType, p.TriggeredBy, trace, input, idem); err != nil {
 			var me *mysql.MySQLError
 			if errors.As(err, &me) && me.Number == 1062 && strings.Contains(me.Message, "uk_exec_idem") {

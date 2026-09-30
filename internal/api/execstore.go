@@ -65,10 +65,13 @@ const execListCols = `id, definition_id, definition_name, definition_version, st
  created_at, started_at, finished_at,
  DATE_FORMAT(created_at, '%Y-%m-%d')`
 
-// GetExecution 按 id 读执行行(任意状态;404 判定)。
-func (s *Store) GetExecution(ctx context.Context, q DBTX, id uint64) (Execution, error) {
+// GetExecution 按 (tenant, id) 读执行行(任意状态;404 判定)。tenant
+// 谓词是执行读面的行级隔离执法点(D-t112 #1):跨租户 id 直取 = 404,
+// 与「不存在」同面(不泄露存在性)。ListNodeExecutions 无租户列,
+// 调用方必须先经本方法过租户闸再列节点行(node 系经 execution 锚派生)。
+func (s *Store) GetExecution(ctx context.Context, q DBTX, tenant, id uint64) (Execution, error) {
 	row := q.QueryRowContext(ctx,
-		"SELECT "+execCols+" FROM workflow_execution WHERE id = ?", id)
+		"SELECT "+execCols+" FROM workflow_execution WHERE id = ? AND tenant_id = ?", id, tenant)
 	exec, err := scanExecution(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Execution{}, fmt.Errorf("%w: execution %d", ErrNotFound, id)
@@ -76,27 +79,24 @@ func (s *Store) GetExecution(ctx context.Context, q DBTX, id uint64) (Execution,
 	return exec, err
 }
 
-// ListExecutions 分页列出执行(name 空 = 全部工作流,给定时走
-// idx_exec_name_created——DDL 钦定的「按工作流列执行」;status 空 = 全部
-// 状态)。顺序 created_at DESC, id DESC(最新在前,snowflake id 时序一致)。
-// 已知取舍:name 缺省(全量/status-only)路径 created_at 无前导索引 ⇒
-// 全表扫 + filesort——本表是全系统无上界增长表,limit≤100/offset≤10000
-// 硬上界下 P0 量级可接受,劣化阈值归 T6.4 告警,补 (status,created_at)
-// 索引归后续迁移任务(对抗审计 LOW,钉住防静默)。
+// ListExecutions 分页列出执行(tenant 恒携谓词 = 行级隔离执法点,
+// idx_exec_tenant_name_created 前缀;name 空 = 全部工作流,status 空 =
+// 全部状态)。顺序 created_at DESC, id DESC(最新在前,snowflake id
+// 时序一致)。已知取舍:tenant+name 缺 status 或全量路径 created_at 无
+// 全维前导索引 ⇒ 前缀扫 + filesort——本表是全系统无上界增长表,
+// limit≤100/offset≤10000 硬上界下 P0 量级可接受,劣化阈值归 T6.4 告警
+// (对抗审计 LOW,钉住防静默;0011 已把租户前缀化索引就位)。
 // 返回 (当前页, 满足条件的总行数),与 List(definitions)同形。
-func (s *Store) ListExecutions(ctx context.Context, q DBTX, name, status string, limit, offset int) ([]Execution, int, error) {
-	where := ""
-	args := make([]any, 0, 4)
+func (s *Store) ListExecutions(ctx context.Context, q DBTX, tenant uint64, name, status string, limit, offset int) ([]Execution, int, error) {
+	where := " WHERE tenant_id = ?"
+	args := make([]any, 0, 5)
+	args = append(args, tenant)
 	if name != "" {
-		where = " WHERE definition_name = ?"
+		where += " AND definition_name = ?"
 		args = append(args, name)
 	}
 	if status != "" {
-		if where == "" {
-			where = " WHERE status = ?"
-		} else {
-			where += " AND status = ?"
-		}
+		where += " AND status = ?"
 		args = append(args, status)
 	}
 	var total int

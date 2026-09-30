@@ -390,7 +390,7 @@ func TestHTTPGetExecution(t *testing.T) {
 	r, execID, dbh := realChainServer(t)
 
 	// 读面:approver(非写面角色)可查。
-	approver, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleApprover})
+	approver, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleApprover}, 0)
 	if err != nil {
 		t.Fatalf("sign approver: %v", err)
 	}
@@ -552,7 +552,7 @@ func TestHTTPTriggerAuthAndRoles(t *testing.T) {
 	if code != 401 {
 		t.Fatalf("unauthenticated trigger = %d, want 401", code)
 	}
-	approver, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleApprover})
+	approver, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleApprover}, 0)
 	if err != nil {
 		t.Fatalf("sign approver: %v", err)
 	}
@@ -565,5 +565,65 @@ func TestHTTPTriggerAuthAndRoles(t *testing.T) {
 	code, body := doJSON(t, r, http.MethodPost, path, token, huge)
 	if code != http.StatusRequestEntityTooLarge || body["error"] != "body_too_large" {
 		t.Fatalf("oversized trigger body = %d %v, want 413 body_too_large", code, body)
+	}
+}
+
+// TestHTTPTenantIsolationIntegration(D-t112):真链(t13)租户隔离的
+// execution 侧半边——租户 7 token 经 API 建草稿/发布/触发,DB 断言
+// execution 行落 tenant_id=7(Instantiate 从定义行携带);平台 token
+// 对同名定义/该执行的全部读/触发面 404。c4 对抗矩阵的 execution 锚。
+func TestHTTPTenantIsolationIntegration(t *testing.T) {
+	dbh := sqltest.MustOpenAt(t, "braid_api_test")
+	cleanExecutionChain(t, dbh)
+	if _, err := dbh.Exec(
+		`INSERT INTO tenants (id, slug, name) VALUES (7, 't-seven', 'T Seven') ON DUPLICATE KEY UPDATE id = id`); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	schedIDs, err := snowflake.New(1)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: schedIDs})
+	if err != nil {
+		t.Fatalf("scheduler: %v", err)
+	}
+	r, _, sign := newTestServerWithTrigger(t, sched)
+	author := sign(auth.RoleAuthor) // alice,平台租户(0)
+	tok7, err := auth.SignToken(testSecret, time.Hour, "bob", []auth.Role{auth.RoleAuthor}, 7)
+	if err != nil {
+		t.Fatalf("sign tenant token: %v", err)
+	}
+	name := uniqName("tenant-trig")
+	publishViaAPI(t, r, tok7, name)
+
+	// 租户 7 触发 → execution 行 tenant_id = 7(定义行携带,非调用方传参)。
+	code, body := doJSON(t, r, http.MethodPost, "/api/v1/executions", tok7,
+		[]byte(fmt.Sprintf(`{"definition_name":%q,"input":{"q":"t7"}}`, name)))
+	if code != http.StatusCreated {
+		t.Fatalf("tenant trigger = %d %v, want 201", code, body)
+	}
+	execID := body["id"].(string)
+	var tenantID uint64
+	if err := dbh.QueryRow(`SELECT tenant_id FROM workflow_execution WHERE id = ?`, execID).Scan(&tenantID); err != nil {
+		t.Fatalf("read execution tenant: %v", err)
+	}
+	if tenantID != 7 {
+		t.Fatalf("execution tenant_id = %d, want 7(定义行携带)", tenantID)
+	}
+
+	// 平台 token 的跨租户面:详情 404 / 同名解析(触发)404 / 定义读 404。
+	if code, b := doJSON(t, r, http.MethodGet, "/api/v1/executions/"+execID, author, nil); code != http.StatusNotFound {
+		t.Fatalf("cross GET execution = %d %v, want 404", code, b)
+	}
+	if code, b := doJSON(t, r, http.MethodPost, "/api/v1/executions", author,
+		[]byte(fmt.Sprintf(`{"definition_name":%q}`, name))); code != http.StatusNotFound {
+		t.Fatalf("cross trigger = %d %v, want 404", code, b)
+	}
+	if code, b := doJSON(t, r, http.MethodGet, "/api/v1/definitions/"+name, author, nil); code != http.StatusNotFound {
+		t.Fatalf("cross GET definition = %d %v, want 404", code, b)
+	}
+	// 租户 7 自见:详情 200。
+	if code, b := doJSON(t, r, http.MethodGet, "/api/v1/executions/"+execID, tok7, nil); code != http.StatusOK {
+		t.Fatalf("own GET execution = %d %v, want 200", code, b)
 	}
 }

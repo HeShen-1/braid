@@ -123,7 +123,7 @@ func newApprovalAPIServer(t *testing.T, d *sql.DB, queue string) *gin.Engine {
 // postDecision 经真 gin 路由发决定(carol 主体)。
 func postDecision(t *testing.T, r *gin.Engine, execID uint64, decision, comment string) (int, map[string]any) {
 	t.Helper()
-	token, err := auth.SignToken(nodesE2ESecret, time.Hour, "carol", []auth.Role{auth.RoleApprover})
+	token, err := auth.SignToken(nodesE2ESecret, time.Hour, "carol", []auth.Role{auth.RoleApprover}, 0)
 	if err != nil {
 		t.Fatalf("sign token: %v", err)
 	}

@@ -165,7 +165,7 @@ func isMySQLConflict(err error) bool {
 // CreateDraft 校验 DSL 并写入一行草稿(version NULL,uk 多 NULL ⇒ 同名
 // 多草稿共存)。写入是两步(INSERT + 读回定稿 hash,见 hashDSL),调用方
 // 必须经 WithTx 包裹保证原子。返回落库后的完整行(时间戳取库端真源)。
-func (s *Store) CreateDraft(ctx context.Context, q DBTX, doc []byte, actor string) (Definition, error) {
+func (s *Store) CreateDraft(ctx context.Context, q DBTX, tenant uint64, doc []byte, actor string) (Definition, error) {
 	wf, err := parseDraft(doc)
 	if err != nil {
 		return Definition{}, err
@@ -176,9 +176,9 @@ func (s *Store) CreateDraft(ctx context.Context, q DBTX, doc []byte, actor strin
 	}
 	res, err := q.ExecContext(ctx, `
 INSERT INTO workflow_definition
-  (id, name, version, dsl_version, status, description, dsl, dsl_hash, created_by, updated_by)
-VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
-		id, wf.Name, wf.DSL, statusDraft, wf.Description, []byte(doc), hashDSL(doc), actor, actor)
+  (id, tenant_id, name, version, dsl_version, status, description, dsl, dsl_hash, created_by, updated_by)
+VALUES (?, ?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
+		id, tenant, wf.Name, wf.DSL, statusDraft, wf.Description, []byte(doc), hashDSL(doc), actor, actor)
 	if err != nil {
 		if isMySQLConflict(err) {
 			return Definition{}, fmt.Errorf("%w: insert definition %d", ErrConflict, id)
@@ -191,7 +191,7 @@ VALUES (?, ?, NULL, ?, ?, ?, ?, ?, ?, ?)`,
 	if err := s.finalizeHash(ctx, q, id); err != nil {
 		return Definition{}, err
 	}
-	return s.GetByID(ctx, q, id)
+	return s.GetByID(ctx, q, tenant, id)
 }
 
 // finalizeHash 用读回的存储形态字节定稿 dsl_hash(hashDSL 契约)。
@@ -208,9 +208,11 @@ func (s *Store) finalizeHash(ctx context.Context, q DBTX, id uint64) error {
 	return nil
 }
 
-// GetByID 按 id 读行(任意状态;读路径与 404 判定)。
-func (s *Store) GetByID(ctx context.Context, q DBTX, id uint64) (Definition, error) {
-	row := q.QueryRowContext(ctx, "SELECT "+defCols+" FROM workflow_definition WHERE id = ?", id)
+// GetByID 按 (tenant, id) 读行(任意状态;读路径与 404 判定)。tenant
+// 谓词是行级隔离的读面执法点(D-t112 #1):跨租户 id 直取 = 404,与
+// 「不存在」同面(不泄露存在性)。
+func (s *Store) GetByID(ctx context.Context, q DBTX, tenant, id uint64) (Definition, error) {
+	row := q.QueryRowContext(ctx, "SELECT "+defCols+" FROM workflow_definition WHERE id = ? AND tenant_id = ?", id, tenant)
 	def, err := scanDefinition(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Definition{}, fmt.Errorf("%w: definition %d", ErrNotFound, id)
@@ -223,9 +225,9 @@ func (s *Store) GetByID(ctx context.Context, q DBTX, id uint64) (Definition, err
 // (TOCTOU:并发 UpdateDraft 提交的新内容会绕过发布白名单直接落
 // PUBLISHED)。锁行串行化 update/publish 交错——败方按状态谓词显式
 // 失败(engine.nodecas 同款仓内纪律)。
-func (s *Store) getByIDForUpdate(ctx context.Context, q DBTX, id uint64) (Definition, error) {
+func (s *Store) getByIDForUpdate(ctx context.Context, q DBTX, tenant, id uint64) (Definition, error) {
 	row := q.QueryRowContext(ctx,
-		"SELECT "+defCols+" FROM workflow_definition WHERE id = ? FOR UPDATE", id)
+		"SELECT "+defCols+" FROM workflow_definition WHERE id = ? AND tenant_id = ? FOR UPDATE", id, tenant)
 	def, err := scanDefinition(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Definition{}, fmt.Errorf("%w: definition %d", ErrNotFound, id)
@@ -233,10 +235,11 @@ func (s *Store) getByIDForUpdate(ctx context.Context, q DBTX, id uint64) (Defini
 	return def, err
 }
 
-// GetVersion 按 (name, version) 读已发布行。
-func (s *Store) GetVersion(ctx context.Context, q DBTX, name string, version uint32) (Definition, error) {
+// GetVersion 按 (tenant, name, version) 读已发布行(租户命名空间,
+// uk_def_tenant_name_version 同维)。
+func (s *Store) GetVersion(ctx context.Context, q DBTX, tenant uint64, name string, version uint32) (Definition, error) {
 	row := q.QueryRowContext(ctx,
-		"SELECT "+defCols+" FROM workflow_definition WHERE name = ? AND version = ?", name, version)
+		"SELECT "+defCols+" FROM workflow_definition WHERE tenant_id = ? AND name = ? AND version = ?", tenant, name, version)
 	def, err := scanDefinition(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Definition{}, fmt.Errorf("%w: %q v%d", ErrNotFound, name, version)
@@ -247,10 +250,10 @@ func (s *Store) GetVersion(ctx context.Context, q DBTX, name string, version uin
 // LatestPublished 解析默认触发目标:该 name 最新 PUBLISHED 版本
 // (idx_def_name_status_version 一次后向扫描;全归档 ⇒ ErrNotFound =
 // 禁新触发)。T5.5 execution 创建从本方法取钉住四件套。
-func (s *Store) LatestPublished(ctx context.Context, q DBTX, name string) (Definition, error) {
+func (s *Store) LatestPublished(ctx context.Context, q DBTX, tenant uint64, name string) (Definition, error) {
 	row := q.QueryRowContext(ctx,
-		"SELECT "+defCols+" FROM workflow_definition WHERE name = ? AND status = ? ORDER BY version DESC LIMIT 1",
-		name, statusPublished)
+		"SELECT "+defCols+" FROM workflow_definition WHERE tenant_id = ? AND name = ? AND status = ? ORDER BY version DESC LIMIT 1",
+		tenant, name, statusPublished)
 	def, err := scanDefinition(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Definition{}, fmt.Errorf("%w: no published version of %q", ErrNotFound, name)
@@ -259,10 +262,10 @@ func (s *Store) LatestPublished(ctx context.Context, q DBTX, name string) (Defin
 }
 
 // ListVersions 列某 name 的全部已发布版本(升序;草稿不占号,走 List)。
-func (s *Store) ListVersions(ctx context.Context, q DBTX, name string) ([]Definition, error) {
+func (s *Store) ListVersions(ctx context.Context, q DBTX, tenant uint64, name string) ([]Definition, error) {
 	rows, err := q.QueryContext(ctx,
-		"SELECT "+defCols+" FROM workflow_definition WHERE name = ? AND version IS NOT NULL ORDER BY version",
-		name)
+		"SELECT "+defCols+" FROM workflow_definition WHERE tenant_id = ? AND name = ? AND version IS NOT NULL ORDER BY version",
+		tenant, name)
 	if err != nil {
 		return nil, fmt.Errorf("api: list versions of %q: %w", name, err)
 	}
@@ -270,13 +273,15 @@ func (s *Store) ListVersions(ctx context.Context, q DBTX, name string) ([]Defini
 	return collectDefinitions(rows)
 }
 
-// List 分页列出定义(status 空 = 全部;updated_at DESC, id DESC 走
-// idx_def_status_updated)。返回 (当前页, 满足条件的总行数)。
-func (s *Store) List(ctx context.Context, q DBTX, status string, limit, offset int) ([]Definition, int, error) {
-	where := ""
-	args := make([]any, 0, 2)
+// List 分页列出定义(tenant 恒携谓词 = 行级隔离执法点;status 空 =
+// 全部;updated_at DESC, id DESC 走 idx_def_tenant_status_updated)。
+// 返回 (当前页, 满足条件的总行数)。
+func (s *Store) List(ctx context.Context, q DBTX, tenant uint64, status string, limit, offset int) ([]Definition, int, error) {
+	where := " WHERE tenant_id = ?"
+	args := make([]any, 0, 3)
+	args = append(args, tenant)
 	if status != "" {
-		where = " WHERE status = ?"
+		where += " AND status = ?"
 		args = append(args, status)
 	}
 	var total int
@@ -302,8 +307,8 @@ func (s *Store) List(ctx context.Context, q DBTX, status string, limit, offset i
 // UpdateDraft 更新草稿 DSL(重校验、重算哈希;仅 DRAFT 可更)。DSL
 // $.name 必须与行 name 一致——改名 = 新工作流。写入是两步(UPDATE +
 // 读回定稿 hash),调用方必须经 WithTx 包裹。
-func (s *Store) UpdateDraft(ctx context.Context, q DBTX, id uint64, doc []byte, actor string) (Definition, error) {
-	cur, err := s.getByIDForUpdate(ctx, q, id)
+func (s *Store) UpdateDraft(ctx context.Context, q DBTX, tenant, id uint64, doc []byte, actor string) (Definition, error) {
+	cur, err := s.getByIDForUpdate(ctx, q, tenant, id)
 	if err != nil {
 		return Definition{}, err
 	}
@@ -321,8 +326,8 @@ func (s *Store) UpdateDraft(ctx context.Context, q DBTX, id uint64, doc []byte, 
 	res, err := q.ExecContext(ctx, `
 UPDATE workflow_definition
 SET dsl_version = ?, description = ?, dsl = ?, dsl_hash = ?, updated_by = ?
-WHERE id = ? AND status = ?`,
-		wf.DSL, wf.Description, []byte(doc), hashDSL(doc), actor, id, statusDraft)
+WHERE id = ? AND tenant_id = ? AND status = ?`,
+		wf.DSL, wf.Description, []byte(doc), hashDSL(doc), actor, id, tenant, statusDraft)
 	if err != nil {
 		return Definition{}, fmt.Errorf("api: update definition %d: %w", id, err)
 	}
@@ -330,7 +335,7 @@ WHERE id = ? AND status = ?`,
 		// changed-rows 语义(未设 clientFoundRows):赋值与现值全同的
 		// 幂等保存(存储形态字节回放)affected=0。重读状态判真伪:
 		// 仍 DRAFT = 幂等成功(返回现状);否则才是并发状态翻转。
-		after, err := s.GetByID(ctx, q, id)
+		after, err := s.GetByID(ctx, q, tenant, id)
 		if err != nil {
 			return Definition{}, err
 		}
@@ -342,7 +347,7 @@ WHERE id = ? AND status = ?`,
 	if err := s.finalizeHash(ctx, q, id); err != nil {
 		return Definition{}, err
 	}
-	return s.GetByID(ctx, q, id)
+	return s.GetByID(ctx, q, tenant, id)
 }
 
 // Publish 把草稿翻成 PUBLISHED:发布路径叠加工具白名单校验
@@ -351,10 +356,10 @@ WHERE id = ? AND status = ?`,
 // 同名并发发布的间隙锁竞态由 uk_def_name_version 兜底 ⇒ 1062 ⇒
 // ErrConflict(显式失败是并发闸,不是错误)。published_at 用库端
 // NOW(3)(会话 time_zone '+00:00' ⇒ UTC,DDL 契约)。
-func (s *Store) Publish(ctx context.Context, q DBTX, id uint64, actor string, allowlist ...string) (Definition, error) {
+func (s *Store) Publish(ctx context.Context, q DBTX, tenant, id uint64, actor string, allowlist ...string) (Definition, error) {
 	// 锁定读:白名单校验的对象必须是即将被翻转的那份内容(getByIDForUpdate
 	// 注释——快照读 + 只钉状态的 guarded UPDATE 会发布未校验的新内容)。
-	cur, err := s.getByIDForUpdate(ctx, q, id)
+	cur, err := s.getByIDForUpdate(ctx, q, tenant, id)
 	if err != nil {
 		return Definition{}, err
 	}
@@ -366,15 +371,15 @@ func (s *Store) Publish(ctx context.Context, q DBTX, id uint64, actor string, al
 	}
 	var next sql.NullInt64
 	if err := q.QueryRowContext(ctx,
-		"SELECT COALESCE(MAX(version), 0) + 1 FROM workflow_definition WHERE name = ? AND version IS NOT NULL",
-		cur.Name).Scan(&next); err != nil {
+		"SELECT COALESCE(MAX(version), 0) + 1 FROM workflow_definition WHERE tenant_id = ? AND name = ? AND version IS NOT NULL",
+		tenant, cur.Name).Scan(&next); err != nil {
 		return Definition{}, fmt.Errorf("api: next version of %q: %w", cur.Name, err)
 	}
 	res, err := q.ExecContext(ctx, `
 UPDATE workflow_definition
 SET version = ?, status = ?, published_by = ?, published_at = NOW(3), updated_by = ?
-WHERE id = ? AND status = ?`,
-		next.Int64, statusPublished, actor, actor, id, statusDraft)
+WHERE id = ? AND tenant_id = ? AND status = ?`,
+		next.Int64, statusPublished, actor, actor, id, tenant, statusDraft)
 	if err != nil {
 		if isMySQLConflict(err) {
 			return Definition{}, fmt.Errorf("%w: concurrent publish of %q v%d", ErrConflict, cur.Name, next.Int64)
@@ -384,12 +389,12 @@ WHERE id = ? AND status = ?`,
 	if n, _ := res.RowsAffected(); n != 1 {
 		return Definition{}, fmt.Errorf("%w: definition %d no longer DRAFT", ErrConflict, id)
 	}
-	return s.GetByID(ctx, q, id)
+	return s.GetByID(ctx, q, tenant, id)
 }
 
 // Archive 把 PUBLISHED 归档(禁新触发;单向不可逆,运行中实例不受影响)。
-func (s *Store) Archive(ctx context.Context, q DBTX, name string, version uint32, actor string) (Definition, error) {
-	cur, err := s.GetVersion(ctx, q, name, version)
+func (s *Store) Archive(ctx context.Context, q DBTX, tenant uint64, name string, version uint32, actor string) (Definition, error) {
+	cur, err := s.GetVersion(ctx, q, tenant, name, version)
 	if err != nil {
 		return Definition{}, err
 	}
@@ -399,15 +404,15 @@ func (s *Store) Archive(ctx context.Context, q DBTX, name string, version uint32
 	res, err := q.ExecContext(ctx, `
 UPDATE workflow_definition
 SET status = ?, updated_by = ?
-WHERE id = ? AND status = ?`,
-		statusArchived, actor, cur.ID, statusPublished)
+WHERE id = ? AND tenant_id = ? AND status = ?`,
+		statusArchived, actor, cur.ID, tenant, statusPublished)
 	if err != nil {
 		return Definition{}, fmt.Errorf("api: archive %q v%d: %w", name, version, err)
 	}
 	if n, _ := res.RowsAffected(); n != 1 {
 		return Definition{}, fmt.Errorf("%w: %q v%d no longer PUBLISHED", ErrConflict, name, version)
 	}
-	return s.GetByID(ctx, q, cur.ID)
+	return s.GetByID(ctx, q, tenant, cur.ID)
 }
 
 // rowScanner 收窄 *sql.Row / *sql.Rows 的公共扫描面。

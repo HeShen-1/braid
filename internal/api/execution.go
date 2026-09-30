@@ -129,9 +129,9 @@ func isJSONObject(raw json.RawMessage) bool {
 // 生命周期闸拒绝 ⇒ ErrConflict(409)。
 func (s *Server) resolveTriggerTarget(c *gin.Context, req triggerRequest) (Definition, error) {
 	if req.Version == nil {
-		return s.st.LatestPublished(c.Request.Context(), s.dbh, req.DefinitionName)
+		return s.st.LatestPublished(c.Request.Context(), s.dbh, tenantFrom(c), req.DefinitionName)
 	}
-	def, err := s.st.GetVersion(c.Request.Context(), s.dbh, req.DefinitionName, *req.Version)
+	def, err := s.st.GetVersion(c.Request.Context(), s.dbh, tenantFrom(c), req.DefinitionName, *req.Version)
 	if err != nil {
 		return Definition{}, err
 	}
@@ -211,7 +211,7 @@ func (s *Server) triggerExecution(c *gin.Context) {
 			// 重放(v4 解析、v3 落库)按名匹配 200 回显首执行;异名命中
 			// 才是作用域违规(SHA-256 碰撞或键空间错乱,不可达)→ 500
 			// 响亮不静默错回显。
-			prior, rerr := s.st.GetExecutionByIdempotencyKey(c.Request.Context(), s.dbh, scoped)
+			prior, rerr := s.st.GetExecutionByIdempotencyKey(c.Request.Context(), s.dbh, tenantFrom(c), scoped)
 			if rerr != nil {
 				mapStoreError(c, rerr)
 				return
@@ -392,7 +392,7 @@ func (s *Server) listExecutions(c *gin.Context) {
 		return
 	}
 	items, total, err := s.st.ListExecutions(c.Request.Context(), s.dbh,
-		c.Query("name"), status, limit, offset)
+		tenantFrom(c), c.Query("name"), status, limit, offset)
 	if err != nil {
 		mapStoreError(c, err)
 		return
@@ -414,7 +414,7 @@ func (s *Server) getExecution(c *gin.Context) {
 	if !ok {
 		return
 	}
-	exec, err := s.st.GetExecution(c.Request.Context(), s.dbh, id)
+	exec, err := s.st.GetExecution(c.Request.Context(), s.dbh, tenantFrom(c), id)
 	if err != nil {
 		mapStoreError(c, err)
 		return

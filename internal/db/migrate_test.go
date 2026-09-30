@@ -99,7 +99,15 @@ var authTables = map[string]bool{
 	"login_throttle": true, // 0010(T11.3 登录防御 DB 锚定,可 UPDATE 簿记面——镜像 chain_heads 判)
 }
 
-var allDomainTables = []map[string]bool{engineTables, authTables}
+// tenantTables:0011 起租户域(T11.2,D-2026-09-30-t112):tenants 单表
+// (归属锚 + 平台哨兵 id=0);行级隔离的冗余 tenant_id 列落在各域既有表
+// (users/workflow_definition/workflow_execution/audit_log/audit_pending),
+// 不为本域加第二张表。
+var tenantTables = map[string]bool{
+	"tenants": true, // 0011(T11.2 租户模型)
+}
+
+var allDomainTables = []map[string]bool{engineTables, authTables, tenantTables}
 
 func tables(t *testing.T, d *sql.DB) map[string]bool {
 	t.Helper()
@@ -244,16 +252,77 @@ SELECT COUNT(*) FROM information_schema.STATISTICS
 		t.Fatalf("login_throttle 锚:pk cols=%d(Composite? want 1)、idx=%d(want 1)", pkCols, idxCnt)
 	}
 
-	// CHECK 约束齐备:10 个(definition 1 + node 3 + attempt 2 + audit 1 + users 3;
-	// node +1 = 0006 chk_node_instance;users +1 = 0009 chk_user_email)
+	// 0011 租户模型锚(T11.2,D-2026-09-30-t112 防回退):平台哨兵行在场;
+	// 五表 tenant_id NOT NULL DEFAULT 0(存量回填 0 = 平台租户,既有路径
+	// 迁移后即绿——分项 commit 各自独立绿的锚);definition 租户键三列化
+	// + execution 租户列表索引;旧全局键退役(旧键在场 = 租户撞名闸缺失,
+	// 静默降级面)。
+	var seedSlug string
+	if err := d.QueryRow(`SELECT slug FROM tenants WHERE id = 0`).Scan(&seedSlug); err != nil {
+		t.Fatalf("tenants 平台哨兵行(id=0)缺(存量归属锚,D-t112): %v", err)
+	}
+	if seedSlug != "platform" {
+		t.Fatalf("tenants id=0 slug = %q, want platform", seedSlug)
+	}
+	for _, tbl := range []string{"users", "workflow_definition", "workflow_execution", "audit_log", "audit_pending"} {
+		var nullable, dflt string
+		if err := d.QueryRow(`
+SELECT IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
+   AND COLUMN_NAME = 'tenant_id'`, tbl).Scan(&nullable, &dflt); err != nil {
+			t.Fatalf("%s.tenant_id 缺列(D-t112 五表归属列): %v", tbl, err)
+		}
+		if nullable != "NO" || dflt != "0" {
+			t.Fatalf("%s.tenant_id nullable=%q default=%q, want NO/\"0\"(存量回填 = 平台租户)", tbl, nullable, dflt)
+		}
+	}
+	var defTenantUK, defOldUK, defTenantList, execTenantList, execOldList int
+	if err := d.QueryRow(`
+SELECT COUNT(*) FROM information_schema.STATISTICS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_definition'
+   AND INDEX_NAME = 'uk_def_tenant_name_version' AND NON_UNIQUE = 0`).Scan(&defTenantUK); err != nil {
+		t.Fatalf("uk_def_tenant_name_version: %v", err)
+	}
+	if err := d.QueryRow(`
+SELECT COUNT(*) FROM information_schema.STATISTICS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_definition'
+   AND INDEX_NAME = 'uk_def_name_version'`).Scan(&defOldUK); err != nil {
+		t.Fatalf("old uk_def_name_version: %v", err)
+	}
+	if err := d.QueryRow(`
+SELECT COUNT(*) FROM information_schema.STATISTICS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_definition'
+   AND INDEX_NAME = 'idx_def_tenant_status_updated'`).Scan(&defTenantList); err != nil {
+		t.Fatalf("idx_def_tenant_status_updated: %v", err)
+	}
+	if err := d.QueryRow(`
+SELECT COUNT(*) FROM information_schema.STATISTICS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_execution'
+   AND INDEX_NAME = 'idx_exec_tenant_name_created'`).Scan(&execTenantList); err != nil {
+		t.Fatalf("idx_exec_tenant_name_created: %v", err)
+	}
+	if err := d.QueryRow(`
+SELECT COUNT(*) FROM information_schema.STATISTICS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'workflow_execution'
+   AND INDEX_NAME = 'idx_exec_name_created'`).Scan(&execOldList); err != nil {
+		t.Fatalf("old idx_exec_name_created: %v", err)
+	}
+	if defTenantUK != 3 || defOldUK != 0 || defTenantList != 3 || execTenantList != 3 || execOldList != 0 {
+		t.Fatalf("0011 租户键锚:uk(tenant,name,version)=%d want 3、旧 uk=%d want 0、def 列表=%d want 3、exec 列表=%d want 3、旧 exec 列表=%d want 0",
+			defTenantUK, defOldUK, defTenantList, execTenantList, execOldList)
+	}
+
+	// CHECK 约束齐备:11 个(definition 1 + node 3 + attempt 2 + audit 1 + users 3;
+	// node +1 = 0006 chk_node_instance;users +1 = 0009 chk_user_email;
+	// tenants +1 = 0011 chk_tenant_slug)
 	var checks int
 	if err := d.QueryRow(
 		`SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
 		 WHERE CONSTRAINT_SCHEMA = DATABASE()`).Scan(&checks); err != nil {
 		t.Fatalf("check constraints: %v", err)
 	}
-	if checks != 10 {
-		t.Fatalf("check constraints = %d, want 10", checks)
+	if checks != 11 {
+		t.Fatalf("check constraints = %d, want 11", checks)
 	}
 
 	// T6.1 对账索引存在

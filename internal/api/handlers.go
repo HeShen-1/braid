@@ -127,6 +127,25 @@ func readDSLBody(c *gin.Context) ([]byte, bool) {
 	return readBodyLimited(c)
 }
 
+// tenantFrom 取认证主体的归属租户(claims.Tenant 签发时刻快照,D-t112;
+// 0 = 平台租户——0011 前存量 token 同判,≤TTL 24h 界)。与 actorFrom
+// 同款单点:全部租户谓词的取值面,语句→caller 反证的唯一锚。
+func tenantFrom(c *gin.Context) uint64 {
+	if claims, ok := ClaimsFrom(c); ok {
+		return claims.Tenant
+	}
+	return 0
+}
+
+// execVisibleInTenant 报告执行对当前读者租户是否可见(D-t112 拒绝审计
+// 落行闸:role_denied 分支在业务租户闸之前触发,落行必须自带闸——跨
+// 租户/不存在执行上落拒绝审计 = 外方主体注入受害者租户证据链)。任何
+// 失败(含 DB 错)一律不落:拒绝审计是 best-effort(writeLoginAudit 同判)。
+func (s *Server) execVisibleInTenant(c *gin.Context, execID uint64) bool {
+	_, err := s.st.GetExecution(c.Request.Context(), s.dbh, tenantFrom(c), execID)
+	return err == nil
+}
+
 // actorFrom 取认证主体(sub 直通 created_by/updated_by/published_by 值域)。
 func actorFrom(c *gin.Context) string {
 	claims, _ := ClaimsFrom(c)
@@ -141,7 +160,7 @@ func (s *Server) createDefinition(c *gin.Context) {
 	var def Definition
 	err := WithTx(c.Request.Context(), s.dbh, func(tx DBTX) error {
 		var err error
-		def, err = s.st.CreateDraft(c.Request.Context(), tx, doc, actorFrom(c))
+		def, err = s.st.CreateDraft(c.Request.Context(), tx, tenantFrom(c), doc, actorFrom(c))
 		return err
 	})
 	if err != nil {
@@ -163,7 +182,7 @@ func (s *Server) updateDraft(c *gin.Context) {
 	var def Definition
 	err := WithTx(c.Request.Context(), s.dbh, func(tx DBTX) error {
 		var err error
-		def, err = s.st.UpdateDraft(c.Request.Context(), tx, id, doc, actorFrom(c))
+		def, err = s.st.UpdateDraft(c.Request.Context(), tx, tenantFrom(c), id, doc, actorFrom(c))
 		return err
 	})
 	if err != nil {
@@ -184,7 +203,7 @@ func (s *Server) publishDraft(c *gin.Context) {
 	var def Definition
 	err := WithTx(c.Request.Context(), s.dbh, func(tx DBTX) error {
 		var err error
-		def, err = s.st.Publish(c.Request.Context(), tx, id, actorFrom(c), s.toolReg.Names()...)
+		def, err = s.st.Publish(c.Request.Context(), tx, tenantFrom(c), id, actorFrom(c), s.toolReg.Names()...)
 		return err
 	})
 	if err != nil {
@@ -199,7 +218,7 @@ func (s *Server) archiveVersion(c *gin.Context) {
 	if !ok {
 		return
 	}
-	def, err := s.st.Archive(c.Request.Context(), s.dbh, c.Param("name"), version, actorFrom(c))
+	def, err := s.st.Archive(c.Request.Context(), s.dbh, tenantFrom(c), c.Param("name"), version, actorFrom(c))
 	if err != nil {
 		mapStoreError(c, err)
 		return
@@ -208,7 +227,7 @@ func (s *Server) archiveVersion(c *gin.Context) {
 }
 
 func (s *Server) getLatestPublished(c *gin.Context) {
-	def, err := s.st.LatestPublished(c.Request.Context(), s.dbh, c.Param("name"))
+	def, err := s.st.LatestPublished(c.Request.Context(), s.dbh, tenantFrom(c), c.Param("name"))
 	if err != nil {
 		mapStoreError(c, err)
 		return
@@ -221,7 +240,7 @@ func (s *Server) getVersion(c *gin.Context) {
 	if !ok {
 		return
 	}
-	def, err := s.st.GetVersion(c.Request.Context(), s.dbh, c.Param("name"), version)
+	def, err := s.st.GetVersion(c.Request.Context(), s.dbh, tenantFrom(c), c.Param("name"), version)
 	if err != nil {
 		mapStoreError(c, err)
 		return
@@ -230,7 +249,7 @@ func (s *Server) getVersion(c *gin.Context) {
 }
 
 func (s *Server) listVersions(c *gin.Context) {
-	items, err := s.st.ListVersions(c.Request.Context(), s.dbh, c.Param("name"))
+	items, err := s.st.ListVersions(c.Request.Context(), s.dbh, tenantFrom(c), c.Param("name"))
 	if err != nil {
 		mapStoreError(c, err)
 		return
@@ -247,7 +266,7 @@ func (s *Server) getDraft(c *gin.Context) {
 	if !ok {
 		return
 	}
-	def, err := s.st.GetByID(c.Request.Context(), s.dbh, id)
+	def, err := s.st.GetByID(c.Request.Context(), s.dbh, tenantFrom(c), id)
 	if err != nil {
 		mapStoreError(c, err)
 		return
@@ -292,7 +311,7 @@ func (s *Server) listDefinitions(c *gin.Context) {
 	if !ok {
 		return
 	}
-	items, total, err := s.st.List(c.Request.Context(), s.dbh, status, limit, offset)
+	items, total, err := s.st.List(c.Request.Context(), s.dbh, tenantFrom(c), status, limit, offset)
 	if err != nil {
 		mapStoreError(c, err)
 		return

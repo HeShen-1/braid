@@ -38,17 +38,20 @@ type PendingApproval struct {
 }
 
 // pendingWhere 是待办列表的公共谓词(计数与取页同一拼法,单源防两处漂移):
-// 节点 WAITING_APPROVAL + 执行非终态 + 快照名单精确成员。
+// 节点 WAITING_APPROVAL + 执行非终态 + 快照名单精确成员 + 执行租户归属
+// (D-t112:跨租户 DSL 命名他租户主体的面在此闭合——主体名单命中且执行
+// 属读者租户才可见;node 系无租户列,经 we.tenant_id 谓词)。
 const pendingWhere = ` WHERE ne.status = ? AND we.status IN (?, ?)
-  AND JSON_CONTAINS(ne.input_snapshot, JSON_QUOTE(?), '$.approvers')`
+  AND JSON_CONTAINS(ne.input_snapshot, JSON_QUOTE(?), '$.approvers')
+  AND we.tenant_id = ?`
 
 // ListPendingApprovals 分页列出主体的待办审批(任意有效 token,主体
 // 过滤即边界;非审批人恒空集)。顺序 deadline_at, id 升序(最紧急优先;
 // id tiebreak 同 created_at,id 先例——snowflake 时序一致)。返回(当前
 // 页, 满足条件的总行数),与 ListExecutions 同形。
-func (s *Store) ListPendingApprovals(ctx context.Context, q DBTX, username string, limit, offset int) ([]PendingApproval, int, error) {
+func (s *Store) ListPendingApprovals(ctx context.Context, q DBTX, tenant uint64, username string, limit, offset int) ([]PendingApproval, int, error) {
 	args := []any{string(engine.NodeWaitingApproval), string(engine.WorkflowRunning),
-		string(engine.WorkflowWaitingApproval), username}
+		string(engine.WorkflowWaitingApproval), username, tenant}
 	var total int
 	if err := q.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM node_execution ne JOIN workflow_execution we ON we.id = ne.execution_id`+pendingWhere,
@@ -118,7 +121,7 @@ func (s *Server) listPendingApprovals(c *gin.Context) {
 	if !ok {
 		return
 	}
-	items, total, err := s.st.ListPendingApprovals(c.Request.Context(), s.dbh, actorFrom(c), limit, offset)
+	items, total, err := s.st.ListPendingApprovals(c.Request.Context(), s.dbh, tenantFrom(c), actorFrom(c), limit, offset)
 	if err != nil {
 		slog.Error("api: pending approvals query", "err", err)
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal"})

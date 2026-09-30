@@ -190,11 +190,14 @@ func (s *Store) CountDecisions(ctx context.Context, q DBTX, nodeExecID uint64, r
 	return n, nil
 }
 
-// GetExecutionByIdempotencyKey 按幂等键读回执行(触发重放响应;键唯一 ⇒ 至多
-// 一行)。行不存在 → ErrNotFound(哈希碰撞之外的不可达:uk 撞必有一行)。
-func (s *Store) GetExecutionByIdempotencyKey(ctx context.Context, q DBTX, key string) (Execution, error) {
+// GetExecutionByIdempotencyKey 按 (tenant, 幂等键) 读回执行(触发重放响应;
+// 键唯一 ⇒ 至多一行)。tenant 谓词是纵深冗余(D-t112):键值域已含主体
+// 作用域哈希(scopedIdempotencyKey),跨租户撞键结构性不可达——谓词
+// 防的是作用域哈希升版/键空间错乱时的静默错回显面。行不存在 →
+// ErrNotFound(哈希碰撞之外的不可达:uk 撞必有一行)。
+func (s *Store) GetExecutionByIdempotencyKey(ctx context.Context, q DBTX, tenant uint64, key string) (Execution, error) {
 	row := q.QueryRowContext(ctx,
-		"SELECT "+execCols+" FROM workflow_execution WHERE idempotency_key = ?", key)
+		"SELECT "+execCols+" FROM workflow_execution WHERE idempotency_key = ? AND tenant_id = ?", key, tenant)
 	exec, err := scanExecution(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Execution{}, fmt.Errorf("%w: idempotency key", ErrNotFound)

@@ -97,15 +97,16 @@ func (s *Sender) NotifyApproval(ctx context.Context, execID, nodeExecID uint64, 
 		defName    string
 		defVersion uint64
 		execDate   string
+		execTenant uint64
 	)
 	err := s.deps.DB.QueryRowContext(ctx, `
 SELECT n.execution_id, n.node_id, n.status, n.deadline_at, n.input_snapshot,
        w.definition_name, w.definition_version,
-       DATE_FORMAT(w.created_at, '%Y-%m-%d')
+       DATE_FORMAT(w.created_at, '%Y-%m-%d'), w.tenant_id
   FROM node_execution n
   JOIN workflow_execution w ON w.id = n.execution_id
  WHERE n.id=?`, nodeExecID).
-		Scan(&rowExecID, &nodeID, &nodeStatus, &deadline, &snapshot, &defName, &defVersion, &execDate)
+		Scan(&rowExecID, &nodeID, &nodeStatus, &deadline, &snapshot, &defName, &defVersion, &execDate, &execTenant)
 	if errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("notify: node_execution %d vanished (data defect)", nodeExecID)
 	}
@@ -148,11 +149,13 @@ SELECT n.execution_id, n.node_id, n.status, n.deadline_at, n.input_snapshot,
 		return fmt.Errorf("notify: approval snapshot node %d: %w", nodeExecID, err)
 	}
 
-	// [3] 收件面解析(T12.2,D-t45 #2 兑现):快照 approvers(用户名)→
-	// users.email 逐人收件;无邮箱/无账号的 approver 名字保留正文(渲染
-	// 上下文不变),由 ops 副本(若配)兜底可见。地址不入日志/审计(D-t45
-	// #1 铁律不变)。
-	emails, err := auth.EmailsByUsernames(ctx, s.deps.DB, snap.Approvers)
+	// [3] 收件面解析(T12.2,D-t45 #2 兑现;D-t112 租户判据):快照
+	// approvers(用户名)→ users.email 逐人收件,解析携执行归属租户——
+	// 名单中他租户主体(username 全局唯一下结构性可达)在解析层缺席,
+	// 跨租户邮件推送闭合;无邮箱/无账号/他租户的 approver 名字保留正文
+	//(渲染上下文不变),由 ops 副本(若配)兜底可见。地址不入日志/
+	// 审计(D-t45 #1 铁律不变)。
+	emails, err := auth.EmailsByUsernames(ctx, s.deps.DB, execTenant, snap.Approvers)
 	if err != nil {
 		return fmt.Errorf("notify: resolve approver emails node %d: %w", nodeExecID, err)
 	}

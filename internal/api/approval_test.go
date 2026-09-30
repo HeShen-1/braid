@@ -39,7 +39,7 @@ import (
 // newTestServer 的 sign 固定 alice)。
 func signSubject(t *testing.T, subject string, roles ...auth.Role) string {
 	t.Helper()
-	s, err := auth.SignToken(testSecret, time.Hour, subject, roles)
+	s, err := auth.SignToken(testSecret, time.Hour, subject, roles, 0)
 	if err != nil {
 		t.Fatalf("sign token: %v", err)
 	}

@@ -257,9 +257,13 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 	// 的午夜,loc≠UTC 时 .UTC() 换算会静默移日(review 修;字符串往返 loc 无关,
 	// 日期语义完全留在 DB 端)。
 	var execDate string
+	var tenantID uint64
+	// tenant_id 随分区键同语句解析(D-t112):审计读面按读者租户裁剪的
+	// 行判据(含模型名 actor——user 行判租不覆盖非用户 actor 的唯一解)。
+	// 访问控制注记,不进 row_hash 19 列定集(D-t93 链零扰动)。
 	err := q.QueryRowContext(ctx,
-		`SELECT DATE_FORMAT(created_at, '%Y-%m-%d') FROM workflow_execution WHERE id=?`,
-		evt.ExecutionID).Scan(&execDate)
+		`SELECT DATE_FORMAT(created_at, '%Y-%m-%d'), tenant_id FROM workflow_execution WHERE id=?`,
+		evt.ExecutionID).Scan(&execDate, &tenantID)
 	if errors.Is(err, sql.ErrNoRows) {
 		// 审计行必须挂在真实执行上,静默无写会破坏「每次迁移必有审计行」验收。
 		return fmt.Errorf("%w: audit event %d: execution %d vanished",
@@ -290,14 +294,14 @@ func Append(ctx context.Context, q engine.DBTX, evt Event) error {
 	}
 	_, err = q.ExecContext(ctx, `
 INSERT INTO audit_log
-  (id, exec_date, event_at, event_type, execution_id, node_execution_id,
+  (id, exec_date, event_at, event_type, execution_id, tenant_id, node_execution_id,
    node_id, attempt_id, actor_type, actor_id, trace_id, linked_trace_id,
    pii_masked, payload,
    model, prompt_tokens, completion_tokens, total_tokens,
    cost_amount, cost_currency, cost_estimated, prev_hash, row_hash)
-VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+VALUES (?, ?, NOW(3), ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		evt.ID, execDate, evt.EventType, evt.ExecutionID,
+		evt.ID, execDate, evt.EventType, evt.ExecutionID, tenantID,
 		nodeExecID, nodeID, attemptID, evt.ActorType, evt.ActorID, trace, linked, piiMasked, payload,
 		model, pt, ct, tt, costArg, currencyArg, usageEstimated(evt.Usage), prevHash, rowHash)
 	if err != nil {

@@ -312,3 +312,46 @@ func TestLoginOffModeIssuesUnboundToken(t *testing.T) {
 		t.Fatalf("off 模式读面 = %d %s(零介入,UA 无关)", code, errc)
 	}
 }
+
+// TestLoginIssuesTenantClaim(D-t112 签发锚,对抗审计 HIGH 修):非平台
+// 租户用户经真实 login 签发,tnt claim 必须回携归属租户——杀「签发点
+// 漏填 TenantID → 全体用户静默归平台租户 → 行级隔离塌方且 CI 零信号」
+// 的变异(login.go 的 user.TenantID 改 0 即红)。bnd claim 的同款装配层
+// 锚 = TestLoginOffModeIssuesUnboundToken。
+func TestLoginIssuesTenantClaim(t *testing.T) {
+	r, dbh, _ := newTestServer(t)
+	for _, q := range []string{"DELETE FROM user_role", "DELETE FROM users"} {
+		if _, err := dbh.Exec(q); err != nil {
+			t.Fatalf("cleanup %q: %v", q, err)
+		}
+	}
+	if _, err := dbh.Exec(
+		`INSERT INTO tenants (id, slug, name) VALUES (7, 't-seven', 'T Seven') ON DUPLICATE KEY UPDATE id = id`); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	hash, err := auth.HashPassword("correct-horse-battery", bcrypt.MinCost)
+	if err != nil {
+		t.Fatalf("hash: %v", err)
+	}
+	if err := auth.CreateUser(t.Context(), dbh, loginTestIDs, auth.CreateUserParams{
+		Username: "t7user", PasswordHash: hash, TenantID: 7, Roles: []auth.Role{auth.RoleAuthor},
+	}); err != nil {
+		t.Fatalf("create tenant user: %v", err)
+	}
+	code, out := doJSON(t, r, http.MethodPost, "/api/v1/auth/login", "",
+		[]byte(`{"username":"t7user","password":"correct-horse-battery"}`))
+	if code != http.StatusOK {
+		t.Fatalf("login = %d %v", code, out)
+	}
+	tok, _ := out["token"].(string)
+	if tok == "" {
+		t.Fatalf("token missing: %v", out)
+	}
+	claims, err := auth.ParseToken(testSecret, tok)
+	if err != nil {
+		t.Fatalf("ParseToken: %v", err)
+	}
+	if claims.Tenant != 7 {
+		t.Fatalf("claims.Tenant = %d, want 7(签发点漏填 TenantID = 全体静默归平台租户,隔离塌方)", claims.Tenant)
+	}
+}

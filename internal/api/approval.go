@@ -147,13 +147,18 @@ func (s *Server) decideApproval(c *gin.Context) {
 	// 角色闸(平台级 DISABLED 窗口,auth/config.go 同记)——名单门 +
 	// 快照真相源仍在,执行时 RBAC(execauth)对工具调用是现查现判。
 	if claims, ok := ClaimsFrom(c); !ok || !claimsHaveAnyRole(claims, auth.RoleApprover, auth.RoleAdmin) {
-		s.writeDecisionDeniedAudit(c, execID, nodeID, actor, face, "role_denied")
+		// 落行闸(D-t112 审计收口):拒绝审计只对本租户可见执行落——
+		// 跨租户/不存在执行上落行会把外方主体注入受害者租户的证据链
+		//(403 响应面不变,证据面与「跨租户直取 = 404」契约对齐)。
+		if s.execVisibleInTenant(c, execID) {
+			s.writeDecisionDeniedAudit(c, execID, nodeID, actor, face, "role_denied")
+		}
 		c.JSON(http.StatusForbidden, gin.H{"error": "role_denied"})
 		return
 	}
 
 	// 执行存在性前置(404 面;终态/快照守卫在事务内权威裁决)。
-	if _, err := s.st.GetExecution(c.Request.Context(), s.dbh, execID); err != nil {
+	if _, err := s.st.GetExecution(c.Request.Context(), s.dbh, tenantFrom(c), execID); err != nil {
 		mapStoreError(c, err)
 		return
 	}
@@ -315,7 +320,11 @@ func (s *Server) getApproval(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_node_id"})
 		return
 	}
-	if _, err := s.st.GetExecution(c.Request.Context(), s.dbh, execID); err != nil {
+	// 执行存在性前置(404 面)+ 租户闸(D-t112:lockApprovalNode 无租户
+	// 列,节点读面经 execution 锚派生——本前置是 [S2] 的第三调用面,
+	// 曾被本窗批量补丁误删、由 approval_detail_cross_tenant_404 对抗
+	// 用例当场抓住,恢复即回归锚)。
+	if _, err := s.st.GetExecution(c.Request.Context(), s.dbh, tenantFrom(c), execID); err != nil {
 		mapStoreError(c, err)
 		return
 	}

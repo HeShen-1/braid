@@ -46,12 +46,15 @@ type AuditEvent struct {
 // 时 ExecDate 必填(GetExecution 钉分区 → 单分区裁剪 + idx_audit_exec);
 // TraceID / ActorID 走分区本地索引逐分区探测(0001 DDL 钦定取舍,保留期
 // 有界;延迟超标演化路径 = audit_trace_map 旁路表,v1 不建)。From/To 是
-// event_at 闭区间(事件时刻,≠ 落库时刻 created_at)。
+// event_at 闭区间(事件时刻,≠ 落库时刻 created_at)。TenantID 是读者
+// 归属租户(D-t112 #4):恒进谓词(残差过滤,不建新索引)——模型名
+// actor 的 llm 查询无法经 user 行判租,行上 tenant_id 是唯一判据。
 type AuditQuery struct {
 	ExecutionID uint64
 	ExecDate    string
 	TraceID     string
 	ActorID     string
+	TenantID    uint64
 	From, To    *time.Time
 }
 
@@ -67,11 +70,16 @@ const auditCols = `id, DATE_FORMAT(exec_date, '%Y-%m-%d'), event_at, created_at,
  model, prompt_tokens, completion_tokens,
  total_tokens, cost_amount, cost_currency, cost_estimated, payload`
 
-// auditPredicate 单源构造 WHERE:维度三选一 + event_at 闭区间。COUNT 与页行
-// 同谓词(与 ListExecutions 同形),防两处漂移。
+// auditPredicate 单源构造 WHERE:租户恒携(行级隔离执法点,D-t112)+
+// 维度三选一 + event_at 闭区间。COUNT 与页行同谓词(与 ListExecutions
+// 同形),防两处漂移。租户谓词是残差过滤(维度索引探测后逐行比对,
+// 不建新索引):trace/actor 维度行集小(单 trace/单主体的执行事件),
+// execution 维度已被 GetExecution 租户闸先行裁决(谓词 = 纵深冗余)。
 func auditPredicate(aq AuditQuery) (string, []any) {
-	conds := make([]string, 0, 4)
-	args := make([]any, 0, 4)
+	conds := make([]string, 0, 5)
+	args := make([]any, 0, 5)
+	conds = append(conds, "tenant_id = ?")
+	args = append(args, aq.TenantID)
 	switch {
 	case aq.ExecutionID != 0:
 		// exec_date 恒为该执行分区(一执行的全部审计行同分区,0001 DDL):

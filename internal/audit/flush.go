@@ -41,10 +41,12 @@ import (
 )
 
 // flushColsPerRow 是 INSERT 每行占位符数。batch 上界由 prepared statement
-// 占位符预算推出:MySQL 上限 65535,23×2800 = 64400 留余量(T9.3 加
-// prev_hash/row_hash 两列后 21→23,3100 会超限 71300;reaper Validate
-// 同步收口 3100→2800;COUNT/DELETE 语句各 2/1 占位符每行,远低)。
-const flushColsPerRow = 23
+// 占位符预算推出:MySQL 上限 65535,24×2700 = 64800 留余量(T11.2 加
+// tenant_id 后 23→24,⌊65535/24⌋=2730,t13 实证 2731 起超限;reaper
+// Validate 同步收口 2800→2700——**列数变更必须重推此预算**(T9.3/T11.2
+// 两次同型收口;跨包对拍锚 = reaper config_test 引本常量断言);COUNT/
+// DELETE 语句各 2/1 占位符每行,远低)。导出供 reaper 侧预算对拍。
+const FlushColsPerRow = 24 // T11.2:+tenant_id(23→24)
 
 // FlushResult 是单批搬运的可观测快照(reaper 循环聚合计数/测试断言)。
 type FlushResult struct {
@@ -159,10 +161,23 @@ func Flush(ctx context.Context, db *sql.DB, afterID uint64, batch int) (FlushRes
 	if err != nil {
 		return res, fmt.Errorf("audit: flush resolve exec_date: %w", err)
 	}
+	// tenant 随 exec_date 同批解析(D-t112):audit_log 行判据,暂存行
+	// DEFAULT 0 占位的真实值在此物化(暂存面不可见,D-t63 #1)。
+	execTenants, err := resolveExecTenants(ctx, db, execIDs)
+	if err != nil {
+		return res, fmt.Errorf("audit: flush resolve exec tenant: %w", err)
+	}
+	// 双命中守卫(D-t112 审计收口):exec_date 与 tenant 是两条独立
+	// autocommit 解析(RR 各拿新快照),执行行在两查询间消失时 execDates
+	// 命中而 execTenants 缺键——map 零值会把该行静默物化成 tenant 0
+	//(平台租户,跨租户可见面)。两 map 任一缺键 = 与日期侧同判的毒行
+	// 隔离(响亮留驻,不静默归 0)。
 	var missingIDs []uint64
 	flushable := make([]flushRow, 0, len(batchRows))
 	for _, r := range batchRows {
-		if _, ok := execDates[r.executionID]; ok {
+		_, okDate := execDates[r.executionID]
+		_, okTenant := execTenants[r.executionID]
+		if okDate && okTenant {
 			flushable = append(flushable, r)
 		} else {
 			missingIDs = append(missingIDs, r.id)
@@ -215,14 +230,15 @@ func Flush(ctx context.Context, db *sql.DB, afterID uint64, batch int) (FlushRes
 	// (回滚后下一轮安全:行未落 ⇒ 重试;并发撞车 1062 ⇒ 预过滤收敛)。
 	err = engine.WithTx(ctx, db, func(tx engine.DBTX) error {
 		var ph strings.Builder
-		args := make([]any, 0, len(pending)*flushColsPerRow)
+		args := make([]any, 0, len(pending)*FlushColsPerRow)
 		for i, r := range pending {
 			if i > 0 {
 				ph.WriteByte(',')
 			}
-			ph.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+			ph.WriteString("(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
 			args = append(args,
 				r.id, execDates[r.executionID], r.eventAt, r.eventType, r.executionID,
+				execTenants[r.executionID],
 				r.nodeExecID, r.nodeID, r.attemptID, r.actorType, r.actorID, r.traceID,
 				r.linkedTrace, r.piiMasked, r.payload, r.prevHash, r.rowHash,
 				r.model, r.promptTok, r.complTok, r.totalTok, r.costAmount, r.costCurr,
@@ -230,7 +246,7 @@ func Flush(ctx context.Context, db *sql.DB, afterID uint64, batch int) (FlushRes
 		}
 		execRes, err := tx.ExecContext(ctx, `
 INSERT INTO audit_log
-  (id, exec_date, event_at, event_type, execution_id, node_execution_id,
+  (id, exec_date, event_at, event_type, execution_id, tenant_id, node_execution_id,
    node_id, attempt_id, actor_type, actor_id, trace_id, linked_trace_id,
    pii_masked, payload, prev_hash, row_hash,
    model, prompt_tokens, completion_tokens, total_tokens,
@@ -310,6 +326,40 @@ func FlushAll(ctx context.Context, db *sql.DB, batch, roundCap int) (FlushAllRes
 		}
 	}
 	return agg, nil
+}
+
+// resolveExecTenants 批量解析执行归属租户(D-t112):与 resolveExecDates
+// 同批同式(PK IN 点查);返回行 id → tenant_id。缺行 = 与 execDates
+// 同判的毒行隔离路径(flushable 过滤要求两 map 双命中,见 [2])。
+func resolveExecTenants(ctx context.Context, db *sql.DB, execIDs []uint64) (map[uint64]uint64, error) {
+	var ph strings.Builder
+	args := make([]any, 0, len(execIDs))
+	for i, id := range execIDs {
+		if i > 0 {
+			ph.WriteByte(',')
+		}
+		ph.WriteByte('?')
+		args = append(args, id)
+	}
+	rows, err := db.QueryContext(ctx,
+		`SELECT id, tenant_id FROM workflow_execution WHERE id IN (`+ph.String()+`)`,
+		args...)
+	if err != nil {
+		return nil, fmt.Errorf("query: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	out := make(map[uint64]uint64, len(execIDs))
+	for rows.Next() {
+		var id, tenant uint64
+		if err := rows.Scan(&id, &tenant); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out[id] = tenant
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate: %w", err)
+	}
+	return out, nil
 }
 
 // groupIDsByDate 把行按 exec_date 分组(对账/预过滤查询的 OR 串输入;

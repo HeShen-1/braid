@@ -399,7 +399,7 @@ func TestEmailsByUsernames(t *testing.T) {
 	seed("bob", nil)          // 账号在、邮箱未配
 	// carol 无账号(DSL 发布期不判存在性,运行面缺席 = 扇出侧跳过)。
 
-	got, err := EmailsByUsernames(context.Background(), d, []string{"alice", "bob", "carol"})
+	got, err := EmailsByUsernames(context.Background(), d, 0, []string{"alice", "bob", "carol"})
 	if err != nil {
 		t.Fatalf("EmailsByUsernames: %v", err)
 	}
@@ -410,17 +410,17 @@ func TestEmailsByUsernames(t *testing.T) {
 	// 大小写变体("Alice")在域预检即响亮报错——域内串恒小写,不存在
 	// 大小写折叠等价对,域拒绝已覆盖该面;SQL 侧 COLLATE utf8mb4_bin
 	// 谓词是纵深防御(username 列排序规则由 TestRoleEnumVocabPinned 钉死)。
-	if _, err := EmailsByUsernames(context.Background(), d, []string{"Alice"}); err == nil {
+	if _, err := EmailsByUsernames(context.Background(), d, 0, []string{"Alice"}); err == nil {
 		t.Fatalf("case-variant accepted silently, want loud domain error")
 	}
 
 	// 域拒绝:名单坏形态响亮报错(不静默漏配)。
-	if _, err := EmailsByUsernames(context.Background(), d, []string{"Bad!"}); err == nil {
+	if _, err := EmailsByUsernames(context.Background(), d, 0, []string{"Bad!"}); err == nil {
 		t.Fatalf("bad username accepted, want error")
 	}
 
 	// 空名单:零触 DB(构造性证明)。
-	if got, err = EmailsByUsernames(context.Background(), panickyDBTX{}, nil); err != nil || len(got) != 0 {
+	if got, err = EmailsByUsernames(context.Background(), panickyDBTX{}, 0, nil); err != nil || len(got) != 0 {
 		t.Fatalf("empty list = (%v, %v), want (map{}, nil)", got, err)
 	}
 }

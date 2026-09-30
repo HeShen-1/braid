@@ -78,6 +78,10 @@ func Enqueue(ctx context.Context, q engine.DBTX, evt Event) error {
 	if err != nil {
 		return err
 	}
+	// tenant_id 不在暂存 INSERT 列集(D-t112):暂存行按 DDL DEFAULT 0
+	// 占位,flush 期随 exec_date 一并物化真实租户——暂存面不可见
+	// (D-t63 #1:Enqueue 行 flush 前不进查询),占位无读面代价;
+	// 发射点(Event)零扩字段,租户唯一真源 = 执行行。
 	_, err = q.ExecContext(ctx, `
 INSERT INTO audit_pending
   (id, event_at, event_type, execution_id, node_execution_id, node_id,
