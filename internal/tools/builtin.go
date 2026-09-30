@@ -6,6 +6,12 @@ package tools
 //	BRAID_FILEREAD_DIRS   JSON 数组 [绝对目录, ...]
 //	BRAID_DBQUERY_DSN     只读账号连接串(T10.4;签名态下恒 env 注入,凭证
 //	                      不进签名工件)
+//	BRAID_MCP_SERVERS     JSON 对象 {alias: https base_url}(T13.2;路径
+//	                      前缀允许,与 http 端点语义不同——见 mcpclient.go)
+//	BRAID_MCP_TOOLS       JSON 对象 {name: {server, tool}}(T13.2;结构
+//	                      校验在 resolveToolSet,值校验在 NewMCPTools)
+//	BRAID_MCP_TOKEN_<A>   per-server 静态 bearer(凭证通道,两态恒 env;
+//	                      缺席 = 匿名连接)
 //	BRAID_TOOL_SANDBOX    off(未设/空=缺省)| docker(T10.1 沙箱词表,sandbox.go)
 //
 // 语义:**未配置即不注册**——Names() 发布白名单真源(T3.2 换源)不被
@@ -32,6 +38,7 @@ package tools
 
 import (
 	"fmt"
+	"strings"
 )
 
 // BuiltinToolsFromEnv 见文件头注释。getenv 注入便于测试(os.Getenv 同款
@@ -97,6 +104,33 @@ func BuiltinToolsFromEnv(getenv func(string) string) ([]Tool, error) {
 		} else {
 			out = append(out, dt)
 		}
+	}
+	if len(ts.mcpTools) > 0 {
+		// MCP 工具(T13.2,D-t132):两模式均进程内载体,不换装沙箱容器
+		// (外部 MCP server 本身就是外部执行域,执法面在出网守卫)。
+		// 凭证 env 单读(仅被引用 server——toolSet 半配置拒保证全量被
+		// 引用;token 零回显)。docker 模式 ProxyURL 取 sandboxConfig.
+		// EgressAddr(worker 启动段恒写;api 进程恒无地址 = 直守仅装配
+		// 零执行,与载体在 api 的惰性构造同判)。构造期零出网
+		// (per-call session),api 装配零外联的结构保证不变。
+		tokens := make(map[string]string, len(ts.mcpServers))
+		for alias := range ts.mcpServers {
+			tokens[alias] = strings.TrimSpace(getenv(MCPTokenEnvKey(alias)))
+		}
+		guard := GuardConfig{}
+		if sbcfg.Docker && sbcfg.EgressAddr != nil {
+			guard.ProxyURL = sbcfg.EgressAddr
+		}
+		mts, err := NewMCPTools(MCPConfig{
+			Servers: ts.mcpServers,
+			Tools:   ts.mcpTools,
+			Tokens:  tokens,
+			Guard:   guard,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("tools: %s: %w", ts.mcpSource, err)
+		}
+		out = append(out, mts...)
 	}
 	return out, nil
 }

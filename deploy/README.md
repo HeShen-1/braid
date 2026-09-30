@@ -230,7 +230,7 @@ BRAID_TOOL_PACKAGE_SIGNATURE=   # 64B Ed25519 签名
 
 **fail closed 纪律(无降级开关;降级须 D- 拍板)**:
 
-| pubkey | package/signature | 内置工具键 | 结果 |
+| pubkey | package/signature | 内置工具键(含 BRAID_MCP_SERVERS/TOOLS;TOKEN_* 凭证键例外) | 结果 |
 |--------|-------------------|-----------|------|
 | 未设 | 全缺 | 任意 | 内置 env 路径现状(签名未部署) |
 | 未设 | 任一在场 | — | 启动败(无钥不可验) |
@@ -241,12 +241,17 @@ BRAID_TOOL_PACKAGE_SIGNATURE=   # 64B Ed25519 签名
 
 清单 v1(字段面封闭:未知工具/未知字段/Endpoints 与 Dirs 交叉携带/
 尾随数据/"tools" 键缺席或 null 均拒——空发布必须是显式 {};工具词表 =
-http/file_read,t13.2 MCP 接入时扩展):
+内置名 http/file_read/db_query ∪ MCP 声明族(T13.2,`mcp_servers` +
+逐工具 `mcp` 引用;server 必须被引用、别名/注册名词形同内置、凭证恒
+`BRAID_MCP_TOKEN_<ALIAS>` env 通道——签名工件零凭证;详见 D-t132)):
 
 ```json
-{"version":1,"tools":{
+{"version":1,
+ "mcp_servers":{"weather":"https://mcp.example.com/mcp"},
+ "tools":{
   "http":{"endpoints":{"docs_api":"https://docs.example.com"}},
-  "file_read":{"dirs":["/var/braid/docs"]}
+  "file_read":{"dirs":["/var/braid/docs"]},
+  "mcp_weather_lookup":{"mcp":{"server":"weather","tool":"lookup_weather"}}
 }}
 ```
 

@@ -29,11 +29,14 @@ import (
 
 	"braid/internal/auth"
 	"braid/internal/engine"
+	"braid/internal/tools"
 )
 
 // mcpProtocolVersion 是唯一支持的 MCP 协议版本(D-t131 决策 2 钉死;
 // 错版本客户端收 SDK 版本错误——明拒优于暗降,版本协商面不开放)。
-const mcpProtocolVersion = "2026-07-28"
+// 单一真源 = tools.MCPProtocolVersion(T13.2 消费面同钉,server/client
+// 两面同源防漂移)。
+const mcpProtocolVersion = tools.MCPProtocolVersion
 
 // mcpClaimsCtxKey 是 claims 从 gin 面注入 SDK request ctx 的键(工具
 // handler 的唯一主体来源;工具面不读 gin context——SDK 拿到的是改造后

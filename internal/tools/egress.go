@@ -408,6 +408,54 @@ func EgressAllowFromDSN(dsn string) (string, int, error) {
 	return strings.ToLower(host), port, nil
 }
 
+// EgressAllowFromMCPServers 从 MCP server 声明单源派生代理白名单条目
+// (T13.2,D-t132)。**常规 Allow,非 AllowInternal**——MCP server 须公网
+// https 端点,不豁免私网禁段(内部 MCP server 属未来 D- 议题;off 模式
+// GuardConfig 拨号复核同判,两模式口径一致)。与 EgressAllowFromEndpoints
+// 的差异仅在路径:MCP 端点允许路径前缀(mcpclient.go mcpServerURL 同门),
+// host:port 派生语义(小写 host、https 缺省 443、显式端口原样)同款;
+// 多工具共宿/共 server 的端口集自然并集。坏值响亮败(上游 NewMCPTools
+// 已同门校验,此处二道防御——两道校验口径漂移即红)。
+func EgressAllowFromMCPServers(servers map[string]string) (map[string]map[int]struct{}, error) {
+	allow := make(map[string]map[int]struct{}, len(servers))
+	for alias, raw := range servers {
+		u, err := url.Parse(raw)
+		if err != nil {
+			return nil, fmt.Errorf("tools: egress allowlist: mcp server %q: parse: %w", alias, err)
+		}
+		if u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
+			return nil, fmt.Errorf("tools: egress allowlist: mcp server %q: want https base url with host and no userinfo/query/fragment (path prefix allowed), got %q", alias, raw)
+		}
+		port := 443
+		if p := u.Port(); p != "" {
+			v, perr := strconv.Atoi(p)
+			if perr != nil || v < 1 || v > 65535 {
+				return nil, fmt.Errorf("tools: egress allowlist: mcp server %q: port %q invalid", alias, p)
+			}
+			port = v
+		}
+		host := strings.ToLower(u.Hostname())
+		if allow[host] == nil {
+			allow[host] = map[int]struct{}{}
+		}
+		allow[host][port] = struct{}{}
+	}
+	return allow, nil
+}
+
+// mergeEgressAllow 把派生条目并进 allow(host 维度并集、端口集合并;
+// 多个声明源(endpoints/MCP servers)汇入同一 allow 集的收口点)。
+func mergeEgressAllow(allow, extra map[string]map[int]struct{}) {
+	for host, ports := range extra {
+		if allow[host] == nil {
+			allow[host] = map[int]struct{}{}
+		}
+		for p := range ports {
+			allow[host][p] = struct{}{}
+		}
+	}
+}
+
 // egressConnectTunnel 拨代理并完成 CONNECT 握手(明文/ TLS 两族共享段,
 // T10.4 提取):写 CONNECT → 读状态行 → 拒答按 egressDenialError 映射 →
 // 2xx 消化剩余响应头。返回已过 2xx 的连接与其 bufio 残余(隧道期续读,
@@ -584,6 +632,15 @@ func SandboxEgressStartup(ctx context.Context, getenv func(string) string) (*url
 	allow, err := EgressAllowFromEndpoints(ts.httpEndpoints)
 	if err != nil {
 		return nil, err
+	}
+	// MCP server 条目(T13.2):常规 Allow(host:port 单源派生;toolSet
+	// 半配置拒保证全量 server 被引用)。
+	if len(ts.mcpServers) > 0 {
+		mcpAllow, err := EgressAllowFromMCPServers(ts.mcpServers)
+		if err != nil {
+			return nil, err
+		}
+		mergeEgressAllow(allow, mcpAllow)
 	}
 	var pinned map[string]map[int]struct{}
 	if ts.dbDSN != "" {
