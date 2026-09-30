@@ -88,7 +88,7 @@ func newSandboxCarrier(name string, cfg sandboxConfig, toolConfig json.RawMessag
 		return nil, fmt.Errorf("tools: sandbox carrier %q requires docker mode (BRAID_TOOL_SANDBOX=docker)", name)
 	}
 	if _, ok := sandboxSandboxableTools[name]; !ok {
-		return nil, fmt.Errorf("tools: sandbox carrier tool %q not in sandboxable vocabulary (want http|file_read)", name)
+		return nil, fmt.Errorf("tools: sandbox carrier tool %q not in sandboxable vocabulary (want http|file_read|db_query)", name)
 	}
 	if name != "file_read" && len(dirs) > 0 {
 		return nil, fmt.Errorf("tools: sandbox carrier %q does not take dirs (file_read only)", name)
@@ -123,6 +123,25 @@ func newSandboxCarrierHTTP(cfg sandboxConfig, eps map[string]string, limiter *sa
 		return nil, fmt.Errorf("marshal http endpoints: %w", err)
 	}
 	return newSandboxCarrier("http", cfg, tc, nil, limiter)
+}
+
+// newSandboxCarrierDBQuery:toolConfig 携 DSN 原文与 proxy 词形,helper
+// rebuildSandboxTool 消费面同构({"dsn":…,"proxy":…})。DSN 是该工具的
+// 作用域凭证,经 stdin 信封进容器(scoped Token 同通道先例;argv 恒白
+// 名单构造无凭证位);信封不落日志,容器内重建即弃。
+func newSandboxCarrierDBQuery(cfg sandboxConfig, dsn string, limiter *sandboxLimiter) (*sandboxCarrier, error) {
+	proxy := ""
+	if cfg.EgressAddr != nil {
+		proxy = cfg.EgressAddr.String()
+	}
+	tc, err := marshalSandboxEnvelope(struct {
+		DSN   string `json:"dsn"`
+		Proxy string `json:"proxy,omitempty"`
+	}{DSN: dsn, Proxy: proxy})
+	if err != nil {
+		return nil, fmt.Errorf("marshal db_query dsn: %w", err)
+	}
+	return newSandboxCarrier("db_query", cfg, tc, nil, limiter)
 }
 
 // newSandboxCarrierFileRead:toolConfig 携 dirs 原样词形(不筛不存在目录

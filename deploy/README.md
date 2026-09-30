@@ -311,3 +311,50 @@ api/worker 启动即验,失败 = 拒启(错误带分量定位,不含密钥材料
 - **t14.4(Helm)前置契约**:k8s 化时「网关 + 进程内代理」对应
   egress NetworkPolicy + 代理 sidecar/独立端点;env 键词表与
   `EgressAllowFromEndpoints` 单源在此两处复用,不再新增拓扑键。
+
+## 10. db_query 内置工具(T10.4)
+
+对运维钉死的**只读 MySQL 账号**执行参数化 SELECT(分析型查询;DSL 输入
+`sql` + `args`,占位符 `?`)。三层只读纵深:客户端语句头词表
+(SELECT|WITH)+ 会话 `transaction_read_only=1`(构造期强制)+ 账号
+GRANT SELECT-only(下方 SQL)。参数化为结构保证:`interpolateParams=false`
++ `multiStatements=false` 强制覆写运营方 DSN 同义值,字符串字面量/注释/
+多语句在客户端门被拒(值只能经 `args` 占位符入协议)。
+
+### env 键(单个;未设 = 不注册 db_query)
+
+```sh
+# deploy/.env(值含 () 时整体加单引号,见 .env.example 文件头书写规则)
+BRAID_DBQUERY_DSN='ro:密码@tcp(db.internal:3306)/analytics'
+```
+
+- 只读账号创建(部署纪律,与业务账号同 one-shot 面;密码字符集建议对齐
+  grants.sh 限界 `[A-Za-z0-9._~@+%-]`):
+
+```sql
+CREATE USER IF NOT EXISTS 'braid_ro'@'%' IDENTIFIED BY '<随机口令>';
+GRANT SELECT ON `analytics`.* TO 'braid_ro'@'%';
+-- 不要 FILE/EXECUTE/写权限;INTO OUTFILE/DUMPFILE 另有客户端门先拒
+```
+
+- DSN 可携带驱动参数(如 `tls=skip-verify`、`timeout=3s`),工具只强制
+  安全三参数;**凭证不进日志/审计/错误消息**(解析失败只报「invalid DSN
+  (value withheld)」)。
+- 沙箱模式(BRAID_TOOL_SANDBOX=docker)下:db_query 进容器执行,MySQL
+  连接经 egress 代理 CONNECT 隧道——DSN 的 host:port 自动进代理
+  AllowInternal 钉死条目(豁免私网/环回禁段,metadata/link-local 仍拒;
+  D-2026-09-30-t104-dbquery-egress),**无需也不应在 BRAID_HTTP_ENDPOINTS
+  里登记数据库**。off 模式 = 进程内直连。
+- 结果集上限(固定,无 env 旋钮):行 1000、序列化输出 8MiB,**超限报错
+  不截断**(错误会建议加 LIMIT);整体耗时由 attempt deadline 约束。
+  单行峰值另受界:driver 整行驻留后才进预算判定,上界 = 服务端
+  `max_allowed_packet`(缺省 64MiB)——建议把该账号/库的
+  max_allowed_packet 压到接近 8MiB(分析查询不需要更大包),峰值内存
+  即钉在 ~max(8MiB, 单行)。
+- 只读词表:语句头 SELECT|WITH + 顶层 DML/管理动词黑名单(含 WITH 前缀
+  CTE-DML;INSERT/REPLACE 的字符串函数形态 `NAME(` 放行);层 2 =
+  会话 `transaction_read_only=1`、层 3 = GRANT SELECT-only——纵深三层,
+  任一层的绕过由下一层兜底。
+- 工具包签名态(T10.3):清单可声明 `{"tools":{"db_query":{}}}`
+  (presence-only,不得携带 endpoints/dirs);DSN 仍经 env 注入——签名
+  工件零凭证。

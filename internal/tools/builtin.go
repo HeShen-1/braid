@@ -4,6 +4,8 @@ package tools
 //
 //	BRAID_HTTP_ENDPOINTS  JSON 对象 {alias: https base_url}
 //	BRAID_FILEREAD_DIRS   JSON 数组 [绝对目录, ...]
+//	BRAID_DBQUERY_DSN     只读账号连接串(T10.4;签名态下恒 env 注入,凭证
+//	                      不进签名工件)
 //	BRAID_TOOL_SANDBOX    off(未设/空=缺省)| docker(T10.1 沙箱词表,sandbox.go)
 //
 // 语义:**未配置即不注册**——Names() 发布白名单真源(T3.2 换源)不被
@@ -76,6 +78,24 @@ func BuiltinToolsFromEnv(getenv func(string) string) ([]Tool, error) {
 			out = append(out, c)
 		} else {
 			out = append(out, ft)
+		}
+	}
+	if ts.dbDeclared {
+		// DSN 凭证红线:错误经 source 包装定位,DSN 本体零回显
+		// (dbqDSNConfig 保证)。docker 模式:进程内实例仅做值校验后弃置,
+		// 连接惰性(api 装配零 DB 接触的结构保证不变)。
+		dt, err := NewDBQueryTool(DBQueryConfig{DSN: ts.dbDSN}) // 值校验(docker 模式仅校验,off 注册该实例)
+		if err != nil {
+			return nil, fmt.Errorf("tools: %s: %w", ts.dbSource, err)
+		}
+		if sbcfg.Docker {
+			c, err := newSandboxCarrierDBQuery(sbcfg, ts.dbDSN, limiter)
+			if err != nil {
+				return nil, fmt.Errorf("tools: %s: %w", ts.dbSource, err)
+			}
+			out = append(out, c)
+		} else {
+			out = append(out, dt)
 		}
 	}
 	return out, nil
