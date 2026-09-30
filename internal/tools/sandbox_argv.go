@@ -26,22 +26,24 @@ var sandboxContainerNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,12
 var sandboxMountDirRe = regexp.MustCompile(`^/[A-Za-z0-9_./-]*[A-Za-z0-9_-]$`)
 
 // sandboxSandboxableTools 可入沙箱的工具词表(网络位按工具钉死:
-// file_read 恒 none 零出网;http 经 cfg.EgressNetwork 内网出网,T10.2
-// 换装点 = SandboxSpec 网络字段,基线 §4)。
+// file_read 恒 none 零出网;http/db_query 经 cfg.EgressNetwork 内网出网
+// ——db_query 的 MySQL 连接过 egress 代理 CONNECT 隧道,T10.4/D-2026-09-30
+// -t104-dbquery-egress;T10.2 换装点 = SandboxSpec 网络字段,基线 §4)。
 var sandboxSandboxableTools = map[string]struct{}{
 	"http":      {},
 	"file_read": {},
+	"db_query":  {},
 }
 
 // sandboxNetworkFor 工具 → docker --network 位:file_read 恒 "none";
-// http 恒 egress 内网名(docker 模式解析期已填默认,空值 = 调用方绕过
-// 解析的装配缺陷,响亮败——绝不静默回落 bridge:过渡网位已随 T10.2 死)。
+// http/db_query 恒 egress 内网名(docker 模式解析期已填默认,空值 = 调用方
+// 绕过解析的装配缺陷,响亮败——绝不静默回落 bridge:过渡网位已随 T10.2 死)。
 func sandboxNetworkFor(cfg sandboxConfig, tool string) (string, error) {
 	if tool == "file_read" {
 		return "none", nil
 	}
 	if cfg.EgressNetwork == "" || !sandboxNetworkRe.MatchString(cfg.EgressNetwork) {
-		return "", fmt.Errorf("tools: sandbox http carrier requires egress network (BRAID_TOOL_SANDBOX_EGRESS_NETWORK, default %q)", sandboxEgressNetworkDefault)
+		return "", fmt.Errorf("tools: sandbox carrier requires egress network (BRAID_TOOL_SANDBOX_EGRESS_NETWORK, default %q)", sandboxEgressNetworkDefault)
 	}
 	return cfg.EgressNetwork, nil
 }

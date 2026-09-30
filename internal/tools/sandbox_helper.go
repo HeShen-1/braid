@@ -63,6 +63,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -103,10 +104,10 @@ var (
 // cmd 以非零码退出(宿主按 §6 走「exit≠0 无信封」分支)。
 func RunSandboxHelper(ctx context.Context, argv []string, stdin io.Reader, stdout io.Writer, hardExit func()) error {
 	if len(argv) < 1 {
-		return fmt.Errorf("usage: braid-sandbox-exec <http|file_read> | selftest <mode>")
+		return fmt.Errorf("usage: braid-sandbox-exec <http|file_read|db_query> | selftest <mode>")
 	}
 	switch argv[0] {
-	case "http", "file_read":
+	case "http", "file_read", "db_query":
 		return runSandboxToolSession(ctx, argv[0], stdin, stdout, hardExit)
 	case "selftest":
 		return runSandboxSelftest(ctx, argv[1:], stdin, stdout)
@@ -114,7 +115,7 @@ func RunSandboxHelper(ctx context.Context, argv []string, stdin io.Reader, stdou
 		// argv 由载体白名单构造器发出;到这即错配/篡改——信封可观测报错。
 		return writeSandboxEnvelope(stdout, SandboxResponse{
 			OK: false, Code: SandboxCodeToolFailed,
-			Message: fmt.Sprintf("unknown mode %q (want http|file_read|selftest)", argv[0]),
+			Message: fmt.Sprintf("unknown mode %q (want http|file_read|db_query|selftest)", argv[0]),
 		})
 	}
 }
@@ -300,6 +301,28 @@ func rebuildSandboxTool(tool string, config json.RawMessage) (Tool, error) {
 			}
 		}
 		return NewFileReadTool(FileReadConfig{Dirs: cfg.Dirs})
+	case "db_query":
+		var cfg struct {
+			DSN   string `json:"dsn"`
+			Proxy string `json:"proxy,omitempty"`
+		}
+		if len(config) > 0 {
+			if err := json.Unmarshal(config, &cfg); err != nil {
+				return nil, fmt.Errorf("db_query config not valid JSON: %w", err)
+			}
+		}
+		// proxy 词形与宿主 env 键共用 parseEgressProxyURL 单门(http 同款);
+		// 在场 = MySQL 拨号经明文隧道(egressTunnelDialPlain),缺席 = 容器
+		// 内直连(off 形态不应到达:载体装配恒带 proxy,坏词形响亮拒)。
+		var proxyURL *url.URL
+		if cfg.Proxy != "" {
+			u, err := parseEgressProxyURL(cfg.Proxy)
+			if err != nil {
+				return nil, fmt.Errorf("db_query config: %w", err)
+			}
+			proxyURL = u
+		}
+		return NewDBQueryTool(DBQueryConfig{DSN: cfg.DSN, Proxy: proxyURL})
 	default:
 		return nil, fmt.Errorf("tool %q not sandboxable", tool)
 	}

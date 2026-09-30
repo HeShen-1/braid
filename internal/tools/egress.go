@@ -81,10 +81,18 @@ var (
 // (合法姿态:无 endpoints 即无合法目的地)。Resolver/IPForbidden 仅测试
 // 注入(GuardConfig 同款纪律:非 nil 整体替换默认,生产恒零值——Allow
 // 是唯一生产字段)。
+//
+// AllowInternal(T10.4,D-2026-09-30-t104-dbquery-egress):db_query DSN
+// 派生的**钉死内部条目**——运维显式授权的内部 DB 位置(host:port 精确
+// 匹配),豁免 ipForbidden 的私网/环回/CGNAT 禁段(ipForbiddenPinned:
+// link-local/metadata/未指定/组播仍拒,豁免面最小化)。Allow 条目的
+// 公网-only 姿态逐字节不变;残余风险(DSN 宿主名 DNS 重绑定可在私网内
+// 枢转)登记于 D- 条目,威胁前提 = 攻击者控制运维所选宿主的 DNS。
 type EgressConfig struct {
-	Allow       map[string]map[int]struct{} // 小写 host(IP 字面量原样) → 端口集
-	Resolver    *net.Resolver               // nil → net.DefaultResolver
-	IPForbidden func(net.IP) bool           // nil → ipForbidden
+	Allow         map[string]map[int]struct{} // 小写 host(IP 字面量原样) → 端口集
+	AllowInternal map[string]map[int]struct{} // 同上;钉死条目,豁免私网禁段(db_query only)
+	Resolver      *net.Resolver               // nil → net.DefaultResolver
+	IPForbidden   func(net.IP) bool           // nil → ipForbidden
 }
 
 // EgressProxy 是默认拒绝 CONNECT 代理。零内部 goroutine——生命周期跟随
@@ -176,12 +184,13 @@ func (p *EgressProxy) handleConn(conn net.Conn) {
 	}
 
 	// 策略门一:host(:port) 白名单(默认拒绝——不在集内即拒,零例外)。
-	ports, ok := p.cfg.Allow[host]
-	if !ok {
-		p.deny(conn, 403, egressReasonHostBlocked)
-		return
-	}
-	if _, ok := ports[port]; !ok {
+	// AllowInternal 是 db_query DSN 派生的钉死条目(T10.4):命中即豁免
+	// 私网禁段(ipForbiddenPinned),Allow 条目照走 ipForbidden 全禁段。
+	// 同宿主双集(https 端点与 DSN 同宿主)按端口组合解析(orch-review
+	// LOW 收口):Allow 管自己的端口,钉死条目管 DSN 端口——豁免语义
+	// 只随钉死端口走,Allow 侧端口维持全禁段。
+	ports, pinned := lookupEgressPorts(p.cfg, host, port)
+	if ports == nil {
 		p.deny(conn, 403, egressReasonHostBlocked)
 		return
 	}
@@ -196,7 +205,13 @@ func (p *EgressProxy) handleConn(conn net.Conn) {
 	defer atomic.AddInt64(&p.activeTunnels, -1)
 
 	// 策略门二:目标 IP。IP 字面量零 DNS 直查;域名全量解析、全 IP 过
-	// 禁段(fail-closed),拨已解析 IP(钉死,无二次解析)。
+	// 禁段(fail-closed),拨已解析 IP(钉死,无二次解析)。钉死条目换用
+	// ipForbiddenPinned(私网/环回/CGNAT 豁免);测试注入的 IPForbidden
+	// 只辖 Allow 条目——钉死语义不随注入缝漂移。
+	forbidden := p.cfg.IPForbidden
+	if pinned {
+		forbidden = ipForbiddenPinned
+	}
 	rctx, cancel := context.WithTimeout(context.Background(), egressDialTimeout)
 	defer cancel()
 	var ips []net.IP
@@ -214,7 +229,7 @@ func (p *EgressProxy) handleConn(conn net.Conn) {
 	}
 	var target net.Conn
 	for _, ip := range ips {
-		if p.cfg.IPForbidden(ip) {
+		if forbidden(ip) {
 			p.deny(conn, 403, egressReasonSSRFBlocked)
 			return
 		}
@@ -345,80 +360,158 @@ func EgressAllowFromEndpoints(endpoints map[string]string) (map[string]map[int]s
 	return allow, nil
 }
 
+// lookupEgressPorts 按 (host, port) 解析允许集:Allow 命中且含端口 →
+// 常规条目;否则 AllowInternal 含该端口 → 钉死条目;两者皆不含 → nil
+// (默认拒绝)。返回值二 = 是否钉死(豁免私网禁段的语义位)。
+func lookupEgressPorts(cfg EgressConfig, host string, port int) (map[int]struct{}, bool) {
+	if ports, ok := cfg.Allow[host]; ok {
+		if _, pok := ports[port]; pok {
+			return ports, false
+		}
+	}
+	if ports, ok := cfg.AllowInternal[host]; ok {
+		if _, pok := ports[port]; pok {
+			return ports, true
+		}
+	}
+	return nil, false
+}
+
+// ipForbiddenPinned 钉死条目(db_query DSN 派生)的禁段口径:私网/环回/
+// CGNAT 豁免(运维显式授权的内部位置),其余禁段(link-local 含 metadata、
+// 未指定/组播/广播)仍拒;公网放行(与 ipForbidden 对公网的判定一致)。
+// 见 EgressConfig.AllowInternal 注释与 D-2026-09-30-t104-dbquery-egress。
+func ipForbiddenPinned(ip net.IP) bool {
+	if ip == nil {
+		return true
+	}
+	if ip.IsPrivate() || ip.IsLoopback() {
+		return false
+	}
+	if ip4 := ip.To4(); ip4 != nil && cgnat.Contains(ip4) {
+		return false
+	}
+	return ipForbidden(ip)
+}
+
+// EgressAllowFromDSN 从 BRAID_DBQUERY_DSN 派生钉死条目(小写 host → 端口;
+// 与工具构造共用 dbqDSNConfig/dbqDSNHostPort 单源,口径漂移在启动即红)。
+func EgressAllowFromDSN(dsn string) (string, int, error) {
+	cfg, err := dbqDSNConfig(dsn)
+	if err != nil {
+		return "", 0, fmt.Errorf("tools: egress pinned entry: %w", err)
+	}
+	host, port, err := dbqDSNHostPort(cfg.Addr)
+	if err != nil {
+		return "", 0, fmt.Errorf("tools: egress pinned entry: %w", err)
+	}
+	return strings.ToLower(host), port, nil
+}
+
+// egressConnectTunnel 拨代理并完成 CONNECT 握手(明文/ TLS 两族共享段,
+// T10.4 提取):写 CONNECT → 读状态行 → 拒答按 egressDenialError 映射 →
+// 2xx 消化剩余响应头。返回已过 2xx 的连接与其 bufio 残余(隧道期续读,
+// 不丢已缓冲字节);**调用方接管连接所有权**(返回即交接,无 defer 关闭)。
+// CONNECT 段共用 egressDialTimeout 绝对 deadline(拨号段唯一执法点:
+// 上游 ctx 对自定义拨号器是 WithoutCancel,attempt deadline 不达此段)。
+func egressConnectTunnel(ctx context.Context, proxy *url.URL, addr string) (net.Conn, *bufio.Reader, error) {
+	d := &net.Dialer{Timeout: egressDialTimeout}
+	raw, err := d.DialContext(ctx, "tcp", net.JoinHostPort(proxy.Hostname(), proxy.Port()))
+	if err != nil {
+		return nil, nil, fmt.Errorf("egress proxy dial %s: %w", proxy.Host, err)
+	}
+	// 失败路径统一收场:established 只在「所有权随返回值移交」时置位;
+	// 其余一切出口(含作用域遮蔽 err 的路径)都由 defer 关闭 raw。
+	established := false
+	defer func() {
+		if !established {
+			_ = raw.Close()
+		}
+	}()
+	deadline := time.Now().Add(egressDialTimeout)
+	_ = raw.SetDeadline(deadline)
+	if _, err := fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, addr); err != nil {
+		return nil, nil, fmt.Errorf("egress proxy write CONNECT: %w", err)
+	}
+	br := bufio.NewReader(raw)
+	line, err := br.ReadString('\n')
+	if err != nil {
+		return nil, nil, fmt.Errorf("egress proxy read CONNECT response: %w", err)
+	}
+	if len(line) > egressMaxRequestBytes {
+		return nil, nil, fmt.Errorf("egress proxy response line exceeds %d bytes", egressMaxRequestBytes)
+	}
+	fields := strings.Fields(strings.TrimRight(line, "\r\n"))
+	if len(fields) < 2 || !strings.HasPrefix(fields[0], "HTTP/") {
+		return nil, nil, fmt.Errorf("egress proxy malformed response %q", strings.TrimSpace(line))
+	}
+	code, cerr := strconv.Atoi(fields[1])
+	if cerr != nil {
+		return nil, nil, fmt.Errorf("egress proxy malformed status %q: %w", strings.TrimSpace(line), cerr)
+	}
+	reason := strings.Join(fields[2:], " ")
+	if code < 200 || code > 299 {
+		// 拒答映射:精确 (code, reason) 配对 → 哨兵或普通错误;
+		// 未知组合按普通传输错误(宿主侧 tool_failed),绝不静默。
+		if derr := egressDenialError(code, reason); derr != nil {
+			return nil, nil, derr
+		}
+		return nil, nil, fmt.Errorf("egress proxy denied: unexpected %q", strings.TrimSpace(line))
+	}
+	// 2xx:消化剩余响应头至空行(隧道期从 br 续读,不丢已缓冲字节)。
+	for {
+		hl, herr := br.ReadString('\n')
+		if herr != nil {
+			return nil, nil, fmt.Errorf("egress proxy read CONNECT headers: %w", herr)
+		}
+		if strings.TrimSpace(hl) == "" {
+			break
+		}
+	}
+	established = true
+	return raw, br, nil
+}
+
+// egressTunnelDialPlain 构造 helper 侧的**明文**隧道拨号器(T10.4,
+// db_query 的 MySQL DialFunc 消费):CONNECT 隧道之上直接承载 MySQL 协议
+// 字节——协议选择权在两端(MySQL 原生挑战响应认证;链路加密留运营方
+// DSN tls= 参数,代理与 worker 同进程同信任域)。拒答映射/残余续读与
+// TLS 族同源(egressConnectTunnel)。
+func egressTunnelDialPlain(proxy *url.URL) func(ctx context.Context, network, addr string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		raw, br, err := egressConnectTunnel(ctx, proxy, addr)
+		if err != nil {
+			return nil, err
+		}
+		_ = raw.SetDeadline(time.Time{})
+		return &egressTunnelConn{Conn: raw, r: br}, nil
+	}
+}
+
 // egressTunnelDialContext 构造 helper 侧的 https 隧道拨号器(T10.2,
 // NewGuardedClient 消费):Transport.Proxy 恒 nil、DialTLSContext 指向本
 // 函数——它是 https 请求的唯一拨号路径(Go 1.27 transport.go 实证:
 // Proxy nil + hasCustomTLSDialer → customDialTLS(ctx, "tcp", cm.addr()) 恰
-// 收目标地址,错误不经 net.OpError 包装原样穿透)。流程:拨代理 → 写
-// CONNECT 目标 authority → 读状态行 → 拒答按 egressDenialError 映射
-// (哨兵经 %w 链穿透 url.Error,宿主 runner 既有分类零改动)→ 2xx 后
-// 在隧道之上做端到端 TLS(系统根或注入根;代理零明文可见),返回已完成
-// 握手的 *tls.Conn(Transport 对 handshaker 幂等)。
+// 收目标地址,错误不经 net.OpError 包装原样穿透)。流程:egressConnectTunnel
+// 共享段 → 隧道之上端到端 TLS(系统根或注入根;代理零明文可见),返回
+// 已完成握手的 *tls.Conn(Transport 对 handshaker 幂等)。
 //
 // 重定向每跳新目标 = 新拨号 = 每跳过代理策略门(容器内 host 门是第一道,
 // 代理是网络层第二道)。
 func egressTunnelDialContext(proxy *url.URL, tlsCfg *tls.Config) func(ctx context.Context, network, addr string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
-		d := &net.Dialer{Timeout: egressDialTimeout}
-		raw, err := d.DialContext(ctx, network, net.JoinHostPort(proxy.Hostname(), proxy.Port()))
+		raw, br, err := egressConnectTunnel(ctx, proxy, addr)
 		if err != nil {
-			return nil, fmt.Errorf("egress proxy dial %s: %w", proxy.Host, err)
+			return nil, err
 		}
-		// 失败路径统一收场:handoff 只在「raw 的所有权移交给返回的
-		// tls.Conn」时置位;其余一切出口(含 if 作用域遮蔽 err 的路径,
-		// orch-review advisory:命名返回值不存在,靠 err 判定曾漏关四条
-		// 路径)都由 defer 关闭 raw。
+		// 失败路径收场:handoff 只在「raw 的所有权移交给返回的 tls.Conn」
+		// 时置位;TLS 握手失败等一切出口都由 defer 关闭 raw。
 		handoff := false
 		defer func() {
 			if !handoff {
 				_ = raw.Close()
 			}
 		}()
-		// CONNECT 请求行/头读取/TLS 握手共用一个绝对 deadline(三段合计
-		// 30s 墙钟,非各 30s)。这是拨号段的唯一执法点:Transport 给
-		// custom dialer 的 ctx 是 WithoutCancel(request ctx)——attempt
-		// deadline 结构性不达拨号段,由本 deadline + Dialer.Timeout 自界
-		// (ssrf.go 硬契约注释的拨号段例外)。
-		deadline := time.Now().Add(egressDialTimeout)
-		_ = raw.SetDeadline(deadline)
-		if _, err := fmt.Fprintf(raw, "CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", addr, addr); err != nil {
-			return nil, fmt.Errorf("egress proxy write CONNECT: %w", err)
-		}
-		br := bufio.NewReader(raw)
-		line, err := br.ReadString('\n')
-		if err != nil {
-			return nil, fmt.Errorf("egress proxy read CONNECT response: %w", err)
-		}
-		if len(line) > egressMaxRequestBytes {
-			return nil, fmt.Errorf("egress proxy response line exceeds %d bytes", egressMaxRequestBytes)
-		}
-		fields := strings.Fields(strings.TrimRight(line, "\r\n"))
-		if len(fields) < 2 || !strings.HasPrefix(fields[0], "HTTP/") {
-			return nil, fmt.Errorf("egress proxy malformed response %q", strings.TrimSpace(line))
-		}
-		code, cerr := strconv.Atoi(fields[1])
-		if cerr != nil {
-			return nil, fmt.Errorf("egress proxy malformed status %q: %w", strings.TrimSpace(line), cerr)
-		}
-		reason := strings.Join(fields[2:], " ")
-		if code < 200 || code > 299 {
-			// 拒答映射:精确 (code, reason) 配对 → 哨兵或普通错误;
-			// 未知组合按普通传输错误(宿主侧 tool_failed),绝不静默。
-			if derr := egressDenialError(code, reason); derr != nil {
-				return nil, derr
-			}
-			return nil, fmt.Errorf("egress proxy denied: unexpected %q", strings.TrimSpace(line))
-		}
-		// 2xx:消化剩余响应头至空行(隧道期从 br 续读,不丢已缓冲字节)。
-		for {
-			hl, herr := br.ReadString('\n')
-			if herr != nil {
-				return nil, fmt.Errorf("egress proxy read CONNECT headers: %w", herr)
-			}
-			if strings.TrimSpace(hl) == "" {
-				break
-			}
-		}
 		host, _, serr := net.SplitHostPort(addr)
 		if serr != nil {
 			return nil, fmt.Errorf("egress tunnel: bad target addr %q: %w", addr, serr)
@@ -481,6 +574,9 @@ func SandboxEgressStartup(ctx context.Context, getenv func(string) string) (*url
 	}
 
 	// allow 集单源:与装配同门解析(env 或验签清单),漂移在启动即红。
+	// 钉死条目(T10.4):db_query DSN 派生 host:port 进 AllowInternal——
+	// 运维显式授权的内部 DB 位置豁免私网禁段(D-2026-09-30-t104
+	// -dbquery-egress);DSN 缺席/坏值在启动即红(凭证通道与装配同源)。
 	ts, err := resolveToolSet(getenv)
 	if err != nil {
 		return nil, err
@@ -488,6 +584,14 @@ func SandboxEgressStartup(ctx context.Context, getenv func(string) string) (*url
 	allow, err := EgressAllowFromEndpoints(ts.httpEndpoints)
 	if err != nil {
 		return nil, err
+	}
+	var pinned map[string]map[int]struct{}
+	if ts.dbDSN != "" {
+		h, p, derr := EgressAllowFromDSN(ts.dbDSN)
+		if derr != nil {
+			return nil, derr
+		}
+		pinned = map[string]map[int]struct{}{h: {p: {}}}
 	}
 
 	// 端口键独立解析(仅启动段消费,不进 sandboxConfig):空 = 缺省
@@ -528,7 +632,7 @@ func SandboxEgressStartup(ctx context.Context, getenv func(string) string) (*url
 	if err != nil {
 		return nil, fmt.Errorf("tools: egress proxy listen %s:%d: %w (single-worker topology; second replica on same network must fail loud)", gwIP, port, err)
 	}
-	proxy := NewEgressProxy(EgressConfig{Allow: allow})
+	proxy := NewEgressProxy(EgressConfig{Allow: allow, AllowInternal: pinned})
 	go func() { _ = proxy.Serve(ln) }() // listener 关闭即退(worker 进程生命周期)
 	return &url.URL{Scheme: "http", Host: ln.Addr().String()}, nil
 }

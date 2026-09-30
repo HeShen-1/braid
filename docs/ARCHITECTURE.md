@@ -101,7 +101,7 @@
 
 ## 5. P1
 
-画布(React Flow 候选)、回滚/断点续跑 UI、容器沙箱 + egress 代理、MCP 双向、审计哈希链、会签、OIDC/LDAP、IM 审批卡片、工具包签名、Helm、SaaS 多租户、完整 taint 追踪、db_query 内置工具(只读账号/参数化/凭证作用域)。
+画布(React Flow 候选)、回滚/断点续跑 UI、容器沙箱 + egress 代理、MCP 双向、审计哈希链、会签、OIDC/LDAP、IM 审批卡片、工具包签名、Helm、SaaS 多租户、完整 taint 追踪。
 
 ## 附:审计事实链(设计依据)
 

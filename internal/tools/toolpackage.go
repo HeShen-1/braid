@@ -30,6 +30,7 @@ import (
 	"io"
 	"maps"
 	"slices"
+	"strings"
 )
 
 // toolPackageVersion 清单格式版本;v1 唯一支持(错版本即拒)。
@@ -51,8 +52,9 @@ type toolPackageTool struct {
 }
 
 // knownPackageTools:清单可声明的工具词表 = 内置装配面支持的载体。新增
-// 工具名须三处联动(见文件头注释)。
-var knownPackageTools = map[string]struct{}{"http": {}, "file_read": {}}
+// 工具名须三处联动(见文件头注释)。db_query(T10.4)在此只声明**在场**,
+// 不携带 DSN——凭证恒 env 通道(BRAID_DBQUERY_DSN),签名工件零凭证。
+var knownPackageTools = map[string]struct{}{"http": {}, "file_read": {}, "db_query": {}}
 
 // verifyToolPackage 加载侧验签原语:base64 → 长度面 → Ed25519 验签 →
 // 严格清单解码与词表校验。任一步失败即拒(fail closed);成功返回解析
@@ -119,6 +121,9 @@ func parseToolPackage(manifest []byte) (toolPackage, error) {
 		if name == "file_read" && len(tp.Endpoints) > 0 {
 			return toolPackage{}, fmt.Errorf(`tools: tool package tool "file_read" must not carry endpoints`)
 		}
+		if name == "db_query" && (len(tp.Endpoints) > 0 || len(tp.Dirs) > 0) {
+			return toolPackage{}, fmt.Errorf(`tools: tool package tool "db_query" is presence-only (DSN stays in BRAID_DBQUERY_DSN; credentials never enter signed artifacts)`)
+		}
 	}
 	return p, nil
 }
@@ -134,6 +139,9 @@ type toolSet struct {
 	filereadSource   string
 	filereadDeclared bool
 	filereadDirs     []string
+	dbSource         string
+	dbDeclared       bool
+	dbDSN            string // 凭证:恒 env 通道,不进签名工件(见 resolveToolSet 注释)
 }
 
 // resolveToolSet 是 T10.3 env 矩阵(语义全表见文件头注释):
@@ -141,6 +149,9 @@ type toolSet struct {
 //	pubkey 缺席 + package/signature 在场  → 拒(无钥不可验,fail closed)
 //	pubkey 缺席 + 两者全缺                → 内置 env 路径(逐字节现状)
 //	pubkey 在场 + legacy 工具键非空       → 拒(unsigned 源,配置漂移防)
+//	                                         (BRAID_DBQUERY_DSN 例外:T10.4 起
+//	                                         DSN 是凭证通道而非工具配置,两路径
+//	                                         恒 env 注入,签名工件零凭证)
 //	pubkey 在场 + package/signature 半配  → 拒(半配置即败)
 //	pubkey 在场 + 验签/清单校验失败       → 拒(验签失败即拒)
 //	pubkey 在场 + 验签通过                → 清单为唯一工具来源
@@ -180,11 +191,18 @@ func resolveToolSet(getenv func(string) string) (toolSet, error) {
 	if t, ok := p.Tools["file_read"]; ok {
 		ts.filereadSource, ts.filereadDeclared, ts.filereadDirs = "BRAID_TOOL_PACKAGE", true, t.Dirs
 	}
+	if _, ok := p.Tools["db_query"]; ok {
+		// 声明在场即 declared;DSN 恒 env 通道——签名清单是可分发/可落
+		// 诊断的工件,凭证永不入内。声明但 DSN 缺席 = 部署半配置,交给
+		// NewDBQueryTool 响亮拒(http 声明空 endpoints 同语义)。
+		ts.dbSource, ts.dbDeclared, ts.dbDSN = "BRAID_TOOL_PACKAGE", true, strings.TrimSpace(getenv("BRAID_DBQUERY_DSN"))
+	}
 	return ts, nil
 }
 
 // legacyToolSet:既有内置 env 路径(raw 非空 = 声明;解析失败键名报错,
-// 语义与 T3.5 起逐字节一致)。
+// 语义与 T3.5 起逐字节一致)。db_query 的声明位 = BRAID_DBQUERY_DSN 在场
+// (值校验归 NewDBQueryTool;本层不解析凭证)。
 func legacyToolSet(getenv func(string) string) (toolSet, error) {
 	var ts toolSet
 	if raw := getenv("BRAID_HTTP_ENDPOINTS"); raw != "" {
@@ -202,6 +220,9 @@ func legacyToolSet(getenv func(string) string) (toolSet, error) {
 			return toolSet{}, fmt.Errorf("tools: BRAID_FILEREAD_DIRS: want JSON array of absolute dirs: %w", err)
 		}
 		ts.filereadDirs = dirs
+	}
+	if raw := strings.TrimSpace(getenv("BRAID_DBQUERY_DSN")); raw != "" {
+		ts.dbSource, ts.dbDeclared, ts.dbDSN = "BRAID_DBQUERY_DSN", true, raw
 	}
 	return ts, nil
 }
