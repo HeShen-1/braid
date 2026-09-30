@@ -178,16 +178,16 @@ SELECT id, execution_id, node_execution_id, node_id, round, decided_by, decision
 	return out, nil
 }
 
-// CountDecisions 数某审批节点某轮的既存决定数(或签首票定局守卫:"> 0"
-// 即定局;round 谓词 = T14.2 会签判据的换装点,D-t42 预告的 CountDecisions
-// 判据改法在此落定)。
-func (s *Store) CountDecisions(ctx context.Context, q DBTX, nodeExecID uint64, round int) (int, error) {
-	var n int
-	if err := q.QueryRowContext(ctx,
-		`SELECT COUNT(*) FROM approval_decision WHERE node_execution_id=? AND round=?`, nodeExecID, round).Scan(&n); err != nil {
-		return 0, fmt.Errorf("api: count decisions of node %d: %w", nodeExecID, err)
+// CountRoundDecisions 数某审批节点某轮 APPROVED/REJECTED 票数(定局判据的
+// 数据面,T14.2 会签换装 CountDecisions:D-t42 预告、D-t92 决策 6 钉点的
+// 判据改法在此落定——方向维度进判据,round 谓词不变。判据语义单点 =
+// scheduler.ApprovalOutcome,本原语只供数,不做裁决)。
+func (s *Store) CountRoundDecisions(ctx context.Context, q DBTX, nodeExecID uint64, round int) (approved, rejected int, err error) {
+	if err := q.QueryRowContext(ctx, scheduler.ApprovalRoundCountSQL, nodeExecID, round).
+		Scan(&approved, &rejected); err != nil {
+		return 0, 0, fmt.Errorf("api: count round decisions of node %d: %w", nodeExecID, err)
 	}
-	return n, nil
+	return approved, rejected, nil
 }
 
 // GetExecutionByIdempotencyKey 按 (tenant, 幂等键) 读回执行(触发重放响应;

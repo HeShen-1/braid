@@ -40,10 +40,16 @@ type PendingApproval struct {
 // pendingWhere 是待办列表的公共谓词(计数与取页同一拼法,单源防两处漂移):
 // 节点 WAITING_APPROVAL + 执行非终态 + 快照名单精确成员 + 执行租户归属
 // (D-t112:跨租户 DSL 命名他租户主体的面在此闭合——主体名单命中且执行
-// 属读者租户才可见;node 系无租户列,经 we.tenant_id 谓词)。
+// 属读者租户才可见;node 系无租户列,经 we.tenant_id 谓词)+ 本轮已投者
+// 排除(T14.2:会签挂起期长,已投者无可做动作不得再见待办;round = 行
+// attempts 与决定面轮次锚同源。any 模式异步窗内同改善——首投者不再见
+// 将被 409 的条目)。
 const pendingWhere = ` WHERE ne.status = ? AND we.status IN (?, ?)
   AND JSON_CONTAINS(ne.input_snapshot, JSON_QUOTE(?), '$.approvers')
-  AND we.tenant_id = ?`
+  AND we.tenant_id = ?
+  AND NOT EXISTS(SELECT 1 FROM approval_decision pd
+                  WHERE pd.node_execution_id = ne.id
+                    AND pd.round = ne.attempts AND pd.decided_by = ?)`
 
 // ListPendingApprovals 分页列出主体的待办审批(任意有效 token,主体
 // 过滤即边界;非审批人恒空集)。顺序 deadline_at, id 升序(最紧急优先;
@@ -51,7 +57,7 @@ const pendingWhere = ` WHERE ne.status = ? AND we.status IN (?, ?)
 // 页, 满足条件的总行数),与 ListExecutions 同形。
 func (s *Store) ListPendingApprovals(ctx context.Context, q DBTX, tenant uint64, username string, limit, offset int) ([]PendingApproval, int, error) {
 	args := []any{string(engine.NodeWaitingApproval), string(engine.WorkflowRunning),
-		string(engine.WorkflowWaitingApproval), username, tenant}
+		string(engine.WorkflowWaitingApproval), username, tenant, username}
 	var total int
 	if err := q.QueryRowContext(ctx,
 		`SELECT COUNT(*) FROM node_execution ne JOIN workflow_execution we ON we.id = ne.execution_id`+pendingWhere,

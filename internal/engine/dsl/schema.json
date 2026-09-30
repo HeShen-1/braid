@@ -308,9 +308,10 @@
           "type": "array",
           "minItems": 1,
           "maxItems": 64,
-          "items": { "type": "string", "pattern": "^\\S+$", "minLength": 1, "maxLength": 128, "description": "词域对齐 username(^[a-z][a-z0-9_-]{0,127}$,T4.4 语义校验拒域外);长度界 128 = users.username VARCHAR(128) 同值域" }
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^\\S+$", "minLength": 1, "maxLength": 128, "description": "词域对齐 username(^[a-z][a-z0-9_-]{0,127}$,T4.4 语义校验拒域外);长度界 128 = users.username VARCHAR(128) 同值域。uniqueItems(T14.2):会签定局判据 = APPROVED 票数==名单长度,重复名单在该判据下永久挂起死锁;any 下重复亦是作者错误,发布期统一拒绝" }
         },
-        "mode": { "enum": ["any"], "default": "any", "description": "或签。会签(all)为 P1,P1 放开时同步放开本枚举。" },
+        "mode": { "enum": ["any", "all"], "default": "any", "description": "any=或签,任一票定局;all=会签,全部批准才过、任一驳回即败(T14.2)。部分批准为可见中间态(pending_approvers 读面)。" },
         "timeout_hours": { "type": "number", "minimum": 0.1, "maximum": 2160, "default": 72, "description": "缺省 72h;平台级默认可配(Q9,T4.3)。" },
         "on_timeout": { "enum": ["escalate", "fail"], "default": "escalate", "description": "escalate=升级通知并保持等待;fail=显式失败。永不自动通过。" },
         "instructions": { "type": "string", "maxLength": 4000 },

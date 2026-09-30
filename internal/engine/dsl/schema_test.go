@@ -25,7 +25,7 @@ var wantCause = map[string]string{
 	"url_value_in_inputs.json":       "inputs/note': 'not' failed",
 	"bare_ipv4_value.json":           "inputs/note': 'not' failed",
 	"template_embeds_ref.json":       "prompt/template': 'not' failed",
-	"approval_mode_all.json":         "value must be 'any'",
+	"approval_dup_approvers.json":    "items at 0 and 1 are equal",
 	"parallel_bad_on_failure.json":   "value must be one of 'fail_fast', 'wait_all'",
 	"parallel_body_branch.json":      "additional properties 'cases', 'default' not allowed",
 	"parallel_foreach_node_ref.json": "does not match pattern",

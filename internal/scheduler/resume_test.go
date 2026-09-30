@@ -55,6 +55,15 @@ const approvalBadOutputDSL = `{"dsl":"1.0","name":"approval-badout-t",
   {"id":"b","type":"approval","approvers":["carol"],"timeout_hours":24,
    "outputs":{"score":"number"}}]}`
 
+// approvalAllTailDSL:会签(mode=all)尾节点,两人名单(T14.2 定局复核面)。
+const approvalAllTailDSL = `{"dsl":"1.0","name":"approval-all-tail-t",
+ "edges":[{"from":"a","to":"b"}],
+ "nodes":[
+  {"id":"a","type":"llm","prompt":{"template":"gen"},"outputs":{"text":"string"}},
+  {"id":"b","type":"approval","approvers":["carol","dave"],"mode":"all","timeout_hours":24,
+   "on_timeout":"fail","instructions":"请会签","outputs":{"decision":"string","comment":"string"}}],
+ "outputs":{"verdict":"{{nodes.b.output.decision}}"}}`
+
 // seedDecision 直插决定行(resume 的事实前置;生产写入面 = api 决定事务)。
 func seedDecision(t *testing.T, d *sql.DB, execID, nodeExecID uint64, nodeID, decidedBy, decision, comment string) uint64 {
 	t.Helper()
@@ -487,5 +496,77 @@ func TestResumeStaleRoundDecisionRejected(t *testing.T) {
 	// 零动作:节点仍在 WAITING_APPROVAL。
 	if got := readNode(t, d, execID, "b"); got.status != engine.NodeWaitingApproval {
 		t.Fatalf("b = %s, want WAITING_APPROVAL(拒绝零动作)", got.status)
+	}
+}
+
+// TestResumeAllModePrematureEventRejected:会签定局复核(T14.2)——只投了
+// 一票 approve(未定局)的 resume 事件 = 伪/早产,响亮拒绝,节点零变化
+// (api 只在定局票落 resume 事件;此事件只能来自直插/伪造)。
+func TestResumeAllModePrematureEventRejected(t *testing.T) {
+	s, d := newSched(t)
+	execID, b := dispatchSuspended(t, s, d, approvalAllTailDSL)
+	decisionID := seedDecision(t, d, execID, b.id, "b", "carol", DecisionApproved, "")
+	before := readNode(t, d, execID, "b")
+
+	err := s.Resume(context.Background(), ResumeRequest{
+		ExecID: execID, NodeExecID: b.id, DecisionID: decisionID,
+		AttemptNo: b.attempts + 1, WorkerID: "resume-test",
+	})
+	if err == nil {
+		t.Fatal("premature all-mode resume: want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "undecided round") {
+		t.Fatalf("error = %v, want undecided round", err)
+	}
+	after := readNode(t, d, execID, "b")
+	if after.status != before.status || after.version != before.version {
+		t.Fatalf("premature resume mutated node: %s v%d, want %s v%d",
+			after.status, after.version, before.status, before.version)
+	}
+}
+
+// TestResumeAllModeQuorumApproves:票齐(两人 approve)→ 锚任一票行均可
+// 续跑成功;output.decided_by = 事件锚定行(此处锚首票 carol)。
+func TestResumeAllModeQuorumApproves(t *testing.T) {
+	s, d := newSched(t)
+	execID, b := dispatchSuspended(t, s, d, approvalAllTailDSL)
+	decCarol := seedDecision(t, d, execID, b.id, "b", "carol", DecisionApproved, "第一票")
+	seedDecision(t, d, execID, b.id, "b", "dave", DecisionApproved, "第二票")
+
+	mustResume(t, s, execID, b.id, decCarol, b.attempts+1)
+
+	got := readNode(t, d, execID, "b")
+	if got.status != engine.NodeSucceeded {
+		t.Fatalf("node status = %s, want SUCCEEDED", got.status)
+	}
+	var out map[string]any
+	if err := json.Unmarshal([]byte(got.output.String), &out); err != nil {
+		t.Fatalf("output json: %v", err)
+	}
+	if out["decided_by"] != "carol" {
+		t.Fatalf("output = %v, want decided_by=carol(事件锚定行)", out)
+	}
+}
+
+// TestResumeAllModeSingleRejectFinalizes:任一驳回即败——单票 reject 已定局,
+// resume 收口 FAILED(approval_rejected),名单未投满不影响。
+func TestResumeAllModeSingleRejectFinalizes(t *testing.T) {
+	s, d := newSched(t)
+	execID, b := dispatchSuspended(t, s, d, approvalAllTailDSL)
+	seedDecision(t, d, execID, b.id, "b", "carol", DecisionApproved, "先批")
+	decDave := seedDecision(t, d, execID, b.id, "b", "dave", DecisionRejected, "否")
+
+	mustResume(t, s, execID, b.id, decDave, b.attempts+1)
+
+	got := readNode(t, d, execID, "b")
+	if got.status != engine.NodeFailed {
+		t.Fatalf("node status = %s, want FAILED", got.status)
+	}
+	var code sql.NullString
+	if err := d.QueryRow(`SELECT error_code FROM node_execution WHERE id=?`, b.id).Scan(&code); err != nil {
+		t.Fatalf("read error_code: %v", err)
+	}
+	if !code.Valid || code.String != "approval_rejected" {
+		t.Fatalf("error_code = %v, want approval_rejected", code)
 	}
 }
