@@ -103,7 +103,7 @@ func mcpServerURL(alias, raw string) (*url.URL, error) {
 	}
 	switch {
 	case u.Scheme != "https":
-		return nil, fmt.Errorf("tools: mcp server %q: url must be https, got %q", alias, raw)
+		return nil, fmt.Errorf("tools: mcp server %q: url must be https, got %q", alias, mcpRedactURL(u, raw))
 	case u.User != nil:
 		return nil, fmt.Errorf("tools: mcp server %q: userinfo in url forbidden (token goes in %s)", alias, MCPTokenEnvKey(alias))
 	case u.Hostname() == "":
@@ -216,13 +216,26 @@ func (t *mcpClientTool) Name() string { return t.name }
 
 // maxMCPResponseBytes 是 MCP 响应体读取上限(评审 MEDIUM:SDK v1.8 对
 // application/json 响应用裸 io.ReadAll——streamable.go handleJSON,无界
-// 读发生在 runner 16MiB 产出收口之前;被声明/被攻破的 server 巨型响应
-// 可打爆共享 worker 进程内存)。界 = 2× DefaultMaxToolOutput:防 OOM 级
-// 而非精确契约——JSON 转义放大(控制字节 6x)使线上字节数可合法超过
-// 产出本身的 16MiB,双倍余量容纳;超限截断使 SDK JSON 解码必然失败 →
-// tool_failed(响亮,不静默)。与 http 工具 DefaultMaxHTTPBody 同威胁
-// 模型同判(SSE 路径 SDK 侧另有 DefaultMaxEventSize 单事件界)。
-const maxMCPResponseBytes = 2 * DefaultMaxToolOutput
+// 读发生在 runner 16MiB 产出收口之前)。界 = DefaultMaxHTTPBody(8MiB,
+// 与内置 http 工具**同威胁模型同界**):除无界读外,SDK 随后对全量 body
+// 做 any 解码,稠密 JSON 的对象图放大约 24-48x(对抗审计:32MiB 界下
+// 单次恶意响应可达 ~GB 级堆;8MiB 界把最坏峰值压回 ~200MB 量级)。
+// 超限截断使 SDK JSON 解码必然失败 → tool_failed(响亮,不静默)。
+// 代价:线上大于 8MiB 的合法 MCP 结果会失败——与 http 工具 body 同判,
+// 属资源界而非契约界(SSE 路径 SDK 侧另有 DefaultMaxEventSize 单事件界)。
+const maxMCPResponseBytes = DefaultMaxHTTPBody
+
+// mcpRedactURL 剥除 URL userinfo 后回显(凭证红线:错误零回显——运维
+// 把凭证误写进 URL 时,报错原文不得把它带进启动日志;对抗审计 MEDIUM:
+// scheme 门先于 userinfo 门命中时 got %q 会整串回显原始 URL)。
+func mcpRedactURL(u *url.URL, raw string) string {
+	if u != nil && u.User != nil {
+		c := *u
+		c.User = nil
+		return c.String()
+	}
+	return raw
+}
 
 // mcpHeaderTransport 注入外部 server 静态 bearer 与 attempt 幂等键头,
 // 并对响应体施加 maxMCPResponseBytes 上限(见常量注释)。注入层在守卫

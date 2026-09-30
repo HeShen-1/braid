@@ -13,6 +13,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -49,14 +50,21 @@ func (c *mcpHeaderCapture) snapshot() (auth, idem []string, rawAuth []string) {
 // mcpTestServer 起 in-process 真 SDK server(stateless streamable HTTP,
 // t13.1 同形态)挂 httptest TLS,返回可注入 GuardConfig.TLS 的根。
 func mcpTestServer(t *testing.T, add func(*mcp.Server)) (*httptest.Server, *mcpHeaderCapture, *tls.Config) {
+	return mcpTestServerOpts(t, []string{MCPProtocolVersion}, true, add)
+}
+
+// mcpTestServerOpts 是可配置变体缝(对抗审计补):versions = server 支持的
+// 协议版本(钉死值之外另测 legacy 协商拒);jsonResp = JSONResponse 关闭
+// 时 POST 响应走 SSE 帧(生产常态之一,DefaultMaxEventSize 路径)。
+func mcpTestServerOpts(t *testing.T, versions []string, jsonResp bool, add func(*mcp.Server)) (*httptest.Server, *mcpHeaderCapture, *tls.Config) {
 	t.Helper()
 	ms := mcp.NewServer(
 		&mcp.Implementation{Name: "test-mcp", Version: "v1"},
-		&mcp.ServerOptions{SupportedProtocolVersions: []string{MCPProtocolVersion}},
+		&mcp.ServerOptions{SupportedProtocolVersions: versions},
 	)
 	add(ms)
 	h := mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return ms },
-		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+		&mcp.StreamableHTTPOptions{Stateless: true, JSONResponse: jsonResp})
 	cap := &mcpHeaderCapture{}
 	hs := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cap.record(r)
@@ -337,6 +345,8 @@ func TestNewMCPToolsValidation(t *testing.T) {
 			map[string]MCPToolRef{"mcp_x": {Server: "srv", Tool: "t"}}, "port"},
 		{"builtin name collision", map[string]string{"srv": "https://a.example.com"},
 			map[string]MCPToolRef{"http": {Server: "srv", Tool: "t"}}, "collides with builtin"},
+		{"non-ascii host", map[string]string{"srv": "https://mcp.exämple.com"},
+			map[string]MCPToolRef{"mcp_x": {Server: "srv", Tool: "t"}}, "non-ascii host"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -412,5 +422,73 @@ func TestMCPResultTextBounded(t *testing.T) {
 	}
 	if !utf8.ValidString(err2.Error()) {
 		t.Fatal("truncated message must stay valid UTF-8")
+	}
+}
+
+// TestMCPToolProtocolPinRejectsLegacy 锁定协议钉死执法点(对抗审计
+// MEDIUM:server 支持表换 legacy 版本时 SDK 会协商降级并成功建会话,
+// 唯一防线 = Connect 后的版本比对——此前该分支零覆盖,删除不红)。
+func TestMCPToolProtocolPinRejectsLegacy(t *testing.T) {
+	hs, _, tlsCfg := mcpTestServerOpts(t, []string{"2025-06-18"}, true, mcpTestTools)
+	tool := newTestMCPTool(t, hs.URL, tlsCfg, "mcp_legacy", "echo_text", "")
+	_, err := tool.Run(context.Background(), Call{})
+	if err == nil || !strings.Contains(err.Error(), "negotiated protocol") {
+		t.Fatalf("err = %v, want negotiated protocol rejection (pinned %s)", err, MCPProtocolVersion)
+	}
+}
+
+// TestMCPToolSSEResponsePath 行使 SSE 帧化响应路径(对抗审计 LOW:
+// JSONResponse:true 钉死使 SDK 的 SSE 解码 + limitedBody 叠加从未跑过;
+// DisableStandaloneSSE 只关 GET 推送流,POST 响应 SSE 帧是规范常态)。
+func TestMCPToolSSEResponsePath(t *testing.T) {
+	hs, _, tlsCfg := mcpTestServerOpts(t, []string{MCPProtocolVersion}, false, mcpTestTools)
+	tool := newTestMCPTool(t, hs.URL, tlsCfg, "mcp_sse", "echo_text", "")
+	res, err := tool.Run(context.Background(), Call{Inputs: map[string]any{"q": 1}})
+	if err != nil {
+		t.Fatalf("run over SSE-framed responses: %v", err)
+	}
+	var out map[string]json.RawMessage
+	if err := json.Unmarshal(res.Output, &out); err != nil || out["content"] == nil {
+		t.Fatalf("output = %s (%v), want content channel", out, err)
+	}
+}
+
+// rtFunc 是 RoundTripper 测试缝(transport 单测)。
+type rtFunc func(*http.Request) (*http.Response, error)
+
+func (f rtFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// TestMCPHeaderTransportBodyCap 直接锁定响应体上限的存在与值(对抗审计
+// MEDIUM:端到端 junk 用例无判别力——解码失败在有无上限时同形;此用例
+// 断言包裹后的 body 恰好读到 maxMCPResponseBytes,删除上限即红)。
+// 同锚定头注入(Clone 不改原请求)。
+func TestMCPHeaderTransportBodyCap(t *testing.T) {
+	var gotAuth, gotIdem string
+	inner := rtFunc(func(r *http.Request) (*http.Response, error) {
+		gotAuth, gotIdem = r.Header.Get("Authorization"), r.Header.Get("Idempotency-Key")
+		return &http.Response{
+			StatusCode: 200,
+			Header:     make(http.Header),
+			Body:       io.NopCloser(bytes.NewReader(make([]byte, maxMCPResponseBytes+(1<<20)))),
+		}, nil
+	})
+	h := &mcpHeaderTransport{rt: inner, auth: "Bearer x", idem: "att:1:1"}
+	req := httptest.NewRequest(http.MethodPost, "https://srv.example/mcp", nil)
+	resp, err := h.RoundTrip(req)
+	if err != nil {
+		t.Fatalf("roundtrip: %v", err)
+	}
+	data, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if int64(len(data)) != maxMCPResponseBytes {
+		t.Fatalf("body read = %d bytes, want capped at %d (cap deleted or miswired)", len(data), maxMCPResponseBytes)
+	}
+	if gotAuth != "Bearer x" || gotIdem != "att:1:1" {
+		t.Fatalf("headers = %q/%q, want injected", gotAuth, gotIdem)
+	}
+	if req.Header.Get("Authorization") != "" || req.Header.Get("Idempotency-Key") != "" {
+		t.Fatal("original request must not be mutated (Clone contract)")
 	}
 }

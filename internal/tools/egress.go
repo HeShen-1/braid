@@ -424,7 +424,7 @@ func EgressAllowFromMCPServers(servers map[string]string) (map[string]map[int]st
 			return nil, fmt.Errorf("tools: egress allowlist: mcp server %q: parse: %w", alias, err)
 		}
 		if u.Scheme != "https" || u.Hostname() == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-			return nil, fmt.Errorf("tools: egress allowlist: mcp server %q: want https base url with host and no userinfo/query/fragment (path prefix allowed), got %q", alias, raw)
+			return nil, fmt.Errorf("tools: egress allowlist: mcp server %q: want https base url with host and no userinfo/query/fragment (path prefix allowed), got %q", alias, mcpRedactURL(u, raw))
 		}
 		port := 443
 		if p := u.Port(); p != "" {

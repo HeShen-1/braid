@@ -189,3 +189,19 @@ func TestMCPAdversarialMalformedResult(t *testing.T) {
 		t.Fatalf("code = %q, want %q", got, CodeToolFailed)
 	}
 }
+
+// 面 6c:连接成功后 CallTool 阶段传输失败(server 中途断连/调用被拒)
+// → tool_failed 业务失败(对抗审计 LOW:该生产最常见失败路径此前零
+// 覆盖,fakeMCPCaller.err 为死参;若此分支错误自行包 CallError 或改
+// 哨兵语义,本用例红)。
+func TestMCPAdversarialCallToolTransportError(t *testing.T) {
+	tool, _ := mcpToolWithDial("mcp_reset", nil, fmt.Errorf("connection reset by peer"))
+	r := NewLocalRunner(registryOf(t, tool), NewTokenIssuer(nil, 0, nil), AllowAllAuthorizer{})
+	_, err := r.Run(context.Background(), RunRequest{Tool: "mcp_reset", NodeExecID: 1, AttemptNo: 1})
+	if got := callCodeOf(t, err); got != CodeToolFailed {
+		t.Fatalf("code = %q, want %q", got, CodeToolFailed)
+	}
+	if !strings.Contains(err.Error(), "call remote tool") {
+		t.Fatalf("err = %v, want call-stage wrapping", err)
+	}
+}

@@ -5,6 +5,8 @@ package tools
 //(EgressAllowFromMCPServers:与 http 端点同语义、路径前缀差异锚)。
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -144,5 +146,34 @@ func TestEgressAllowFromMCPServers(t *testing.T) {
 		if _, err := EgressAllowFromMCPServers(map[string]string{"x": bad}); err == nil {
 			t.Fatalf("bad url %q must reject", bad)
 		}
+	}
+}
+
+// TestSandboxEgressStartupMCPAllow 锁定 docker 模式生产接线:SandboxEgress
+// Startup 从 MCP 声明单源派生 host:port 进代理 Allow 集并集(对抗审计
+// MEDIUM:派生函数/代理 403/ProxyURL 消费各自有测,但这条装配缝——
+// EgressAllowFromMCPServers + mergeEgressAllow 在 startup 的调用——此前
+// 零覆盖,删除整个合并块全套件仍绿)。docker shim + 真代理 + 探针,
+// 与 TestSandboxEgressStartup 同形:声明 host(环回 IP)在白名 → 禁段
+// 403 ssrf(派生 + 默认禁段双证);非声明 host → 403 host_blocked。
+func TestSandboxEgressStartupMCPAllow(t *testing.T) {
+	bin, _ := fakeNamedDockerShim(t, "docker", egressStartupShimBody("true"))
+	t.Setenv("PATH", filepath.Dir(bin))
+	u, err := SandboxEgressStartup(context.Background(), envOf(map[string]string{
+		"BRAID_TOOL_SANDBOX":             "docker",
+		"BRAID_TOOL_SANDBOX_EGRESS_PORT": "0",
+		"BRAID_MCP_SERVERS":              `{"m":"https://127.0.0.1:1"}`,
+		"BRAID_MCP_TOOLS":                `{"mcp_x":{"server":"m","tool":"t"}}`,
+	}))
+	if err != nil {
+		t.Fatalf("startup: %v", err)
+	}
+	code, reason := egressProbe(t, u.Host, "127.0.0.1:1")
+	if code != 403 || reason != egressReasonSSRFBlocked {
+		t.Fatalf("probe declared host = %d %q, want 403 %s (host in allow, loopback IP forbidden)", code, reason, egressReasonSSRFBlocked)
+	}
+	code, reason = egressProbe(t, u.Host, "evil.example:443")
+	if code != 403 || reason != egressReasonHostBlocked {
+		t.Fatalf("probe undeclared host = %d %q, want 403 %s", code, reason, egressReasonHostBlocked)
 	}
 }

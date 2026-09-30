@@ -294,8 +294,10 @@ api/worker 启动即验,失败 = 拒启(错误带分量定位,不含密钥材料
   进程内策略保证。
 - **代理**:worker 进程内 CONNECT-only 代理,绑内网网关
   `BRAID_TOOL_SANDBOX_EGRESS_PORT`(缺省 9210;0 = 内核指派)。策略:
-  host(:port) 白名单单源派生自 `BRAID_HTTP_ENDPOINTS`(或验签工具包,
-  §8),端口级管控在此收口;DNS 全在代理侧解析,任一解析 IP 落 SSRF
+  host(:port) 白名单三源单派:`BRAID_HTTP_ENDPOINTS`(或验签工具包,
+  §8)∪ MCP server 声明(T13.2,`EgressAllowFromMCPServers`——常规
+  Allow 非 AllowInternal,私网禁段不豁免)∪ db_query DSN 钉死条目
+  (§10);端口级管控在此收口;DNS 全在代理侧解析,任一解析 IP 落 SSRF
   禁段整体拒(fail-closed),拨已解析 IP(DNS rebinding 无二次解析窗)。
   明文 http 不转发(CONNECT-only),端到端 TLS 在容器与目标之间,代理
   零明文可见。
