@@ -189,7 +189,7 @@ func TestLoginTokenRoleComposite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("login: %v", err)
 	}
-	tok, err := SignToken(testSecret, time.Hour, u.Username, u.Roles)
+	tok, err := SignToken(testSecret, time.Hour, u.Username, u.Roles, 0)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}

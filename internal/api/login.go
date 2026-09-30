@@ -192,7 +192,8 @@ func (s *Server) login(c *gin.Context) {
 	ttl := auth.DefaultTokenTTL
 	// token 绑定(T11.3):按当前模式携 bnd claim(off = 空串不带;
 	// 与 Authenticate 校验共用 bindingFingerprint 单点,oidc 回调同契约)。
-	token, err := auth.SignTokenWithBinding(s.cfg.JWTSecret, ttl, user.Username, user.Roles,
+	// 租户快照(D-t112):user.TenantID → tnt claim;两签发点同契约。
+	token, err := auth.SignTokenWithBinding(s.cfg.JWTSecret, ttl, user.Username, user.Roles, user.TenantID,
 		bindingFingerprint(s.cfg.TokenBinding, c.Request.UserAgent(), ip))
 	if err != nil {
 		// 词表外角色/签名密钥问题:启动期 Validate 已拦密钥面,到达此处即

@@ -61,7 +61,7 @@ func newTestServerWithTrigger(t *testing.T, trig ExecutionTrigger, allowlist ...
 	r := NewServer(cfg, dbh, ids, reg, trig, auth.BuiltinProvider{DB: dbh}).Router()
 	sign := func(roles ...auth.Role) string {
 		t.Helper()
-		s, err := auth.SignToken(testSecret, time.Hour, "alice", roles)
+		s, err := auth.SignToken(testSecret, time.Hour, "alice", roles, 0)
 		if err != nil {
 			t.Fatalf("sign token: %v", err)
 		}
@@ -379,7 +379,7 @@ func newNoDBServer(t *testing.T) (*gin.Engine, string) {
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 100000, LoginLockout: time.Minute}
 	gin.SetMode(gin.TestMode)
-	token, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAuthor})
+	token, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAuthor}, 0)
 	if err != nil {
 		t.Fatalf("sign token: %v", err)
 	}

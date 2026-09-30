@@ -105,11 +105,11 @@ func TestAuthenticateBinding(t *testing.T) {
 	const ua = "braid-bind-test/1.0"
 	const otherUA = "curl/8.0"
 	boundUA, err := auth.SignTokenWithBinding(testSecret, time.Hour, "alice",
-		[]auth.Role{auth.RoleAuthor}, bindingFingerprint(TokenBindingUA, ua, "192.0.2.1"))
+		[]auth.Role{auth.RoleAuthor}, 0, bindingFingerprint(TokenBindingUA, ua, "192.0.2.1"))
 	if err != nil {
 		t.Fatalf("sign bound token: %v", err)
 	}
-	unbound, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAuthor})
+	unbound, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAuthor}, 0)
 	if err != nil {
 		t.Fatalf("sign unbound token: %v", err)
 	}
@@ -151,7 +151,7 @@ func TestAuthenticateBinding(t *testing.T) {
 
 	t.Run("ua_ip24_prefix_tolerance", func(t *testing.T) {
 		bound, err := auth.SignTokenWithBinding(testSecret, time.Hour, "alice",
-			[]auth.Role{auth.RoleAuthor}, bindingFingerprint(TokenBindingUAIP24, ua, "10.1.2.3"))
+			[]auth.Role{auth.RoleAuthor}, 0, bindingFingerprint(TokenBindingUAIP24, ua, "10.1.2.3"))
 		if err != nil {
 			t.Fatalf("sign ip24 token: %v", err)
 		}
@@ -183,7 +183,7 @@ func TestAuthenticateBinding(t *testing.T) {
 		// router(及反向)必须 401——两模式指纹输入域不同,跨模式残留
 		// token 不存在过渡放行(对抗审计 LOW)。
 		ipTok, err := auth.SignTokenWithBinding(testSecret, time.Hour, "alice",
-			[]auth.Role{auth.RoleAuthor}, bindingFingerprint(TokenBindingUAIP24, ua, "10.1.2.3"))
+			[]auth.Role{auth.RoleAuthor}, 0, bindingFingerprint(TokenBindingUAIP24, ua, "10.1.2.3"))
 		if err != nil {
 			t.Fatalf("sign ip24 token: %v", err)
 		}
@@ -210,7 +210,7 @@ func TestAuthenticateBinding(t *testing.T) {
 			c.String(http.StatusOK, "sub=%s", c.ClientIP())
 		})
 		bound, err := auth.SignTokenWithBinding(testSecret, time.Hour, "alice",
-			[]auth.Role{auth.RoleAuthor}, bindingFingerprint(TokenBindingUAIP24, ua, "10.1.2.3"))
+			[]auth.Role{auth.RoleAuthor}, 0, bindingFingerprint(TokenBindingUAIP24, ua, "10.1.2.3"))
 		if err != nil {
 			t.Fatalf("sign ip24 token: %v", err)
 		}
@@ -228,11 +228,11 @@ func TestAuthenticateBinding(t *testing.T) {
 }
 
 func TestAuthenticateMiddleware(t *testing.T) {
-	valid, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAuthor})
+	valid, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAuthor}, 0)
 	if err != nil {
 		t.Fatalf("sign token: %v", err)
 	}
-	wrongKey, err := auth.SignToken("another-jwt-secret-placeholder-made-of-plain-words", time.Hour, "alice", []auth.Role{auth.RoleAuthor})
+	wrongKey, err := auth.SignToken("another-jwt-secret-placeholder-made-of-plain-words", time.Hour, "alice", []auth.Role{auth.RoleAuthor}, 0)
 	if err != nil {
 		t.Fatalf("sign token: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestAuthenticateMiddleware(t *testing.T) {
 func TestRequireAnyRole(t *testing.T) {
 	sign := func(t *testing.T, roles ...auth.Role) string {
 		t.Helper()
-		s, err := auth.SignToken(testSecret, time.Hour, "alice", roles)
+		s, err := auth.SignToken(testSecret, time.Hour, "alice", roles, 0)
 		if err != nil {
 			t.Fatalf("sign token: %v", err)
 		}

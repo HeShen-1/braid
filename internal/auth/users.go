@@ -52,11 +52,13 @@ const (
 
 // User 是登录路径读齐的用户视图:身份 + 授权快照 + 状态。不含密码哈希
 // (哈希只进 Authenticate 内部比对,不出包)。Email 是资料邮箱(T12.2
-// 扇出投递解析面;nil = 未配置)。
+// 扇出投递解析面;nil = 未配置)。TenantID 是归属租户(D-t112 #2:
+// 用户单成员;0 = 平台租户存量哨兵——直通 token tnt claim 的签发值)。
 type User struct {
 	ID       uint64
 	Username string
 	Email    *string
+	TenantID uint64
 	Roles    []Role // 升序排序(确定性 claims);空仅见于无授权行的旁路数据
 	Status   Status
 }
@@ -75,6 +77,7 @@ type CreateUserParams struct {
 	Username     string
 	PasswordHash string
 	Email        *string // 可选资料邮箱(T12.2;nil = 未配置)
+	TenantID     uint64  // 归属租户(D-t112;0 = 平台租户;存在性由 fk_users_tenant 兜底——1452 响亮失败)
 	Roles        []Role
 }
 
@@ -103,8 +106,8 @@ func CreateUser(ctx context.Context, q DBTX, ids IDGen, p CreateUserParams) erro
 		return fmt.Errorf("auth: user id: %w", err)
 	}
 	if _, err := q.ExecContext(ctx,
-		`INSERT INTO users (id, username, password_hash, email) VALUES (?, ?, ?, ?)`,
-		uid, p.Username, p.PasswordHash, p.Email,
+		`INSERT INTO users (id, tenant_id, username, password_hash, email) VALUES (?, ?, ?, ?, ?)`,
+		uid, p.TenantID, p.Username, p.PasswordHash, p.Email,
 	); err != nil {
 		return mapDup(fmt.Errorf("auth: insert user %q: %w", p.Username, err))
 	}
@@ -134,13 +137,16 @@ func mapDup(err error) error {
 }
 
 // EmailsByUsernames 批量解析用户名 → 资料邮箱(T12.2 扇出投递的解析
-// 原语,消费方 = notify sender:快照 approvers 名单 → 逐人收件)。只回
-// 已配置邮箱的映射:无账号 / email NULL 的名字缺席(扇出侧以缺席 = 无
-// 邮箱处理,名字保留正文 + ops 副本兜底)。空名单返回空映射(不触 DB);
-// 用户名经 usernameRe 预检——名单来自 DSL 快照(发布期已过同则词域闸),
-// 坏形态在此响亮报错而非静默漏配。utf8mb4_bin 精确等值(列继承表默认
-// ai_ci,大小写折叠会把互异主体并进同一行——D-t63 actor 谓词同判)。
-func EmailsByUsernames(ctx context.Context, q DBTX, usernames []string) (map[string]string, error) {
+// 原语,消费方 = notify sender:快照 approvers 名单 → 逐人收件)。tenant
+// 是归属判据(D-t112):username 全局唯一下跨租户 DSL 命名他租户主体
+// 结构性可达(发布期 approver 租户校验未立),谓词使名单中他租户名字
+// 在此缺席——收件面与执行归属同租户,跨租户邮件推送闭合(名字仍保留
+// 正文,ops 副本兜底)。只回已配置邮箱的映射:无账号 / email NULL /
+// 他租户的名字缺席。空名单返回空映射(不触 DB);用户名经 usernameRe
+// 预检——名单来自 DSL 快照(发布期已过同则词域闸),坏形态在此响亮
+// 报错而非静默漏配。utf8mb4_bin 精确等值(列继承表默认 ai_ci,大小写
+// 折叠会把互异主体并进同一行——D-t63 actor 谓词同判)。
+func EmailsByUsernames(ctx context.Context, q DBTX, tenant uint64, usernames []string) (map[string]string, error) {
 	if len(usernames) == 0 {
 		return map[string]string{}, nil
 	}
@@ -154,9 +160,10 @@ func EmailsByUsernames(ctx context.Context, q DBTX, usernames []string) (map[str
 	for i, name := range usernames {
 		args[i] = name
 	}
+	args = append([]any{tenant}, args...)
 	rows, err := q.QueryContext(ctx,
 		`SELECT username, email FROM users
-		  WHERE email IS NOT NULL AND username COLLATE utf8mb4_bin IN (`+placeholders+`)`,
+		  WHERE email IS NOT NULL AND tenant_id = ? AND username COLLATE utf8mb4_bin IN (`+placeholders+`)`,
 		args...)
 	if err != nil {
 		return nil, fmt.Errorf("auth: resolve emails: %w", err)
@@ -184,9 +191,9 @@ func EmailsByUsernames(ctx context.Context, q DBTX, usernames []string) (map[str
 func findByUsername(ctx context.Context, q DBTX, username string) (userRecord, error) {
 	var rec userRecord
 	err := q.QueryRowContext(ctx,
-		`SELECT id, username, password_hash, status, email FROM users WHERE username = ?`,
+		`SELECT id, tenant_id, username, password_hash, status, email FROM users WHERE username = ?`,
 		username,
-	).Scan(&rec.ID, &rec.Username, &rec.passwordHash, &rec.Status, &rec.Email)
+	).Scan(&rec.ID, &rec.TenantID, &rec.Username, &rec.passwordHash, &rec.Status, &rec.Email)
 	if errors.Is(err, sql.ErrNoRows) {
 		return rec, fmt.Errorf("%w: %q", errUserNotFound, username)
 	}

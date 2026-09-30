@@ -77,7 +77,7 @@ func createDraft(t *testing.T, st *Store, dbh *sql.DB, doc []byte, actor string)
 	var d Definition
 	err := WithTx(context.Background(), dbh, func(tx DBTX) error {
 		var err error
-		d, err = st.CreateDraft(context.Background(), tx, doc, actor)
+		d, err = st.CreateDraft(context.Background(), tx, 0, doc, actor)
 		return err
 	})
 	return d, err
@@ -88,7 +88,7 @@ func updateDraft(t *testing.T, st *Store, dbh *sql.DB, id uint64, doc []byte, ac
 	var d Definition
 	err := WithTx(context.Background(), dbh, func(tx DBTX) error {
 		var err error
-		d, err = st.UpdateDraft(context.Background(), tx, id, doc, actor)
+		d, err = st.UpdateDraft(context.Background(), tx, 0, id, doc, actor)
 		return err
 	})
 	return d, err
@@ -129,7 +129,7 @@ func TestStoreCreateDraftRoundtrip(t *testing.T) {
 		t.Fatalf("dsl_hash = %s, want sha256(stored bytes) %s", got.DSLHash, hashOf(got.DSL))
 	}
 	assertSameJSON(t, got.DSL, doc)
-	back, err := st.GetByID(ctx, dbh, got.ID)
+	back, err := st.GetByID(ctx, dbh, 0, got.ID)
 	if err != nil {
 		t.Fatalf("GetByID: %v", err)
 	}
@@ -189,7 +189,7 @@ func TestStoreUpdateDraft(t *testing.T) {
 	if _, err := updateDraft(t, st, dbh, 999999, d2, "bob"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown id err = %v, want ErrNotFound", err)
 	}
-	published, err := st.Publish(ctx, dbh, d1.ID, "bob")
+	published, err := st.Publish(ctx, dbh, 0, d1.ID, "bob")
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestStorePublishVersioning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft#1: %v", err)
 	}
-	p1, err := st.Publish(ctx, dbh, d1.ID, "alice")
+	p1, err := st.Publish(ctx, dbh, 0, d1.ID, "alice")
 	if err != nil {
 		t.Fatalf("Publish#1: %v", err)
 	}
@@ -240,37 +240,37 @@ func TestStorePublishVersioning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft#2: %v", err)
 	}
-	p2, err := st.Publish(ctx, dbh, d2.ID, "bob")
+	p2, err := st.Publish(ctx, dbh, 0, d2.ID, "bob")
 	if err != nil {
 		t.Fatalf("Publish#2: %v", err)
 	}
 	if p2.Version == nil || *p2.Version != 2 {
 		t.Fatalf("p2 version = %v, want 2", p2.Version)
 	}
-	latest, err := st.LatestPublished(ctx, dbh, name)
+	latest, err := st.LatestPublished(ctx, dbh, 0, name)
 	if err != nil {
 		t.Fatalf("LatestPublished: %v", err)
 	}
 	if latest.ID != p2.ID {
 		t.Fatalf("latest = %d, want %d", latest.ID, p2.ID)
 	}
-	if _, err := st.Publish(ctx, dbh, p1.ID, "alice"); !errors.Is(err, ErrConflict) {
+	if _, err := st.Publish(ctx, dbh, 0, p1.ID, "alice"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("republish err = %v, want ErrConflict", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 999999, "alice"); !errors.Is(err, ErrNotFound) {
+	if _, err := st.Publish(ctx, dbh, 0, 999999, "alice"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown id err = %v, want ErrNotFound", err)
 	}
-	versions, err := st.ListVersions(ctx, dbh, name)
+	versions, err := st.ListVersions(ctx, dbh, 0, name)
 	if err != nil {
 		t.Fatalf("ListVersions: %v", err)
 	}
 	if len(versions) != 2 || *versions[0].Version != 1 || *versions[1].Version != 2 {
 		t.Fatalf("versions = %+v, want [1 2]", versions)
 	}
-	if v, err := st.GetVersion(ctx, dbh, name, 1); err != nil || v.ID != p1.ID {
+	if v, err := st.GetVersion(ctx, dbh, 0, name, 1); err != nil || v.ID != p1.ID {
 		t.Fatalf("GetVersion(name,1) = %d, %v", v.ID, err)
 	}
-	if _, err := st.GetVersion(ctx, dbh, name, 9); !errors.Is(err, ErrNotFound) {
+	if _, err := st.GetVersion(ctx, dbh, 0, name, 9); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("GetVersion(name,9) err = %v, want ErrNotFound", err)
 	}
 }
@@ -282,24 +282,24 @@ func TestStorePublishToolAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, allowed.ID, "alice", "http"); err != nil {
+	if _, err := st.Publish(ctx, dbh, 0, allowed.ID, "alice", "http"); err != nil {
 		t.Fatalf("publish with allowlist [http]: %v", err)
 	}
 	blocked, err := createDraft(t, st, dbh, toolDSL(uniqName("tool-no")), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, blocked.ID, "alice", "file_read"); err == nil || !HasIssueCode(err, dsl.IssueToolNotAllowed) {
+	if _, err := st.Publish(ctx, dbh, 0, blocked.ID, "alice", "file_read"); err == nil || !HasIssueCode(err, dsl.IssueToolNotAllowed) {
 		t.Fatalf("publish with allowlist [file_read] err = %v, want tool_not_allowed", err)
 	}
-	if _, err := st.Publish(ctx, dbh, blocked.ID, "alice"); err == nil {
+	if _, err := st.Publish(ctx, dbh, 0, blocked.ID, "alice"); err == nil {
 		t.Fatal("publish with empty allowlist accepted tool")
 	}
 	plain, err := createDraft(t, st, dbh, dslDoc(uniqName("tool-na")), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, plain.ID, "alice", "http"); err != nil {
+	if _, err := st.Publish(ctx, dbh, 0, plain.ID, "alice", "http"); err != nil {
 		t.Fatalf("publish tool-free DSL with [http] allowlist: %v", err)
 	}
 }
@@ -330,7 +330,7 @@ func TestStorePublishConcurrent(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			errs[i] = WithTx(ctx, dbh, func(tx DBTX) error {
-				_, err := st.Publish(ctx, tx, ids[i], "alice")
+				_, err := st.Publish(ctx, tx, 0, ids[i], "alice")
 				return err
 			})
 		}(i)
@@ -349,7 +349,7 @@ func TestStorePublishConcurrent(t *testing.T) {
 	for i, err := range errs {
 		switch {
 		case err == nil:
-			d, gerr := st.GetByID(ctx, dbh, ids[i])
+			d, gerr := st.GetByID(ctx, dbh, 0, ids[i])
 			if gerr != nil || d.Status != "PUBLISHED" || d.Version == nil {
 				t.Fatalf("winner#%d = %+v (err %v), want PUBLISHED", i, d, gerr)
 			}
@@ -358,7 +358,7 @@ func TestStorePublishConcurrent(t *testing.T) {
 			}
 			versions[*d.Version] = true
 		case errors.Is(err, ErrConflict):
-			d, gerr := st.GetByID(ctx, dbh, ids[i])
+			d, gerr := st.GetByID(ctx, dbh, 0, ids[i])
 			if gerr != nil || d.Status != "DRAFT" {
 				t.Fatalf("loser#%d = %+v (err %v), want still DRAFT (retryable)", i, d, gerr)
 			}
@@ -386,14 +386,14 @@ func TestStoreArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft#2: %v", err)
 	}
-	p1, err := st.Publish(ctx, dbh, d1.ID, "alice")
+	p1, err := st.Publish(ctx, dbh, 0, d1.ID, "alice")
 	if err != nil {
 		t.Fatalf("Publish#1: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, d2.ID, "alice"); err != nil {
+	if _, err := st.Publish(ctx, dbh, 0, d2.ID, "alice"); err != nil {
 		t.Fatalf("Publish#2: %v", err)
 	}
-	arch, err := st.Archive(ctx, dbh, name, 2, "admin")
+	arch, err := st.Archive(ctx, dbh, 0, name, 2, "admin")
 	if err != nil {
 		t.Fatalf("Archive(name,2): %v", err)
 	}
@@ -401,26 +401,26 @@ func TestStoreArchive(t *testing.T) {
 		t.Fatalf("archived = %+v", arch)
 	}
 	// 归档最新版后,默认触发解析回退到上一个 PUBLISHED(一次后向扫描)。
-	fallback, err := st.LatestPublished(ctx, dbh, name)
+	fallback, err := st.LatestPublished(ctx, dbh, 0, name)
 	if err != nil {
 		t.Fatalf("LatestPublished after archive: %v", err)
 	}
 	if fallback.ID != p1.ID {
 		t.Fatalf("fallback = %d, want %d", fallback.ID, p1.ID)
 	}
-	if _, err := st.Archive(ctx, dbh, name, 1, "admin"); err != nil {
+	if _, err := st.Archive(ctx, dbh, 0, name, 1, "admin"); err != nil {
 		t.Fatalf("Archive(name,1): %v", err)
 	}
-	if _, err := st.LatestPublished(ctx, dbh, name); !errors.Is(err, ErrNotFound) {
+	if _, err := st.LatestPublished(ctx, dbh, 0, name); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("all-archived LatestPublished err = %v, want ErrNotFound", err)
 	}
-	if _, err := st.Archive(ctx, dbh, name, 1, "admin"); !errors.Is(err, ErrConflict) {
+	if _, err := st.Archive(ctx, dbh, 0, name, 1, "admin"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("re-archive err = %v, want ErrConflict", err)
 	}
-	if _, err := st.Archive(ctx, dbh, name, 3, "admin"); !errors.Is(err, ErrNotFound) {
+	if _, err := st.Archive(ctx, dbh, 0, name, 3, "admin"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("archive unpublished version err = %v, want ErrNotFound", err)
 	}
-	if _, err := st.Archive(ctx, dbh, "ghost-"+name, 1, "admin"); !errors.Is(err, ErrNotFound) {
+	if _, err := st.Archive(ctx, dbh, 0, "ghost-"+name, 1, "admin"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown name err = %v, want ErrNotFound", err)
 	}
 }
@@ -441,10 +441,10 @@ func TestStoreList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft pub: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, publishable.ID, "alice"); err != nil {
+	if _, err := st.Publish(ctx, dbh, 0, publishable.ID, "alice"); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
-	items, total, err := st.List(ctx, dbh, "DRAFT", 2, 0)
+	items, total, err := st.List(ctx, dbh, 0, "DRAFT", 2, 0)
 	if err != nil {
 		t.Fatalf("List DRAFT: %v", err)
 	}
@@ -454,14 +454,14 @@ func TestStoreList(t *testing.T) {
 	if items[0].ID != lastID {
 		t.Fatalf("newest first violated: head = %d, want %d", items[0].ID, lastID)
 	}
-	page2, total, err := st.List(ctx, dbh, "DRAFT", 2, 2)
+	page2, total, err := st.List(ctx, dbh, 0, "DRAFT", 2, 2)
 	if err != nil {
 		t.Fatalf("List DRAFT page2: %v", err)
 	}
 	if total != 3 || len(page2) != 1 {
 		t.Fatalf("page2 = %d items, total %d; want 1, 3", len(page2), total)
 	}
-	all, total, err := st.List(ctx, dbh, "", 100, 0)
+	all, total, err := st.List(ctx, dbh, 0, "", 100, 0)
 	if err != nil {
 		t.Fatalf("List all: %v", err)
 	}
@@ -472,5 +472,114 @@ func TestStoreList(t *testing.T) {
 		if it.Status == "DRAFT" && it.Version != nil {
 			t.Fatalf("draft with version: %+v", it)
 		}
+	}
+}
+
+// TestDefinitionTenantIsolation(D-t112):定义命名空间租户化的 store 级
+// 锚——同名跨租户并存(uk 三列化)、各自版本号独立(MAX 作用域)、
+// 读/写/发布/归档的跨租户面全 404(与「不存在」同面,不泄露存在性)。
+// c4 的 HTTP 层对抗矩阵在 store 谓词之上,本测试是谓词本身的落盘证据。
+func TestDefinitionTenantIsolation(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	// 测试租户 7(镜像 0011 种子形态,幂等重放)。
+	if _, err := dbh.Exec(
+		`INSERT INTO tenants (id, slug, name) VALUES (7, 't-seven', 'T Seven') ON DUPLICATE KEY UPDATE id = id`); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	name := uniqName("tenant-iso")
+	d0, err := st.CreateDraft(ctx, dbh, 0, dslDoc(name), "alice")
+	if err != nil {
+		t.Fatalf("platform draft: %v", err)
+	}
+	d7, err := st.CreateDraft(ctx, dbh, 7, dslDoc(name), "bob")
+	if err != nil {
+		t.Fatalf("tenant draft: %v", err)
+	}
+	p0, err := st.Publish(ctx, dbh, 0, d0.ID, "alice")
+	if err != nil {
+		t.Fatalf("platform publish: %v", err)
+	}
+	p7, err := st.Publish(ctx, dbh, 7, d7.ID, "bob")
+	if err != nil {
+		t.Fatalf("tenant publish: %v", err)
+	}
+	// 版本号作用域 = 租户内:两个 v1 并存。
+	if p0.Version == nil || *p0.Version != 1 || p7.Version == nil || *p7.Version != 1 {
+		t.Fatalf("per-tenant versioning: p0=%v p7=%v, want 各自 v1", p0.Version, p7.Version)
+	}
+
+	// 租户视图:LatestPublished / GetVersion / ListVersions 各归各。
+	l0, err := st.LatestPublished(ctx, dbh, 0, name)
+	if err != nil || l0.ID != p0.ID {
+		t.Fatalf("latest(0) = %v/%v, want p0", l0.ID, err)
+	}
+	l7, err := st.LatestPublished(ctx, dbh, 7, name)
+	if err != nil || l7.ID != p7.ID {
+		t.Fatalf("latest(7) = %v/%v, want p7", l7.ID, err)
+	}
+	if v, err := st.GetVersion(ctx, dbh, 0, name, 1); err != nil || v.ID != p0.ID {
+		t.Fatalf("getversion(0) = %v/%v, want p0", v.ID, err)
+	}
+	vs7, err := st.ListVersions(ctx, dbh, 7, name)
+	if err != nil || len(vs7) != 1 || vs7[0].ID != p7.ID {
+		t.Fatalf("listversions(7) = %d 行/%v, want p7 only", len(vs7), err)
+	}
+
+	// 跨租户点查 = 404。
+	if _, err := st.GetByID(ctx, dbh, 7, d0.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross GetByID = %v, want ErrNotFound", err)
+	}
+	// 跨租户写 = 404(草稿面:租户 7 的作者改不了平台草稿)。
+	d0b, err := st.CreateDraft(ctx, dbh, 0, dslDoc(name), "alice")
+	if err != nil {
+		t.Fatalf("platform draft b: %v", err)
+	}
+	if _, err := st.UpdateDraft(ctx, dbh, 7, d0b.ID, dslDoc(name), "bob"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross UpdateDraft = %v, want ErrNotFound", err)
+	}
+	if _, err := st.Publish(ctx, dbh, 7, d0b.ID, "bob"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross Publish = %v, want ErrNotFound", err)
+	}
+	// 跨租户 Archive:name 只在平台存在时,租户 7 按名归档 = 404
+	//(name 双方共存时 (7,name,1) 命中租户 7 自己的 p7,是合法同租户操作)。
+	soloName := uniqName("tenant-iso-solo")
+	ds0, err := st.CreateDraft(ctx, dbh, 0, dslDoc(soloName), "alice")
+	if err != nil {
+		t.Fatalf("platform solo draft: %v", err)
+	}
+	if _, err := st.Publish(ctx, dbh, 0, ds0.ID, "alice"); err != nil {
+		t.Fatalf("platform solo publish: %v", err)
+	}
+	if _, err := st.Archive(ctx, dbh, 7, soloName, 1, "bob"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("cross Archive = %v, want ErrNotFound", err)
+	}
+
+	// 列表互不可见(共享 schema 下 total 断言需清场:newTestStore 已清;
+	// d7 已发布,补一份租户 7 在册草稿使 total7 非零)。
+	d7b, err := st.CreateDraft(ctx, dbh, 7, dslDoc(name), "bob")
+	if err != nil {
+		t.Fatalf("tenant draft b: %v", err)
+	}
+	items0, total0, err := st.List(ctx, dbh, 0, "DRAFT", 100, 0)
+	if err != nil {
+		t.Fatalf("list(0): %v", err)
+	}
+	for _, d := range items0 {
+		if d.ID == d7b.ID {
+			t.Fatalf("list(0) 泄露租户 7 草稿 %d", d7b.ID)
+		}
+	}
+	items7, total7, err := st.List(ctx, dbh, 7, "DRAFT", 100, 0)
+	if err != nil {
+		t.Fatalf("list(7): %v", err)
+	}
+	for _, d := range items7 {
+		if d.ID == d0b.ID {
+			t.Fatalf("list(7) 泄露平台草稿 %d", d0b.ID)
+		}
+	}
+	if total0 == 0 || total7 == 0 {
+		t.Fatalf("totals = %d/%d, want 双方各有草稿行", total0, total7)
 	}
 }

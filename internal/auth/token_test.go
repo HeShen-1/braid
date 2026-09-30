@@ -36,7 +36,7 @@ func validClaims(username string, roles []Role) Claims {
 }
 
 func TestSignParseRoundTrip(t *testing.T) {
-	tok, err := SignToken(testSecret, time.Hour, "alice", []Role{RoleAuthor, RoleApprover})
+	tok, err := SignToken(testSecret, time.Hour, "alice", []Role{RoleAuthor, RoleApprover}, 0)
 	if err != nil {
 		t.Fatalf("SignToken: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestParseExpired(t *testing.T) {
 // 而 base64url 末字符低位是无解码语义的 padding 位,恰翻转无效位时
 // 签名字节不变、校验照过(≈4/64 概率 flaky)——T3.2 全量跑实测纠正。
 func TestParseTamperedSignature(t *testing.T) {
-	tok, _ := SignToken(testSecret, time.Hour, "alice", []Role{RoleAdmin})
+	tok, _ := SignToken(testSecret, time.Hour, "alice", []Role{RoleAdmin}, 0)
 	dot := strings.LastIndex(tok, ".")
 	b := []byte(tok)
 	b[dot+1] = flip(b[dot+1])
@@ -103,7 +103,7 @@ func flip(b byte) byte {
 }
 
 func TestParseWrongSecret(t *testing.T) {
-	tok, _ := SignToken(testSecret, time.Hour, "alice", []Role{RoleAdmin})
+	tok, _ := SignToken(testSecret, time.Hour, "alice", []Role{RoleAdmin}, 0)
 	if _, err := ParseToken(altSecret, tok); !errors.Is(err, ErrTokenInvalid) {
 		t.Fatalf("err = %v, want ErrTokenInvalid", err)
 	}
@@ -191,33 +191,33 @@ func TestParseEmptySubject(t *testing.T) {
 }
 
 func TestSignTokenRejectsBadInput(t *testing.T) {
-	if _, err := SignToken(testSecret, 0, "alice", []Role{RoleAdmin}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := SignToken(testSecret, 0, "alice", []Role{RoleAdmin}, 0); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("ttl=0: %v", err)
 	}
-	if _, err := SignToken(testSecret, -time.Minute, "alice", []Role{RoleAdmin}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := SignToken(testSecret, -time.Minute, "alice", []Role{RoleAdmin}, 0); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("负 ttl: %v", err)
 	}
 	// 吊销上界在签发原语处自洽(不止 Config.Validate):超 7d 拒绝,
 	// 恰在边界放行。
-	if _, err := SignToken(testSecret, MaxTokenTTL+time.Second, "alice", []Role{RoleAdmin}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := SignToken(testSecret, MaxTokenTTL+time.Second, "alice", []Role{RoleAdmin}, 0); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("超上界 ttl: %v", err)
 	}
-	if _, err := SignToken(testSecret, MaxTokenTTL, "alice", []Role{RoleAdmin}); err != nil {
+	if _, err := SignToken(testSecret, MaxTokenTTL, "alice", []Role{RoleAdmin}, 0); err != nil {
 		t.Fatalf("上界边界应合法: %v", err)
 	}
-	if _, err := SignToken("short", time.Hour, "alice", []Role{RoleAdmin}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := SignToken("short", time.Hour, "alice", []Role{RoleAdmin}, 0); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("短 secret: %v", err)
 	}
-	if _, err := SignToken(testSecret, time.Hour, "Bad Name", []Role{RoleAdmin}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := SignToken(testSecret, time.Hour, "Bad Name", []Role{RoleAdmin}, 0); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("非法 username: %v", err)
 	}
-	if _, err := SignToken(testSecret, time.Hour, "alice", []Role{Role("root")}); !errors.Is(err, ErrInvalidInput) {
+	if _, err := SignToken(testSecret, time.Hour, "alice", []Role{Role("root")}, 0); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("词表外角色: %v", err)
 	}
 }
 
 func TestParseShortSecretRejected(t *testing.T) {
-	tok, _ := SignToken(testSecret, time.Hour, "alice", []Role{RoleAdmin})
+	tok, _ := SignToken(testSecret, time.Hour, "alice", []Role{RoleAdmin}, 0)
 	if _, err := ParseToken("too-short-secret", tok); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("短 secret: %v, want ErrInvalidInput(配置误用,非 token 问题)", err)
 	}
@@ -248,7 +248,7 @@ const testBinding = "ABCDEFGHIJKLMNOPQRSTUV"
 
 func mustSign(t *testing.T, secret string, ttl time.Duration, username string, roles []Role) string {
 	t.Helper()
-	tok, err := SignToken(secret, ttl, username, roles)
+	tok, err := SignToken(secret, ttl, username, roles, 0)
 	if err != nil {
 		t.Fatalf("SignToken: %v", err)
 	}
@@ -256,7 +256,7 @@ func mustSign(t *testing.T, secret string, ttl time.Duration, username string, r
 }
 
 func TestSignTokenWithBindingRoundTrip(t *testing.T) {
-	tok, err := SignTokenWithBinding(testSecret, time.Hour, "alice", []Role{RoleAdmin}, testBinding)
+	tok, err := SignTokenWithBinding(testSecret, time.Hour, "alice", []Role{RoleAdmin}, 0, testBinding)
 	if err != nil {
 		t.Fatalf("SignTokenWithBinding: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestSignTokenWithBindingRoundTrip(t *testing.T) {
 // 空 binding = 不携带 claim(等价 SignToken):off 模式签发面走同一出口,
 // 不产出空串 claim 的歧义形态。
 func TestSignTokenWithBindingEmptyOmitsClaim(t *testing.T) {
-	tok, err := SignTokenWithBinding(testSecret, time.Hour, "alice", []Role{RoleAdmin}, "")
+	tok, err := SignTokenWithBinding(testSecret, time.Hour, "alice", []Role{RoleAdmin}, 0, "")
 	if err != nil {
 		t.Fatalf("SignTokenWithBinding: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestSignTokenWithBindingRejectsBadFormat(t *testing.T) {
 		"ABCDEFGHIJKLMNOPQRSTUV+wxy==", // 非 base64url 词域(含 +/=;长度 28,长度分量主导)
 	}
 	for _, b := range bad {
-		if _, err := SignTokenWithBinding(testSecret, time.Hour, "alice", []Role{RoleAdmin}, b); !errors.Is(err, ErrInvalidInput) {
+		if _, err := SignTokenWithBinding(testSecret, time.Hour, "alice", []Role{RoleAdmin}, 0, b); !errors.Is(err, ErrInvalidInput) {
 			t.Fatalf("binding %q: err = %v, want ErrInvalidInput", b, err)
 		}
 	}
@@ -351,5 +351,47 @@ func TestParseBindingFormatFailClosed(t *testing.T) {
 	}
 	if _, err := ParseToken(testSecret, tok); !errors.Is(err, ErrTokenInvalid) {
 		t.Fatalf("垃圾 bnd claim 被接受: %v", err)
+	}
+}
+
+// TestTokenTenantClaimRoundtrip(D-t112):租户快照进 tnt claim 的签发/
+// 解析往返。7 → "tnt":7 在场;0(平台租户)→ omitempty 缺席 → 解析回 0
+// ——存量 token(0011 前)与平台租户同判的契约锚,变异杀点 = 签发漏填
+// Tenant 或 ParseToken 丢弃未知 claim。
+func TestTokenTenantClaimRoundtrip(t *testing.T) {
+	tok, err := SignToken(testSecret, time.Hour, "alice", []Role{RoleAuthor}, 7)
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	c, err := ParseToken(testSecret, tok)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if c.Tenant != 7 {
+		t.Fatalf("claims.Tenant = %d, want 7", c.Tenant)
+	}
+	// claim 在场性直解(payload 段裸 JSON):tnt 缺席 = 0 语义依赖
+	// omitempty,签发面漏填 Tenant 会静默产出「平台租户」token——直解
+	// 钉住 wire 形态。
+	var payload map[string]any
+	if raw, ok := strings.CutPrefix(tok, strings.SplitN(tok, ".", 2)[0]+"."); ok {
+		if b, err := base64.RawURLEncoding.DecodeString(strings.SplitN(raw, ".", 2)[0]); err == nil {
+			_ = json.Unmarshal(b, &payload)
+		}
+	}
+	if payload["tnt"] != float64(7) {
+		t.Fatalf("wire tnt claim = %v, want 7(签发漏填 Tenant 的静默降级面)", payload["tnt"])
+	}
+
+	tok0, err := SignToken(testSecret, time.Hour, "alice", []Role{RoleAuthor}, 0)
+	if err != nil {
+		t.Fatalf("sign platform: %v", err)
+	}
+	c0, err := ParseToken(testSecret, tok0)
+	if err != nil {
+		t.Fatalf("parse platform: %v", err)
+	}
+	if c0.Tenant != 0 {
+		t.Fatalf("platform claims.Tenant = %d, want 0", c0.Tenant)
 	}
 }

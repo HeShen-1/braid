@@ -86,7 +86,11 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 		return
 	}
 	if !claimsHaveAnyRole(claims, auth.RoleAuthor, auth.RoleAdmin) {
-		s.writeRollbackDeniedAudit(c, execID, req.NodeID, claims.Subject, "role_denied", 0)
+		// 落行闸(D-t112 审计收口):同 decideApproval——拒绝审计只对
+		// 本租户可见执行落,跨租户/不存在不注入受害者证据链。
+		if s.execVisibleInTenant(c, execID) {
+			s.writeRollbackDeniedAudit(c, execID, req.NodeID, claims.Subject, "role_denied", 0)
+		}
 		if s.rollbackMetrics != nil {
 			s.rollbackMetrics.Denied.WithLabelValues("role_denied").Inc()
 		}
@@ -95,6 +99,15 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 	}
 	if s.rollbackMetrics != nil {
 		s.rollbackMetrics.Requested.Inc()
+	}
+
+	// 租户闸(D-t112):跨租户 execID 直取 = 404(与「不存在」同面)。
+	// 执行前置检查在 RollbackTo 的执行读取之外,但行的 tenant_id 不可变
+	// (无 UPDATE 路径)⇒ 无 TOCTOU;深读面(节点/快照)全部经本闸后
+	// 才可达。decideApproval 的 GetExecution 前置同构。
+	if _, err := s.st.GetExecution(c.Request.Context(), s.dbh, tenantFrom(c), execID); err != nil {
+		mapStoreError(c, err)
+		return
 	}
 
 	res, err := s.trig.RollbackTo(c.Request.Context(), scheduler.RollbackParams{

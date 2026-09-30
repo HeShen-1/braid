@@ -24,10 +24,14 @@ var bindingRe = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
 
 // Claims 是 braid 的 JWT 载荷:sub(username 主体字符串,直通
 // created_by/actor_id 值域)+ roles(签发时刻的授权快照,T5.2 中间件
-// 只信 claims 不回库)+ bnd(可选 token 绑定指纹,D-2026-09-29-t113:
-// 空 = 未绑定,off 模式语义)+ 标准三件套 iat/exp/iss/aud。
+// 只信 claims 不回库)+ tnt(签发时刻的租户快照,D-2026-09-30-t112;
+// 缺席 = 0 = 平台租户——0011 迁移前的存量 token 与平台租户同判,
+// ≤24h TTL 界,roles 快照同界)+ bnd(可选 token 绑定指纹,
+// D-2026-09-29-t113:空 = 未绑定,off 模式语义)+ 标准三件套
+// iat/exp/iss/aud。
 type Claims struct {
 	Roles   []Role `json:"roles"`
+	Tenant  uint64 `json:"tnt,omitempty"`
 	Binding string `json:"bnd,omitempty"`
 	jwt.RegisteredClaims
 }
@@ -36,14 +40,17 @@ type Claims struct {
 // signClaims 出口,不给生产面留「负 TTL 合法」的脚枪)。输入先过
 // validUsername/validRoles(调用方 bug 前置拒绝,不产出坏 token)。
 // 等价于 SignTokenWithBinding(binding="")。
-func SignToken(secret string, ttl time.Duration, username string, roles []Role) (string, error) {
-	return SignTokenWithBinding(secret, ttl, username, roles, "")
+func SignToken(secret string, ttl time.Duration, username string, roles []Role, tenant uint64) (string, error) {
+	return SignTokenWithBinding(secret, ttl, username, roles, tenant, "")
 }
 
 // SignTokenWithBinding 签发携带绑定指纹的 token(T11.3):binding 非空
 // 时必须过 bindingRe(签发面 bug 前置拒绝,不产出消费面不可比对的
-// claim);空串 = 不携带 claim(off 模式两形态同一出口)。
-func SignTokenWithBinding(secret string, ttl time.Duration, username string, roles []Role, binding string) (string, error) {
+// claim);空串 = 不携带 claim(off 模式两形态同一出口)。tenant 是
+// 签发时刻的用户归属租户(D-t112:0 = 平台租户合法值;用户行迁租后
+// token 残余访问 ≤ TTL 24h,roles 快照同界——显式传参使新签发点无法
+// 遗忘租户维度,编译器强制)。
+func SignTokenWithBinding(secret string, ttl time.Duration, username string, roles []Role, tenant uint64, binding string) (string, error) {
 	if ttl <= 0 {
 		return "", fmt.Errorf("%w: ttl %s <= 0", ErrInvalidInput, ttl)
 	}
@@ -65,6 +72,7 @@ func SignTokenWithBinding(secret string, ttl time.Duration, username string, rol
 	now := time.Now().UTC()
 	c := Claims{
 		Roles:   roles,
+		Tenant:  tenant,
 		Binding: binding,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   username,
