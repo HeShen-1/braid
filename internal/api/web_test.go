@@ -142,4 +142,105 @@ func TestWebAssetsServed(t *testing.T) {
 			t.Fatalf("code = %d, want 404", w.Code)
 		}
 	})
+
+	// T14.1 画布(D-2026-09-30-t141):dist 入库 + 同静态路由零新端点。
+	// 锚三件事:①/ui/canvas/ 页面可达且安全头与审批台同套(CSP 不因
+	// 框架化放宽——React 内联样式走 CSSOM,不需求 unsafe-inline);
+	// ②index.html 引用的 bundle/CSS 真在 embed 里(vite 产物名带 hash,
+	// 从页面提取再回取,漂移门在 CI web job 的 git diff,此处锚可达性);
+	// ③无内联事件句柄/无 src 的 script(vite 产物全外部文件契约)。
+	t.Run("canvas_index_and_bundle", func(t *testing.T) {
+		w := webGet(t, r, "/ui/canvas/")
+		if w.Code != http.StatusOK {
+			t.Fatalf("code = %d", w.Code)
+		}
+		if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+			t.Fatalf("content-type = %q", ct)
+		}
+		csp := w.Header().Get("Content-Security-Policy")
+		if strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "unsafe-eval") {
+			t.Fatalf("canvas CSP 含 unsafe-*(预期零放宽,D-t141 #4): %q", csp)
+		}
+		if w.Header().Get("X-Frame-Options") != "DENY" {
+			t.Fatalf("X-Frame-Options 缺失(应 DENY)")
+		}
+		page := w.Body.String()
+		for _, banned := range []string{"onclick=", "onerror=", "onload=", "javascript:"} {
+			if strings.Contains(strings.ToLower(page), banned) {
+				t.Fatalf("canvas index.html 含内联事件句柄/伪协议 %q", banned)
+			}
+		}
+		if strings.Contains(page, "<script>") {
+			t.Fatalf("canvas index.html 含无 src 的 script 标签")
+		}
+		// bundle(src)与样式(href)双回取:页面引用什么,embed 就必须有什么。
+		src := extractAttr(t, page, "script", "src")
+		href := extractAttr(t, page, "link", "href")
+		for _, ref := range []struct{ path, wantCT string }{
+			{src, "javascript"},
+			{href, "text/css"},
+		} {
+			aw := webGet(t, r, ref.path)
+			if aw.Code != http.StatusOK {
+				t.Fatalf("%s = %d", ref.path, aw.Code)
+			}
+			if ct := aw.Header().Get("Content-Type"); !strings.Contains(ct, ref.wantCT) {
+				t.Fatalf("%s content-type = %q, want *%s*", ref.path, ct, ref.wantCT)
+			}
+		}
+		// 端点锚(同 app.js 纪律):bundle 必须引用真实 API 面,前后端
+		// 契约漂移在此红。XSS 纪律(禁 innerHTML 家族)锚在 vitest 源码
+		// 扫描——React 运行时内部合法使用 innerHTML,bundle 级子串禁令
+		// 会误伤框架本体;画布代码全走 React 文本节点转义。
+		bw := webGet(t, r, src)
+		bundle := bw.Body.String()
+		for _, anchor := range []string{
+			"/api/v1/auth/login",
+			"/definitions?status=DRAFT",
+			"/drafts/",
+			"/publish",
+		} {
+			if !strings.Contains(bundle, anchor) {
+				t.Fatalf("canvas bundle 缺端点锚 %q(前后端契约漂移)", anchor)
+			}
+		}
+
+		// 目录列表 fail-closed:assets/ 无 index.html,FileServer 默认会
+		// 渲染 autoindex——noDirListing 必须把它翻成 404(对抗审查 LOW,
+		// 未来 sourcemap 等新目录默认拒绝)。
+		if w := webGet(t, r, "/ui/canvas/assets/"); w.Code != http.StatusNotFound {
+			t.Fatalf("/ui/canvas/assets/ = %d, want 404(禁目录列表)", w.Code)
+		}
+		// 有 index.html 的目录(/ui/canvas/)不受影响,仍 200。
+		if w := webGet(t, r, "/ui/canvas/"); w.Code != http.StatusOK {
+			t.Fatalf("/ui/canvas/ = %d, want 200", w.Code)
+		}
+	})
+}
+
+// extractAttr 从 HTML 里取第一个满足 tag+attr 的属性值(画布产物唯一
+// script/stylesheet 引用;提不出来 = 产物形态漂移,红即是胜利)。
+// link 限定 rel="stylesheet":未来加 favicon 等其它 link 不误捕、也
+// 不产出误导性的 content-type 失败(对抗审查 LOW)。
+func extractAttr(t *testing.T, page, tag, attr string) string {
+	t.Helper()
+	for _, line := range strings.Split(page, "\n") {
+		if !strings.Contains(line, "<"+tag) || !strings.Contains(line, attr+`="`) {
+			continue
+		}
+		if tag == "link" && !strings.Contains(line, `rel="stylesheet"`) {
+			continue
+		}
+		q := attr + `="`
+		i := strings.Index(line, q)
+		if i < 0 {
+			continue
+		}
+		rest := line[i+len(q):]
+		if j := strings.Index(rest, `"`); j >= 0 {
+			return rest[:j]
+		}
+	}
+	t.Fatalf("canvas index.html 未找到 %s[%s] 引用:\n%s", tag, attr, page)
+	return ""
 }
