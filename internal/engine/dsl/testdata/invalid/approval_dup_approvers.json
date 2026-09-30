@@ -1,0 +1,15 @@
+{
+  "dsl": "1.0",
+  "name": "approval-dup-approvers",
+  "$comment": "非法:重复审批人。会签定局判据 = APPROVED 票数==名单长度(uniqueItems 前置),重复名单在该判据下永久挂起死锁;any 下重复亦是作者错误(T14.2 发布期前移)",
+  "nodes": [
+    {
+      "id": "boss",
+      "type": "approval",
+      "approvers": ["carol", "carol"],
+      "mode": "all",
+      "timeout_hours": 72,
+      "on_timeout": "escalate"
+    }
+  ]
+}

@@ -27,15 +27,30 @@ type approvalSeeded struct {
 
 func seedApproval(t *testing.T, d *sql.DB, wfStatus string, deadlinePast time.Duration,
 	onTimeout string, escalated bool) approvalSeeded {
+	return seedApprovalMode(t, d, wfStatus, deadlinePast, onTimeout, escalated, "any", "alice")
+}
+
+// seedApprovalMode 是 seedApproval 的 mode/名单参数化变体(T14.2 会签用例)。
+func seedApprovalMode(t *testing.T, d *sql.DB, wfStatus string, deadlinePast time.Duration,
+	onTimeout string, escalated bool, mode string, approvers ...string) approvalSeeded {
 	t.Helper()
 	ids := mustTestIDs(t)
 	defID, _ := ids.Next()
 	execID, _ := ids.Next()
 	nodeRowID, _ := ids.Next()
 	name := fmt.Sprintf("appr-wf-%d", defID)
-	dsl := fmt.Sprintf(`{"dsl":"1.0","name":%q,"description":"","inputs":[],"edges":[],`+
-		`"nodes":[{"id":"boss","type":"approval","title":"b","description":"",`+
-		`"approvers":["alice"],"mode":"any"}],"outputs":{}}`, name)
+	dslBytes, err := json.Marshal(map[string]any{
+		"dsl": "1.0", "name": name, "description": "", "inputs": []any{}, "edges": []any{},
+		"nodes": []any{map[string]any{
+			"id": "boss", "type": "approval", "title": "b", "description": "",
+			"approvers": approvers, "mode": mode,
+		}},
+		"outputs": map[string]any{},
+	})
+	if err != nil {
+		t.Fatalf("marshal dsl: %v", err)
+	}
+	dsl := string(dslBytes)
 	ins := func(q string, args ...any) {
 		t.Helper()
 		if _, err := d.Exec(q, args...); err != nil {
@@ -60,7 +75,7 @@ func seedApproval(t *testing.T, d *sql.DB, wfStatus string, deadlinePast time.Du
 	}
 	// on_timeout 空 = schema default 路径(escalate);快照形状 = scheduler.ApprovalInput。
 	snap, err := json.Marshal(scheduler.ApprovalInput{
-		Approvers: []string{"alice"}, Mode: "any", TimeoutHours: 72, OnTimeout: onTimeout,
+		Approvers: approvers, Mode: mode, TimeoutHours: 72, OnTimeout: onTimeout,
 	})
 	if err != nil {
 		t.Fatalf("marshal snapshot: %v", err)
@@ -84,9 +99,14 @@ func seedApproval(t *testing.T, d *sql.DB, wfStatus string, deadlinePast time.Du
 	return approvalSeeded{execID: execID, nodeExecID: nodeRowID}
 }
 
-// seedDecision 落一行决定(或签首票形态,唯一行)。round = 行内 attempts
-// (T9.2 决策 6:⑤a 死信网按轮锚定,种子行与生产写入面同源)。
+// seedDecision 落一行决定(或签首票形态,唯一行,投票人 alice)。
 func seedDecision(t *testing.T, d *sql.DB, s approvalSeeded, decision string) uint64 {
+	return seedDecisionBy(t, d, s, "alice", decision)
+}
+
+// seedDecisionBy 落一行指定投票人的决定(round = 行内 attempts,T9.2 决策 6:
+// ⑤a 死信网按轮锚定,种子行与生产写入面同源;T14.2 会签多票形态)。
+func seedDecisionBy(t *testing.T, d *sql.DB, s approvalSeeded, decidedBy, decision string) uint64 {
 	t.Helper()
 	id := nextID(t)
 	var attempts uint16
@@ -95,8 +115,8 @@ func seedDecision(t *testing.T, d *sql.DB, s approvalSeeded, decision string) ui
 	}
 	if _, err := d.Exec(`INSERT INTO approval_decision
 	  (id, execution_id, node_execution_id, node_id, round, decided_by, decision, decided_at)
-	  VALUES (?, ?, ?, 'boss', ?, 'alice', ?, NOW(3))`,
-		id, s.execID, s.nodeExecID, int(attempts), decision); err != nil {
+	  VALUES (?, ?, ?, 'boss', ?, ?, ?, NOW(3))`,
+		id, s.execID, s.nodeExecID, int(attempts), decidedBy, decision); err != nil {
 		t.Fatalf("seed decision: %v", err)
 	}
 	return id
@@ -691,5 +711,91 @@ func TestApprovalDeadLetterAnchorRoundScoped(t *testing.T) {
 	ns, _, _ := readApprovalNode(t, d, s.nodeExecID)
 	if ns != engine.NodeWaitingApproval {
 		t.Fatalf("node = %s, want WAITING_APPROVAL(零动作)", ns)
+	}
+}
+
+// TestApprovalAllPartialVotesEscalate(T14.2):会签部分批准 ≠ 定局——超时走
+// escalate 策略(与或签一致),不误入已定局重投分支;升级恰好一次,节点
+// 保持等待(Q9)。
+func TestApprovalAllPartialVotesEscalate(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	s := seedApprovalMode(t, d, "RUNNING", 5*time.Minute, "", false, "all", "alice", "bob")
+	seedDecisionBy(t, d, s, "alice", "APPROVED") // 1/2 票:中间态
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	ns, _, escalatedAt := readApprovalNode(t, d, s.nodeExecID)
+	if ns != engine.NodeWaitingApproval || !escalatedAt.Valid {
+		t.Fatalf("node = %s escalated=%v, want WAITING_APPROVAL + 已升级", ns, escalatedAt.Valid)
+	}
+	if rows := fetchOutbox(t, d, s.execID, "approval.notify"); len(rows) != 1 {
+		t.Fatalf("approval.notify 行数 = %d, want 1", len(rows))
+	}
+	if rows := fetchOutbox(t, d, s.execID, "execution.resume"); len(rows) != 0 {
+		t.Fatalf("execution.resume 行数 = %d, want 0(未定局零重投)", len(rows))
+	}
+	// 二轮:已升级 + 未定局 → 候选谓词裁出,零新动作(空转闭合)。
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce 2: %v", err)
+	}
+	if rows := fetchOutbox(t, d, s.execID, "approval.notify"); len(rows) != 1 {
+		t.Fatalf("二轮 approval.notify 行数 = %d, want 1(恰好一次)", len(rows))
+	}
+}
+
+// TestApprovalAllRejectRedispatchesAnchoredOnRejection(T14.2):会签定局
+// reject(先批后驳)→ 死信网重投锚 REJECTED 行(最早驳回),不锚更早的
+// 批准行——worker 复核方向交叉验证的对面锚。
+func TestApprovalAllRejectRedispatchesAnchoredOnRejection(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	s := seedApprovalMode(t, d, "RUNNING", 5*time.Minute, "escalate", false, "all", "alice", "bob")
+	seedDecisionBy(t, d, s, "alice", "APPROVED")
+	rejectID := seedDecisionBy(t, d, s, "bob", "REJECTED")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	rows := fetchOutbox(t, d, s.execID, "execution.resume")
+	if len(rows) != 1 {
+		t.Fatalf("execution.resume 行数 = %d, want 1(定局死信重投)", len(rows))
+	}
+	var rp scheduler.ResumePayload
+	if err := json.Unmarshal(rows[0].payload, &rp); err != nil {
+		t.Fatalf("resume payload: %v", err)
+	}
+	if rp.DecisionID != rejectID {
+		t.Fatalf("DecisionID = %d, want %d(锚 REJECTED 行,非最早批准行)", rp.DecisionID, rejectID)
+	}
+	if ns, _, _ := readApprovalNode(t, d, s.nodeExecID); ns != engine.NodeWaitingApproval {
+		t.Fatalf("node = %s, want WAITING_APPROVAL(重投零节点变化)", ns)
+	}
+}
+
+// TestApprovalAllFullApproveRedispatches(T14.2):会签票齐(approve 定局)
+// + 无活事件 → 重投锚最早批准行;升级行为不触发(已定局半边,候选谓词
+// 保持可达)。
+func TestApprovalAllFullApproveRedispatches(t *testing.T) {
+	r, d := newReaper(t, testCfg())
+	s := seedApprovalMode(t, d, "RUNNING", 5*time.Minute, "escalate", false, "all", "alice", "bob")
+	approveID := seedDecisionBy(t, d, s, "alice", "APPROVED")
+	seedDecisionBy(t, d, s, "bob", "APPROVED")
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	rows := fetchOutbox(t, d, s.execID, "execution.resume")
+	if len(rows) != 1 {
+		t.Fatalf("execution.resume 行数 = %d, want 1", len(rows))
+	}
+	var rp scheduler.ResumePayload
+	if err := json.Unmarshal(rows[0].payload, &rp); err != nil {
+		t.Fatalf("resume payload: %v", err)
+	}
+	if rp.DecisionID != approveID {
+		t.Fatalf("DecisionID = %d, want %d(锚最早批准行)", rp.DecisionID, approveID)
+	}
+	if rows := fetchOutbox(t, d, s.execID, "approval.notify"); len(rows) != 0 {
+		t.Fatalf("approval.notify 行数 = %d, want 0(定局不走升级分支)", len(rows))
 	}
 }

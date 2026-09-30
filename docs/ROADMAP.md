@@ -37,7 +37,7 @@
 ## M14 交互层
 
 - [ ] T14.1 画布(React Flow)— L — 验收:DSL 元数据(节点位置)驱动的可视化编辑;画布 → DSL 导出过发布校验;并行/分支/审批节点全类型支持;纯前端静态资源进 /ui/(零后端新端点优先)
-- [ ] T14.2 会签 — M — 验收:approval mode=all(全部批准才过,任一驳回即败);部分批准的中间态可视化;超时语义与或签一致(escalate)
+- [x] T14.2 会签 — M — 验收:approval mode=all(全部批准才过,任一驳回即败);部分批准的中间态可视化;超时语义与或签一致(escalate)
 - [ ] T14.3 IM 审批卡片 — M — 依赖 T14.2 — 验收:至少一个 IM 平台(钉钉/飞书 webhook 形态);卡片动作回平台 API(鉴权短链);与 SMTP 升级通知共存
 - [x] T14.4 Helm chart — M — 验收:values 覆盖镜像/密钥/副本;preflight 与 init 作业模板化;与 prod compose 交付面等价
 

@@ -186,15 +186,26 @@ function metaRow(term, value) {
 
 function decisionFace(v) { return v === "approve" ? "批准" : v === "reject" ? "驳回" : v; }
 
+// 会签中间态(T14.2):mode 徽标词面 + 待投名单(仅 WAITING 时非空;
+// 部分批准的可见进度 = 名单 − 本轮已投)。
+function modeFace(m) {
+  if (m === "all") return "会签(全部批准才过,任一驳回即败)";
+  if (m === "any") return "或签(任一票定局)";
+  return m || "或签(任一票定局)";
+}
+
 function renderDetail(d) {
   $("detail-title").textContent = d.definition_name
     ? (d.definition_name + " · " + d.node_id)
     : ("执行 " + d.execution_id + " · " + d.node_id);
+  const pending = d.pending_approvers || [];
   const meta = $("detail-meta");
   meta.replaceChildren(
     metaRow("执行 ID", d.execution_id),
     metaRow("节点状态", d.node_status),
+    metaRow("审批模式", modeFace(d.mode)),
     metaRow("审批人", (d.approvers || []).join(", ")),
+    metaRow("待投名单", pending.length ? pending.join(", ") : "—"),
     metaRow("截止时间", d.deadline_at ? new Date(d.deadline_at).toLocaleString() : "—")
   );
   $("detail-instructions").textContent = d.instructions || "(工作流未提供审批说明)";

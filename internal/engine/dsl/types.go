@@ -153,7 +153,7 @@ type Condition struct {
 // ApprovalNode 人工审批节点。
 type ApprovalNode struct {
 	Approvers    []string          `json:"approvers"`
-	Mode         string            `json:"mode"`
+	Mode         string            `json:"mode"` // any=或签(默认)| all=会签(T14.2:全部批准才过、任一驳回即败);判据单点 scheduler.ApprovalOutcome
 	TimeoutHours float64           `json:"timeout_hours"`
 	OnTimeout    string            `json:"on_timeout"`
 	Instructions string            `json:"instructions"`

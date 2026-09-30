@@ -5,7 +5,7 @@ package reaper
 //
 //	⑤a 超时(deadline_at 过期,idx_node_status_deadline 的第二消费面;策略
 //	  真源 = input_snapshot 的 on_timeout,schema enum escalate|fail):
-//	    已决票            → resume 死信网最小版:活事件闸 → 幂等重投(同 TaskID
+//	    已定局            → resume 死信网最小版:活事件闸 → 幂等重投(同 TaskID
 //	                       resume:<exec>:<node>:<attempts+1>,D-t42 §8-② 移交;
 //	                       archived 滞留副本靠 relay 冲突收敛,P0 手动恢复 =
 //	                       asynq Inspector RunTask,archived 告警归 T6.4)
@@ -61,10 +61,19 @@ func (r *Reaper) scanApprovals(ctx context.Context) error {
 // 已升级裁剪(对抗审计 LOW 修):升级后未决票的行再无 P0 裁决可做(Q9 策略
 // 钉死快照、escalate 恰好一次),deadline 又被刻意保留 → 不裁剪则它们永久
 // 命中谓词,每 tick 白付锁+复核事务,≥1000 行时吃满单 tick 预算饿死高位
-// 候选(含 fail 策略节点)。谓词因此收紧为「未升级 OR 已决票」——已决票
+// 候选(含 fail 策略节点)。谓词因此收紧为「未升级 OR 已定局」——已定局
 // 半边保死信网对 escalate→后决定→事件死序的修复路径(便宜修法
 // escalated_at IS NULL 会错杀该路径);事务内 escalatedAt.Valid 复核保留为
 // TOCTOU 守卫。纯效率谓词:去掉它行为不变(多付每 tick 空转),不设变异锚。
+//
+// 已定局 = mode-aware(T14.2 会签,判据单点 scheduler.ApprovalOutcome 的
+// SQL 投影,计数口径与 scheduler.ApprovalRoundCountSQL 同源——镜像不变量:
+// 谓词命中集 ⊇ 处置事务 body 判 final 的集合,谓词放宽只多付锁后复核):
+// any = 本轮任一票;all = 本轮任一 REJECTED 或 APPROVED 票数
+// >= 名单长度(JSON_LENGTH 快照名单;uniqueItems 发布期钉死,计数==人数)。
+// 会签部分批准 ≠ 定局——若按旧谓词(EXISTS 任意票)已升级+部分票的行会
+// 永久空转(t43 #9-① 重开)。快照缺 mode(COALESCE 'any')/缺 approvers
+// (JSON_LENGTH NULL → 比较不成立)均安全侧退化为 any 单票判定。
 func (r *Reaper) scanApprovalTimeouts(ctx context.Context) error {
 	var lastID uint64
 	for batch := 0; batch < scanMaxBatch; batch++ {
@@ -75,7 +84,14 @@ SELECT id, execution_id
    AND (escalated_at IS NULL
         OR EXISTS(SELECT 1 FROM approval_decision d
                    WHERE d.node_execution_id = node_execution.id
-                     AND d.round = node_execution.attempts))
+                     AND d.round = node_execution.attempts
+                     AND (d.decision = 'REJECTED'
+                          OR COALESCE(JSON_UNQUOTE(JSON_EXTRACT(node_execution.input_snapshot, '$.mode')), 'any') <> 'all'
+                          OR (SELECT COUNT(*) FROM approval_decision d2
+                               WHERE d2.node_execution_id = node_execution.id
+                                 AND d2.round = node_execution.attempts
+                                 AND d2.decision = 'APPROVED')
+                              >= JSON_LENGTH(node_execution.input_snapshot, '$.approvers'))))
    AND id > ?
  ORDER BY id
  LIMIT ?`, r.cfg.ScanInterval.Microseconds(), lastID, scanBatchSize)
@@ -241,28 +257,40 @@ SELECT node_id, status, version, attempts, worker_id, deadline_at, escalated_at,
 			return errSkip
 		}
 
-		// [5] 已决票?(或签首票定局,本轮至多一行,取最早;决定方向不入判据
-		// ——重投事件仅锚 DecisionID,worker 续跑事务回表复核)。round 谓词
-		// = T9.2 轮次锚(D-t92 决策 6):旧形态 ORDER BY decided_at LIMIT 1 无
-		// 轮次维度,回滚重挂新轮挂起时 round-1 旧行被合法套用到新轮(实害
-		// 路径,D-t42 #9-③ 点名);锚定本轮(锁行 attempts)后旧轮结构性不可达。
-		var decisionID uint64
-		decErr := q.QueryRowContext(ctx,
-			`SELECT id FROM approval_decision WHERE node_execution_id=? AND round=? ORDER BY decided_at, id LIMIT 1`,
-			nodeExecID, int(attempts)).Scan(&decisionID)
-		if decErr != nil && !errors.Is(decErr, sql.ErrNoRows) {
-			return fmt.Errorf("reaper: read decision node %d: %w", nodeExecID, decErr)
-		}
-		if decErr == nil {
-			return r.redispatchResume(ctx, q, execID, nodeExecID, nodeID, attempts, decisionID)
-		}
-
-		// [6] 未决票 → 策略(快照真相源;WAITING_APPROVAL ⇒ snapshot NOT NULL
-		// 是 engine 不变量,resume.go 同依据)。
+		// [5] 定局判定(T14.2 会签:部分批准 ≠ 已决)。判据单点 =
+		// scheduler.ApprovalOutcome;快照先解码(mode/approvers,词面响亮
+		// 兜底镜像 [6] 原 on_timeout 纪律)。round 谓词 = T9.2 轮次锚
+		// (D-t92 决策 6):锚定本轮(锁行 attempts)后旧轮结构性不可达。
+		// 定局锚行按方向取最早:REJECTED 定局锚最早驳回行;APPROVED 定局
+		// any = 唯一行、all = 最早批准行(worker 复核按本轮票数重导出方向,
+		// 锚行只承 DecisionID 与 output 归属)。
 		var snap scheduler.ApprovalInput
 		if err := json.Unmarshal(snapshot, &snap); err != nil {
 			return fmt.Errorf("reaper: approval snapshot node %d: %w", nodeExecID, err)
 		}
+		if snap.Mode != "" && snap.Mode != scheduler.ApprovalModeAny && snap.Mode != scheduler.ApprovalModeAll {
+			return fmt.Errorf("reaper: approval node %d mode %q outside vocabulary (snapshot drift)", nodeExecID, snap.Mode)
+		}
+		var approved, rejected int
+		if err := q.QueryRowContext(ctx, scheduler.ApprovalRoundCountSQL,
+			nodeExecID, int(attempts)).Scan(&approved, &rejected); err != nil {
+			return fmt.Errorf("reaper: count round decisions node %d: %w", nodeExecID, err)
+		}
+		if final, outcome := scheduler.ApprovalOutcome(snap.Mode, len(snap.Approvers), approved, rejected); final {
+			var decisionID uint64
+			if err := q.QueryRowContext(ctx,
+				`SELECT id FROM approval_decision WHERE node_execution_id=? AND round=? AND decision=?
+				 ORDER BY decided_at, id LIMIT 1`,
+				nodeExecID, int(attempts), outcome).Scan(&decisionID); err != nil {
+				return fmt.Errorf("reaper: anchor %s decision node %d: %w", outcome, nodeExecID, err)
+			}
+			return r.redispatchResume(ctx, q, execID, nodeExecID, nodeID, attempts, decisionID)
+		}
+
+		// [6] 未定局(零票,或会签票未齐的部分批准中间态)→ 策略(快照
+		// 真相源;WAITING_APPROVAL ⇒ snapshot NOT NULL 是 engine 不变量,
+		// resume.go 同依据)。超时语义与或签一致:escalate 升级通知 / fail
+		// 显式终败,会签票齐与否不入策略分派(T14.2 验收口径)。
 		switch snap.OnTimeout {
 		case "escalate", "": // 空 = schema default(effectiveApprovalSpec 物化兜底)
 			if escalatedAt.Valid {

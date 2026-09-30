@@ -178,6 +178,29 @@ func (s *Scheduler) resumeOnce(ctx context.Context, req ResumeRequest,
 			decidedComment = comment.String
 		}
 
+		// 5a. 定局复核(T14.2,D-2026-09-30-t142-and-approval):「消费必
+		// 复核」从行存在性延展到定局判据——本轮票数按 mode 裁决
+		// (scheduler.ApprovalOutcome 单点):未定局(any 零票不可达、all
+		// 票未齐)= 伪/早产事件,响亮拒绝零动作;定局方向与锚行方向交叉
+		// 复核(不一致 = 锚行漂移)。mode 真源 = 钉版 DSL spec(effective
+		// ApprovalSpec 生效值,与快照物化同源);REJECTED 恒定局(任一
+		// 驳回即败,两模式同语义)。
+		mode, _, _ := effectiveApprovalSpec(spec)
+		var approved, rejected int
+		if err := q.QueryRowContext(ctx, ApprovalRoundCountSQL,
+			req.NodeExecID, int(n.attempts)).Scan(&approved, &rejected); err != nil {
+			return fmt.Errorf("scheduler: count round decisions node %d: %w", n.id, err)
+		}
+		final, outcome := ApprovalOutcome(mode, len(spec.Approvers), approved, rejected)
+		if !final {
+			return fmt.Errorf("scheduler: resume on undecided round (node %d: mode %s, %d approved/%d rejected of %d approvers) — fabricated or premature event",
+				n.id, mode, approved, rejected, len(spec.Approvers))
+		}
+		if outcome != dbDecision {
+			return fmt.Errorf("scheduler: decision %d direction %q disagrees with round outcome %q (anchor drift)",
+				req.DecisionID, dbDecision, outcome)
+		}
+
 		// 6. 快照守卫(镜像 suspendOnce):engine 不变量 WAITING_APPROVAL ⇒
 		// input_snapshot NOT NULL;复入重写为同值(前驱输出终态不可变 ⇒ 求值
 		// 恒同,复现语义不受影响)。

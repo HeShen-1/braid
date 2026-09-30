@@ -101,7 +101,7 @@ type ApprovalRequestedPayload struct {
 type ApprovalDecidedPayload struct {
 	NodeID   string `json:"node_id"`
 	Decision string `json:"decision"` // approved | rejected(请求面词表,区别于 DB ENUM)
-	Mode     string `json:"mode"`     // any(P0 唯一值;快照同源,首票定局的裁决依据)
+	Mode     string `json:"mode"`     // any | all(快照同源;T14.2 会签起双值,判据单点 scheduler.ApprovalOutcome)
 }
 
 // ApprovalDecisionDeniedPayload 是 approval.decision_denied(T4.2 越权决定

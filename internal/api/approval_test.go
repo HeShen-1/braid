@@ -83,8 +83,15 @@ var approvalTestIDs, _ = snowflake.New(7)
 
 // seedSuspendedApproval 直插一个挂起审批节点的执行(生产链 = T4.1 worker
 // 挂起;此处 SQL 种子钉 HTTP 契约面,免拉全链)。快照 = ApprovalInput 生效值
-// 形状(scheduler.buildSnapshot 同构)。
+// 形状(scheduler.buildSnapshot 同构)。mode 固定 any(既有或签用例);
+// 会签用例走 seedSuspendedApprovalMode。
 func seedSuspendedApproval(t *testing.T, dbh *sql.DB, wfStatus string, nodeStatus string, approvers ...string) (uint64, uint64) {
+	return seedSuspendedApprovalMode(t, dbh, wfStatus, nodeStatus, "any", approvers...)
+}
+
+// seedSuspendedApprovalMode 是 seedSuspendedApproval 的 mode 参数化变体
+// (T14.2 会签:快照 mode = any|all)。
+func seedSuspendedApprovalMode(t *testing.T, dbh *sql.DB, wfStatus string, nodeStatus string, mode string, approvers ...string) (uint64, uint64) {
 	t.Helper()
 	defID, err := approvalTestIDs.Next()
 	if err != nil {
@@ -100,7 +107,7 @@ func seedSuspendedApproval(t *testing.T, dbh *sql.DB, wfStatus string, nodeStatu
 	}
 	name := fmt.Sprintf("approval-seed-%d", defID)
 	snap, err := json.Marshal(scheduler.ApprovalInput{
-		Approvers: approvers, Mode: "any", TimeoutHours: 24, OnTimeout: "fail", Instructions: "请审批",
+		Approvers: approvers, Mode: mode, TimeoutHours: 24, OnTimeout: "fail", Instructions: "请审批",
 	})
 	if err != nil {
 		t.Fatalf("marshal snapshot: %v", err)

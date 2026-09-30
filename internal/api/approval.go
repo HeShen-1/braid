@@ -73,6 +73,10 @@ type decisionDTO struct {
 	DecidedBy   string    `json:"decided_by"`
 	Comment     *string   `json:"comment"`
 	DecidedAt   time.Time `json:"decided_at"`
+	// Final 是 POST 语义(T14.2,t14.1 画布数据契约):本票落库后本轮是否
+	// 定局(any:首票;all:任一驳回或全员批准)。定局票 = true;非定局
+	// 中间态票 = 缺省(omitempty,GET 时间线与竞速败者回显恒不带)。
+	Final bool `json:"final,omitempty"`
 }
 
 func toDecisionDTO(d Decision) decisionDTO {
@@ -188,15 +192,26 @@ func (s *Server) decideApproval(c *gin.Context) {
 		if !containsString(snap.Approvers, actor) {
 			return ErrNotApprover
 		}
+		// mode 词面响亮兜底(T14.2):schema enum 发布期钉死 any|all,快照
+		// 漂移到词面外 → 500,不静默按 any 裁决(判据单点对词面的前置)。
+		if snap.Mode != "" && snap.Mode != scheduler.ApprovalModeAny && snap.Mode != scheduler.ApprovalModeAll {
+			return fmt.Errorf("api: approval snapshot of node %q mode %q outside vocabulary", nodeID, snap.Mode)
+		}
 		// 轮次锚(T9.2/D-t92 决策 6):round = 锁行 attempts(挂起所属轮),
 		// 与 resume 事件第四段(attempts+1)同源单点、恒差 1;旧轮票对
 		// 新轮不可见(谓词承载,消费点零漏改面)。
 		round := int(node.Attempts)
 		// 重放/改判裁决先行(先于终态/状态守卫:已定局的执行 wf 可能已
-		// 终态,重放语义必须胜出 409 面)。
+		// 终态,重放语义必须胜出 409 面)。重放行的 final 按本轮计数补判
+		//(锁内读数;非定局票重放恒缺省)。
+		approved, rejected, err := s.st.CountRoundDecisions(c.Request.Context(), tx, node.NodeExecID, round)
+		if err != nil {
+			return err
+		}
 		if prior, err := s.st.GetDecisionByApprover(c.Request.Context(), tx, node.NodeExecID, round, actor); err == nil {
 			if prior.Decision == dbDecision {
 				out = toDecisionDTO(prior)
+				out.Final, _ = scheduler.ApprovalOutcome(snap.Mode, len(snap.Approvers), approved, rejected)
 				replay = true // 重放:响应行回显,零新写(200 面)
 				return nil
 			}
@@ -204,11 +219,11 @@ func (s *Server) decideApproval(c *gin.Context) {
 		} else if !errors.Is(err, ErrNotFound) {
 			return err
 		}
-		// 或签首票定局:任何既存票(他人先投,节点可能仍在 WAITING——
-		// 续跑是异步的)即定局,后续票 409。
-		if n, err := s.st.CountDecisions(c.Request.Context(), tx, node.NodeExecID, round); err != nil {
-			return err
-		} else if n > 0 {
+		// 定局守卫(T14.2 会签判据,语义单点 scheduler.ApprovalOutcome——
+		// D-t42 预告的 CountDecisions 判据改法):本轮既存票已定局(any:
+		// 首票;all:任一驳回或全员批准)→ 后续票 409。已投者的重放/改判
+		// 已在上方先裁(同人语义优先于定局面)。
+		if fin, _ := scheduler.ApprovalOutcome(snap.Mode, len(snap.Approvers), approved, rejected); fin {
 			return ErrAlreadyDecided
 		}
 		// 节点状态守卫先于执行终态(更贴近审批面的裁决码:已收口的节点
@@ -244,18 +259,32 @@ func (s *Server) decideApproval(c *gin.Context) {
 			return err
 		}
 		// 迁移零(node 不动:WAITING_APPROVAL 的状态权威在 worker 续跑事务);
-		// 审计 + outbox 同事务(D-t26 调用方契约;outbox 词表 resume 四段式)。
+		// 审计同事务(D-t26 调用方契约)。每票一行 approval.decided——
+		// 会签中间态票同样是决定事实(部分批准时间线)。
 		if err := s.appendApprovalAudit(c.Request.Context(), tx, execID, node.NodeExecID, nodeID, actor, face, snap.Mode, rootTrace.String); err != nil {
 			return err
 		}
-		if err := s.appendResumeEvent(c.Request.Context(), tx, execID, node.NodeExecID, nodeID, node.Attempts+1, decisionID); err != nil {
+		// 定局判定重查(含本票;node 行锁内计数稳定):定局票(any 首票 /
+		// all 任一驳回 / all 末票批准)→ resume 事件(四段式,末段
+		// attempts+1);非定局中间态票 → 零续跑意图,节点保持
+		// WAITING_APPROVAL——部分批准中间态,续跑意图只在定局票产生
+		//(T14.2;判据单点 scheduler.ApprovalOutcome)。
+		approved, rejected, err = s.st.CountRoundDecisions(c.Request.Context(), tx, node.NodeExecID, round)
+		if err != nil {
 			return err
+		}
+		final, _ := scheduler.ApprovalOutcome(snap.Mode, len(snap.Approvers), approved, rejected)
+		if final {
+			if err := s.appendResumeEvent(c.Request.Context(), tx, execID, node.NodeExecID, nodeID, node.Attempts+1, decisionID); err != nil {
+				return err
+			}
 		}
 		decided, err := s.st.GetDecisionByApprover(c.Request.Context(), tx, node.NodeExecID, round, actor)
 		if err != nil {
 			return err
 		}
 		out = toDecisionDTO(decided)
+		out.Final = final
 		return nil
 	})
 	if err != nil {
@@ -355,22 +384,44 @@ func (s *Server) getApproval(c *gin.Context) {
 		mapApprovalError(c, ErrNotApprover)
 		return
 	}
-	detail := approvalDetailDTO{
-		ExecutionID:  strconv.FormatUint(execID, 10),
-		NodeID:       node.NodeID,
-		NodeStatus:   node.Status,
-		DeadlineAt:   node.DeadlineAt,
-		Approvers:    snap.Approvers,
-		Mode:         snap.Mode,
-		TimeoutHours: snap.TimeoutHours,
-		OnTimeout:    snap.OnTimeout,
-		Instructions: snap.Instructions,
-		Decisions:    []decisionDTO{},
-	}
 	decisions, err := s.st.ListDecisions(c.Request.Context(), s.dbh, node.NodeExecID)
 	if err != nil {
 		mapStoreError(c, err)
 		return
+	}
+	// 会签中间态读面(T14.2,t14.1 画布的数据契约):pending_approvers =
+	// 名单 − 本轮已投者,仅在节点 WAITING_APPROVAL 时非空(round = 读行
+	// attempts,与 ListDecisions 跨轮时间线按 Round 分组对齐;读面无事务,
+	// 钉版契约同款近似)。已知尖锐点(对抗审计登记,D-t142 定局异步窗):
+	// 定局票落库后 worker 续跑前的窗口内节点仍 WAITING——已定局轮的
+	// 未投者仍出现在本字段与待办列表,其投票将 409 already_decided(窗口
+	// 有界);收口后恒空数组(字段恒在场,契约稳定)。
+	pending := []string{}
+	if node.Status == string(engine.NodeWaitingApproval) {
+		voted := make(map[string]bool, len(decisions))
+		for _, d := range decisions {
+			if d.Round == int(node.Attempts) {
+				voted[d.DecidedBy] = true
+			}
+		}
+		for _, a := range snap.Approvers {
+			if !voted[a] {
+				pending = append(pending, a)
+			}
+		}
+	}
+	detail := approvalDetailDTO{
+		ExecutionID:      strconv.FormatUint(execID, 10),
+		NodeID:           node.NodeID,
+		NodeStatus:       node.Status,
+		DeadlineAt:       node.DeadlineAt,
+		Approvers:        snap.Approvers,
+		Mode:             snap.Mode,
+		TimeoutHours:     snap.TimeoutHours,
+		OnTimeout:        snap.OnTimeout,
+		Instructions:     snap.Instructions,
+		PendingApprovers: pending,
+		Decisions:        []decisionDTO{},
 	}
 	for _, d := range decisions {
 		detail.Decisions = append(detail.Decisions, toDecisionDTO(d))
@@ -380,16 +431,17 @@ func (s *Server) getApproval(c *gin.Context) {
 
 // approvalDetailDTO 是审批详情视图:状态 + 挂起声明面 + 决定时间线。
 type approvalDetailDTO struct {
-	ExecutionID  string        `json:"execution_id"`
-	NodeID       string        `json:"node_id"`
-	NodeStatus   string        `json:"node_status"`
-	DeadlineAt   *time.Time    `json:"deadline_at"`
-	Approvers    []string      `json:"approvers,omitempty"`
-	Mode         string        `json:"mode,omitempty"`
-	TimeoutHours float64       `json:"timeout_hours,omitempty"`
-	OnTimeout    string        `json:"on_timeout,omitempty"`
-	Instructions string        `json:"instructions,omitempty"`
-	Decisions    []decisionDTO `json:"decisions"`
+	ExecutionID      string        `json:"execution_id"`
+	NodeID           string        `json:"node_id"`
+	NodeStatus       string        `json:"node_status"`
+	DeadlineAt       *time.Time    `json:"deadline_at"`
+	Approvers        []string      `json:"approvers,omitempty"`
+	Mode             string        `json:"mode,omitempty"`
+	TimeoutHours     float64       `json:"timeout_hours,omitempty"`
+	OnTimeout        string        `json:"on_timeout,omitempty"`
+	Instructions     string        `json:"instructions,omitempty"`
+	PendingApprovers []string      `json:"pending_approvers"` // T14.2:本轮未投名单(会签中间态;非 WAITING 恒空数组)
+	Decisions        []decisionDTO `json:"decisions"`
 }
 
 // appendApprovalAudit 落 approval.decided 审计行(决定事务内;actor=user/
