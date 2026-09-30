@@ -27,12 +27,15 @@ var bindingRe = regexp.MustCompile(`^[A-Za-z0-9_-]{22}$`)
 // 只信 claims 不回库)+ tnt(签发时刻的租户快照,D-2026-09-30-t112;
 // 缺席 = 0 = 平台租户——0011 迁移前的存量 token 与平台租户同判,
 // ≤24h TTL 界,roles 快照同界)+ bnd(可选 token 绑定指纹,
-// D-2026-09-29-t113:空 = 未绑定,off 模式语义)+ 标准三件套
-// iat/exp/iss/aud。
+// D-2026-09-29-t113:空 = 未绑定,off 模式语义)+ scp(可选 token
+// 作用域,D-2026-09-30-t131:缺席/空 = 零作用域,MCP 面 fail-closed
+// 零权限;角色答「你是谁」,作用域答「这枚 token 能做什么」)+
+// 标准三件套 iat/exp/iss/aud。
 type Claims struct {
-	Roles   []Role `json:"roles"`
-	Tenant  uint64 `json:"tnt,omitempty"`
-	Binding string `json:"bnd,omitempty"`
+	Roles   []Role  `json:"roles"`
+	Tenant  uint64  `json:"tnt,omitempty"`
+	Binding string  `json:"bnd,omitempty"`
+	Scopes  []Scope `json:"scp,omitempty"`
 	jwt.RegisteredClaims
 }
 
@@ -49,8 +52,19 @@ func SignToken(secret string, ttl time.Duration, username string, roles []Role, 
 // claim);空串 = 不携带 claim(off 模式两形态同一出口)。tenant 是
 // 签发时刻的用户归属租户(D-t112:0 = 平台租户合法值;用户行迁租后
 // token 残余访问 ≤ TTL 24h,roles 快照同界——显式传参使新签发点无法
-// 遗忘租户维度,编译器强制)。
+// 遗忘租户维度,编译器强制)。等价于 SignTokenScoped(..., scopes=nil)
+// ——语义冻结:存量签发函数不携带 scp。
 func SignTokenWithBinding(secret string, ttl time.Duration, username string, roles []Role, tenant uint64, binding string) (string, error) {
+	return SignTokenScoped(secret, ttl, username, roles, tenant, binding, nil)
+}
+
+// SignTokenScoped 是完备签发原语(bnd 与 scp 双携带,D-2026-09-30-t131):
+// login 签发换装默认全量(DefaultScopesForRoles)、/api/v1/auth/tokens
+// 自窄化子集都走此出口。scopes 显式传参使新签发点无法遗忘作用域维度
+// (镜像 tenant 显式传参先例);nil/空 = 不携带 claim(零作用域,
+// fail-closed 消费面语义)。scopes 逐项过词表(签发面 bug 前置拒绝,
+// 不产出词表外 token)。
+func SignTokenScoped(secret string, ttl time.Duration, username string, roles []Role, tenant uint64, binding string, scopes []Scope) (string, error) {
 	if ttl <= 0 {
 		return "", fmt.Errorf("%w: ttl %s <= 0", ErrInvalidInput, ttl)
 	}
@@ -69,11 +83,15 @@ func SignTokenWithBinding(secret string, ttl time.Duration, username string, rol
 	if binding != "" && !bindingRe.MatchString(binding) {
 		return "", fmt.Errorf("%w: binding violates ^[A-Za-z0-9_-]{22}$", ErrInvalidInput)
 	}
+	if err := validScopes(scopes); err != nil {
+		return "", err
+	}
 	now := time.Now().UTC()
 	c := Claims{
 		Roles:   roles,
 		Tenant:  tenant,
 		Binding: binding,
+		Scopes:  scopes,
 		RegisteredClaims: jwt.RegisteredClaims{
 			Subject:   username,
 			IssuedAt:  jwt.NewNumericDate(now),
@@ -129,6 +147,11 @@ func ParseToken(secret string, token string) (Claims, error) {
 	// 同判:防线针对签发面 bug + 消费面信任载荷的组合)。
 	if c.Binding != "" && !bindingRe.MatchString(c.Binding) {
 		return Claims{}, fmt.Errorf("%w: binding claim format", ErrTokenInvalid)
+	}
+	// scp 逐项过词表闸(fail-closed,镜像 bnd:正确密钥但携词表外/重复
+	// 作用域的 token 在此拒绝——空/缺席合法,零作用域)。
+	if err := validScopes(c.Scopes); err != nil {
+		return Claims{}, fmt.Errorf("%w: %v", ErrTokenInvalid, err)
 	}
 	return c, nil
 }
