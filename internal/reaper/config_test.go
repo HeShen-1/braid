@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"braid/internal/audit"
 	"braid/internal/db"
 	"braid/internal/snowflake"
 )
@@ -52,7 +53,8 @@ func TestConfigValidateBounds(t *testing.T) {
 		{"audit_flush_interval_ok", func(c *Config) { c.AuditFlushInterval = 100 * time.Millisecond }, true},
 		{"audit_flush_batch_zero", func(c *Config) { c.AuditFlushBatch = 0 }, false},
 		{"audit_flush_batch_over", func(c *Config) { c.AuditFlushBatch = 2801 }, false},
-		{"audit_flush_batch_edge", func(c *Config) { c.AuditFlushBatch = 2800 }, true}, // T9.3:23 列×2800=64400<65535 占位符预算新上界
+		{"audit_flush_batch_edge", func(c *Config) { c.AuditFlushBatch = 2700 }, true}, // T11.2:24 列(tenant_id)×2700=64800<65535,⌊65535/24⌋=2730(旧 2800 是 23 列时代,超限必败)
+		{"audit_flush_budget_over", func(c *Config) { c.AuditFlushBatch = 2731 }, false}, // 2731×24=65544>65535:t13 实证临界,预算失守即拒启
 		{"janitor_floor", func(c *Config) { c.JanitorInterval = 4 * time.Minute }, false},
 		{"login_retention_floor", func(c *Config) { c.LoginAuditRetention = 23 * time.Hour }, false},
 		{"login_retention_ok", func(c *Config) { c.LoginAuditRetention = 24 * time.Hour }, true},
@@ -236,5 +238,18 @@ func TestConfigFromEnvInfra(t *testing.T) {
 				t.Fatalf("err = %v, want containing BRAID_REAPER_SNOWFLAKE_NODE", err)
 			}
 		})
+	}
+}
+
+// TestAuditFlushPlaceholderBudget(D-t112 审计收口 HIGH 修的防再犯锚):
+// flush 列集(audit.FlushColsPerRow)× 本包 Validate 上界必须留在 MySQL
+// prepared statement 65535 占位符预算内——T9.3(21→23)与 T11.2(23→24)
+// 两次同型收口都是「改列忘改上界」,此断言把耦合变成编译期可测不变量:
+// 任一侧漂移(列加/上界抬)在 reaper 测试即红,不再依赖注释纪律。
+func TestAuditFlushPlaceholderBudget(t *testing.T) {
+	const mysqlPlaceholderLimit = 65535
+	if audit.FlushColsPerRow*2700 > mysqlPlaceholderLimit {
+		t.Fatalf("placeholder budget blown: %d cols x 2700 batch = %d > %d (raise cap? re-derive both sides)",
+			audit.FlushColsPerRow, audit.FlushColsPerRow*2700, mysqlPlaceholderLimit)
 	}
 }

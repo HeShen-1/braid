@@ -723,3 +723,176 @@ func TestHTTPAuditTriggeredImmediatelyVisible(t *testing.T) {
 		t.Fatalf("execution.triggered by alice not found in %v", body)
 	}
 }
+
+// seedAuditExecTenant 是 seedAuditExec 的租户变体:execution 行显式落
+// tenant_id(definition 归 DEFAULT 0——测试变量只在 execution 归属)。
+func seedAuditExecTenant(t *testing.T, dbh *sql.DB, ids IDGen, name string, tenant uint64) uint64 {
+	t.Helper()
+	defID, err := ids.Next()
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	execID, err := ids.Next()
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	sum := sha256.Sum256([]byte("{}"))
+	h := hex.EncodeToString(sum[:])
+	if _, err := dbh.Exec(`
+INSERT INTO workflow_definition (id, name, dsl_version, dsl, dsl_hash, created_by, updated_by)
+VALUES (?, ?, '1.0', '{}', ?, 'seed', 'seed')`, defID, name, h); err != nil {
+		t.Fatalf("seed definition: %v", err)
+	}
+	if _, err := dbh.Exec(`
+INSERT INTO workflow_execution
+  (id, tenant_id, definition_id, definition_name, definition_version, definition_hash, triggered_by, input)
+VALUES (?, ?, ?, ?, 1, ?, 'seed', '{}')`, execID, tenant, defID, name, h); err != nil {
+		t.Fatalf("seed execution: %v", err)
+	}
+	return execID
+}
+
+// TestHTTPAuditTenantScopingAndDeniedMasking(D-t112 #4,D-t63 #5 兑现):
+// 审计读面按读者租户裁剪 + tool.call.denied 账号态字段投影脱敏。
+// 对抗主轴 = 模型名 actor(无法经 user 行判租的唯一 actor 形态):同名
+// 模型跨租户各有一行 llm.call.completed,admin 按人查只见本租户行。
+func TestHTTPAuditTenantScopingAndDeniedMasking(t *testing.T) {
+	r, dbh, sign := newTestServer(t)
+	ids := seedIDs(t)
+	if _, err := dbh.Exec(
+		`INSERT INTO tenants (id, slug, name) VALUES (7, 't-seven', 'T Seven') ON DUPLICATE KEY UPDATE id = id`); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	admin0 := sign(auth.RoleAdmin) // alice,平台租户(0)
+	mkToken := func(sub string, roles []auth.Role, tenant uint64) string {
+		t.Helper()
+		tok, err := auth.SignToken(testSecret, time.Hour, sub, roles, tenant)
+		if err != nil {
+			t.Fatalf("sign %s: %v", sub, err)
+		}
+		return tok
+	}
+	admin7 := mkToken("root7", []auth.Role{auth.RoleAdmin}, 7)
+	alice := sign(auth.RoleAuthor) // alice 非管理员
+	carol := mkToken("carol", []auth.Role{auth.RoleApprover}, 0)
+
+	// 双租户执行各带一行同模型名 llm.call.completed(模型名 actor 泄露面)
+	// + 平台执行带一行 tool.call.denied(脱敏面,actor = carol)。
+	exec7 := seedAuditExecTenant(t, dbh, ids, uniqName("audit-t7"), 7)
+	exec0 := seedAuditExec(t, dbh, ids, uniqName("audit-t0"))
+	appendAuditRow(t, dbh, ids, audit.Event{
+		EventType: audit.EventLLMCallCompleted, ExecutionID: exec7,
+		NodeExecID: 1, NodeID: "n1", AttemptID: 11, ActorType: audit.ActorLLM, ActorID: "glm-5.3",
+		TraceID: auditTestTrace, Payload: json.RawMessage(`{"node_id":"n1"}`)})
+	appendAuditRow(t, dbh, ids, audit.Event{
+		EventType: audit.EventLLMCallCompleted, ExecutionID: exec0,
+		NodeExecID: 2, NodeID: "n2", AttemptID: 22, ActorType: audit.ActorLLM, ActorID: "glm-5.3",
+		Payload: json.RawMessage(`{"node_id":"n2"}`)})
+	appendAuditRow(t, dbh, ids, audit.Event{
+		EventType: audit.EventToolCallDenied, ExecutionID: exec0,
+		NodeExecID: 3, NodeID: "n3", ActorType: audit.ActorUser, ActorID: "carol",
+		Payload: json.RawMessage(`{"node_id":"n3","tool":"http","actor_roles":["approver"],"reason":"role_mismatch"}`)})
+
+	get := func(token, path string) (int, map[string]any) {
+		t.Helper()
+		return doJSON(t, r, http.MethodGet, path, token, nil)
+	}
+	itemsOf := func(body map[string]any) []map[string]any {
+		t.Helper()
+		raw, _ := body["items"].([]any)
+		out := make([]map[string]any, 0, len(raw))
+		for _, it := range raw {
+			out = append(out, it.(map[string]any))
+		}
+		return out
+	}
+
+	// ① 模型名 actor 维:各租户 admin 只见本租户行(跨租户 llm 全景关闭)。
+	code, body := get(admin0, "/api/v1/audit?actor_id=glm-5.3")
+	if code != http.StatusOK {
+		t.Fatalf("admin0 actor dim = %d %v", code, body)
+	}
+	items := itemsOf(body)
+	if len(items) != 1 || items[0]["execution_id"] != strconv.FormatUint(exec0, 10) {
+		t.Fatalf("admin0 sees %d rows, want 平台 exec0 only(模型名 actor 租户裁剪)", len(items))
+	}
+	code, body = get(admin7, "/api/v1/audit?actor_id=glm-5.3")
+	if code != http.StatusOK {
+		t.Fatalf("admin7 actor dim = %d %v", code, body)
+	}
+	items = itemsOf(body)
+	if len(items) != 1 || items[0]["execution_id"] != strconv.FormatUint(exec7, 10) {
+		t.Fatalf("admin7 sees %d rows, want 租户7 exec7 only", len(items))
+	}
+
+	// ①b trace 维:平台读者查租户 7 行的 trace = 空集(分区本地索引
+	// 探测后的租户残差过滤;[S4] 锚的第三维度用例)。
+	code, body = get(alice, "/api/v1/audit?trace_id="+auditTestTrace)
+	if code != http.StatusOK {
+		t.Fatalf("platform trace dim = %d %v", code, body)
+	}
+	if items := itemsOf(body); len(items) != 0 {
+		t.Fatalf("平台 trace 维泄露租户 7 行:%d 条", len(items))
+	}
+	code, body = get(admin7, "/api/v1/audit?trace_id="+auditTestTrace)
+	if code != http.StatusOK {
+		t.Fatalf("tenant7 trace dim = %d %v", code, body)
+	}
+	if items := itemsOf(body); len(items) != 1 || items[0]["execution_id"] != strconv.FormatUint(exec7, 10) {
+		t.Fatalf("租户 7 trace 维 = %d 行, want exec7", len(items))
+	}
+
+	// ② execution 维:跨租户执行 = 404(GetExecution 租户闸先行)。
+	if code, _ := get(admin0, "/api/v1/audit?execution_id="+strconv.FormatUint(exec7, 10)); code != http.StatusNotFound {
+		t.Fatalf("cross execution dim = %d, want 404", code)
+	}
+	// ③ execution 维本租户:非本人非 admin 读者见脱敏投影。
+	code, body = get(alice, "/api/v1/audit?execution_id="+strconv.FormatUint(exec0, 10))
+	if code != http.StatusOK {
+		t.Fatalf("alice execution dim = %d %v", code, body)
+	}
+	var denied map[string]any
+	for _, it := range itemsOf(body) {
+		if it["event_type"] == audit.EventToolCallDenied {
+			denied = it["payload"].(map[string]any)
+		}
+	}
+	if denied == nil {
+		t.Fatalf("denied row missing")
+	}
+	if _, ok := denied["reason"]; ok {
+		t.Fatalf("unrelated reader sees reason = %v(账号态 oracle 未脱敏)", denied["reason"])
+	}
+	if _, ok := denied["actor_roles"]; ok {
+		t.Fatalf("unrelated reader sees actor_roles = %v", denied["actor_roles"])
+	}
+	if denied["tool"] != "http" || denied["node_id"] != "n3" {
+		t.Fatalf("masked payload lost attribution fields: %v", denied)
+	}
+	// ④ admin 见全量(证据链本位对 admin 保留)。
+	code, body = get(admin0, "/api/v1/audit?execution_id="+strconv.FormatUint(exec0, 10))
+	if code != http.StatusOK {
+		t.Fatalf("admin0 own execution dim = %d", code)
+	}
+	for _, it := range itemsOf(body) {
+		if it["event_type"] == audit.EventToolCallDenied {
+			pl := it["payload"].(map[string]any)
+			if pl["reason"] != "role_mismatch" {
+				t.Fatalf("admin payload masked: %v", pl)
+			}
+		}
+	}
+	// ⑤ 本人见全量(自证调试性)。
+	code, body = get(carol, "/api/v1/audit?execution_id="+strconv.FormatUint(exec0, 10))
+	if code != http.StatusOK {
+		t.Fatalf("carol own execution dim = %d", code)
+	}
+	for _, it := range itemsOf(body) {
+		if it["event_type"] == audit.EventToolCallDenied {
+			pl := it["payload"].(map[string]any)
+			if _, ok := pl["actor_roles"]; !ok {
+				t.Fatalf("self payload masked: %v", pl)
+			}
+		}
+	}
+}

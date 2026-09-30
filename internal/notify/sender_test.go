@@ -544,3 +544,43 @@ func TestNotifyApprovalNoRecipientsResolvable(t *testing.T) {
 		t.Fatalf("approval.notified rows = %d, want 0(失败不落锚,重投可完整重试)", got)
 	}
 }
+
+// TestNotifyApprovalCrossTenantApproverSuppressed(D-t112 审计收口):
+// 执行属租户 7、快照名单指向平台用户(全局唯一 username 下结构性可达)
+// ——解析携执行租户,平台用户缺席收件面,跨租户邮件推送闭合;ops 副本
+// 兜底可见性。变异自查:EmailsByUsernames 去掉 tenant 谓词 → Count 断言
+// 红(多出一封发往平台用户的逐人封)。
+func TestNotifyApprovalCrossTenantApproverSuppressed(t *testing.T) {
+	d := sqltest.MustOpenAt(t, notifySchema)
+	f := notifytest.Start(t)
+	if _, err := d.Exec(
+		`INSERT INTO tenants (id, slug, name) VALUES (7, 't-seven', 'T Seven') ON DUPLICATE KEY UPDATE id = id`); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	execID, nodeExecID, _ := seedApprovalEscalated(t, d)
+	// 执行迁入租户 7 + 名单指向平台用户(种子默认租户 0)。
+	if _, err := d.Exec(`UPDATE workflow_execution SET tenant_id = 7 WHERE id = ?`, execID); err != nil {
+		t.Fatalf("move exec to tenant 7: %v", err)
+	}
+	if _, err := d.Exec(`UPDATE node_execution SET input_snapshot = JSON_SET(input_snapshot,
+		'$.approvers', JSON_ARRAY('fanout-carol')) WHERE id=?`, nodeExecID); err != nil {
+		t.Fatalf("rewire approvers: %v", err)
+	}
+	carolMail := "fanout-carol@example.com"
+	seedFanoutUser(t, d, "fanout-carol", &carolMail) // 平台租户(0)
+	s := newFanoutSender(t, d, f, nil)
+
+	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1); err != nil {
+		t.Fatalf("NotifyApproval: %v", err)
+	}
+
+	msgs := f.Messages()
+	if len(msgs) != 1 {
+		t.Fatalf("messages = %d, want 1(仅 ops 副本;跨租户名单用户被租户谓词抑制)", len(msgs))
+	}
+	for _, m := range msgs {
+		if strings.Contains(m, carolMail) {
+			t.Fatalf("跨租户用户收到推送:%s", carolMail)
+		}
+	}
+}

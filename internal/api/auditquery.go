@@ -18,6 +18,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"braid/internal/audit"
 	"braid/internal/auth"
 )
 
@@ -77,7 +78,9 @@ func uint64PtrToString(p *uint64) *string {
 	return &s
 }
 
-func toAuditEventDTO(e AuditEvent) auditEventDTO {
+// toAuditEventDTO 组装行视图;tool.call.denied 行经 maskDeniedPayload
+// 投影脱敏(读者角色面判,见其注释),其余事件 payload 原样直嵌。
+func toAuditEventDTO(e AuditEvent, reader string, isAdmin bool) auditEventDTO {
 	return auditEventDTO{
 		ID:               strconv.FormatUint(e.ID, 10),
 		ExecDate:         e.ExecDate,
@@ -101,8 +104,36 @@ func toAuditEventDTO(e AuditEvent) auditEventDTO {
 		CostAmount:       e.CostAmount,
 		CostCurrency:     e.CostCurrency,
 		CostEstimated:    e.CostEstimated,
-		Payload:          json.RawMessage(e.Payload),
+		Payload:          maskDeniedPayload(e, reader, isAdmin),
 	}
+}
+
+// maskDeniedPayload(D-t63 #5 重议兑现,D-t112 #4):tool.call.denied 的
+// reason/actor_roles 是主体账号态 oracle(unknown_subject=无账号 /
+// disabled=停用态 / role_mismatch=实持角色集),对「非本执行触发者且
+// 非 admin」读者脱敏——剥除两字段,归因面(actor_id/node_id/tool)保留。
+// 豁免判定用审计行 actor:本事件 actor 恒 = 执行行 triggered_by
+//(execauth.go 发射点单源,worker 按执行行反查被拒主体),与 D- 文本
+// 的「本执行触发者」构造性等价,无需行级回查执行表;
+// 本人执行保留自证调试性,admin 见全量(「证据链原样直读」哲学对 admin
+// 保留,DB 行永不改动——脱敏只发生在 DTO 投影层)。解码失败 = 原样
+// 返回(投影是读面增益,不为它引入 500 面;原始 payload 必为合法
+// JSON——发射点 Marshal 产物)。
+func maskDeniedPayload(e AuditEvent, reader string, isAdmin bool) json.RawMessage {
+	if e.EventType != audit.EventToolCallDenied || isAdmin || e.ActorID == reader {
+		return json.RawMessage(e.Payload)
+	}
+	var pl map[string]any
+	if err := json.Unmarshal(e.Payload, &pl); err != nil {
+		return json.RawMessage(e.Payload)
+	}
+	delete(pl, "actor_roles")
+	delete(pl, "reason")
+	masked, err := json.Marshal(pl)
+	if err != nil {
+		return json.RawMessage(e.Payload)
+	}
+	return masked
 }
 
 // parseAuditTimeRange 解析 from/to(RFC3339,event_at 闭区间):坏格式与
@@ -211,7 +242,7 @@ func (s *Server) listAuditEvents(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "bad_query"})
 		return
 	}
-	aq := AuditQuery{}
+	aq := AuditQuery{TenantID: tenantFrom(c)}
 	switch {
 	case execRaw != "":
 		id, err := strconv.ParseUint(execRaw, 10, 64)
@@ -262,7 +293,7 @@ func (s *Server) listAuditEvents(c *gin.Context) {
 		// 单分区裁剪 + idx_audit_exec;缺行 404(与 GET /executions/:id
 		// 同面)。exec_date 不可变,钉分区读与审计查询分语句无撕裂面
 		// (keyset 契约下无 total,COUNT 一致快照诉求已退役)。
-		exec, err := s.st.GetExecution(c.Request.Context(), s.dbh, aq.ExecutionID)
+		exec, err := s.st.GetExecution(c.Request.Context(), s.dbh, tenantFrom(c), aq.ExecutionID)
 		if err != nil {
 			mapStoreError(c, err)
 			return
@@ -280,9 +311,17 @@ func (s *Server) listAuditEvents(c *gin.Context) {
 		mapStoreError(c, err)
 		return
 	}
+	// tool.call.denied 投影脱敏(D-t63 #5 重议兑现,D-t112 #4):账号态
+	// 字段仅对「本执行触发者本人」与 admin 直读,其余读者见脱敏投影
+	//(实现按审计行 actor 豁免——tool.call.denied 的 actor 恒 =
+	// workflow_execution.triggered_by,execauth 发射点单源,两口径构造性
+	// 等价)。
+	claims, _ := ClaimsFrom(c)
+	isAdmin := claimsHaveAnyRole(claims, auth.RoleAdmin)
+	reader := actorFrom(c)
 	out := make([]auditEventDTO, 0, len(items))
 	for _, e := range items {
-		out = append(out, toAuditEventDTO(e))
+		out = append(out, toAuditEventDTO(e, reader, isAdmin))
 	}
 	nextCursor := ""
 	if next != nil {

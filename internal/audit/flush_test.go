@@ -10,6 +10,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -528,4 +529,73 @@ func TestFlushPreservesTraceAndPiiDefaults(t *testing.T) {
 	if rows[0].piiMasked {
 		t.Fatal("pii_masked = true on unmarked row, want false")
 	}
+}
+
+// TestFlushMaterializesExecTenant(D-t112):暂存行 tenant 0 占位,flush 随
+// exec_date 一并物化执行真实租户——audit_log 行判据的搬运半边锚。
+func TestFlushMaterializesExecTenant(t *testing.T) {
+	d := sqltest.MustOpenAt(t, testSchema)
+	ctx := context.Background()
+	// 测试租户 7(镜像 0011 种子形态,幂等重放)。
+	if _, err := d.Exec(
+		`INSERT INTO tenants (id, slug, name) VALUES (7, 't-seven', 'T Seven') ON DUPLICATE KEY UPDATE id = id`); err != nil {
+		t.Fatalf("seed tenant: %v", err)
+	}
+	exec7 := seedExecTenant(t, d, 7)
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM audit_log WHERE execution_id=?`, exec7)
+		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, exec7)
+	})
+	stageEvent(t, d, Event{ID: nextID(t), EventType: EventNodeStateChanged,
+		ExecutionID: exec7, NodeExecID: 1, NodeID: "n1", AttemptID: 11,
+		ActorType: ActorWorker, ActorID: "w1",
+		Payload: json.RawMessage(`{"from":"PENDING","to":"EXECUTING"}`)})
+	// 暂存面占位断言:flush 前暂存行 tenant_id = 0(列缺省)。
+	var pendingTenant uint64
+	if err := d.QueryRow(`SELECT tenant_id FROM audit_pending WHERE execution_id=?`, exec7).Scan(&pendingTenant); err != nil {
+		t.Fatalf("read pending tenant: %v", err)
+	}
+	if pendingTenant != 0 {
+		t.Fatalf("pending placeholder tenant = %d, want 0", pendingTenant)
+	}
+	if _, err := Flush(ctx, d, 0, 100); err != nil {
+		t.Fatalf("Flush: %v", err)
+	}
+	var logTenant uint64
+	if err := d.QueryRow(`SELECT tenant_id FROM audit_log WHERE execution_id=?`, exec7).Scan(&logTenant); err != nil {
+		t.Fatalf("read log tenant: %v", err)
+	}
+	if logTenant != 7 {
+		t.Fatalf("audit_log tenant = %d, want 7(flush 随 exec_date 物化执行租户)", logTenant)
+	}
+}
+
+// seedExecTenant 是 seedExec 的租户变体:execution 行显式落 tenant_id
+// (definition 行归 DEFAULT 0——本测试的变量只在 execution 归属)。
+func seedExecTenant(t *testing.T, d *sql.DB, tenant uint64) uint64 {
+	t.Helper()
+	defID := nextID(t)
+	execID := nextID(t)
+	name := fmt.Sprintf("audit-wf-%d", defID)
+	ins := func(q string, args ...any) {
+		t.Helper()
+		if _, err := d.Exec(q, args...); err != nil {
+			t.Fatalf("seed: %v", err)
+		}
+	}
+	ins(`INSERT INTO workflow_definition
+	  (id, name, version, status, dsl_version, dsl, dsl_hash, created_by, updated_by, published_by, published_at)
+	  VALUES (?, ?, 1, 'PUBLISHED', '1.0', '{}', ?, 'test', 'test', 'test', NOW(3))`,
+		defID, name, string(make([]byte, 64)))
+	ins(`INSERT INTO workflow_execution
+	  (id, tenant_id, definition_id, definition_name, definition_version, definition_hash, status, triggered_by, input, created_at)
+	  VALUES (?, ?, ?, ?, 1, ?, 'RUNNING', 'audit-test', '{}', ?)`,
+		execID, tenant, defID, name, string(make([]byte, 64)), seedExecCreatedAt)
+	t.Cleanup(func() {
+		_, _ = d.Exec(`DELETE FROM audit_pending WHERE execution_id=?`, execID)
+		_, _ = d.Exec(`DELETE FROM chain_heads WHERE execution_id=?`, execID)
+		_, _ = d.Exec(`DELETE FROM workflow_execution WHERE id=?`, execID)
+		_, _ = d.Exec(`DELETE FROM workflow_definition WHERE id=?`, defID)
+	})
+	return execID
 }
