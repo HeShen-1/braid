@@ -193,8 +193,11 @@ func (s *Server) login(c *gin.Context) {
 	// token 绑定(T11.3):按当前模式携 bnd claim(off = 空串不带;
 	// 与 Authenticate 校验共用 bindingFingerprint 单点,oidc 回调同契约)。
 	// 租户快照(D-t112):user.TenantID → tnt claim;两签发点同契约。
-	token, err := auth.SignTokenWithBinding(s.cfg.JWTSecret, ttl, user.Username, user.Roles, user.TenantID,
-		bindingFingerprint(s.cfg.TokenBinding, c.Request.UserAgent(), ip))
+	// 作用域(D-t131 决策 3):login 签发按角色默认全量——REST 面不消费
+	// scp(行为零变化),MCP 面对新 token 全量、对存量(无 scp)fail-closed。
+	token, err := auth.SignTokenScoped(s.cfg.JWTSecret, ttl, user.Username, user.Roles, user.TenantID,
+		bindingFingerprint(s.cfg.TokenBinding, c.Request.UserAgent(), ip),
+		auth.DefaultScopesForRoles(user.Roles))
 	if err != nil {
 		// 词表外角色/签名密钥问题:启动期 Validate 已拦密钥面,到达此处即
 		// 数据或接线异常,响亮 500 不伪造成功。

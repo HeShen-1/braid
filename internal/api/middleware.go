@@ -25,37 +25,44 @@ const claimsCtxKey = "braid.api.claims"
 // 不在这里做角色判定:路由级 RequireAnyRole 组合,读面与写面各自声明。
 func Authenticate(secret string, binding TokenBindingMode) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		h := c.GetHeader("Authorization")
-		const prefix = "Bearer "
-		if !strings.HasPrefix(h, prefix) {
-			abort(c, 401, "missing_token")
-			return
-		}
-		claims, err := auth.ParseToken(secret, strings.TrimPrefix(h, prefix))
-		if err != nil {
-			switch {
-			case errors.Is(err, auth.ErrTokenExpired):
-				abort(c, 401, "token_expired")
-			case errors.Is(err, auth.ErrTokenInvalid):
-				abort(c, 401, "token_invalid")
-			default:
-				// ErrInvalidInput(secret 过短)是配置误用,ParseToken 契约
-				// 下不应在请求路径出现;按 invalid 对外,细节留在错误链里。
-				abort(c, 401, "token_invalid")
-			}
-			return
-		}
-		if binding == TokenBindingUA || binding == TokenBindingUAIP24 {
-			// 签发与校验共用 bindingFingerprint 单点(见 binding.go);
-			// 失配与缺席同面(claims.Binding 零值 "" 恒不等于指纹)。
-			if claims.Binding != bindingFingerprint(binding, c.Request.UserAgent(), c.ClientIP()) {
-				abort(c, 401, "token_binding_mismatch")
-				return
-			}
-		}
-		c.Set(claimsCtxKey, claims)
-		c.Next()
+		authenticate(c, secret, binding)
 	}
+}
+
+// authenticate 是认证判定核(T13.1 抽出):REST 路由组中间件与 MCP 面
+// 单路由入口共用同一判定,失败面貌/绑定校验单点防双面漂移。失败时
+// Abort 写终态响应;成功时 claims 入 context(c.Next 由调用方形态决定:
+// 中间件链自然续行,单入口由调用方显式检查 IsAborted)。
+func authenticate(c *gin.Context, secret string, binding TokenBindingMode) {
+	h := c.GetHeader("Authorization")
+	const prefix = "Bearer "
+	if !strings.HasPrefix(h, prefix) {
+		abort(c, 401, "missing_token")
+		return
+	}
+	claims, err := auth.ParseToken(secret, strings.TrimPrefix(h, prefix))
+	if err != nil {
+		switch {
+		case errors.Is(err, auth.ErrTokenExpired):
+			abort(c, 401, "token_expired")
+		case errors.Is(err, auth.ErrTokenInvalid):
+			abort(c, 401, "token_invalid")
+		default:
+			// ErrInvalidInput(secret 过短)是配置误用,ParseToken 契约
+			// 下不应在请求路径出现;按 invalid 对外,细节留在错误链里。
+			abort(c, 401, "token_invalid")
+		}
+		return
+	}
+	if binding == TokenBindingUA || binding == TokenBindingUAIP24 {
+		// 签发与校验共用 bindingFingerprint 单点(见 binding.go);
+		// 失配与缺席同面(claims.Binding 零值 "" 恒不等于指纹)。
+		if claims.Binding != bindingFingerprint(binding, c.Request.UserAgent(), c.ClientIP()) {
+			abort(c, 401, "token_binding_mismatch")
+			return
+		}
+	}
+	c.Set(claimsCtxKey, claims)
 }
 
 // RequireAnyRole 是路由级角色闸:claims 命中任一所需角色放行,不足 403。
