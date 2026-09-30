@@ -100,8 +100,12 @@ type ApprovalRequestedPayload struct {
 // 自证);T4.4 审批历史/T6.4 审批吞吐指标的免 join 字段在此。
 type ApprovalDecidedPayload struct {
 	NodeID   string `json:"node_id"`
-	Decision string `json:"decision"` // approved | rejected(请求面词表,区别于 DB ENUM)
+	Decision string `json:"decision"` // approve | reject(请求面词表,区别于 DB ENUM;与 decisionFromRequest/Attempted 同词面)
 	Mode     string `json:"mode"`     // any | all(快照同源;T14.2 会签起双值,判据单点 scheduler.ApprovalOutcome)
+	// Via 是投票入口归因(T14.3):im_link = 钉钉卡片鉴权短链;缺省 =
+	// Bearer Web/API 决定面。归因是观测事实不是身份——actor_id 仍是决定者
+	// 本人(短链所指 approver,D-t143 决策 4)。
+	Via string `json:"via,omitempty"`
 }
 
 // ApprovalDecisionDeniedPayload 是 approval.decision_denied(T4.2 越权决定
@@ -144,6 +148,17 @@ type ApprovalNotifiedPayload struct {
 	// Round:T9.2 轮次段(D-t92 决策 7 的消费半边)——notify 去重锚按轮匹配,
 	// 回滚重挂后第二轮升级不再被第一轮行静默吞。
 	Round int `json:"round"`
+}
+
+// ApprovalIMNotifiedPayload 是 approval.im_notified(T14.3 IM 卡片送达)的
+// 事件体——形态镜像 ApprovalNotifiedPayload(D-t143 决策 5:per-channel
+// 去重锚,事件类型本身即通道)。平台归因不复制(配置真相源在部署 env);
+// 卡片内容的工作流上下文真相源在 node_execution.input_snapshot(notify
+// 包渲染单点)。
+type ApprovalIMNotifiedPayload struct {
+	NodeID string `json:"node_id"`
+	Reason string `json:"reason"` // escalated(P0 词表,scheduler.ApprovalNotifyPayload 同源)
+	Round  int    `json:"round"`
 }
 
 // ExecutionTriggeredPayload 是 execution.triggered(T5.5 API 触发面)的

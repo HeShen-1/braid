@@ -36,25 +36,57 @@ import (
 // traceShutdownGrace 是 OTel batcher 排空预算(独立停机窗)。
 const traceShutdownGrace = 2 * time.Second
 
-// buildNotifier 是 T4.5 SMTP 通知装配的决策面(抽函数 = 装配分支可测,
-// cmd/worker/main_test.go):整组缺省(BRAID_SMTP_HOST 空)→ nil(worker
-// 对 approval.notify 走降级 log-only ack);反向/正向半配置、坏配置 →
-// error 启动即败(notify.Validate);全配置 → notify.Sender。
-func buildNotifier(getenv func(string) string, db *sql.DB, ids *snowflake.Generator, workerID string) (worker.ApprovalNotifier, error) {
-	cfg, err := notify.ConfigFromEnv(getenv)
+// buildNotifier 是通知装配的决策面(T4.5 SMTP;T14.3 扩双通道扇出,
+// D-t143 决策 5;抽函数 = 装配分支可测,cmd/worker/main_test.go):SMTP/IM
+// 各自整组缺省 → 该通道不装(两通道全缺 → nil,worker 对 approval.notify
+// 走降级 log-only ack);半配置/坏配置 → error 启动即败(notify.Validate
+// / IMConfig.Validate);≥1 通道 → 直连(单通道)或 Fanout 扇出(双通道,
+// per-channel 去重锚隔离失败域)。返回的 smtp/im 布尔是可用性指标真值
+// (braid_smtp_configured / braid_im_configured——T6.4 通知丢失对账的
+// 静默闸按通道关闭,单通道指标不再被「任意 notifier 非 nil」误点亮)。
+func buildNotifier(getenv func(string) string, db *sql.DB, ids *snowflake.Generator, workerID string) (n worker.ApprovalNotifier, smtpOK, imOK bool, err error) {
+	var chans []notify.Channel
+	smtpCfg, err := notify.ConfigFromEnv(getenv)
 	if err != nil {
-		return nil, fmt.Errorf("worker: smtp config: %w", err)
+		return nil, false, false, fmt.Errorf("worker: smtp config: %w", err)
 	}
-	if cfg.Host == "" {
-		return nil, nil
+	if smtpCfg.Host != "" {
+		s, err := notify.NewSender(notify.Deps{
+			DB: db, IDs: ids, WorkerID: workerID, Logger: slog.Default(),
+		}, smtpCfg)
+		if err != nil {
+			return nil, false, false, fmt.Errorf("worker: notify sender: %w", err)
+		}
+		chans = append(chans, notify.Channel{Label: "smtp", N: s})
 	}
-	s, err := notify.NewSender(notify.Deps{
-		DB: db, IDs: ids, WorkerID: workerID, Logger: slog.Default(),
-	}, cfg)
+	imCfg, err := notify.IMConfigFromEnv(getenv)
 	if err != nil {
-		return nil, fmt.Errorf("worker: notify sender: %w", err)
+		return nil, false, false, fmt.Errorf("worker: im config: %w", err)
 	}
-	return s, nil
+	// 共享键联合孤儿闸(T14.3):BRAID_APPROVAL_BASE_URL 是 SMTP/IM 双通道
+	// 共享键,单通道视角不可判孤儿——两通道全未配置而它非空 = 死配置
+	//(SMTP 反向半配置家族),在此启动即败;任一通道在场则它是合法供给。
+	if smtpCfg.Host == "" && imCfg.WebhookURL == "" && smtpCfg.ApprovalBaseURL != "" {
+		return nil, false, false, fmt.Errorf("worker: approval base url set but no notify channel (fix BRAID_SMTP_HOST / BRAID_IM_WEBHOOK_URL or clear BRAID_APPROVAL_BASE_URL)")
+	}
+	if imCfg.WebhookURL != "" {
+		im, err := notify.NewIMSender(notify.Deps{
+			DB: db, IDs: ids, WorkerID: workerID, Logger: slog.Default(),
+		}, imCfg)
+		if err != nil {
+			return nil, false, false, fmt.Errorf("worker: im sender: %w", err)
+		}
+		chans = append(chans, notify.Channel{Label: "im", N: im})
+	}
+	switch len(chans) {
+	case 0:
+		return nil, false, false, nil
+	case 1:
+		n = chans[0].N
+	default:
+		n = notify.NewFanout(chans...)
+	}
+	return n, smtpCfg.Host != "", imCfg.WebhookURL != "", nil
 }
 
 func main() {
@@ -191,16 +223,21 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: scheduler: %w", err)
 	}
 
-	// T4.5 SMTP 通知装配:决策面在 buildNotifier(整组缺省 → nil 降级;
-	// 半配置/坏配置启动即败)。凭证仅经 env 注入,不进日志/审计(铁律)。
-	notifier, err := buildNotifier(os.Getenv, mysqlDB, ids, cfg.WorkerID)
+	// 通知装配(T4.5 SMTP;T14.3 IM 双通道):决策面在 buildNotifier
+	//(两通道整组缺省 → nil 降级;半配置/坏配置启动即败)。凭证仅经 env
+	// 注入,不进日志/审计(铁律)。
+	notifier, smtpOK, imOK, err := buildNotifier(os.Getenv, mysqlDB, ids, cfg.WorkerID)
 	if err != nil {
 		return err
 	}
-	// SMTP 可用性作为指标暴露:通知丢失对账告警的静默闸(未配置时
-	// approval.notified 设计性缺席,缺失不告警,D-t45)。
-	if notifier != nil {
+	// 通道可用性按通道暴露:通知丢失对账告警的静默闸(未配置通道的
+	// approval.notified / approval.im_notified 设计性缺席,缺失不告警,
+	// D-t45;T14.3 起双指标,单通道未配不误点亮)。
+	if smtpOK {
 		mset.Worker.SMTPConfigured.Set(1)
+	}
+	if imOK {
+		mset.Worker.IMConfigured.Set(1)
 	}
 
 	// T3.2/T3.5 工具运行时装配 + T5.2 执行时 RBAC 门:registry(内置

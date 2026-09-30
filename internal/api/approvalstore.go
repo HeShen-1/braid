@@ -34,6 +34,10 @@ var (
 	// ErrExecTerminal:执行已终态(失败兄弟的 fail-fast/取消竞速),决定面
 	// 收口(终态执行的迟到决定不产生新语义)。
 	ErrExecTerminal = errors.New("api: execution terminal")
+	// ErrLinkRoundStale:IM 鉴权短链的轮次绑定已过(T14.3)——链接签发于
+	// 第 N 轮,节点已进入第 N+k 轮(回滚重挂)。撤销语义的细粒度半边
+	//(D-t143 决策 2):旧轮链接对新轮投票结构性失效,不落票。
+	ErrLinkRoundStale = errors.New("api: im link round stale")
 )
 
 // ApprovalNode 是审批决定事务的锁定读面(POST 路径守卫读;GET 路径同结构

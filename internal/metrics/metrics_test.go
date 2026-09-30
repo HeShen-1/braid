@@ -42,6 +42,7 @@ var metricNames = map[string]dto.MetricType{
 	"braid_approval_notify_missing_rows":        dto.MetricType_GAUGE,
 	"braid_notify_results_total":                dto.MetricType_COUNTER,
 	"braid_smtp_configured":                     dto.MetricType_GAUGE,
+	"braid_im_configured":                       dto.MetricType_GAUGE,
 	"braid_asynq_archived_tasks":                dto.MetricType_GAUGE,
 	"braid_relay_deliveries_total":              dto.MetricType_COUNTER,
 	"braid_redis_memory_used_bytes":             dto.MetricType_GAUGE,

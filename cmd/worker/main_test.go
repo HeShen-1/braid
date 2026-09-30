@@ -13,6 +13,7 @@ import (
 
 	"braid/internal/llm"
 	"braid/internal/metrics"
+	"braid/internal/notify"
 	"braid/internal/snowflake"
 )
 
@@ -27,7 +28,7 @@ func TestBuildNotifier(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snowflake: %v", err)
 	}
-	full := map[string]string{
+	smtpFull := map[string]string{
 		"BRAID_SMTP_HOST":         "127.0.0.1",
 		"BRAID_SMTP_PORT":         "2525",
 		"BRAID_SMTP_STARTTLS":     "false",
@@ -35,33 +36,60 @@ func TestBuildNotifier(t *testing.T) {
 		"BRAID_SMTP_NOTIFY_TO":    "ops@test.example",
 		"BRAID_APPROVAL_BASE_URL": "https://braid.test.example",
 	}
+	imFull := map[string]string{
+		"BRAID_IM_WEBHOOK_URL":    "https://oapi.dingtalk.example/robot/send?access_token=x",
+		"BRAID_IM_LINK_SECRET":    "braid-im-link-secret-0123456789ab",
+		"BRAID_APPROVAL_BASE_URL": "https://braid.test.example",
+	}
+	both := map[string]string{}
+	for k, v := range smtpFull {
+		both[k] = v
+	}
+	for k, v := range imFull {
+		both[k] = v
+	}
 	cases := []struct {
-		name      string
-		env       map[string]string
-		wantNil   bool
-		wantError bool
+		name       string
+		env        map[string]string
+		wantNil    bool
+		wantFanout bool
+		wantSMTP   bool
+		wantIM     bool
+		wantError  bool
 	}{
-		{"unconfigured group degrades to nil", nil, true, false},
+		{"unconfigured group degrades to nil", nil, true, false, false, false, false},
 		{"knob-only orphans still nil", map[string]string{
 			"BRAID_SMTP_PORT": "2525",
-		}, true, false},
-		{"full config builds sender", full, false, false},
-		{"forward half-config fails", map[string]string{
+		}, true, false, false, false, false},
+		{"im link-secret orphan tolerated (dual-end key, api side may own it)", map[string]string{
+			"BRAID_IM_LINK_SECRET": "braid-im-link-secret-0123456789ab",
+		}, true, false, false, false, false},
+		{"smtp-only builds sender", smtpFull, false, false, true, false, false},
+		{"im-only builds im sender", imFull, false, false, false, true, false},
+		{"both channels build fanout", both, false, true, true, true, false},
+		{"smtp forward half-config fails", map[string]string{
 			"BRAID_SMTP_HOST":      "127.0.0.1",
 			"BRAID_SMTP_FROM":      "braid@test.example",
 			"BRAID_SMTP_NOTIFY_TO": "ops@test.example",
 			// 缺 BRAID_APPROVAL_BASE_URL
-		}, false, true},
-		{"reverse half-config fails", map[string]string{
+		}, false, false, false, false, true},
+		{"smtp reverse half-config fails", map[string]string{
 			"BRAID_SMTP_FROM":         "braid@test.example",
 			"BRAID_SMTP_NOTIFY_TO":    "ops@test.example",
 			"BRAID_APPROVAL_BASE_URL": "https://braid.test.example",
 			// 缺 BRAID_SMTP_HOST
-		}, false, true},
+		}, false, false, false, false, true},
+		{"im half-config fails (webhook without link secret)", map[string]string{
+			"BRAID_IM_WEBHOOK_URL":    "https://oapi.dingtalk.example/robot/send?access_token=x",
+			"BRAID_APPROVAL_BASE_URL": "https://braid.test.example",
+		}, false, false, false, false, true},
+		{"shared base url orphan with no channel fails (joint gate)", map[string]string{
+			"BRAID_APPROVAL_BASE_URL": "https://braid.test.example",
+		}, false, false, false, false, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			n, err := buildNotifier(func(k string) string { return tc.env[k] }, db, ids, "test-worker")
+			n, smtpOK, imOK, err := buildNotifier(func(k string) string { return tc.env[k] }, db, ids, "test-worker")
 			if tc.wantError {
 				if err == nil {
 					t.Fatalf("buildNotifier(%s) = nil error, want error", tc.name)
@@ -71,11 +99,20 @@ func TestBuildNotifier(t *testing.T) {
 			if err != nil {
 				t.Fatalf("buildNotifier(%s): %v", tc.name, err)
 			}
+			if smtpOK != tc.wantSMTP || imOK != tc.wantIM {
+				t.Fatalf("buildNotifier(%s) channel flags = (%v,%v), want (%v,%v)",
+					tc.name, smtpOK, imOK, tc.wantSMTP, tc.wantIM)
+			}
 			if tc.wantNil && n != nil {
 				t.Fatalf("buildNotifier(%s) = %T, want nil (degraded)", tc.name, n)
 			}
 			if !tc.wantNil && n == nil {
 				t.Fatalf("buildNotifier(%s) = nil, want sender", tc.name)
+			}
+			if tc.wantFanout && smtpOK && imOK {
+				if _, ok := n.(*notify.Fanout); !ok {
+					t.Fatalf("buildNotifier(%s) = %T, want *notify.Fanout", tc.name, n)
+				}
 			}
 		})
 	}

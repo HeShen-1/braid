@@ -169,9 +169,12 @@ func TestConfigFromEnv(t *testing.T) {
 		{"host missing but notify_to set", map[string]string{
 			"BRAID_SMTP_NOTIFY_TO": "ops@example.com",
 		}, true, nil},
-		{"host missing but base url set", map[string]string{
+		// T14.3 起 ApprovalBaseURL 是 SMTP/IM 共享键:Host 空而它非空在本层
+		// 放行(IM-only 部署合法形态),联合孤儿闸在 cmd/worker.buildNotifier
+		//(两通道全缺才报错;cmd 侧已锚)。
+		{"host missing but shared base url tolerated (IM-only form)", map[string]string{
 			"BRAID_APPROVAL_BASE_URL": "https://braid.example.com",
-		}, true, nil},
+		}, false, nil},
 		{"host missing with knob-only orphans tolerated", map[string]string{
 			"BRAID_SMTP_PORT":     "2525",
 			"BRAID_SMTP_TIMEOUT":  "30s",

@@ -167,12 +167,69 @@ func (s *Server) decideApproval(c *gin.Context) {
 		return
 	}
 
-	var out decisionDTO
-	var replay bool
-	err := WithTx(c.Request.Context(), s.dbh, func(tx DBTX) error {
-		node, err := s.st.lockApprovalNode(c.Request.Context(), tx, execID, nodeID, true)
+	out, replay, err := s.applyApprovalDecision(c.Request.Context(), decisionCall{
+		ExecID: execID, NodeID: nodeID, Actor: actor,
+		Decision: dbDecision, Comment: req.Comment,
+		LinkRound: -1, // Bearer 路径无短链轮绑定(守卫面见 decisionCall)
+	})
+	if err != nil {
+		if errors.Is(err, errDeciderRace) {
+			s.resolveDeciderRace(c, execID, nodeID, actor, dbDecision)
+			return
+		}
+		if errors.Is(err, ErrNotApprover) {
+			// 越权拒绝必须落审计(issue #33 硬约束)。独立小事务:主事务
+			// 已回滚,拒绝事实不与任何决定写同存亡。审计失败仅 slog——403
+			// 的裁决不受旁路写入失败影响。
+			s.writeDecisionDeniedAudit(c, execID, nodeID, actor, face, "membership")
+			mapApprovalError(c, err)
+			return
+		}
+		mapApprovalError(c, err)
+		return
+	}
+	if replay {
+		c.JSON(http.StatusOK, out)
+		return
+	}
+	c.JSON(http.StatusCreated, out)
+}
+
+// decisionCall 是决定事务单点的调用参数(T14.3 抽核,D-t143 决策 4):
+// HTTP Bearer 决定与 IM 鉴权短链决定两入口共消费——锁行/名单门/重放
+// 裁决/定局守卫/落票/审计/resume 语义单点,入口层只差「凭据怎么来」,
+// 两路行为永不分叉(判据单点从 scheduler.ApprovalOutcome 延伸到投票
+// 入口层)。LinkRound/LinkNodeExecID 是短链绑定面(LinkRound<0 = 无轮
+// 绑定,Bearer 路径;短链路径恒 ≥0):轮变 ⇒ ErrLinkRoundStale 不落票
+// (撤销语义细粒度半边),node_execution 错配 ⇒ 数据缺陷响亮失败。
+type decisionCall struct {
+	ExecID         uint64
+	NodeID         string
+	Actor          string // 投票主体(Bearer sub 或短链所指 approver)
+	Decision       string // DB ENUM(APPROVED/REJECTED)
+	Comment        string
+	Via            string // 审计归因:""(Bearer)| "im_link"
+	LinkRound      int
+	LinkNodeExecID uint64
+}
+
+// applyApprovalDecision 是决定事务单点(原 decideApproval 事务体原样
+// 抽出,守卫链语义零改动;注释随体迁移)。IM 短链入口经 ctx 无 trace
+// span(authed 组外)——决策行自身 trace_id(请求段)为空,但
+// linked_trace_id 仍从事务内 rootTrace 落值链回执行主链,审计串联
+// 不受影响(对抗审计修正:原注释把空列写成 linked_trace_id,失真)。
+func (s *Server) applyApprovalDecision(ctx context.Context, call decisionCall) (out decisionDTO, replay bool, err error) {
+	err = WithTx(ctx, s.dbh, func(tx DBTX) error {
+		execID, nodeID, actor, dbDecision := call.ExecID, call.NodeID, call.Actor, call.Decision
+		node, err := s.st.lockApprovalNode(ctx, tx, execID, nodeID, true)
 		if err != nil {
 			return err
+		}
+		// 短链 node_execution 绑定(数据缺陷族:链接指向的 node 行与当前
+		// 锁行错配——签发后节点行被替换,响亮失败不落票)。
+		if call.LinkNodeExecID != 0 && call.LinkNodeExecID != node.NodeExecID {
+			return fmt.Errorf("api: im link node_exec %d != locked %d (data defect)",
+				call.LinkNodeExecID, node.NodeExecID)
 		}
 		if node.Type != "approval" {
 			return ErrNotApproval
@@ -201,14 +258,19 @@ func (s *Server) decideApproval(c *gin.Context) {
 		// 与 resume 事件第四段(attempts+1)同源单点、恒差 1;旧轮票对
 		// 新轮不可见(谓词承载,消费点零漏改面)。
 		round := int(node.Attempts)
+		// 短链轮绑定(T14.3):链接签发于第 N 轮而节点已进入第 N+k 轮
+		//(回滚重挂)⇒ 旧轮链接结构性失效——不把旧轮票落进新轮。
+		if call.LinkRound >= 0 && call.LinkRound != round {
+			return ErrLinkRoundStale
+		}
 		// 重放/改判裁决先行(先于终态/状态守卫:已定局的执行 wf 可能已
 		// 终态,重放语义必须胜出 409 面)。重放行的 final 按本轮计数补判
 		//(锁内读数;非定局票重放恒缺省)。
-		approved, rejected, err := s.st.CountRoundDecisions(c.Request.Context(), tx, node.NodeExecID, round)
+		approved, rejected, err := s.st.CountRoundDecisions(ctx, tx, node.NodeExecID, round)
 		if err != nil {
 			return err
 		}
-		if prior, err := s.st.GetDecisionByApprover(c.Request.Context(), tx, node.NodeExecID, round, actor); err == nil {
+		if prior, err := s.st.GetDecisionByApprover(ctx, tx, node.NodeExecID, round, actor); err == nil {
 			if prior.Decision == dbDecision {
 				out = toDecisionDTO(prior)
 				out.Final, _ = scheduler.ApprovalOutcome(snap.Mode, len(snap.Approvers), approved, rejected)
@@ -237,7 +299,7 @@ func (s *Server) decideApproval(c *gin.Context) {
 		// 链指回执行主链 root X——D-2026-09-27-t62-otel-trace)。
 		var wfStatus string
 		var rootTrace sql.NullString
-		if err := tx.QueryRowContext(c.Request.Context(),
+		if err := tx.QueryRowContext(ctx,
 			`SELECT status, trace_id FROM workflow_execution WHERE id=?`, execID).
 			Scan(&wfStatus, &rootTrace); err != nil {
 			return fmt.Errorf("api: read execution status %d: %w", execID, err)
@@ -249,9 +311,9 @@ func (s *Server) decideApproval(c *gin.Context) {
 		if err != nil {
 			return fmt.Errorf("api: gen decision id: %w", err)
 		}
-		if err := s.st.InsertDecision(c.Request.Context(), tx, InsertDecisionParams{
+		if err := s.st.InsertDecision(ctx, tx, InsertDecisionParams{
 			ID: decisionID, ExecutionID: execID, NodeExecID: node.NodeExecID,
-			NodeID: nodeID, Round: round, DecidedBy: actor, Decision: dbDecision, Comment: req.Comment,
+			NodeID: nodeID, Round: round, DecidedBy: actor, Decision: dbDecision, Comment: call.Comment,
 		}); err != nil {
 			if errors.Is(err, ErrConflict) {
 				return errDeciderRace // 并发双投:事务外读回裁决
@@ -260,8 +322,9 @@ func (s *Server) decideApproval(c *gin.Context) {
 		}
 		// 迁移零(node 不动:WAITING_APPROVAL 的状态权威在 worker 续跑事务);
 		// 审计同事务(D-t26 调用方契约)。每票一行 approval.decided——
-		// 会签中间态票同样是决定事实(部分批准时间线)。
-		if err := s.appendApprovalAudit(c.Request.Context(), tx, execID, node.NodeExecID, nodeID, actor, face, snap.Mode, rootTrace.String); err != nil {
+		// 会签中间态票同样是决定事实(部分批准时间线)。via 是入口归因
+		//(T14.3:"" = Bearer,im_link = 鉴权短链)。
+		if err := s.appendApprovalAudit(ctx, tx, execID, node.NodeExecID, nodeID, actor, decisionFace(dbDecision), snap.Mode, rootTrace.String, call.Via); err != nil {
 			return err
 		}
 		// 定局判定重查(含本票;node 行锁内计数稳定):定局票(any 首票 /
@@ -269,17 +332,17 @@ func (s *Server) decideApproval(c *gin.Context) {
 		// attempts+1);非定局中间态票 → 零续跑意图,节点保持
 		// WAITING_APPROVAL——部分批准中间态,续跑意图只在定局票产生
 		//(T14.2;判据单点 scheduler.ApprovalOutcome)。
-		approved, rejected, err = s.st.CountRoundDecisions(c.Request.Context(), tx, node.NodeExecID, round)
+		approved, rejected, err = s.st.CountRoundDecisions(ctx, tx, node.NodeExecID, round)
 		if err != nil {
 			return err
 		}
 		final, _ := scheduler.ApprovalOutcome(snap.Mode, len(snap.Approvers), approved, rejected)
 		if final {
-			if err := s.appendResumeEvent(c.Request.Context(), tx, execID, node.NodeExecID, nodeID, node.Attempts+1, decisionID); err != nil {
+			if err := s.appendResumeEvent(ctx, tx, execID, node.NodeExecID, nodeID, node.Attempts+1, decisionID); err != nil {
 				return err
 			}
 		}
-		decided, err := s.st.GetDecisionByApprover(c.Request.Context(), tx, node.NodeExecID, round, actor)
+		decided, err := s.st.GetDecisionByApprover(ctx, tx, node.NodeExecID, round, actor)
 		if err != nil {
 			return err
 		}
@@ -287,50 +350,39 @@ func (s *Server) decideApproval(c *gin.Context) {
 		out.Final = final
 		return nil
 	})
+	return out, replay, err
+}
+
+// resolveDeciderRace:同审批人并发双投的败方读回(胜方已提交):同决定 →
+// 200 重放;异决定 → 409 改判。读回裁决抽在 deciderRaceReadback(T14.3:
+// IM 短链入口同语义消费)。
+func (s *Server) resolveDeciderRace(c *gin.Context, execID uint64, nodeID, actor, dbDecision string) {
+	replay, prior, err := s.deciderRaceReadback(c.Request.Context(), execID, nodeID, actor, dbDecision)
 	if err != nil {
-		if errors.Is(err, errDeciderRace) {
-			s.resolveDeciderRace(c, execID, nodeID, actor, dbDecision)
-			return
-		}
-		if errors.Is(err, ErrNotApprover) {
-			// 越权拒绝必须落审计(issue #33 硬约束)。独立小事务:主事务
-			// 已回滚,拒绝事实不与任何决定写同存亡。审计失败仅 slog——403
-			// 的裁决不受旁路写入失败影响。
-			s.writeDecisionDeniedAudit(c, execID, nodeID, actor, face, "membership")
-			mapApprovalError(c, err)
-			return
-		}
 		mapApprovalError(c, err)
 		return
 	}
 	if replay {
-		c.JSON(http.StatusOK, out)
-		return
-	}
-	c.JSON(http.StatusCreated, out)
-}
-
-// resolveDeciderRace:同审批人并发双投的败方读回(胜方已提交):同决定 →
-// 200 重放;异决定 → 409 改判。
-func (s *Server) resolveDeciderRace(c *gin.Context, execID uint64, nodeID, actor, dbDecision string) {
-	node, err := s.st.lockApprovalNode(c.Request.Context(), s.dbh, execID, nodeID, false)
-	if err != nil {
-		mapApprovalError(c, err)
-		return
-	}
-	// 轮次锚定读回(T9.2):并发双投必同轮(同一次挂起),按当轮 attempts
-	// 查,round-1 旧行结构性不可达——旧形态「读回命中旧轮行 → 假 200/
-	// 误 409」的实害路径封闭。
-	prior, err := s.st.GetDecisionByApprover(c.Request.Context(), s.dbh, node.NodeExecID, int(node.Attempts), actor)
-	if err != nil {
-		mapApprovalError(c, err)
-		return
-	}
-	if prior.Decision == dbDecision {
 		c.JSON(http.StatusOK, toDecisionDTO(prior))
 		return
 	}
 	mapApprovalError(c, ErrDecisionConflict)
+}
+
+// deciderRaceReadback 是竞速败方的读回裁决(T14.3 抽出)。轮次锚定读回
+// (T9.2):并发双投必同轮(同一次挂起),按当轮 attempts 查,round-1
+// 旧行结构性不可达——旧形态「读回命中旧轮行 → 假 200/误 409」的实害
+// 路径封闭。
+func (s *Server) deciderRaceReadback(ctx context.Context, execID uint64, nodeID, actor, dbDecision string) (bool, Decision, error) {
+	node, err := s.st.lockApprovalNode(ctx, s.dbh, execID, nodeID, false)
+	if err != nil {
+		return false, Decision{}, err
+	}
+	prior, err := s.st.GetDecisionByApprover(ctx, s.dbh, node.NodeExecID, int(node.Attempts), actor)
+	if err != nil {
+		return false, Decision{}, err
+	}
+	return prior.Decision == dbDecision, prior, nil
 }
 
 // getApproval:GET /executions/:id/approvals/:node_id —— 名单内审批人可读
@@ -448,15 +500,16 @@ type approvalDetailDTO struct {
 // 决定者;node_id 携目标节点;attempt 恒 NULL——决定先于续跑 attempt 创建)。
 // linkedTrace 是执行主链 root trace(workflow_execution.trace_id):审批链
 // 段首行单点落 linked_trace_id(T6.2)——本行 trace_id = 决策请求 trace Z
-// (ctx 自动提取),Z 链头部一行指回 X,两链由此串联。
+// (ctx 自动提取),Z 链头部一行指回 X,两链由此串联。via 是入口归因
+// (T14.3:"" = Bearer,im_link = 鉴权短链;决定者身份仍在行级 actor_id)。
 func (s *Server) appendApprovalAudit(ctx context.Context, tx DBTX,
-	execID, nodeExecID uint64, nodeID, actor, face, mode, linkedTrace string) error {
+	execID, nodeExecID uint64, nodeID, actor, face, mode, linkedTrace, via string) error {
 	auditID, err := s.ids.Next()
 	if err != nil {
 		return fmt.Errorf("api: gen audit id: %w", err)
 	}
 	raw, err := json.Marshal(audit.ApprovalDecidedPayload{
-		NodeID: nodeID, Decision: face, Mode: mode,
+		NodeID: nodeID, Decision: face, Mode: mode, Via: via,
 	})
 	if err != nil {
 		return fmt.Errorf("api: marshal approval.decided payload: %w", err)
