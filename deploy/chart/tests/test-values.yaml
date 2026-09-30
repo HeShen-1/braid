@@ -11,6 +11,7 @@ secrets:
   llmApiKey: dummy_llm_key
   toolTokenSecret: dummy_tool_token
   smtpPassword: dummy_smtp_pw
+  dbQueryDsn: "ro:dummy_ro_pw@tcp(db.example.invalid:3306)/analytics"
   oidcClientSecret: dummy_oidc_secret
 config:
   llmBaseUrl: https://llm.example.invalid/v1

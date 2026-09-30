@@ -76,7 +76,7 @@ helm upgrade braid deploy/chart -f my-braid-values.yaml \
   既有 Secret。**键名契约**:`mysql-root-password`、
   `db-{api,worker,relay,reaper}-password`、`auth-jwt-secret`、
   `llm-api-key`、`{api,worker,relay,reaper}-dsn`、`tool-token-secret`、
-  `smtp-password`、`oidc-client-secret`。DSN 的 host 段 = `<fullname>-mysql:3306`,
+  `smtp-password`、`dbquery-dsn`(T10.4,空 = 不注册)、`oidc-client-secret`。DSN 的 host 段 = `<fullname>-mysql:3306`,
   其中 fullname 见 `_helpers.tpl`(release 名含 `braid` 子串时 = release 名
   本身——如 `helm install braid` 的 host 是 `braid-mysql:3306`;否则 =
   `<release>-braid`,如 release `prod` → `prod-braid-mysql:3306`)。

@@ -69,6 +69,8 @@ secrets:
   llmApiKey: "" # 必填(生产装配 llm 组;仅经 env 注入)
   toolTokenSecret: "" # 可选(空 = worker 进程内随机,重启轮换)
   smtpPassword: "" # smtp 组可选
+  dbQueryDsn: "" # 可选(T10.4 db_query 只读账号连接串,空 = 不注册;沙箱
+                 # 模式下 host:port 自动进 egress 钉死条目,README §10)
   oidcClientSecret: "" # oidc 组开则渲染期必填(与组内其余键同层执法)
 
 # ---- 非敏感配置(values→env 字面量;compose ${VAR:-} 同面)----

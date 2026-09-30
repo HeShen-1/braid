@@ -88,6 +88,16 @@ spec:
               value: {{ .Values.config.smtpStarttls | quote }}
             - name: BRAID_APPROVAL_BASE_URL
               value: {{ .Values.config.approvalBaseUrl | quote }}
+            {{- if .Values.secrets.dbQueryDsn }}
+            # db_query(T10.4;空 = 不注册,选通面:仅设值时渲染,默认面
+            # 与 compose 逐键等价不受扰;沙箱模式下 DSN host:port 进 egress
+            # 钉死条目 = D-t104 私网豁免,deploy/README.md §10)
+            - name: BRAID_DBQUERY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: dbquery-dsn
+            {{- end }}
             {{- if .Values.tools.sandbox.enabled }}
             # 沙箱选通面(T10.1/T10.2;启用 = docker 模式,前置
             # dockerSocketMount,镜像构建见 deploy/README.md §7):
