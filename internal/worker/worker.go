@@ -118,11 +118,13 @@ type Executor interface {
 	Execute(ctx context.Context, req Request) (Outcome, error)
 }
 
-// ApprovalNotifier 是审批通知发射缝(T4.5,D-t43 #3 锁定的换装点):消费
-// approval.notify 事件后的发送面。生产实现 notify.Sender(结构化满足,
-// cmd/worker 装配;发送/去重/审计编排全在 notify 包)。nil = 未配置 SMTP
-// 的降级面——保留 T4.3 占位 log-only ack 语义(dev 栈无 SMTP 可用;送达
-// 缺口由 T6.4 的 escalated-vs-notified 审计对账暴露,非静默)。
+// ApprovalNotifier 是审批通知发射缝(T4.5,D-t43 #3 锁定的换装点;T14.3
+// 起双通道形态):消费 approval.notify 事件后的发送面。生产实现 =
+// notify.Sender(SMTP)/ notify.IMSender(钉钉)/ notify.Fanout(双通道
+// 扇出,per-channel 去重锚;cmd/worker 装配)。nil = SMTP 与 IM 双通道
+// 全未配置的降级面——保留 T4.3 占位 log-only ack 语义(dev 栈零外发
+// 通道可用;送达缺口由 T6.4 的 escalated-vs-notified/im_notified 审计
+// 对账暴露,非静默)。
 type ApprovalNotifier interface {
 	NotifyApproval(ctx context.Context, execID, nodeExecID uint64, reason string, round int) error
 }
@@ -134,7 +136,7 @@ type Deps struct {
 	IDs      *snowflake.Generator // attempt 行 id 生成(应用侧 Snowflake)
 	Executor Executor
 	Sched    *scheduler.Scheduler // T2.4 调度器(完成回写 + execution.start);nil 拒启动
-	Notifier ApprovalNotifier     // T4.5 审批通知面;nil = SMTP 未配置降级
+	Notifier ApprovalNotifier     // T4.5 审批通知面(T14.3 双通道扇出);nil = 全通道未配置降级
 	Logger   *slog.Logger
 	// Metrics 是观测面(T6.4):nil = 关闭(测试默认)。notify 结果计数 +
 	// asynq archived 死信 gauge(探测 goroutine 随 Run 生命周期)。
@@ -470,13 +472,16 @@ func (h *attHandler) handleNodeResume(ctx context.Context, t *asynq.Task) error 
 }
 
 // handleApprovalNotify 处理 approval.notify(T4.3 审批超时升级通知;T4.5
-// 起换装为 SMTP 发送面,注册行不动)。P0 语义 = 解析校验 + reason 词表闸 +
-// Notifier 分派:通知的事实记录在 outbox 事件行与 approval.escalated 审计行
-// (reaper 同事务落定);通知事件不写节点状态——发送/去重(approval.notified
-// 审计行锚)/邮件渲染全在 notify 包。Notifier nil(SMTP 未配置)= 降级
-// log-only ack(T4.3 占位语义的显式保留)。错误上抛 ⇒ asynq 内部重试一次
+// 起换装为通知发送面,T14.3 起双通道扇出——SMTP/钉钉或 Fanout,注册行
+// 不动)。P0 语义 = 解析校验 + reason 词表闸 + Notifier 分派:通知的事实
+// 记录在 outbox 事件行与 approval.escalated 审计行(reaper 同事务落定);
+// 通知事件不写节点状态——发送/去重(approval.notified / approval.
+// im_notified 审计行锚,per-channel)/渲染全在 notify 包。Notifier nil
+// (SMTP 与 IM 双通道全未配置)= 降级 log-only ack(T4.3 占位语义的显式
+// 保留)。错误上抛 ⇒ asynq 内部重试一次
 // 后 archived(死信可见,notify 无死信网——D-t43 已知边界,告警归 T6.4);
-// 重投的幂等收敛 = notify.ErrAlreadyNotified → ack。不触节点执行器。
+// 重投的幂等收敛 = notify.ErrAlreadyNotified → ack(Fanout 面吸收同哨兵,
+// 单通道直连面原样透传)。不触节点执行器。
 func (h *attHandler) handleApprovalNotify(ctx context.Context, t *asynq.Task) error {
 	taskID, ok := asynq.GetTaskID(ctx)
 	if !ok {
@@ -505,7 +510,7 @@ func (h *attHandler) dispatchApprovalNotify(ctx context.Context, taskID string, 
 		h.log.Info("approval.notify_degraded",
 			"execution_id", p.ExecutionID, "node_execution_id", p.NodeExecutionID,
 			"reason", p.Reason, "task_id", taskID,
-			"hint", "smtp unconfigured; log-only ack (T4.5)")
+			"hint", "smtp and im both unconfigured; log-only ack (T4.5/T14.3)")
 		h.mNotify(metrics.NotifyOutcomeDegraded)
 		return nil
 	}

@@ -111,6 +111,7 @@ const (
 	EventApprovalEscalated          = "approval.escalated"
 	EventApprovalResumeRedispatched = "approval.resume_redispatched"
 	EventApprovalNotified           = "approval.notified"
+	EventApprovalIMNotified         = "approval.im_notified"
 	EventExecutionTriggered         = "execution.triggered"
 	EventExecutionRolledBack        = "execution.rolled_back"
 	EventRollbackDenied             = "rollback.denied"
@@ -161,6 +162,7 @@ var knownEvents = map[string]bool{
 	EventApprovalEscalated:          true,
 	EventApprovalResumeRedispatched: true,
 	EventApprovalNotified:           true,
+	EventApprovalIMNotified:         true,
 	EventExecutionTriggered:         true,
 	EventExecutionRolledBack:        true,
 	EventRollbackDenied:             true,

@@ -88,19 +88,22 @@ var mailAddrRe = regexp.MustCompile(`^[^@\s]+@[^@\s]+$`)
 
 // Validate 报告配置矛盾(启动即败,不进运行期)。上界:Timeout ≤2m(通知是
 // 旁路面,不允许长占 worker 槽);端口全域校验。配对闸(对抗审计 M②③):
-//   - 反向半配置:Host 缺失但 From/NotifyTo/ApprovalBaseURL 任一非空 ⇒ 报错
-//     (HOST 拼错/丢失而其余键就位时,静默降级 = 邮件永不发出且零启动信号,
-//     违背本包「半配置启动即败」自立原则;PORT/TIMEOUT/STARTTLS 孤儿容忍
-//     ——纯旋钮无语义承诺);
+//   - 反向半配置:Host 缺失但 From/NotifyTo 任一非空 ⇒ 报错(HOST 拼错/
+//     丢失而其余键就位时,静默降级 = 邮件永不发出且零启动信号,违背本包
+//     「半配置启动即败」自立原则;PORT/TIMEOUT/STARTTLS 孤儿容忍——纯旋钮
+//     无语义承诺)。ApprovalBaseURL 不在本闸:T14.3 起它是 SMTP/IM 双通道
+//     共享键(BRAID_APPROVAL_BASE_URL),IM-only 部署合法持有——孤儿判定
+//     上移到装配层(cmd/worker.buildNotifier,两通道可见处);
 //   - 凭证轴:Password 存在即意图认证 ⇒ Username 必须同在(否则静默变
 //     不认证,对要求认证的中继每发 530);Username 非空且 Host 非 loopback
 //     ⇒ StartTLS 必须开(否则 net/smtp PlainAuth 对明文拒发,每发送必败
 //     ——标准库兜底是生产流量期每发必炸,不是启动闸)。
 func (c Config) Validate() error {
 	if c.Host == "" {
-		// 未配置 + 语义键孤儿 = 反向半配置(见方法注释);纯未配置放行。
-		if c.From != "" || len(c.NotifyTo) > 0 || c.ApprovalBaseURL != "" {
-			return fmt.Errorf("notify: smtp host empty but from/notify_to/approval_base_url set (half-configured: fix BRAID_SMTP_HOST or clear the group)")
+		// 未配置 + SMTP 自有语义键孤儿 = 反向半配置(见方法注释);纯未配置
+		// 与共享键孤儿放行(共享键归装配层联合判定)。
+		if c.From != "" || len(c.NotifyTo) > 0 {
+			return fmt.Errorf("notify: smtp host empty but from/notify_to set (half-configured: fix BRAID_SMTP_HOST or clear the group)")
 		}
 		return nil
 	}

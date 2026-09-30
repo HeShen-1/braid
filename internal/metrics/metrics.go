@@ -147,6 +147,7 @@ type ReaperSet struct {
 type WorkerSet struct {
 	NotifyResults  *prometheus.CounterVec
 	SMTPConfigured prometheus.Gauge
+	IMConfigured   prometheus.Gauge
 	AsynqArchived  prometheus.Gauge
 }
 
@@ -323,6 +324,10 @@ func NewSet() (*Set, *prometheus.Registry) {
 			SMTPConfigured: f.NewGauge(prometheus.GaugeOpts{
 				Name: "braid_smtp_configured",
 				Help: "1 when the worker runs with SMTP configured, 0 in degraded log-only mode; gates the notify-missing alert.",
+			}),
+			IMConfigured: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_im_configured",
+				Help: "1 when the worker runs with the IM approval-card channel (DingTalk webhook) configured; intended to gate a future approval.im_notified-missing alert (T6.4 domain, not yet defined).",
 			}),
 			AsynqArchived: f.NewGauge(prometheus.GaugeOpts{
 				Name: "braid_asynq_archived_tasks",

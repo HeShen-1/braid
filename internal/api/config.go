@@ -101,6 +101,13 @@ type Config struct {
 	// OIDC 是 OIDC 插件配置组(T11.1,BRAID_OIDC_*):零值 = 关闭(路由
 	// 不挂载);半开在 auth.ParseOIDCConfig 启动即败(组全或无)。
 	OIDC auth.OIDCConfig
+	// IMLinkSecret 是 IM 鉴权短链验证密钥(T14.3,D-t143 决策 2/7):
+	// 与 worker/notify 签发侧同键(BRAID_IM_LINK_SECRET,双端同批供给
+	// ——跨组件半配置无法启动期互检,部署契约:worker 配了 api 没配 =
+	// 卡片链接点击全 404;api 配了 worker 没配 = 卡片根本发不出);空 =
+	// IM 审批入口关闭(端点恒挂载,返回 404,不随配置漂移路由表)。非空
+	// 须过 auth.MinIMLinkSecretLen 熵地板。仅经 env 注入,不进日志/审计。
+	IMLinkSecret string
 }
 
 // DefaultConfig 返回生产默认值(JWTSecret 故意留空:必须显式供给)。
@@ -168,6 +175,13 @@ func (c Config) Validate() error {
 	// 拦下(env 面已由 auth.ParseOIDCConfig 拦,此为第二道)。
 	if err := c.OIDC.Validate(); err != nil {
 		return err
+	}
+	// IM 短链密钥(T14.3):空 = 关闭(合法);非空须过熵地板(与 notify
+	// 签发侧同口径,auth.MinIMLinkSecretLen 单源——防「可暴破 capability
+	// 秘密」静默上线)。
+	if len(c.IMLinkSecret) > 0 && len(c.IMLinkSecret) < auth.MinIMLinkSecretLen {
+		return fmt.Errorf("api: im link secret %d bytes < %d floor (fix BRAID_IM_LINK_SECRET)",
+			len(c.IMLinkSecret), auth.MinIMLinkSecretLen)
 	}
 	return nil
 }
@@ -249,6 +263,11 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		return c, err
 	}
 	c.OIDC = oidcCfg
+	// IM 短链密钥(T14.3):api 侧只验不签(签发在 worker/notify);空 =
+	// IM 审批入口关闭。跨组件半配置(worker 配了 api 没配 = 卡片链接
+	// 点击全 404;api 配了 worker 没配 = 卡片根本发不出)无法在本进程
+	// 判——部署契约 D-t143 决策 7。
+	c.IMLinkSecret = getenv("BRAID_IM_LINK_SECRET")
 	pool, err := db.ParsePoolConfig(getenv)
 	if err != nil {
 		return c, err
