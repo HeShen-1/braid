@@ -113,7 +113,7 @@ func toAuditEventDTO(e AuditEvent, reader string, isAdmin bool) auditEventDTO {
 // disabled=停用态 / role_mismatch=实持角色集),对「非本执行触发者且
 // 非 admin」读者脱敏——剥除两字段,归因面(actor_id/node_id/tool)保留。
 // 豁免判定用审计行 actor:本事件 actor 恒 = 执行行 triggered_by
-//(execauth.go 发射点单源,worker 按执行行反查被拒主体),与 D- 文本
+// (execauth.go 发射点单源,worker 按执行行反查被拒主体),与 D- 文本
 // 的「本执行触发者」构造性等价,无需行级回查执行表;
 // 本人执行保留自证调试性,admin 见全量(「证据链原样直读」哲学对 admin
 // 保留,DB 行永不改动——脱敏只发生在 DTO 投影层)。解码失败 = 原样

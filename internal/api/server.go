@@ -145,6 +145,10 @@ func (s *Server) Router() *gin.Engine {
 	// Web 审批页静态面(T4.4):内嵌资产 + 安全头,见 web.go。
 	s.registerWeb(r)
 
+	// MCP server 面(T13.1,D-t131):POST /mcp 单端点,协议版本钉死
+	// 2026-07-28 stateless;鉴权/租户/触发判定核与 REST 同源。
+	s.registerMCP(r)
+
 	// 登录面(T4.4):authed 组外——凭据换 token(错误面/防枚举语义见
 	// login.go)。限流/账号锁定/登录审计已随 T6.4 落地(loginDefenseGate +
 	// login_audit 表,旋钮见 Config;DB 锚定升级归 P1 停车场)。
@@ -152,6 +156,10 @@ func (s *Server) Router() *gin.Engine {
 
 	authed := r.Group("/api/v1", s.traceSpan(), Authenticate(s.cfg.JWTSecret, s.cfg.TokenBinding))
 	v1 := authed
+	// 自窄化 scoped token 签发面(T13.1,D-t131 决策 4):任意有效 token
+	// 请求自身默认作用域子集(只窄不宽)——外部 agent 窄 token 的运维面;
+	// 角色零门槛(读角色也允许自窄,上限由其角色默认集钉死)。
+	v1.POST("/auth/tokens", s.issueToken)
 	v1.POST("/definitions", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.createDefinition)
 	v1.GET("/definitions", s.listDefinitions)
 	v1.GET("/definitions/:name", s.getLatestPublished)
