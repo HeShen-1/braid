@@ -114,6 +114,7 @@ outbox UPDATE / audit_pending INSERT)已全部收回。
 | audit_pending | — | INSERT | — | SELECT,DELETE |
 | chain_heads | SELECT,INSERT,UPDATE(last_id,last_row_hash) | SELECT,INSERT,UPDATE(last_id,last_row_hash) | — | SELECT,INSERT,UPDATE,DELETE |
 | login_audit | INSERT | — | — | SELECT,DELETE |
+| login_throttle | SELECT,INSERT,UPDATE(window_start,count,locked_until,updated_at) | — | — | SELECT,DELETE |
 | users / user_role | SELECT | SELECT | — | — |
 | schema_migrations | SELECT | SELECT | SELECT | SELECT |
 
@@ -127,7 +128,17 @@ outbox UPDATE / audit_pending INSERT)已全部收回。
   哈希链的 per-execution 锚(head 行锁 = 串行化点,verified 轮换戳 =
   全链复走触发锚,broken 闩 = fail-closed 执法位),UPDATE 是设计语义
   ——不在 CheckAuditAppendOnly 断言表集 {audit_log, login_audit} 内。
-  **列级最小授权**:api/worker 的 UPDATE 限 (last_id, last_row_hash)
+- **login_throttle 同为簿记面(T11.3,D-2026-09-29-t113 #2)**:登录
+  防御状态(连败锁定 + IP 固定窗口,多副本共享真相源),UPDATE 是设计
+  语义、api 无 DELETE(成功重置走 UPDATE,且 UPDATE 列级收窄到四数据
+  列——kind 仅 INSERT 写);超龄行由 reaper janitor 回收(常量 30d
+  horizon,`updated_at` 谓词 + 锁定期未满行守卫)。
+- **列级最小授权**:矩阵中括号列集(如 chain_heads 的
+  `(last_id,last_row_hash)`、login_throttle 的
+  `(window_start,count,locked_until,updated_at)`)是 GRANT 的字面
+  列集——不变量列(kind、broken_*/verified_* 等)对写路径结构性
+  不可达,grants.sh 与本矩阵同源。chain_heads 的收窄由来(T9.3):
+  api/worker 的 UPDATE 限 (last_id, last_row_hash)
   两列(写路径唯一更新面),broken_*/verified_* 对它们不可写 =
   「闩复位 = 人工」的权限面承载;reaper 全行 UPDATE(校验轮换/落闩/
   推链尾)+ DELETE(janitor 分区回收级联:证据窗口消亡 ⇒ 链义务解除,

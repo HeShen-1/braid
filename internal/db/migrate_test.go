@@ -93,9 +93,10 @@ var engineTables = map[string]bool{
 // authTables:0002 起按域分 map 登记(T5.1)——后续新增域只加自己的 map,
 // 不改写 engine map 的语义;assertTables 遍历全部域。
 var authTables = map[string]bool{
-	"users":       true,
-	"user_role":   true,
-	"login_audit": true, // 0005(T6.4 登录审计,append-only 账号域事实)
+	"users":          true,
+	"user_role":      true,
+	"login_audit":    true, // 0005(T6.4 登录审计,append-only 账号域事实)
+	"login_throttle": true, // 0010(T11.3 登录防御 DB 锚定,可 UPDATE 簿记面——镜像 chain_heads 判)
 }
 
 var allDomainTables = []map[string]bool{engineTables, authTables}
@@ -222,6 +223,25 @@ func TestSchemaContract(t *testing.T) {
 		if nullable[col] != "NO" {
 			t.Fatalf("node_attempt.%s IS_NULLABLE=%q, want NO(对抗审计修复防回退)", col, nullable[col])
 		}
+	}
+
+	// 0010 login_throttle 结构锚(每迁移防回退惯例,审计 LOW):PK 单列于
+	// throttle_key 且 janitor 谓词索引在场。
+	var pkCols, idxCnt int
+	if err := d.QueryRow(`
+SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'login_throttle'
+   AND CONSTRAINT_NAME = 'PRIMARY'`).Scan(&pkCols); err != nil {
+		t.Fatalf("login_throttle pk: %v", err)
+	}
+	if err := d.QueryRow(`
+SELECT COUNT(*) FROM information_schema.STATISTICS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'login_throttle'
+   AND INDEX_NAME = 'idx_login_throttle_updated'`).Scan(&idxCnt); err != nil {
+		t.Fatalf("login_throttle idx: %v", err)
+	}
+	if pkCols != 1 || idxCnt != 1 {
+		t.Fatalf("login_throttle 锚:pk cols=%d(Composite? want 1)、idx=%d(want 1)", pkCols, idxCnt)
 	}
 
 	// CHECK 约束齐备:10 个(definition 1 + node 3 + attempt 2 + audit 1 + users 3;

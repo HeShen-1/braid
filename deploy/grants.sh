@@ -44,6 +44,11 @@ GRANT SELECT, INSERT          ON braid.approval_decision  TO 'braid_api'@'%';
 GRANT SELECT, INSERT          ON braid.audit_log          TO 'braid_api'@'%';
 GRANT SELECT, INSERT, UPDATE (last_id, last_row_hash) ON braid.chain_heads TO 'braid_api'@'%'; -- T9.3 哈希链锚:列级最小授权——api 写路径只推链尾两列;闩/水位列(broken_*/verified_*)不可写 = 「闩复位=人工」的权限面承载
 GRANT INSERT                  ON braid.login_audit        TO 'braid_api'@'%';
+-- login_throttle(T11.3):登录防御状态簿记面——api 行锁单事务读-判-写
+-- (成功重置走 UPDATE,无 DELETE;UPDATE 列级收窄:kind 仅 INSERT 写,
+-- chain_heads 列级先例);reaper janitor 超龄回收(DELETE 谓词列需
+-- SELECT,login_audit 同注记)。
+GRANT SELECT, INSERT, UPDATE (window_start, count, locked_until, updated_at) ON braid.login_throttle TO 'braid_api'@'%';
 GRANT SELECT                  ON braid.users              TO 'braid_api'@'%';
 GRANT SELECT                  ON braid.user_role          TO 'braid_api'@'%';
 GRANT INSERT                  ON braid.outbox             TO 'braid_api'@'%';
@@ -87,5 +92,6 @@ GRANT SELECT, INSERT, DELETE  ON braid.outbox              TO 'braid_reaper'@'%'
 -- 无 SELECT 则 purge 报 1143(演练实证,MySQL 权限规则:UPDATE/DELETE 的
 -- 谓词列需要 SELECT)。
 GRANT SELECT, DELETE          ON braid.login_audit         TO 'braid_reaper'@'%';
+GRANT SELECT, DELETE          ON braid.login_throttle      TO 'braid_reaper'@'%';
 GRANT SELECT                  ON braid.schema_migrations   TO 'braid_reaper'@'%';
 SQL
