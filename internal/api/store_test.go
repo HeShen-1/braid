@@ -583,3 +583,31 @@ func TestDefinitionTenantIsolation(t *testing.T) {
 		t.Fatalf("totals = %d/%d, want 双方各有草稿行", total0, total7)
 	}
 }
+
+// TestStorePublishToolAllowlistMCPNames:T13.2 面——MCP 声明名经
+// registry.Names() 进发布白名单(名字面语义与内置名同判;动态发现无
+// 注入面)。需 t13 MySQL(不可达自动 skip)。
+func TestStorePublishToolAllowlistMCPNames(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	mcpDSL := func(name, tool string) []byte {
+		return fmt.Appendf(nil, `{"dsl":"1.0","name":%q,
+"nodes":[{"id":"w","type":"tool","tool":%q,"inputs":{"city":"berlin"},"outputs":{"content_text":"string"}}],
+"edges":[],
+"outputs":{"s":"{{nodes.w.output.content_text}}"}}`, name, tool)
+	}
+	allowed, err := createDraft(t, st, dbh, mcpDSL(uniqName("mcp-ok"), "mcp_weather_lookup"), "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if _, err := st.Publish(ctx, dbh, 0, allowed.ID, "alice", "mcp_weather_lookup"); err != nil {
+		t.Fatalf("publish mcp-declared tool with matching allowlist: %v", err)
+	}
+	blocked, err := createDraft(t, st, dbh, mcpDSL(uniqName("mcp-no"), "mcp_undeclared"), "alice")
+	if err != nil {
+		t.Fatalf("CreateDraft: %v", err)
+	}
+	if _, err := st.Publish(ctx, dbh, 0, blocked.ID, "alice", "mcp_weather_lookup"); err == nil || !HasIssueCode(err, dsl.IssueToolNotAllowed) {
+		t.Fatalf("publish undeclared mcp tool err = %v, want tool_not_allowed", err)
+	}
+}

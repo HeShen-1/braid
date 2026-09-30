@@ -41,14 +41,20 @@ const toolPackageVersion = 1
 type toolPackage struct {
 	Version int                        `json:"version"`
 	Tools   map[string]toolPackageTool `json:"tools"`
+	// MCPServers(T13.2,D-t132):外部 MCP server 声明 alias → https base
+	// URL。值校验(词形/URL 单门)归 NewMCPTools 构造器,与 http 端点
+	// 同纪律;未引用 server 在 parseToolPackage 拒(半配置 fail-closed)。
+	MCPServers map[string]string `json:"mcp_servers,omitempty"`
 }
 
-// toolPackageTool 是单工具声明。Endpoints(http)/Dirs(file_read)按工具
-// 各归其位(交叉携带即拒——签名面内也不容声明歧义);值校验全权交给
-// 既有构造器(与 env 路径同门:声明但空配置 = 构造器响亮拒)。
+// toolPackageTool 是单工具声明。Endpoints(http)/Dirs(file_read)/MCP
+// (外部 MCP 工具引用)按工具各归其位(交叉携带即拒——签名面内也不容
+// 声明歧义);值校验全权交给既有构造器(与 env 路径同门:声明但空配置
+// = 构造器响亮拒)。
 type toolPackageTool struct {
 	Endpoints map[string]string `json:"endpoints,omitempty"`
 	Dirs      []string          `json:"dirs,omitempty"`
+	MCP       *MCPToolRef       `json:"mcp,omitempty"`
 }
 
 // knownPackageTools:清单可声明的工具词表 = 内置装配面支持的载体。新增
@@ -110,8 +116,30 @@ func parseToolPackage(manifest []byte) (toolPackage, error) {
 	}
 	// 遍历序确定化:多缺陷清单的报错可复现(map 随机序下每次启动
 	// 可能报出不同缺陷名,排障不可比对)。
+	referenced := make(map[string]struct{}, len(p.MCPServers)) // 已被工具引用的 server
 	for _, name := range slices.Sorted(maps.Keys(p.Tools)) {
 		tp := p.Tools[name]
+		// MCP 声明族(D-t132):注册名词形 + server 引用 + 与内置配置面
+		// 互斥;内置名携带 mcp 同样拒(交叉携带,与 dirs/endpoints 同判)。
+		if tp.MCP != nil {
+			if _, builtin := knownPackageTools[name]; builtin {
+				return toolPackage{}, fmt.Errorf("tools: tool package tool %q must not carry mcp (builtin name)", name)
+			}
+			if !endpointNameRe.MatchString(name) {
+				return toolPackage{}, fmt.Errorf("tools: tool package mcp tool name %q invalid (want ^[a-z][a-z0-9_]{0,63}$)", name)
+			}
+			if len(tp.Endpoints) > 0 || len(tp.Dirs) > 0 {
+				return toolPackage{}, fmt.Errorf("tools: tool package mcp tool %q must not carry endpoints/dirs", name)
+			}
+			if _, ok := p.MCPServers[tp.MCP.Server]; !ok {
+				return toolPackage{}, fmt.Errorf("tools: tool package mcp tool %q references undeclared server %q", name, tp.MCP.Server)
+			}
+			if !mcpRemoteToolRe.MatchString(tp.MCP.Tool) {
+				return toolPackage{}, fmt.Errorf("tools: tool package mcp tool %q: remote tool name %q invalid (want ^[a-zA-Z0-9_-]{1,64}$)", name, tp.MCP.Tool)
+			}
+			referenced[tp.MCP.Server] = struct{}{}
+			continue
+		}
 		if _, known := knownPackageTools[name]; !known {
 			return toolPackage{}, fmt.Errorf("tools: tool package declares unknown tool %q", name)
 		}
@@ -123,6 +151,18 @@ func parseToolPackage(manifest []byte) (toolPackage, error) {
 		}
 		if name == "db_query" && (len(tp.Endpoints) > 0 || len(tp.Dirs) > 0) {
 			return toolPackage{}, fmt.Errorf(`tools: tool package tool "db_query" is presence-only (DSN stays in BRAID_DBQUERY_DSN; credentials never enter signed artifacts)`)
+		}
+	}
+	// 未引用 server = 半配置,fail-closed 拒(与「开签名忘摘旧键响亮拒」
+	// 同纪律):每个声明 server 必须被至少一个工具消费,否则 URL 值永远
+	// 不经构造器校验 = 签名面藏死条目。别名词形与工具名同判(结构性
+	// 词表,非值校验);遍历序确定化同上。
+	for _, alias := range slices.Sorted(maps.Keys(p.MCPServers)) {
+		if !endpointNameRe.MatchString(alias) {
+			return toolPackage{}, fmt.Errorf("tools: tool package mcp server alias %q invalid (want ^[a-z][a-z0-9_]{0,63}$)", alias)
+		}
+		if _, ok := referenced[alias]; !ok {
+			return toolPackage{}, fmt.Errorf("tools: tool package mcp server %q declared but not referenced by any tool", alias)
 		}
 	}
 	return p, nil
@@ -142,6 +182,12 @@ type toolSet struct {
 	dbSource         string
 	dbDeclared       bool
 	dbDSN            string // 凭证:恒 env 通道,不进签名工件(见 resolveToolSet 注释)
+	// MCP(T13.2,D-t132):mcpServers 全量被引用(parseToolPackage 半配置
+	// 拒保证);装配与 egress 派生共同消费。凭证(BRAID_MCP_TOKEN_<ALIAS>)
+	// 恒 env 通道,不进 toolSet——builtin 装配期单读。
+	mcpSource  string
+	mcpServers map[string]string
+	mcpTools   map[string]MCPToolRef
 }
 
 // resolveToolSet 是 T10.3 env 矩阵(语义全表见文件头注释):
@@ -174,6 +220,16 @@ func resolveToolSet(getenv func(string) string) (toolSet, error) {
 		return toolSet{}, fmt.Errorf(
 			"tools: BRAID_FILEREAD_DIRS forbidden while BRAID_TOOL_SIGNING_PUBLIC_KEY is set (declare dirs in the signed package)")
 	}
+	// MCP 同门(unsigned 源即拒);凭证键 BRAID_MCP_TOKEN_* 例外——凭证
+	// 通道非工具配置,两路径恒 env 注入(BRAID_DBQUERY_DSN 同判)。
+	if v := getenv("BRAID_MCP_SERVERS"); v != "" {
+		return toolSet{}, fmt.Errorf(
+			"tools: BRAID_MCP_SERVERS forbidden while BRAID_TOOL_SIGNING_PUBLIC_KEY is set (declare mcp servers in the signed package)")
+	}
+	if v := getenv("BRAID_MCP_TOOLS"); v != "" {
+		return toolSet{}, fmt.Errorf(
+			"tools: BRAID_MCP_TOOLS forbidden while BRAID_TOOL_SIGNING_PUBLIC_KEY is set (declare mcp tools in the signed package)")
+	}
 	if pkg == "" || sig == "" {
 		return toolSet{}, fmt.Errorf(
 			"tools: BRAID_TOOL_SIGNING_PUBLIC_KEY set: BRAID_TOOL_PACKAGE and BRAID_TOOL_PACKAGE_SIGNATURE are both required")
@@ -197,7 +253,28 @@ func resolveToolSet(getenv func(string) string) (toolSet, error) {
 		// NewDBQueryTool 响亮拒(http 声明空 endpoints 同语义)。
 		ts.dbSource, ts.dbDeclared, ts.dbDSN = "BRAID_TOOL_PACKAGE", true, strings.TrimSpace(getenv("BRAID_DBQUERY_DSN"))
 	}
+	if len(p.MCPServers) > 0 || mcpToolCount(p) > 0 {
+		ts.mcpSource = "BRAID_TOOL_PACKAGE"
+		ts.mcpServers = p.MCPServers
+		ts.mcpTools = make(map[string]MCPToolRef)
+		for name, tp := range p.Tools {
+			if tp.MCP != nil {
+				ts.mcpTools[name] = *tp.MCP
+			}
+		}
+	}
 	return ts, nil
+}
+
+// mcpToolCount 统计清单内 MCP 工具声明数(装配位判定)。
+func mcpToolCount(p toolPackage) int {
+	n := 0
+	for _, tp := range p.Tools {
+		if tp.MCP != nil {
+			n++
+		}
+	}
+	return n
 }
 
 // legacyToolSet:既有内置 env 路径(raw 非空 = 声明;解析失败键名报错,
@@ -223,6 +300,56 @@ func legacyToolSet(getenv func(string) string) (toolSet, error) {
 	}
 	if raw := strings.TrimSpace(getenv("BRAID_DBQUERY_DSN")); raw != "" {
 		ts.dbSource, ts.dbDeclared, ts.dbDSN = "BRAID_DBQUERY_DSN", true, raw
+	}
+	// MCP(T13.2):双键 JSON,BRAID_HTTP_ENDPOINTS 同款 JSON-in-env 先例。
+	// 结构校验(引用闭合 + 全量引用 + 未知字段拒——与签名面
+	// DisallowUnknownFields 对称,评审 LOW:静默忽略运维笔误字段与
+	// fail-closed 纪律相悖)在此层,值校验(词形/URL)归 NewMCPTools
+	// 构造器(http 端点同纪律)。
+	var mcpServers map[string]string
+	var mcpTools map[string]MCPToolRef
+	if raw := getenv("BRAID_MCP_SERVERS"); raw != "" {
+		dec := json.NewDecoder(strings.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&mcpServers); err != nil {
+			return toolSet{}, fmt.Errorf("tools: BRAID_MCP_SERVERS: want JSON object {alias: https base_url}: %w", err)
+		}
+		// 尾随垃圾拒(评审 LOW:单 Decode 会静默丢弃第二份 JSON 文档,
+		// 与 parseToolPackage/BRAID_HTTP_ENDPOINTS 口径不一致)。
+		if _, err := dec.Token(); err != io.EOF {
+			return toolSet{}, fmt.Errorf("tools: BRAID_MCP_SERVERS: trailing data after JSON object")
+		}
+	}
+	if raw := getenv("BRAID_MCP_TOOLS"); raw != "" {
+		dec := json.NewDecoder(strings.NewReader(raw))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&mcpTools); err != nil {
+			return toolSet{}, fmt.Errorf("tools: BRAID_MCP_TOOLS: want JSON object {name: {server, tool}}: %w", err)
+		}
+		if _, err := dec.Token(); err != io.EOF {
+			return toolSet{}, fmt.Errorf("tools: BRAID_MCP_TOOLS: trailing data after JSON object")
+		}
+	}
+	if len(mcpServers) > 0 || len(mcpTools) > 0 {
+		// 遍历序确定化(parseToolPackage 同款纪律:多缺陷报错可复现)。
+		for _, name := range slices.Sorted(maps.Keys(mcpTools)) {
+			ref := mcpTools[name]
+			if _, ok := mcpServers[ref.Server]; !ok {
+				return toolSet{}, fmt.Errorf("tools: BRAID_MCP_TOOLS: tool %q references server %q not declared in BRAID_MCP_SERVERS", name, ref.Server)
+			}
+		}
+		referenced := make(map[string]struct{}, len(mcpTools))
+		for _, ref := range mcpTools {
+			referenced[ref.Server] = struct{}{}
+		}
+		for _, alias := range slices.Sorted(maps.Keys(mcpServers)) {
+			if _, ok := referenced[alias]; !ok {
+				return toolSet{}, fmt.Errorf("tools: BRAID_MCP_SERVERS: server %q declared but not referenced by any tool in BRAID_MCP_TOOLS", alias)
+			}
+		}
+		ts.mcpSource = "BRAID_MCP_SERVERS/BRAID_MCP_TOOLS"
+		ts.mcpServers = mcpServers
+		ts.mcpTools = mcpTools
 	}
 	return ts, nil
 }

@@ -230,7 +230,7 @@ BRAID_TOOL_PACKAGE_SIGNATURE=   # 64B Ed25519 签名
 
 **fail closed 纪律(无降级开关;降级须 D- 拍板)**:
 
-| pubkey | package/signature | 内置工具键 | 结果 |
+| pubkey | package/signature | 内置工具键(含 BRAID_MCP_SERVERS/TOOLS;TOKEN_* 凭证键例外) | 结果 |
 |--------|-------------------|-----------|------|
 | 未设 | 全缺 | 任意 | 内置 env 路径现状(签名未部署) |
 | 未设 | 任一在场 | — | 启动败(无钥不可验) |
@@ -241,12 +241,17 @@ BRAID_TOOL_PACKAGE_SIGNATURE=   # 64B Ed25519 签名
 
 清单 v1(字段面封闭:未知工具/未知字段/Endpoints 与 Dirs 交叉携带/
 尾随数据/"tools" 键缺席或 null 均拒——空发布必须是显式 {};工具词表 =
-http/file_read,t13.2 MCP 接入时扩展):
+内置名 http/file_read/db_query ∪ MCP 声明族(T13.2,`mcp_servers` +
+逐工具 `mcp` 引用;server 必须被引用、别名/注册名词形同内置、凭证恒
+`BRAID_MCP_TOKEN_<ALIAS>` env 通道——签名工件零凭证;详见 D-t132)):
 
 ```json
-{"version":1,"tools":{
+{"version":1,
+ "mcp_servers":{"weather":"https://mcp.example.com/mcp"},
+ "tools":{
   "http":{"endpoints":{"docs_api":"https://docs.example.com"}},
-  "file_read":{"dirs":["/var/braid/docs"]}
+  "file_read":{"dirs":["/var/braid/docs"]},
+  "mcp_weather_lookup":{"mcp":{"server":"weather","tool":"lookup_weather"}}
 }}
 ```
 
@@ -289,8 +294,10 @@ api/worker 启动即验,失败 = 拒启(错误带分量定位,不含密钥材料
   进程内策略保证。
 - **代理**:worker 进程内 CONNECT-only 代理,绑内网网关
   `BRAID_TOOL_SANDBOX_EGRESS_PORT`(缺省 9210;0 = 内核指派)。策略:
-  host(:port) 白名单单源派生自 `BRAID_HTTP_ENDPOINTS`(或验签工具包,
-  §8),端口级管控在此收口;DNS 全在代理侧解析,任一解析 IP 落 SSRF
+  host(:port) 白名单三源单派:`BRAID_HTTP_ENDPOINTS`(或验签工具包,
+  §8)∪ MCP server 声明(T13.2,`EgressAllowFromMCPServers`——常规
+  Allow 非 AllowInternal,私网禁段不豁免)∪ db_query DSN 钉死条目
+  (§10);端口级管控在此收口;DNS 全在代理侧解析,任一解析 IP 落 SSRF
   禁段整体拒(fail-closed),拨已解析 IP(DNS rebinding 无二次解析窗)。
   明文 http 不转发(CONNECT-only),端到端 TLS 在容器与目标之间,代理
   零明文可见。
