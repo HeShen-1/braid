@@ -1,0 +1,17 @@
+braid {{ .Chart.AppVersion }} 已安装:release {{ .Release.Name }} @ {{ .Release.Namespace }}。
+
+首装序:组件 Deployment 与 migrate/grants(post-install hook Job)并行
+创建——hook 追平前组件 crash-loop 自愈(一次性窗;慢存储首启建议
+helm --timeout ≥ 10m)。升级序:pre-upgrade hook 迁移/授权先行(幂等),
+再应用新资源:
+  kubectl -n {{ .Release.Namespace }} get jobs -w
+  kubectl -n {{ .Release.Namespace }} get pods -w
+
+api 内网面(ClusterIP,零宿主暴露;公开面经反代/Ingress 另接):
+  {{ include "braid.fullname" . }}-api.{{ .Release.Namespace }}.svc:{{ .Values.service.port }}
+
+组件指标 exposition(worker/relay/reaper 容器内 9090;api /metrics 与服务同
+端口)不建 Service——监控栈由运维侧另接(deploy/README.md §6 同口径)。
+
+选通面与已知边界(副本/雪花、sandbox egress、existingSecret 键名契约)见
+deploy/chart/README.md。

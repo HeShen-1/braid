@@ -1,0 +1,123 @@
+# braid Helm chart values(T14.4;D-2026-09-30-t144-helm)
+#
+# 等价口径:默认 values(选通面全关)渲染 = deploy/prod.docker-compose.yml
+# 默认交付面——逐组件 env 键集 / 对象清单 / 零宿主暴露 / Redis 契约,
+# 由 deploy/chart/tests/verify.sh 的 compose 对拍断言执法(零 fixture 漂移)。
+#
+# 密钥纪律(铁律):secrets.* 默认恒空,真值仅经 values 注入并渲染进 Secret;
+# 不进 chart 文本、不进默认值、不进 git。模板 required 执法 = 缺必填键渲染
+# 即败(对齐 compose ${VAR:?} fail-fast)。四组件 DB 密码字符集限
+# [A-Za-z0-9._~@+%-](grants.sh SQL/shell 字面量安全门,越界 grants Job 即拒)。
+
+nameOverride: ""
+fullnameOverride: ""
+
+# 交付镜像:一镜像四入口(根 Dockerfile 多阶段构建,api/worker/relay/reaper
+# 共用;镜像内含 /delivery/migrations 与 /delivery/grants.sh,migrate/grants
+# hook Job 经 initContainer 取用)。compose 交付栈同名 braid:prod;私有
+# registry 由部署方改写 repository/tag。
+image:
+  repository: braid
+  tag: prod
+  pullPolicy: IfNotPresent
+
+# 基础设施镜像(与 prod compose 钉版一致;改动须与 compose 同步)。
+migrate:
+  image: migrate/migrate:v4.18.2
+  # 迁移尾参(compose command 同位):缺省 up;dirty 恢复(UPGRADE.md §4)
+  # 覆写为 ["force", "N"] 经 helm upgrade 生效,恢复后改回。
+  args: ["up"]
+mysql:
+  image: mysql:8.0
+  storage: 10Gi
+  storageClassName: "" # 空 = 集群默认 StorageClass
+redisQueue:
+  image: redis:7.4
+  # noeviction + AOF everysec + maxmemory 是 T7.3 preflight 互锁硬契约
+  # (逐出会静默丢任务),仅 maxmemory 体量可调。
+  maxmemory: 256mb
+  storage: 8Gi
+  storageClassName: ""
+
+# 副本:compose = 单副本等价面。api/worker/reaper 副本 >1 需外部雪花节点号
+# 分配(Deployment 无稳定 ordinal,进程内缺省派生必撞号 = 业务表 PK 1062);
+# worker 副本 >1 且 sandbox egress 启用 = 同网撞端口拒启(D-t102 登记④)。
+replicaCount:
+  api: 1
+  worker: 1
+  relay: 1
+  reaper: 1
+
+# api Service:缺省 ClusterIP = 零宿主暴露(compose 同口径:公开面经反代/
+# Ingress 另接;/metrics 与 /healthz 留内网)。
+service:
+  type: ClusterIP
+  port: 8081
+
+# ---- 密钥(values→Secret;默认恒空)----
+secrets:
+  # 设则跳过 Secret 渲染、全部组件改引用该既有 Secret(键名契约见 chart
+  # README §existingSecret;DSN 内嵌 release 限定的 Service 主机名,预建
+  # Secret 须按目标 release 命名空间组合)。
+  existingSecret: ""
+  mysqlRootPassword: "" # 必填(MySQL root;mysql 容器 + migrate/grants Job 消费)
+  dbApiPassword: "" # 必填,字符集 [A-Za-z0-9._~@+%-]
+  dbWorkerPassword: "" # 必填,同上
+  dbRelayPassword: "" # 必填,同上
+  dbReaperPassword: "" # 必填,同上
+  authJwtSecret: "" # 必填(openssl rand -hex 32)
+  llmApiKey: "" # 必填(生产装配 llm 组;仅经 env 注入)
+  toolTokenSecret: "" # 可选(空 = worker 进程内随机,重启轮换)
+  smtpPassword: "" # smtp 组可选
+  dbQueryDsn: "" # 可选(T10.4 db_query 只读账号连接串,空 = 不注册;沙箱
+                 # 模式下 host:port 自动进 egress 钉死条目,README §10)
+  oidcClientSecret: "" # oidc 组开则渲染期必填(与组内其余键同层执法)
+
+# ---- 非敏感配置(values→env 字面量;compose ${VAR:-} 同面)----
+config:
+  llmBaseUrl: "" # 必填(llm 组)
+  llmPriceTable: "" # 必填(llm 组;JSON 单价表)
+  # smtp 组(可选;BRAID_SMTP_HOST 空 = 审批通知降级 log-only;半配置
+  # 启动即败由进程承载):
+  smtpHost: ""
+  smtpPort: "587"
+  smtpUsername: ""
+  smtpFrom: ""
+  smtpNotifyTo: ""
+  smtpStarttls: "true"
+  approvalBaseUrl: ""
+  # api 工具/反代面(可选):
+  httpEndpoints: "" # JSON alias→https base URL(空 = 不注册 http 工具)
+  filereadDirs: "" # JSON 数组绝对路径(空 = 不注册 file_read)
+  apiTrustedProxies: "" # 反代部署必配(CIDR 列表;直连留空 fail-closed)
+
+# ---- 选通面(默认全关:渲染产物与 compose 逐键等价;开启才渲染对应键)----
+tools:
+  # 沙箱(D-t102):启用后 BRAID_TOOL_SANDBOX=docker + 沙箱配额/egress 拓扑键
+  # 注入 worker env(词表单源复用,零新拓扑键);运行前提 = dockerSocketMount。
+  sandbox:
+    enabled: false
+    image: braid-tool-sandbox:1 # 构建见 deploy/README.md §7
+    memory: 256m
+    cpus: "0.5"
+    pids: 64
+    maxConcurrency: 8
+    egressNetwork: braid-sbx-egress # 缺省网名(D-t102,env 可覆写)
+    egressPort: 9210 # 0 = 内核指派
+  # worker 挂载 host /var/run/docker.sock(sandbox docker 模式前置;节点
+  # root 等价面,默认关——见 chart README §egress 边界)。
+  dockerSocketMount: false
+  # 节点 docker 组 GID(worker uid 65532 对 socket 的读写通路;0 = 不加组
+  # ——标准节点须配,否则挂载形同虚设;查法:节点上 stat -c %g
+  # /var/run/docker.sock)。
+  dockerSocketGid: 0
+
+# OIDC(T11.1;可选超集键,compose 未接线——开启才渲染):issuer/clientId/
+# redirectUrl 与 secrets.oidcClientSecret 渲染期 required(缺即 helm 失败),
+# claim 有缺省;discovery 启动期拉取(issuer 不可达 = 进程启动失败)。
+oidc:
+  enabled: false
+  issuer: ""
+  clientId: ""
+  redirectUrl: ""
+  claim: preferred_username

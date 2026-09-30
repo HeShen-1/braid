@@ -1,0 +1,40 @@
+{{/* reaper(prod compose reaper 服务的 K8s 形态;4 键对齐)。
+     雪花节点 3 显式(容器 PID 恒 1,缺省派生必撞 api=1,compose 同注释)。 */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "braid.fullname" . }}-reaper
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "reaper") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount.reaper }} # >1 需外部雪花节点号分配(见 values 注释)
+  selector:
+    matchLabels:
+      {{- include "braid.selectorLabels" (dict "ctx" . "component" "reaper") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "braid.selectorLabels" (dict "ctx" . "component" "reaper") | nindent 8 }}
+    spec:
+      containers:
+        - name: reaper
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/reaper"]
+          securityContext:
+            runAsNonRoot: true
+          ports:
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: BRAID_MYSQL_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: reaper-dsn
+            - name: BRAID_REDIS_QUEUE_ADDR
+              value: {{ printf "%s:6379" (include "braid.redisHost" .) | quote }}
+            - name: BRAID_REAPER_SNOWFLAKE_NODE
+              value: "3"
+            - name: BRAID_METRICS_ADDR
+              value: "0.0.0.0:9090"

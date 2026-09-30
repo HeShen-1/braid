@@ -1,0 +1,82 @@
+{{/* migrate = one-shot 迁移器(prod compose migrate 服务的 K8s 形态)。
+     Hook 相位 = post-install + pre-upgrade(审计收口 ①,2026-09-30):
+     pre-install hook 先于一切 release 资源执行,而本 Job 依赖 mysql
+     Service 与 Secret(普通资源)——首装结构性死锁(k3s 实测 3/3 超时)。
+     post-install 下首装序 = 组件 Deployment 先建、hook 追平前组件
+     crash-loop 自愈(一次性窗,chart README §已知边界);pre-upgrade 保
+     住升级序:迁移先于新资源应用(旧二进制 × 新 schema 的 N-1 混跑窗,
+     纪律 = UPGRADE.md §2,同 compose 升级形态)。幂等:重复 up =
+     ErrNoChange no-op。before-hook-creation:重跑前清旧同名 Job(缺省
+     策略,显式声明自证)。hook-weight -2 → grants(-1)之先。
+     重试语义偏差(登记):backoffLimit 3 = 至多 4 次尝试(compose 单次);
+     幂等面下安全。dirty 恢复(UPGRADE.md §4)= migrate.args 覆写
+     ["force","N"] 经 helm upgrade 生效(Job 模板创建后不可变,
+     kubectl edit 路不通);恢复后记得把 values 改回 ["up"]。 */}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "braid.fullname" . }}-migrate
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": "post-install,pre-upgrade"
+    "helm.sh/hook-weight": "-2"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "braid.selectorLabels" (dict "ctx" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 65532 # braid 镜像(uid 65532)写 emptyDir 交付卷
+      initContainers:
+        # 交付文件自 braid 镜像拷出(Dockerfile 烘焙 /delivery;构建期单源)。
+        - name: delivery
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+          command: ["sh", "-c", "cp -r /delivery/. /delivery-src/"]
+          volumeMounts:
+            - name: delivery
+              mountPath: /delivery-src
+        # 等 mysql 可达(compose depends_on service_healthy 的 K8s 形态;
+        # 连接面走 Service,就绪由 mysql readinessProbe 闸门)。
+        - name: wait-mysql
+          image: {{ .Values.mysql.image | quote }}
+          command:
+            - sh
+            - -c
+            - until mysqladmin ping -h"$MYSQL_HOST" -uroot -p"$MYSQL_ROOT_PASSWORD" --silent; do echo "waiting for mysql"; sleep 2; done
+          env:
+            - name: MYSQL_HOST
+              value: {{ include "braid.mysqlHost" . | quote }}
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: mysql-root-password
+      containers:
+        - name: migrate
+          image: {{ .Values.migrate.image | quote }}
+          # 主机名模板期渲染(与 compose 同形:仅 MYSQL_ROOT_PASSWORD 经 env);
+          # 尾参 = values.migrate.args(缺省 up;dirty 恢复覆写 force N):
+          command:
+            - sh
+            - -c
+            - exec migrate -path /delivery-src/migrations -database "mysql://root:$MYSQL_ROOT_PASSWORD@tcp({{ include "braid.mysqlHost" . }}:3306)/braid?multiStatements=true" {{ join " " .Values.migrate.args }}
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: mysql-root-password
+          volumeMounts:
+            - name: delivery
+              mountPath: /delivery-src
+      volumes:
+        - name: delivery
+          emptyDir: {}

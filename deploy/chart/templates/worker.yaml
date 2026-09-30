@@ -1,0 +1,134 @@
+{{/* worker(prod compose worker 服务的 K8s 形态)。
+     env 键集与 compose 逐键对齐(17 键,verify.sh 对拍断言);llm 组
+     生产装配必填(required = compose :? 对齐)。sandbox/egress =
+     D-2026-09-30-t144-helm 决策 2 的选通面:tools.sandbox.enabled 才
+     渲染 8 键(词表单源复用 D-t102,零新拓扑键);dockerSocketMount
+     才挂 host docker.sock(节点 root 等价面,默认关)。K8s 原生
+     NetworkPolicy + sidecar 映射 P1 deferred(D- 登记)。 */}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "braid.fullname" . }}-worker
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount.worker }} # >1 + sandbox egress = 同网撞端口拒启(D-t102 登记④)
+  selector:
+    matchLabels:
+      {{- include "braid.selectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "braid.selectorLabels" (dict "ctx" . "component" "worker") | nindent 8 }}
+    spec:
+      {{- if and .Values.tools.dockerSocketMount .Values.tools.dockerSocketGid }}
+      # socket 挂载通路(审计收口 ⑥):worker 以 uid 65532 跑,标准节点
+      # /var/run/docker.sock 属 root:docker(GID 因发行版而异)——不配组
+      # 则挂了也读写被拒。tools.dockerSocketGid = 节点 docker 组 GID。
+      securityContext:
+        supplementalGroups:
+          - {{ .Values.tools.dockerSocketGid }}
+      {{- end }}
+      containers:
+        - name: worker
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/worker"]
+          securityContext:
+            runAsNonRoot: true
+          ports:
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: BRAID_MYSQL_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: worker-dsn
+            - name: BRAID_REDIS_QUEUE_ADDR
+              value: {{ printf "%s:6379" (include "braid.redisHost" .) | quote }}
+            - name: BRAID_WORKER_SNOWFLAKE_NODE
+              value: "2"
+            - name: BRAID_WORKER_QUEUES
+              value: default:1 # 须含 BRAID_API_RESUME_QUEUE 指定队列(T12.2 交叉校验)
+            - name: BRAID_METRICS_ADDR
+              value: "0.0.0.0:9090"
+            - name: BRAID_TOOL_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: tool-token-secret
+            # llm 组(生产装配必需,缺 URL/KEY/PRICE_TABLE 启动即败):
+            - name: BRAID_LLM_BASE_URL
+              value: {{ required "config.llmBaseUrl is required (BRAID_LLM_BASE_URL)" .Values.config.llmBaseUrl | quote }}
+            - name: BRAID_LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: llm-api-key
+            - name: BRAID_LLM_PRICE_TABLE
+              value: {{ required "config.llmPriceTable is required (BRAID_LLM_PRICE_TABLE)" .Values.config.llmPriceTable | quote }}
+            # smtp 组(可选;未配置 = 审批通知降级 log-only):
+            - name: BRAID_SMTP_HOST
+              value: {{ .Values.config.smtpHost | quote }}
+            - name: BRAID_SMTP_PORT
+              value: {{ .Values.config.smtpPort | quote }}
+            - name: BRAID_SMTP_USERNAME
+              value: {{ .Values.config.smtpUsername | quote }}
+            - name: BRAID_SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: smtp-password
+            - name: BRAID_SMTP_FROM
+              value: {{ .Values.config.smtpFrom | quote }}
+            - name: BRAID_SMTP_NOTIFY_TO
+              value: {{ .Values.config.smtpNotifyTo | quote }}
+            - name: BRAID_SMTP_STARTTLS
+              value: {{ .Values.config.smtpStarttls | quote }}
+            - name: BRAID_APPROVAL_BASE_URL
+              value: {{ .Values.config.approvalBaseUrl | quote }}
+            {{- if .Values.secrets.dbQueryDsn }}
+            # db_query(T10.4;空 = 不注册,选通面:仅设值时渲染,默认面
+            # 与 compose 逐键等价不受扰;沙箱模式下 DSN host:port 进 egress
+            # 钉死条目 = D-t104 私网豁免,deploy/README.md §10)
+            - name: BRAID_DBQUERY_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: dbquery-dsn
+            {{- end }}
+            {{- if .Values.tools.sandbox.enabled }}
+            # 沙箱选通面(T10.1/T10.2;启用 = docker 模式,前置
+            # dockerSocketMount,镜像构建见 deploy/README.md §7):
+            - name: BRAID_TOOL_SANDBOX
+              value: docker
+            - name: BRAID_TOOL_SANDBOX_IMAGE
+              value: {{ .Values.tools.sandbox.image | quote }}
+            - name: BRAID_TOOL_SANDBOX_MEMORY
+              value: {{ .Values.tools.sandbox.memory | quote }}
+            - name: BRAID_TOOL_SANDBOX_CPUS
+              value: {{ .Values.tools.sandbox.cpus | quote }}
+            - name: BRAID_TOOL_SANDBOX_PIDS
+              value: {{ .Values.tools.sandbox.pids | quote }}
+            - name: BRAID_TOOL_SANDBOX_MAX_CONCURRENCY
+              value: {{ .Values.tools.sandbox.maxConcurrency | quote }}
+            - name: BRAID_TOOL_SANDBOX_EGRESS_NETWORK
+              value: {{ .Values.tools.sandbox.egressNetwork | quote }}
+            - name: BRAID_TOOL_SANDBOX_EGRESS_PORT
+              value: {{ .Values.tools.sandbox.egressPort | quote }}
+            {{- end }}
+          {{- if .Values.tools.dockerSocketMount }}
+          # host docker.sock = 节点 root 等价面(D-t102 拓扑的运行前提;
+          # 默认关,边界见 chart README §egress)
+          volumeMounts:
+            - name: docker-sock
+              mountPath: /var/run/docker.sock
+          {{- end }}
+      {{- if .Values.tools.dockerSocketMount }}
+      volumes:
+        - name: docker-sock
+          hostPath:
+            path: /var/run/docker.sock
+            type: Socket
+      {{- end }}

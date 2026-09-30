@@ -1,0 +1,38 @@
+# 全覆盖渲染用 values(parity 面之上再开全部选通面):kubeconform 的
+# 渲染输入,使条件分支(sandbox/egress/oidc/socket 挂载)全部进渲染产物。
+# 对拍断言不用本文件(用 parity-values.yaml,保持默认面逐键等价)。
+secrets:
+  mysqlRootPassword: dummy_root_pw
+  dbApiPassword: dummy_api_pw
+  dbWorkerPassword: dummy_worker_pw
+  dbRelayPassword: dummy_relay_pw
+  dbReaperPassword: dummy_reaper_pw
+  authJwtSecret: dummy_jwt_secret
+  llmApiKey: dummy_llm_key
+  toolTokenSecret: dummy_tool_token
+  smtpPassword: dummy_smtp_pw
+  dbQueryDsn: "ro:dummy_ro_pw@tcp(db.example.invalid:3306)/analytics"
+  oidcClientSecret: dummy_oidc_secret
+config:
+  llmBaseUrl: https://llm.example.invalid/v1
+  llmPriceTable: '{"dummy":{"input":1,"output":1}}'
+  smtpHost: smtp.example.invalid
+  smtpPort: "587"
+  smtpUsername: braid
+  smtpFrom: braid@example.invalid
+  smtpNotifyTo: ops@example.invalid
+  smtpStarttls: "true"
+  approvalBaseUrl: https://braid.example.invalid
+  httpEndpoints: '{"docs":"https://docs.example.invalid"}'
+  filereadDirs: '["/var/braid/docs"]'
+  apiTrustedProxies: 10.0.0.0/8
+tools:
+  sandbox:
+    enabled: true
+  dockerSocketMount: true
+oidc:
+  enabled: true
+  issuer: https://idp.example.invalid
+  clientId: braid
+  redirectUrl: https://braid.example.invalid/api/v1/auth/oidc/callback
+  claim: preferred_username

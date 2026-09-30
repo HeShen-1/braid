@@ -1,0 +1,90 @@
+{{/* grants = one-shot 授权器(prod compose grants 服务的 K8s 形态)。
+     Hook 相位 = post-install + pre-upgrade(同 migrate-job 审计收口 ①:
+     pre-install 位下依赖的 mysql Service/Secret 尚未创建,首装死锁)。
+     hook-weight -1(migrate 之后;表级 GRANT 要求迁移后表在场)。幂等:
+     CREATE USER IF NOT EXISTS + GRANT 重跑 no-op(升级带来新写面重新执行
+     即完成扩权,README §5 矩阵同源语句真源 = deploy/grants.sh)。密码
+     字符集门由 grants.sh 运行期承载([A-Za-z0-9._~@+%-],越界即拒)。
+     重试语义偏差(登记):backoffLimit 3 = 至多 4 次尝试(compose 单次)。 */}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "braid.fullname" . }}-grants
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "grants") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": "post-install,pre-upgrade"
+    "helm.sh/hook-weight": "-1"
+    "helm.sh/hook-delete-policy": "before-hook-creation"
+spec:
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        {{- include "braid.selectorLabels" (dict "ctx" . "component" "grants") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      securityContext:
+        fsGroup: 65532
+      initContainers:
+        - name: delivery
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            runAsNonRoot: true
+          command: ["sh", "-c", "cp -r /delivery/. /delivery-src/"]
+          volumeMounts:
+            - name: delivery
+              mountPath: /delivery-src
+        - name: wait-mysql
+          image: {{ .Values.mysql.image | quote }}
+          command:
+            - sh
+            - -c
+            - until mysqladmin ping -h"$MYSQL_HOST" -uroot -p"$MYSQL_ROOT_PASSWORD" --silent; do echo "waiting for mysql"; sleep 2; done
+          env:
+            - name: MYSQL_HOST
+              value: {{ include "braid.mysqlHost" . | quote }}
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: mysql-root-password
+      containers:
+        - name: grants
+          image: {{ .Values.mysql.image | quote }}
+          command: ["sh", "/delivery-src/grants.sh"]
+          env:
+            - name: MYSQL_HOST
+              value: {{ include "braid.mysqlHost" . | quote }}
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: mysql-root-password
+            - name: BRAID_DB_API_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: db-api-password
+            - name: BRAID_DB_WORKER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: db-worker-password
+            - name: BRAID_DB_RELAY_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: db-relay-password
+            - name: BRAID_DB_REAPER_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: db-reaper-password
+          volumeMounts:
+            - name: delivery
+              mountPath: /delivery-src
+      volumes:
+        - name: delivery
+          emptyDir: {}

@@ -1,0 +1,94 @@
+{{/* redis-queue(prod compose redis-queue 服务的 K8s 形态)。
+     契约逐字:--maxmemory-policy noeviction(逐出会静默丢任务)+ AOF
+     everysec(~1s 丢失窗;任务真相源在 MySQL)——T7.3 preflight 在
+     relay/worker 侧硬拒破约,栈契约与自检互锁(verify.sh 断言 5)。
+     P0 内网互信模型无 requirepass(Service 边界即信任边界,compose 同)。 */}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "braid.fullname" . }}-redis-queue-data
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "redis-queue") | nindent 4 }}
+  annotations:
+    # 审计收口 ③:同 mysql PVC——uninstall 不回收,显式删 PVC 才毁数据。
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.redisQueue.storage }}
+  {{- with .Values.redisQueue.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "braid.redisHost" . }}
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "redis-queue") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: 6379
+  selector:
+    {{- include "braid.selectorLabels" (dict "ctx" . "component" "redis-queue") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "braid.fullname" . }}-redis-queue
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "redis-queue") | nindent 4 }}
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "braid.selectorLabels" (dict "ctx" . "component" "redis-queue") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "braid.selectorLabels" (dict "ctx" . "component" "redis-queue") | nindent 8 }}
+    spec:
+      containers:
+        - name: redis-queue
+          image: {{ .Values.redisQueue.image | quote }}
+          # args(镜像 ENTRYPOINT docker-entrypoint.sh 透传 = compose command)
+          args:
+            - redis-server
+            - --maxmemory
+            - {{ .Values.redisQueue.maxmemory | quote }}
+            - --maxmemory-policy
+            - noeviction # 契约键:仅 maxmemory 体量可调(values),策略不可
+            - --appendonly
+            - "yes"
+            - --appendfsync
+            - everysec
+          ports:
+            - name: redis
+              containerPort: 6379
+          volumeMounts:
+            - name: data
+              mountPath: /data
+          readinessProbe:
+            exec:
+              command: ["redis-cli", "ping"]
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 30
+          livenessProbe: # initialDelay 消化首启(AOF 载入),语义注记同 mysql
+            exec:
+              command: ["redis-cli", "ping"]
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "braid.fullname" . }}-redis-queue-data

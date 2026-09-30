@@ -1,0 +1,14 @@
+# 对拍渲染用 values:密钥/必填配置齐备,选通面全关(= 默认面)。
+# 占位值与 tests/dummy.env 同源(dummy.env 服务 compose 侧,本文件服务
+# chart 侧;两侧行为断言只比键名,值不进任何断言)。
+secrets:
+  mysqlRootPassword: dummy_root_pw
+  dbApiPassword: dummy_api_pw
+  dbWorkerPassword: dummy_worker_pw
+  dbRelayPassword: dummy_relay_pw
+  dbReaperPassword: dummy_reaper_pw
+  authJwtSecret: dummy_jwt_secret
+  llmApiKey: dummy_llm_key
+config:
+  llmBaseUrl: https://llm.example.invalid/v1
+  llmPriceTable: '{"dummy":{"input":1,"output":1}}'

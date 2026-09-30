@@ -1,0 +1,99 @@
+{{/* mysql(prod compose mysql 服务的 K8s 形态;D-2026-09-30-t144-helm 决策 4)。
+     契约保真:MYSQL_DATABASE=braid 钉死(库名非凭证,DSN 确定性);探针 =
+     compose healthcheck 同口径(mysqladmin ping 强制 TCP,首启竞态修同
+     T8.1);单副本 + Recreate(RWO PVC 滚更死锁规避;compose 换代语义)。
+     组件经 Service 内网连接;零宿主暴露由 Service ClusterIP 承载
+     (verify.sh 断言 6)。 */}}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "braid.fullname" . }}-mysql-data
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "mysql") | nindent 4 }}
+  annotations:
+    # 审计收口 ③:uninstall/删 release 不回收数据卷(= compose down 不带
+    # -v 的同口径);重建 release 复用既有数据。真要毁数据 = 显式删 PVC。
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.mysql.storage }}
+  {{- with .Values.mysql.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "braid.mysqlHost" . }}
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "mysql") | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: mysql
+      port: 3306
+      targetPort: 3306
+  selector:
+    {{- include "braid.selectorLabels" (dict "ctx" . "component" "mysql") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "braid.fullname" . }}-mysql
+  labels:
+    {{- include "braid.labels" (dict "ctx" . "component" "mysql") | nindent 4 }}
+spec:
+  replicas: 1 # 单写者,非 values 面(compose 同为单实例)
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "braid.selectorLabels" (dict "ctx" . "component" "mysql") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "braid.selectorLabels" (dict "ctx" . "component" "mysql") | nindent 8 }}
+    spec:
+      containers:
+        - name: mysql
+          image: {{ .Values.mysql.image | quote }}
+          env:
+            - name: MYSQL_DATABASE
+              value: braid
+            - name: MYSQL_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: mysql-root-password
+          # 不挂 env_file 全量灌注:业务密钥(LLM/JWT/SMTP)不进 mysql
+          # 容器(最小暴露,compose 同注释)。
+          ports:
+            - name: mysql
+              containerPort: 3306
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/mysql
+          readinessProbe: # compose healthcheck 同参(3s/3s/30)
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h127.0.0.1 -uroot -p\"$MYSQL_ROOT_PASSWORD\""]
+            periodSeconds: 3
+            timeoutSeconds: 3
+            failureThreshold: 30
+          # liveness 语义超出 compose 面(healthcheck 失败不杀容器,liveness
+          # 杀):首启初始化(entrypoint --skip-networking 期 TCP ping 恒败)与
+          # InnoDB crash recovery 均可能超短预算——initialDelay + 放宽周期
+          # 消化慢存储,防「杀初始化中 mysqld → 半初始化数据卷」(审计收口 ②)。
+          livenessProbe:
+            exec:
+              command: ["sh", "-c", "mysqladmin ping -h127.0.0.1 -uroot -p\"$MYSQL_ROOT_PASSWORD\""]
+            initialDelaySeconds: 120
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 30
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "braid.fullname" . }}-mysql-data

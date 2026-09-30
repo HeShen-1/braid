@@ -311,6 +311,10 @@ api/worker 启动即验,失败 = 拒启(错误带分量定位,不含密钥材料
 - **t14.4(Helm)前置契约**:k8s 化时「网关 + 进程内代理」对应
   egress NetworkPolicy + 代理 sidecar/独立端点;env 键词表与
   `EgressAllowFromEndpoints` 单源在此两处复用,不再新增拓扑键。
+- **t14.4 落地注记(D-2026-09-30-t144-helm)**:chart(deploy/chart)按
+  docker.sock 选通面落地——env 键单源复用 + worker 可选挂载
+  /var/run/docker.sock,拓扑在有 docker 的节点原样工作;上条的
+  NetworkPolicy + sidecar K8s 原生映射需 Go 面改动,登记 P1 deferred。
 
 ## 10. db_query 内置工具(T10.4)
 
