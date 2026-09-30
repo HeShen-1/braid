@@ -311,6 +311,17 @@ func TestMCPTriggerWorkflowRealChain(t *testing.T) {
 	if !strings.Contains(string(exec1.Input), "9007199254740993") {
 		t.Fatalf("input = %s, want >2^53 integer preserved", exec1.Input)
 	}
+	// 读面同判(评审 MEDIUM 二轮):MCP get_execution 的 Out 侧 RawMessage
+	// 透传——服务端字节原样,不经 any 解码 float64 折叠(any 路径在此锚
+	// 必红;client SDK 侧的解码折叠是消费端 artifact,非本面语义)。
+	_, rd, err := s.mcpGetExecution(mcpClaimsCtx(testClaims("alice", 0, auth.ScopeExecutionsRead)),
+		nil, getExecutionIn{ID: out1.ID})
+	if err != nil {
+		t.Fatalf("mcp read back: %v", err)
+	}
+	if !strings.Contains(string(rd.Input), "9007199254740993") {
+		t.Fatalf("mcp read back input = %s, want >2^53 preserved", rd.Input)
+	}
 
 	// 同主体同键:重放。
 	_, out2, err := s.mcpTriggerWorkflow(mcpClaimsCtx(full), nil, in)

@@ -247,31 +247,19 @@ type getExecutionIn struct {
 	ID string `json:"id" jsonschema:"execution id (decimal string)"`
 }
 
-// getExecutionOut 镜像 executionDetailDTO,但 Input/Outputs 用 any 而非
-// json.RawMessage:SDK 对 RawMessage 的 schema 推断产出 null/array 形
-// (与任意对象正文冲突,输出校验自拒);any 推断为通配,语义不变(nil =
-// null,与 REST detail 的 null 面同判)。
+// getExecutionOut 镜像 executionDetailDTO:Input/Outputs 用 json.RawMessage
+// 原样字节透传(评审 MEDIUM 二轮:any 解码把一切 JSON 数值折叠成 float64,
+// >2^53 整数读面静默损毁——snowflake 级 ID 恰在此域,写路径已 RawMessage
+// 硬化,读路径同判);RawMessage 的 schema 推断产出 null/array 不可用,故
+// 该工具的 OutputSchema 在 AddTool 处显式给定(bypass 推断)。nil = null,
+// 与 REST detail 的 null 面同判。
 type getExecutionOut struct {
 	executionDTO
 	DefinitionHash string                `json:"definition_hash"`
-	Input          any                   `json:"input"`
-	Outputs        any                   `json:"outputs"`
+	Input          json.RawMessage       `json:"input"`
+	Outputs        json.RawMessage       `json:"outputs"`
 	Nodes          []nodeExecutionDTO    `json:"nodes"`
 	Audit          executionAuditPointer `json:"audit"`
-}
-
-// rawToAny 把 DB 侧原始 JSON 字节解码为 any(空 = nil = null 面)。解码
-// 失败按 nil 处理——不可达防御(DB 值均经写入侧 JSON 语义约束),非静默
-// 吞错路径。
-func rawToAny(raw json.RawMessage) any {
-	if len(raw) == 0 {
-		return nil
-	}
-	var v any
-	if json.Unmarshal(raw, &v) != nil {
-		return nil
-	}
-	return v
 }
 
 func (s *Server) mcpGetExecution(ctx context.Context, _ *mcp.CallToolRequest, in getExecutionIn) (*mcp.CallToolResult, getExecutionOut, error) {
@@ -298,8 +286,8 @@ func (s *Server) mcpGetExecution(ctx context.Context, _ *mcp.CallToolRequest, in
 	return nil, getExecutionOut{
 		executionDTO:   toExecutionDTO(exec),
 		DefinitionHash: exec.DefinitionHash,
-		Input:          rawToAny(exec.Input),
-		Outputs:        rawToAny(exec.Outputs),
+		Input:          json.RawMessage(exec.Input),
+		Outputs:        json.RawMessage(exec.Outputs),
 		Nodes:          nodeOut,
 		Audit:          executionAuditPointer{ExecDate: exec.ExecDate, TraceID: exec.TraceID},
 	}, nil
@@ -381,6 +369,10 @@ func (s *Server) buildMCPServer() *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "braid_get_execution",
 		Description: "Get execution status, node statuses, inputs/outputs and audit pointer.",
+		// OutputSchema 显式给定:Out 的 Input/Outputs 是 json.RawMessage 原样
+		// 透传(>2^53 整数读面保真),其 schema 推断产出 null/array 不可用
+		//(评审 MEDIUM 二轮,同 trigger 工具 InputSchema 的 bypass 先例)。
+		OutputSchema: json.RawMessage(`{"type": "object"}`),
 	}, s.mcpGetExecution)
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "braid_list_executions",
