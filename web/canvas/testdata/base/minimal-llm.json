@@ -1,0 +1,17 @@
+{
+  "dsl": "1.0",
+  "name": "minimal-llm",
+  "nodes": [
+    {
+      "id": "only",
+      "type": "llm",
+      "prompt": {
+        "template": "说点什么"
+      },
+      "outputs": {
+        "text": "string"
+      }
+    }
+  ],
+  "edges": []
+}

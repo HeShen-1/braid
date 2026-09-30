@@ -37,6 +37,7 @@
 ## 命令(有代码后更新此节)
 
 - 测试:`go test ./...`(集成测试需 t13 栈:`docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d`,MySQL 13306 / Redis 16379;不在时自动 skip)
+- 画布前端(`web/canvas/`,Vite+TS,dist 入库 = `internal/api/web/canvas/`,D-2026-09-30-t141):首次 `npm --prefix web/canvas ci`;测试 `npm --prefix web/canvas test`(vitest;fixtures 双消费见 `web/canvas/testdata/`,改导出器后 `UPDATE_FIXTURES=1 npm --prefix web/canvas test` 重生成并同 commit 过 Go 侧 `canvas_contract_test`);构建 `npm --prefix web/canvas run build`——**改前端源码后必须重建 dist 同 commit 提交**,否则 CI web 作业漂移门红
 - 沙箱 e2e:`go test ./internal/tools/ -run TestSandboxE2E`(真 docker 全链路:file_read/hermetic http/资源超限三族,镜像测试内自建,不依赖 t13 栈;docker 不在场自动 skip,CI `BRAID_TEST_REQUIRE_STACK=1` 下不可达即红;worktree 须带 `BRAID_TEST_REDIS_DB=<槽位>`——e2e 镜像 tag 按槽位隔离,缺省落槽位 0 与主仓互踩)
 - 告警规则:`promtool check rules deploy/prometheus/alerts.yml && promtool test rules deploy/prometheus/alerts_test.yml`(T6.4;CI 第 4 job 同口径)
 - Lint:`golangci-lint run`

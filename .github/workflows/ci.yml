@@ -124,3 +124,26 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - name: chart static gate
         run: deploy/chart/tests/verify.sh
+
+  # T14.1:画布前端作业(D-2026-09-30-t141-canvas-pipeline 决策 2+3)。
+  # 工具链经钉版镜像取用(node:26.10.0-bookworm,与 web/canvas/.nvmrc
+  # 数值人工同步——改 .nvmrc 必须同改本 tag),零 Secrets。
+  # 漂移门拆两步(对抗审查 CRITICAL 修正):容器内只跑 npm(ci/test/
+  # build;root 容器对 runner 属主仓库跑 git 会触发 dubious ownership
+  # 必红),门在宿主步骤用 runner 自带 git 执行;porcelain 而非 diff =
+  # 未跟踪的纯新增产物(未来 code splitting/额外 chunk)同样拦截。
+  web:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: canvas test + build
+        run: >
+          docker run --rm -v "$PWD:/src" -w /src/web/canvas node:26.10.0-bookworm
+          sh -c "npm ci && npm test && npm run build"
+      - name: dist drift gate
+        run: >
+          test -z "$(git status --porcelain -- internal/api/web/canvas/)"
+          || { git status --porcelain -- internal/api/web/canvas/;
+          echo "::error::dist 漂移:前端源码改动未重建入库(npm --prefix web/canvas run build)";
+          exit 1; }

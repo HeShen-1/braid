@@ -1,0 +1,232 @@
+{
+  "dsl": "1.0",
+  "name": "canvas-showcase",
+  "description": "五类节点全覆盖的画布导出样例(llm/tool/branch/approval/parallel)",
+  "metadata": {
+    "canvas": {
+      "nodes": {
+        "read_doc": {
+          "position": {
+            "x": 40,
+            "y": 40
+          }
+        },
+        "parse": {
+          "position": {
+            "x": 300,
+            "y": 40
+          }
+        },
+        "fan": {
+          "position": {
+            "x": 560,
+            "y": 40
+          }
+        },
+        "review": {
+          "position": {
+            "x": 820,
+            "y": 40
+          }
+        },
+        "verdict": {
+          "position": {
+            "x": 1080,
+            "y": 40
+          }
+        },
+        "revise": {
+          "position": {
+            "x": 1340,
+            "y": 40
+          }
+        },
+        "report": {
+          "position": {
+            "x": 1600,
+            "y": 40
+          }
+        }
+      },
+      "viewport": {
+        "x": 0,
+        "y": 0,
+        "zoom": 1
+      }
+    }
+  },
+  "inputs": [
+    {
+      "name": "doc_path",
+      "type": "string",
+      "required": true,
+      "description": "待处理文档路径"
+    },
+    {
+      "name": "items",
+      "type": "array",
+      "required": true,
+      "description": "并行展开数组"
+    }
+  ],
+  "edges": [
+    {
+      "from": "read_doc",
+      "to": "parse"
+    },
+    {
+      "from": "parse",
+      "to": "fan"
+    },
+    {
+      "from": "fan",
+      "to": "review"
+    },
+    {
+      "from": "review",
+      "to": "verdict"
+    },
+    {
+      "from": "verdict",
+      "to": "report"
+    },
+    {
+      "from": "verdict",
+      "to": "revise"
+    },
+    {
+      "from": "revise",
+      "to": "report"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "read_doc",
+      "type": "tool",
+      "title": "读取文档",
+      "tool": "file_read",
+      "inputs": {
+        "path": "{{inputs.doc_path}}"
+      },
+      "outputs": {
+        "content": "string"
+      }
+    },
+    {
+      "id": "parse",
+      "type": "llm",
+      "title": "文档解析",
+      "prompt": {
+        "template": "解析下述文档,提取关键事实。",
+        "user_data": [
+          {
+            "name": "document",
+            "ref": "{{nodes.read_doc.output.content}}"
+          }
+        ]
+      },
+      "outputs": {
+        "facts": "array"
+      }
+    },
+    {
+      "id": "fan",
+      "type": "parallel",
+      "title": "并行评审",
+      "parallel": {
+        "foreach": "{{inputs.items}}",
+        "on_failure": "wait_all",
+        "body": {
+          "type": "llm",
+          "prompt": {
+            "template": "评审以下内容并给出结论。",
+            "user_data": [
+              {
+                "name": "piece",
+                "ref": "{{item}}"
+              }
+            ]
+          },
+          "outputs": {
+            "verdict": "string"
+          }
+        }
+      }
+    },
+    {
+      "id": "review",
+      "type": "approval",
+      "title": "人工审核",
+      "approvers": [
+        "alice",
+        "bob"
+      ],
+      "mode": "any",
+      "timeout_hours": 24,
+      "on_timeout": "escalate",
+      "instructions": "请审核并行评审结论;驳回请填写理由。",
+      "outputs": {
+        "decision": "string",
+        "comment": "string"
+      }
+    },
+    {
+      "id": "verdict",
+      "type": "branch",
+      "title": "按审批结论分流",
+      "cases": [
+        {
+          "when": {
+            "left": "{{nodes.review.output.decision}}",
+            "op": "eq",
+            "right": "approved"
+          },
+          "next": "report"
+        }
+      ],
+      "default": "revise"
+    },
+    {
+      "id": "revise",
+      "type": "llm",
+      "title": "修订建议",
+      "prompt": {
+        "template": "审核未通过,基于关键事实生成修订建议。",
+        "user_data": [
+          {
+            "name": "facts",
+            "ref": "{{nodes.parse.output.facts}}"
+          }
+        ]
+      },
+      "outputs": {
+        "text": "string"
+      }
+    },
+    {
+      "id": "report",
+      "type": "llm",
+      "title": "最终报告",
+      "prompt": {
+        "template": "汇总关键事实与并行评审结果,生成最终报告。",
+        "user_data": [
+          {
+            "name": "facts",
+            "ref": "{{nodes.parse.output.facts}}"
+          },
+          {
+            "name": "verdicts",
+            "ref": "{{nodes.fan.output.results}}"
+          }
+        ]
+      },
+      "outputs": {
+        "text": "string"
+      }
+    }
+  ],
+  "outputs": {
+    "report": "{{nodes.report.output.text}}",
+    "revision": "{{nodes.revise.output.text}}"
+  }
+}

@@ -12,11 +12,13 @@ import (
 	"embed"
 	"io/fs"
 	"net/http"
+	"path"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 )
 
-//go:embed web/index.html web/app.js web/style.css
+//go:embed web/index.html web/app.js web/style.css web/canvas
 var webFS embed.FS
 
 // webCSP 是静态面内容安全策略(词面契约由 web_test 锚死)。
@@ -24,6 +26,9 @@ const webCSP = `default-src 'none'; script-src 'self'; style-src 'self'; connect
 
 // registerWeb 挂静态路由:/ 与 /ui 收编到 /ui/;/ui/*filepath 走内嵌 FS
 // (fs.Sub 把 embed 的 web/ 前缀剥掉,FileServer 根即资产根)。
+// T14.1 画布(D-2026-09-30-t141):embed 面 web/canvas/ 是 vite 构建产物
+// (dist 入库;源码与工具链在仓根 web/canvas/,构建直出本目录),同路由
+// 零新端点:/ui/canvas/ → web/canvas/index.html。
 func (s *Server) registerWeb(r *gin.Engine) {
 	redirect := func(c *gin.Context) {
 		c.Redirect(http.StatusFound, "/ui/")
@@ -36,7 +41,26 @@ func (s *Server) registerWeb(r *gin.Engine) {
 		panic("api: embedded web assets: " + err.Error())
 	}
 	r.GET("/ui/*filepath", gin.WrapH(webSecurityHeaders(
-		http.StripPrefix("/ui", http.FileServer(http.FS(assets))))))
+		http.StripPrefix("/ui", noDirListing(assets)))))
+}
+
+// noDirListing:目录请求且该目录无 index.html 时 404(fail-closed)。
+// http.FileServer 对无 index 的目录渲染自动列表——canvas/assets/ 是
+// embed 面第一个子目录资产面(T14.1),不为哈希产物开 browsing 面;
+// 未来构建产物加目录(sourcemap 等)无需逐个登记即默认拒绝。
+func noDirListing(assets fs.FS) http.Handler {
+	file := http.FileServer(http.FS(assets))
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		// Stat 前剥首尾 /(目录请求带尾斜杠,embed FS 视为非法路径)。
+		p := strings.Trim(req.URL.Path, "/")
+		if st, err := fs.Stat(assets, p); err == nil && st.IsDir() {
+			if idx, ierr := fs.Stat(assets, path.Join(p, "index.html")); ierr != nil || idx.IsDir() {
+				http.NotFound(w, req)
+				return
+			}
+		}
+		file.ServeHTTP(w, req)
+	})
 }
 
 // webSecurityHeaders 给静态响应统一叠安全头(X-Frame-Options 是 CSP
