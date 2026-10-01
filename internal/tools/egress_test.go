@@ -29,6 +29,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -676,11 +677,85 @@ exit 9
 `
 }
 
+// TestEgressNetworkInstance 实例段网名推导(D-t151 决策 5,t15.4):网名
+// = <基段>-<sha256(worker_id) 前 8 hex>。golden 字面量钉算法稳定性——
+// 「同 worker_id 跨重启同名」是幂等复用网与 owner 唯一部署契约的前提,
+// 改动哈希构造即红(issue #124 注记:短哈希稳定性在 PR 内钉死)。
+func TestEgressNetworkInstance(t *testing.T) {
+	suffixRe := regexp.MustCompile(`^braid-sbx-egress-[0-9a-f]{8}$`)
+
+	t.Run("golden pins derivation", func(t *testing.T) {
+		name, err := egressNetworkInstance(sandboxEgressNetworkDefault, "worker-a")
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if name != "braid-sbx-egress-6a65e237" {
+			t.Fatalf("name = %q, want golden braid-sbx-egress-6a65e237 (sha256(\"worker-a\")[:4] hex)", name)
+		}
+		if !suffixRe.MatchString(name) {
+			t.Fatalf("name = %q, want <base>-<8 lowercase hex>", name)
+		}
+	})
+
+	t.Run("same id stable distinct ids differ", func(t *testing.T) {
+		a1, err := egressNetworkInstance(sandboxEgressNetworkDefault, "worker-a")
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		a2, err := egressNetworkInstance(sandboxEgressNetworkDefault, "worker-a")
+		if err != nil || a1 != a2 {
+			t.Fatalf("(%q, %q, %v), want identical names for same worker id", a1, a2, err)
+		}
+		b, err := egressNetworkInstance(sandboxEgressNetworkDefault, "worker-b")
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if a1 == b {
+			t.Fatalf("names for distinct workers collide: %q", a1)
+		}
+	})
+
+	t.Run("custom base honored", func(t *testing.T) {
+		name, err := egressNetworkInstance("edge-lan", "worker-a")
+		if err != nil || name != "edge-lan-6a65e237" {
+			t.Fatalf("(%q, %v), want edge-lan-6a65e237", name, err)
+		}
+	})
+
+	t.Run("base length budget", func(t *testing.T) {
+		// 基段 55 恰容(55+1+8 = 64,值域上界);56 拒(键名响亮)。
+		fit, err := egressNetworkInstance(strings.Repeat("a", 55), "w")
+		if err != nil || len(fit) != 64 || !sandboxNetworkRe.MatchString(fit) {
+			t.Fatalf("(%q len %d, %v), want 64-char name within value domain", fit, len(fit), err)
+		}
+		_, err = egressNetworkInstance(strings.Repeat("a", 56), "w")
+		if err == nil || !strings.Contains(err.Error(), "BRAID_TOOL_SANDBOX_EGRESS_NETWORK") {
+			t.Fatalf("err = %v, want named rejection for 56-char base", err)
+		}
+	})
+
+	t.Run("empty worker id refused", func(t *testing.T) {
+		_, err := egressNetworkInstance(sandboxEgressNetworkDefault, "")
+		if err == nil || !strings.Contains(err.Error(), "worker") {
+			t.Fatalf("err = %v, want loud refusal for empty worker identity", err)
+		}
+	})
+
+	t.Run("composed name revalidation direct call", func(t *testing.T) {
+		// 生产路径上基段已过 sandboxConfigFromEnv 值域门,合成名复检分支
+		// 不可达;直调负例钉住该纵深防御分支(未来直调者兜底),
+		// 删除复检即红。
+		if _, err := egressNetworkInstance(":x", "w"); err == nil || !strings.Contains(err.Error(), "value domain") {
+			t.Fatalf("err = %v, want value-domain rejection for invalid base", err)
+		}
+	})
+}
+
 func TestSandboxEgressStartup(t *testing.T) {
 	t.Run("off mode zero docker contact", func(t *testing.T) {
 		bin, dir := fakeNamedDockerShim(t, "docker", egressStartupShimBody("true"))
 		t.Setenv("PATH", filepath.Dir(bin))
-		u, err := SandboxEgressStartup(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "off"}))
+		u, err := SandboxEgressStartup(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "off"}), "w1")
 		if err != nil || u != nil {
 			t.Fatalf("(%v, %v), want (nil, nil)", u, err)
 		}
@@ -696,19 +771,28 @@ func TestSandboxEgressStartup(t *testing.T) {
 			"BRAID_TOOL_SANDBOX":             "docker",
 			"BRAID_TOOL_SANDBOX_EGRESS_PORT": "0", // 内核指派:测试零碰撞
 			"BRAID_HTTP_ENDPOINTS":           `{"t":"https://127.0.0.1:1"}`,
-		}))
+		}), "w1")
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
-		if u.Scheme != "http" || u.Hostname() != "127.0.0.1" || u.Port() == "" {
-			t.Fatalf("addr = %v, want http://127.0.0.1:<port>", u)
+		// 网名 = 基段 + worker_id 实例段(D-t151 决策 5;派生单源,算法
+		// 稳定性由 TestEgressNetworkInstance golden 钉死)。
+		inst, err := egressNetworkInstance(sandboxEgressNetworkDefault, "w1")
+		if err != nil {
+			t.Fatalf("instance name: %v", err)
+		}
+		if u.Network != inst {
+			t.Fatalf("network = %q, want %q", u.Network, inst)
+		}
+		if u.ProxyURL.Scheme != "http" || u.ProxyURL.Hostname() != "127.0.0.1" || u.ProxyURL.Port() == "" {
+			t.Fatalf("addr = %v, want http://127.0.0.1:<port>", u.ProxyURL)
 		}
 		want := []string{
 			"info --format {{.ServerVersion}}",
-			"network inspect --format {{.Internal}} braid-sbx-egress",
-			"network create --internal braid-sbx-egress",
-			"network inspect --format {{.Internal}} braid-sbx-egress",
-			"network inspect --format {{(index .IPAM.Config 0).Gateway}} braid-sbx-egress",
+			"network inspect --format {{.Internal}} " + inst,
+			"network create --internal " + inst,
+			"network inspect --format {{.Internal}} " + inst,
+			"network inspect --format {{(index .IPAM.Config 0).Gateway}} " + inst,
 		}
 		lines := shimArgv(t, dir)
 		if len(lines) != len(want) {
@@ -721,14 +805,150 @@ func TestSandboxEgressStartup(t *testing.T) {
 		}
 		// 代理真在服务且 allow 集来自 endpoints(127.0.0.1:1 在白名,
 		// 但生产禁段拒环回 → 403 ssrf 标记:allow 派生 + 默认禁段双证)。
-		code, reason := egressProbe(t, u.Host, "127.0.0.1:1")
+		code, reason := egressProbe(t, u.ProxyURL.Host, "127.0.0.1:1")
 		if code != 403 || reason != egressReasonSSRFBlocked {
 			t.Fatalf("probe = %d %q, want 403 %s", code, reason, egressReasonSSRFBlocked)
 		}
 		// 非白名 host:默认拒绝(host 白名单来自 endpoints 单源)。
-		code, reason = egressProbe(t, u.Host, "evil.example:443")
+		code, reason = egressProbe(t, u.ProxyURL.Host, "evil.example:443")
 		if code != 403 || reason != egressReasonHostBlocked {
 			t.Fatalf("probe = %d %q, want 403 %s", code, reason, egressReasonHostBlocked)
+		}
+	})
+
+	t.Run("distinct workers same port distinct gateways coexist", func(t *testing.T) {
+		// t15.4 验收核心:同 daemon 双 worker 各持实例网,网关互异 ⇒
+		// 同端口不撞(每代理绑各自网关)。shim 按网名分发网关 IP,
+		// 复刻真 daemon「一 bridge 网一子网一网关」的分配面。端口配方 =
+		// 首调用内核指派、回读实际端口后显式复用(probe-close-rebind 有
+		// 跨进程竞态窗,并行 lane 常态下不可用)。
+		instA, err := egressNetworkInstance(sandboxEgressNetworkDefault, "wrk-a")
+		if err != nil {
+			t.Fatalf("instance name: %v", err)
+		}
+		instB, err := egressNetworkInstance(sandboxEgressNetworkDefault, "wrk-b")
+		if err != nil {
+			t.Fatalf("instance name: %v", err)
+		}
+		body := `
+rec "$@"
+if [ "$1" = "info" ]; then echo 29.1.3; exit 0; fi
+if [ "$1" = "network" ] && [ "$2" = "inspect" ]; then
+  [ -f "$d/net-$5" ] || exit 1
+  case "$4" in
+  *Internal*) echo true ;;
+  *Gateway*) case "$5" in
+    ` + instA + `) echo 127.0.0.2 ;;
+    ` + instB + `) echo 127.0.0.3 ;;
+    *) exit 9 ;;
+    esac ;;
+  *) exit 9 ;;
+  esac
+  exit 0
+fi
+if [ "$1" = "network" ] && [ "$2" = "create" ]; then : > "$d/net-$4"; exit 0; fi
+exit 9
+`
+		bin, _ := fakeNamedDockerShim(t, "docker", body)
+		t.Setenv("PATH", filepath.Dir(bin))
+		env := func(port string) func(string) string {
+			return envOf(map[string]string{
+				"BRAID_TOOL_SANDBOX":             "docker",
+				"BRAID_TOOL_SANDBOX_EGRESS_PORT": port,
+				"BRAID_HTTP_ENDPOINTS":           `{"t":"https://127.0.0.1:1"}`,
+			})
+		}
+		egA, err := SandboxEgressStartup(context.Background(), env("0"), "wrk-a")
+		if err != nil {
+			t.Fatalf("worker A startup: %v", err)
+		}
+		egB, err := SandboxEgressStartup(context.Background(), env(egA.ProxyURL.Port()), "wrk-b")
+		if err != nil {
+			t.Fatalf("worker B startup (must not collide on port %s): %v", egA.ProxyURL.Port(), err)
+		}
+		if egA.Network == egB.Network || egA.ProxyURL.Host == egB.ProxyURL.Host {
+			t.Fatalf("networks/addresses not distinct: %q vs %q, %s vs %s", egA.Network, egB.Network, egA.ProxyURL.Host, egB.ProxyURL.Host)
+		}
+		if egA.ProxyURL.Port() != egB.ProxyURL.Port() {
+			t.Fatalf("ports = %q/%q, want equal (same port, distinct gateways)", egA.ProxyURL.Port(), egB.ProxyURL.Port())
+		}
+		// 双代理都活着且同策略(默认拒绝)——非白名 host 双探测 403。
+		for _, addr := range []string{egA.ProxyURL.Host, egB.ProxyURL.Host} {
+			code, reason := egressProbe(t, addr, "evil.example:443")
+			if code != 403 || reason != egressReasonHostBlocked {
+				t.Fatalf("probe %s = %d %q, want 403 %s", addr, code, reason, egressReasonHostBlocked)
+			}
+		}
+	})
+
+	t.Run("same worker second start refused and reuses network", func(t *testing.T) {
+		// 活体同 owner 冲突边界(D-t151 决策 8-③):同 worker_id 二启 =
+		// 幂等复用同一实例网(argv 无 create 行)+ 同网关同端口 bind 拒启
+		// ——响亮,不静默共享代理(owner 唯一部署契约在显式端口下的执法
+		// 形态;PORT=0 例外见下一子测)。端口 = 首调内核指派后显式复用。
+		bin, dir := fakeNamedDockerShim(t, "docker", egressStartupShimBody("true"))
+		t.Setenv("PATH", filepath.Dir(bin))
+		env := func(port string) func(string) string {
+			return envOf(map[string]string{
+				"BRAID_TOOL_SANDBOX":             "docker",
+				"BRAID_TOOL_SANDBOX_EGRESS_PORT": port,
+			})
+		}
+		first, err := SandboxEgressStartup(context.Background(), env("0"), "w1")
+		if err != nil {
+			t.Fatalf("first start: %v", err)
+		}
+		_, err = SandboxEgressStartup(context.Background(), env(first.ProxyURL.Port()), "w1")
+		if err == nil || !strings.Contains(err.Error(), "listen") {
+			t.Fatalf("err = %v, want listen failure for same-worker double start (shim argv: %q)", err, shimArgv(t, dir))
+		}
+		// 幂等复用锚:第二次启动的 argv 尾巴恰为版本探针 + 两次 inspect
+		// (Internal 命中在场网 → Gateway),零 network create——若
+		// ensureEgressNetwork 退化为无条件 create,此处即红。
+		inst, err := egressNetworkInstance(sandboxEgressNetworkDefault, "w1")
+		if err != nil {
+			t.Fatalf("instance name: %v", err)
+		}
+		tail := []string{
+			"info --format {{.ServerVersion}}",
+			"network inspect --format {{.Internal}} " + inst,
+			"network inspect --format {{(index .IPAM.Config 0).Gateway}} " + inst,
+		}
+		lines := shimArgv(t, dir)
+		if len(lines) != len(tail)+5 { // 冷启 5 行 + 复用 3 行
+			t.Fatalf("invocations = %q, want cold-start 5 + reuse 3", lines)
+		}
+		for i := range tail {
+			if got := lines[len(lines)-len(tail)+i]; got != tail[i] {
+				t.Fatalf("reuse invocation[%d] = %q, want %q (no network create)", i, got, tail[i])
+			}
+		}
+	})
+
+	t.Run("port zero double start shares network dev semantics", func(t *testing.T) {
+		// PORT=0(内核指派,dev/test 避碰撞键)下同 owner 二启不触发 bind
+		// 拒启:幂等复用同一实例网,各持内核端口双活。owner 唯一契约在该
+		// 模式不执法——登记边界(生产显式端口执法;t15.3 owner-scoped
+		// sweep 落地后,双活互杀面亦消失)。钉死为既定语义,防漂移成意外。
+		bin, _ := fakeNamedDockerShim(t, "docker", egressStartupShimBody("true"))
+		t.Setenv("PATH", filepath.Dir(bin))
+		env := envOf(map[string]string{
+			"BRAID_TOOL_SANDBOX":             "docker",
+			"BRAID_TOOL_SANDBOX_EGRESS_PORT": "0",
+		})
+		first, err := SandboxEgressStartup(context.Background(), env, "w1")
+		if err != nil {
+			t.Fatalf("first start: %v", err)
+		}
+		second, err := SandboxEgressStartup(context.Background(), env, "w1")
+		if err != nil {
+			t.Fatalf("second start: %v, want kernel-port twin allowed in port-0 mode", err)
+		}
+		if first.Network != second.Network || first.ProxyURL.Hostname() != second.ProxyURL.Hostname() {
+			t.Fatalf("twin startups diverged: %q/%q %s/%s", first.Network, second.Network, first.ProxyURL.Hostname(), second.ProxyURL.Hostname())
+		}
+		if first.ProxyURL.Port() == second.ProxyURL.Port() {
+			t.Fatalf("kernel-assigned ports collided: %s", first.ProxyURL.Port())
 		}
 	})
 
@@ -739,7 +959,7 @@ func TestSandboxEgressStartup(t *testing.T) {
 		_, err := SandboxEgressStartup(context.Background(), envOf(map[string]string{
 			"BRAID_TOOL_SANDBOX":             "docker",
 			"BRAID_TOOL_SANDBOX_EGRESS_PORT": "0",
-		}))
+		}), "w1")
 		if err == nil || !strings.Contains(err.Error(), "not --internal") {
 			t.Fatalf("err = %v, want non-internal refusal", err)
 		}
@@ -756,7 +976,7 @@ func TestSandboxEgressStartup(t *testing.T) {
 		_, err = SandboxEgressStartup(context.Background(), envOf(map[string]string{
 			"BRAID_TOOL_SANDBOX":             "docker",
 			"BRAID_TOOL_SANDBOX_EGRESS_PORT": strconv.Itoa(hold.Addr().(*net.TCPAddr).Port),
-		}))
+		}), "w1")
 		if err == nil || !strings.Contains(err.Error(), "listen") {
 			t.Fatalf("err = %v, want listen failure (shim argv: %q)", err, shimArgv(t, dir))
 		}
@@ -770,7 +990,7 @@ func TestSandboxEgressStartup(t *testing.T) {
 			_, err := SandboxEgressStartup(context.Background(), envOf(map[string]string{
 				"BRAID_TOOL_SANDBOX":             "docker",
 				"BRAID_TOOL_SANDBOX_EGRESS_PORT": v,
-			}))
+			}), "w1")
 			if err == nil || !strings.Contains(err.Error(), "BRAID_TOOL_SANDBOX_EGRESS_PORT") {
 				t.Fatalf("port %q: err = %v, want named rejection (shim argv: %q)", v, err, shimArgv(t, dir))
 			}
@@ -779,6 +999,81 @@ func TestSandboxEgressStartup(t *testing.T) {
 			t.Fatalf("invocations = %q, want zero (port validated before docker contact)", lines)
 		}
 	})
+
+	t.Run("oversized base name refused before docker contact", func(t *testing.T) {
+		// 基段超长(实例名放不进 64 字符值域)= 坏配置快败,零 docker 接触
+		// (与端口键同窗口:校验先于 daemon 探测)。
+		bin, dir := fakeNamedDockerShim(t, "docker", egressStartupShimBody("true"))
+		t.Setenv("PATH", filepath.Dir(bin))
+		_, err := SandboxEgressStartup(context.Background(), envOf(map[string]string{
+			"BRAID_TOOL_SANDBOX":                "docker",
+			"BRAID_TOOL_SANDBOX_EGRESS_NETWORK": strings.Repeat("a", 56),
+		}), "w1")
+		if err == nil || !strings.Contains(err.Error(), "BRAID_TOOL_SANDBOX_EGRESS_NETWORK") {
+			t.Fatalf("err = %v, want named rejection for 56-char base (shim argv: %q)", err, shimArgv(t, dir))
+		}
+		if lines := shimArgv(t, dir); len(lines) != 0 {
+			t.Fatalf("invocations = %q, want zero (base validated before docker contact)", lines)
+		}
+	})
+
+	t.Run("empty worker id refused before docker contact", func(t *testing.T) {
+		// 空 worker 身份 = 无法派生实例段,坏输入快败零 docker 接触
+		// (与超长基段同窗口;生产 cmd/worker 恒先解析非空 WorkerID,
+		// 此处钉库边界)。
+		bin, dir := fakeNamedDockerShim(t, "docker", egressStartupShimBody("true"))
+		t.Setenv("PATH", filepath.Dir(bin))
+		_, err := SandboxEgressStartup(context.Background(), envOf(map[string]string{
+			"BRAID_TOOL_SANDBOX": "docker",
+		}), "")
+		if err == nil || !strings.Contains(err.Error(), "worker identity") {
+			t.Fatalf("err = %v, want named refusal for empty worker identity (shim argv: %q)", err, shimArgv(t, dir))
+		}
+		if lines := shimArgv(t, dir); len(lines) != 0 {
+			t.Fatalf("invocations = %q, want zero (worker id validated before docker contact)", lines)
+		}
+	})
+}
+
+// TestEgressStartupEnvHandoff 钉死 worker 装配缝契约(t15.4):启动段返回
+// 的实例网名与代理地址经双键 env 交接后,sandboxConfigFromEnv(Builtin
+// ToolsFromEnv 的沙箱配置半边)读到的正是实例名与该地址——容器
+// --network 位与建网/监听三面同源。对抗审计 MED:该缝回归时启动全绿、
+// 故障延迟到首次工具调用,须有锚(cmd/worker 侧 setenv 先于装配的顺序
+// 本身不在单测射程,与 EGRESS_ADDR 既有缝同状,PR 说明登记)。
+func TestEgressStartupEnvHandoff(t *testing.T) {
+	bin, _ := fakeNamedDockerShim(t, "docker", egressStartupShimBody("true"))
+	t.Setenv("PATH", filepath.Dir(bin))
+	getenv := envOf(map[string]string{
+		"BRAID_TOOL_SANDBOX":             "docker",
+		"BRAID_TOOL_SANDBOX_EGRESS_PORT": "0",
+		"BRAID_HTTP_ENDPOINTS":           `{"t":"https://127.0.0.1:1"}`,
+	})
+	eg, err := SandboxEgressStartup(context.Background(), getenv, "w1")
+	if err != nil {
+		t.Fatalf("startup: %v", err)
+	}
+	// 调用方契约形(= cmd/worker:双键齐写后装配;漏写 NETWORK 键则载体
+	// 落回基段名,漏写 ADDR 则信封不带 proxy)。
+	handed := func(k string) string {
+		switch k {
+		case "BRAID_TOOL_SANDBOX_EGRESS_ADDR":
+			return eg.ProxyURL.String()
+		case "BRAID_TOOL_SANDBOX_EGRESS_NETWORK":
+			return eg.Network
+		}
+		return getenv(k)
+	}
+	cfg, err := sandboxConfigFromEnv(handed)
+	if err != nil {
+		t.Fatalf("assembled config: %v", err)
+	}
+	if cfg.EgressNetwork != eg.Network {
+		t.Fatalf("assembled EgressNetwork = %q, want instance %q (base override lost)", cfg.EgressNetwork, eg.Network)
+	}
+	if cfg.EgressAddr == nil || cfg.EgressAddr.String() != eg.ProxyURL.String() {
+		t.Fatalf("assembled EgressAddr = %v, want %s", cfg.EgressAddr, eg.ProxyURL)
+	}
 }
 
 // TestSandboxCarrierHTTPEnvelopeProxy 信封 proxy 字段:worker 装配(非

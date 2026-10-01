@@ -141,6 +141,13 @@ services:
     <<: *braid-image
     image: braid:prod
     container_name: braid-prod-worker
+    # T15.3 部署契约(D-t151 #5):worker 身份(owner)须在并发活体间唯一
+    # 且跨重启/recreate 稳定——hostname 缺省 = 容器短 ID,recreate 必换身份;
+    # 显式钉死后 restart 与 recreate 均自机清扫成立。停机宽限 ≥35s:缺省
+    # 10s < BRAID_WORKER_SHUTDOWN_TIMEOUT(30s)会在排水中途被 SIGKILL,
+    # 在飞沙箱容器变孤儿。多副本形态须逐副本显式 hostname/BRAID_WORKER_ID。
+    hostname: braid-prod-worker
+    stop_grace_period: 35s
     entrypoint: ["/usr/local/bin/worker"]
     environment:
       BRAID_MYSQL_DSN: braid_worker:${BRAID_DB_WORKER_PASSWORD:?BRAID_DB_WORKER_PASSWORD 未设}@tcp(mysql:3306)/braid

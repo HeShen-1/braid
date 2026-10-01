@@ -13,9 +13,12 @@ package tools
 //	BRAID_TOOL_SANDBOX_CPUS            docker 旗标原样,默认 0.5
 //	BRAID_TOOL_SANDBOX_PIDS            整数 1..4096,默认 64
 //	BRAID_TOOL_SANDBOX_MAX_CONCURRENCY 并发容器上界 1..1000,默认 8
-//	BRAID_TOOL_SANDBOX_EGRESS_NETWORK  egress 内网名(docker 网络名值域),默认 braid-sbx-egress(T10.2)
+//	BRAID_TOOL_SANDBOX_EGRESS_NETWORK  egress 内网名基段(docker 网络名值域 ≤64;worker egress 启动段另限基段 ≤55——实例段 8 hex 预算,超限拒启),默认 braid-sbx-egress(T10.2/T15.4)
 //	BRAID_TOOL_SANDBOX_EGRESS_ADDR     egress 代理地址 http://host:port(worker 启动自算自写,装配单读;
 //	                                   api 进程不执行工具,缺省 nil = 信封不带 proxy 字段)
+//	BRAID_TOOL_SANDBOX_OWNER           owner 身份 = WorkerID(T15.3/D-t151 #5;worker 启动自写,装配单读;
+//	                                   空 = 解析层放行——api 进程无 WorkerID 且永不 Run,必填闸在
+//	 SandboxStartupCheck 与 argv 构造器两处 worker 侧消费点)
 //
 // off 模式对沙箱键零消费(零 docker 代码路径):api 进程永不触 docker 的
 // 结构保证。键家族 BRAID_TOOL_SANDBOX* 结构性不进容器 env(防 helper 再入
@@ -55,6 +58,11 @@ var sandboxNetworkRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
 // 同源登记;worker 启动幂等创建 --internal 网络,见 SandboxStartupCheck)。
 const sandboxEgressNetworkDefault = "braid-sbx-egress"
 
+// sandboxOwnerRe owner 身份值域(T15.3,网络名同款纪律):owner 落 docker
+// argv 的 --label 值位与 ps --filter 值位,拒前导 dash/空白/逗号等注入
+// 形。上限 64 对齐 node_attempt.worker_id DDL VARCHAR(64)。
+var sandboxOwnerRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$`)
+
 // sandboxConfig 沙箱载体配置(不可变值对象;docker 二进制解析不在构造——
 // 构造保持纯配置惰性,worker 侧 Probe 负责 LookPath/daemon/镜像检查)。
 type sandboxConfig struct {
@@ -70,6 +78,11 @@ type sandboxConfig struct {
 	// EgressAddr egress 代理地址(信封 proxy 字段原料;api 装配恒 nil,
 	// worker 由启动段自写 env 后装配非 nil——见文件头 env 词表)。
 	EgressAddr *url.URL
+	// Owner 沙箱容器归属身份 = WorkerID(T15.3/D-t151 #5):docker run 打
+	// braid.sandbox.owner label、启动清扫只清自家——多 worker 同 daemon 不
+	// 互杀。api 装配恒空(不执行工具);worker 侧消费点
+	// (SandboxStartupCheck/buildSandboxRunArgv)必填闸。
+	Owner string
 }
 
 // sandboxConfigFromEnv 解析并校验沙箱 env 词表;off 模式(含未设)不读
@@ -145,6 +158,15 @@ func sandboxConfigFromEnv(getenv func(string) string) (sandboxConfig, error) {
 			return sandboxConfig{}, fmt.Errorf("tools: BRAID_TOOL_SANDBOX_EGRESS_ADDR: %w", err)
 		}
 		cfg.EgressAddr = u
+	}
+
+	// T15.3 owner 段:非空才校验值域(argv label/filter 注入面防线);空 =
+	// 解析层放行(api 无 WorkerID 且永不 Run)。worker 侧必填闸在
+	// SandboxStartupCheck(启动清扫 fail-closed)与 buildSandboxRunArgv
+	// (run 期门)——三闸共同保证 api 结构不受影响、worker 缺身份即响亮败。
+	cfg.Owner = strings.TrimSpace(getenv("BRAID_TOOL_SANDBOX_OWNER"))
+	if cfg.Owner != "" && !sandboxOwnerRe.MatchString(cfg.Owner) {
+		return sandboxConfig{}, fmt.Errorf("tools: BRAID_TOOL_SANDBOX_OWNER=%q: invalid owner identity (want ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$, same charset as worker id)", cfg.Owner)
 	}
 	return cfg, nil
 }

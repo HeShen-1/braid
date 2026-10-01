@@ -60,6 +60,16 @@ func buildSandboxRunArgv(cfg sandboxConfig, name, tool string, mounts []string) 
 	if _, ok := sandboxSandboxableTools[tool]; !ok {
 		return nil, fmt.Errorf("tools: sandbox tool %q not in vocabulary (want http|file_read)", tool)
 	}
+	// T15.3 owner 门(D-t151 #5):docker 模式下 owner 必填——每容器打
+	// braid.sandbox.owner label 是启动清扫按家过滤的前提,缺 owner 的容器
+	// 会变成「代码路径不可回收、只等 runbook 全局原语」的孤儿。api 进程
+	// 结构性不可达(不执行工具);空 owner = 装配链断了,响亮败。
+	if cfg.Owner == "" {
+		return nil, fmt.Errorf("tools: sandbox argv requires owner identity (BRAID_TOOL_SANDBOX_OWNER, set by worker startup from WorkerID; sweep scoping per D-t151 #5)")
+	}
+	if !sandboxOwnerRe.MatchString(cfg.Owner) {
+		return nil, fmt.Errorf("tools: sandbox owner %q invalid (want ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$)", cfg.Owner)
+	}
 	network, err := sandboxNetworkFor(cfg, tool)
 	if err != nil {
 		return nil, err
@@ -78,6 +88,10 @@ func buildSandboxRunArgv(cfg sandboxConfig, name, tool string, mounts []string) 
 		"--name", name,
 		"--label", "braid.sandbox=1",
 		"--label", "braid.tool=" + tool,
+		// T15.3 owner label(D-t151 #5):清扫注册面从全局单 label 升格为
+		// (全局, owner) 二元组——SandboxSweep 按本 label 过滤只清自家,
+		// 多 worker 同 daemon 不互杀;kill -9 孤儿身份可知(归属可判)。
+		"--label", "braid.sandbox.owner=" + cfg.Owner,
 		"--read-only",
 		"--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
 		"--memory", cfg.Memory,

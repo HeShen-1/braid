@@ -116,7 +116,11 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if c.Queues, err = envQueues(getenv("BRAID_WORKER_QUEUES"), c.Queues); err != nil {
 		return c, err
 	}
-	c.WorkerID = getenv("BRAID_WORKER_ID")
+	// TrimSpace:T15.3 起 WorkerID 同时是沙箱 owner 身份(= braid.sandbox.owner
+	// label),与 node_attempt.worker_id 对账面必须同词形——env 文件 CRLF 尾巴
+	// 等空白形态在此归一,否则 DB 记 "x\r" 而 label 记 "x",kill -9 孤儿按
+	// DB 身份回收的 runbook 原语失配。空白串归零 = 落 hostname 兜底。
+	c.WorkerID = strings.TrimSpace(getenv("BRAID_WORKER_ID"))
 	c.MySQLDSN = getenv("BRAID_MYSQL_DSN")
 	c.RedisQueueAddr = getenv("BRAID_REDIS_QUEUE_ADDR")
 	c.MetricsAddr = getenv("BRAID_METRICS_ADDR")

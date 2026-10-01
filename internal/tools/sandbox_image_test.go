@@ -427,6 +427,16 @@ func sandboxTestImageTag() string {
 	return "braid-tool-sandbox:t" + slot
 }
 
+// sandboxTestOwner e2e 侧 owner 身份(T15.3):按槽位隔离——并行 lane 各自
+// 的容器归属可判,残留差分断言(全局 label 面)不因他 lane 在飞容器误报。
+func sandboxTestOwner() string {
+	slot := os.Getenv("BRAID_TEST_REDIS_DB")
+	if slot == "" {
+		slot = "0"
+	}
+	return "e2e-t" + slot
+}
+
 // sandboxEnsureImage prod 形态镜像装配(T9/T10 e2e 消费):进程内首调用
 // 构建缺省 target(prod = Dockerfile 最后 stage,零注入),之后在场即跳过。
 func sandboxEnsureImage(t *testing.T, image string) {

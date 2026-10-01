@@ -29,6 +29,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -106,7 +107,7 @@ type EgressProxy struct {
 }
 
 // NewEgressProxy 构造代理(纯配置惰性:绑定/监听在调用方,worker 装配
-// 见 SandboxStartupCheck 的 egress 段)。
+// 见 SandboxEgressStartup——cmd/worker 启动段接线)。
 func NewEgressProxy(cfg EgressConfig) *EgressProxy {
 	if cfg.Allow == nil {
 		cfg.Allow = map[string]map[int]struct{}{}
@@ -601,18 +602,33 @@ func egressTunnelTLSConfig(tlsCfg *tls.Config, host string) *tls.Config {
 	return tlsConf
 }
 
+// EgressStartup 是 SandboxEgressStartup 的结果:代理地址 + 实例段网名。
+// 调用方写 BRAID_TOOL_SANDBOX_EGRESS_ADDR 与 BRAID_TOOL_SANDBOX_EGRESS_NETWORK
+// (实例名覆写基段)后再走 BuiltinToolsFromEnv——容器 --network 位、信封
+// proxy 字段与代理 allow 集由此三面同源(ADDR handoff 同款纪律,worker
+// 进程内传递,非手配键)。
+type EgressStartup struct {
+	ProxyURL *url.URL
+	Network  string
+}
+
 // SandboxEgressStartup 是 worker 启动的 egress 段(T10.2,SandboxStartupCheck
 // 同族):docker 模式下幂等确保 --internal egress 内网 → 读网关 IP → 以
 // resolveToolSet 单源派生 allow 集(签名工具包/env 矩阵同过,基线 §4c)
-// → 绑网关:port 起 CONNECT 代理并 serve → 返回代理地址(调用方
-// os.Setenv BRAID_TOOL_SANDBOX_EGRESS_ADDR 后再走 BuiltinToolsFromEnv 装配,
-// 信封 proxy 字段与代理 allow 集由此同源)。off 模式零 docker 接触,返回
-// nil。零静默降级:网络不可确保/非 internal 复用/网关不可读/端口不可绑 =
-// 响亮败(worker 拒启,绝不回落 bridge)。
+// → 绑网关:port 起 CONNECT 代理并 serve → 返回代理地址与实例段网名
+// (调用方 os.Setenv BRAID_TOOL_SANDBOX_EGRESS_ADDR / EGRESS_NETWORK 后再走
+// BuiltinToolsFromEnv 装配,信封 proxy 字段与代理 allow 集由此同源)。
+// off 模式零 docker 接触,返回 nil。零静默降级:网络不可确保/非 internal
+// 复用/网关不可读/端口不可绑 = 响亮败(worker 拒启,绝不回落 bridge)。
 //
-// 多副本边界:同名网络幂等创建可共存,但固定端口 + 网关单址 = 第二副本
-// 绑听即败拒启(单 worker 拓扑现状;Helm 多副本是 t14.4 的拓扑议题)。
-func SandboxEgressStartup(ctx context.Context, getenv func(string) string) (*url.URL, error) {
+// 多副本口径(D-t151 决策 5,t15.4):网名带实例段(egressNetworkInstance,
+// 一 worker 一网)⇒ 独立 bridge 子网独立网关 IP,同端口 9210 不撞,顺带
+// worker 间沙箱容器物理网络隔离。同 worker_id 二启 = 幂等复用同一实例网
+// + 同网关同端口 bind 拒启(**显式端口**下 owner 唯一部署契约的执法形态;
+// PORT=0 内核指派 = dev/test 语义,不执法——同族登记边界;活体同 owner
+// 冲突面见 D-t151 决策 8-③);
+// 地址池上界与 recreate 泄漏网回收 = runbook 面(deploy/RUNBOOK.md)。
+func SandboxEgressStartup(ctx context.Context, getenv func(string) string, workerID string) (*EgressStartup, error) {
 	cfg, err := sandboxConfigFromEnv(getenv)
 	if err != nil {
 		return nil, err
@@ -663,6 +679,13 @@ func SandboxEgressStartup(ctx context.Context, getenv func(string) string) (*url
 		port = v
 	}
 
+	// 实例段网名(一 worker 一网,D-t151 决策 5):坏输入(空身份/基段
+	// 超长)在此快败——与端口键同窗口,先于 docker 接触(零副作用)。
+	network, nerr := egressNetworkInstance(cfg.EgressNetwork, workerID)
+	if nerr != nil {
+		return nil, nerr
+	}
+
 	// daemon 语义下限:--internal 旗标自 17.06 存在,但「隔离转发」语义
 	// (容器仅达网关、外发结构性拒绝)按 20.10 验证——低于即拒启(基线
 	// §9-8 daemon 版本漂移残留的 egress 半边,SandboxProbe 的 17.06 下限
@@ -681,22 +704,53 @@ func SandboxEgressStartup(ctx context.Context, getenv func(string) string) (*url
 		return nil, fmt.Errorf("tools: egress startup: docker daemon %d.%d below 20.10 minimum for --internal isolation semantics (default-deny egress)", major, minor)
 	}
 
-	gwIP, err := ensureEgressNetwork(ctx, sandboxDockerBin, cfg.EgressNetwork)
+	gwIP, err := ensureEgressNetwork(ctx, sandboxDockerBin, network)
 	if err != nil {
 		return nil, err
 	}
 	ln, err := net.Listen("tcp", net.JoinHostPort(gwIP, strconv.Itoa(port)))
 	if err != nil {
-		return nil, fmt.Errorf("tools: egress proxy listen %s:%d: %w (single-worker topology; second replica on same network must fail loud)", gwIP, port, err)
+		return nil, fmt.Errorf("tools: egress proxy listen %s:%d: %w (per-worker network %s; concurrent same-owner start must fail loud)", gwIP, port, err, network)
 	}
 	proxy := NewEgressProxy(EgressConfig{Allow: allow, AllowInternal: pinned})
 	go func() { _ = proxy.Serve(ln) }() // listener 关闭即退(worker 进程生命周期)
-	return &url.URL{Scheme: "http", Host: ln.Addr().String()}, nil
+	return &EgressStartup{
+		ProxyURL: &url.URL{Scheme: "http", Host: ln.Addr().String()},
+		Network:  network,
+	}, nil
 }
 
 // sandboxEgressPortDefault 代理监听缺省端口(deploy/README §egress 同源
 // 登记;容器 → 网关唯一可达面,无公网暴露)。
 const sandboxEgressPortDefault = 9210
+
+// sandboxEgressNetworkBaseMax 基段长度上界:实例名 = 基段 + "-" + 8 hex,
+// 须落 docker 网络名值域(≤64,sandboxNetworkRe)⇒ 基段 ≤ 55。
+const sandboxEgressNetworkBaseMax = 55
+
+// egressNetworkInstance 从基段与 worker 身份派生实例段网名(D-t151 决策
+// 5):<base>-<sha256(workerID) 前 4 字节 hex>。同 worker_id 跨重启同名
+// (幂等复用网 + owner 唯一部署契约的前提,算法稳定性由 golden 测试钉死);
+// 异 worker_id 各持独立 --internal bridge——独立子网独立网关 IP ⇒ 同端口
+// 9210 不撞,顺带 worker 间沙箱容器物理网络隔离。8 hex = 2^32 空间,同
+// daemon 副本数下碰撞后果 = 同名网(显式端口下 bind 冲突拒启,响亮;
+// PORT=0 内核指派 = dev/test 语义,双活不执法——登记边界,与同 owner
+// 二启同判),静默串扰结构性不可达。网名最终落 docker argv,值域白名单
+// (sandboxNetworkRe)在此复检——镜像引用同款纪律。
+func egressNetworkInstance(base, workerID string) (string, error) {
+	if workerID == "" {
+		return "", fmt.Errorf("tools: egress network instance segment requires worker identity (empty worker id; set BRAID_WORKER_ID or hostname)")
+	}
+	if len(base) > sandboxEgressNetworkBaseMax {
+		return "", fmt.Errorf("tools: BRAID_TOOL_SANDBOX_EGRESS_NETWORK=%q longer than %d chars (no room for per-worker instance segment)", base, sandboxEgressNetworkBaseMax)
+	}
+	sum := sha256.Sum256([]byte(workerID))
+	name := fmt.Sprintf("%s-%x", base, sum[:4])
+	if !sandboxNetworkRe.MatchString(name) {
+		return "", fmt.Errorf("tools: egress network instance name %q invalid (docker network name value domain)", name)
+	}
+	return name, nil
+}
 
 // ensureEgressNetwork 幂等确保 egress 内网在场且为 --internal:inspect 缺
 // 失 → create --internal(「已存在」竞态 = 复检消化);复用既有网络但
