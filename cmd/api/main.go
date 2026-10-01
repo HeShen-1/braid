@@ -20,6 +20,7 @@ import (
 	"braid/internal/api"
 	"braid/internal/auth"
 	"braid/internal/db"
+	entoidc "braid/internal/enterprise/oidc"
 	"braid/internal/metrics"
 	"braid/internal/preflight"
 	"braid/internal/scheduler"
@@ -150,17 +151,23 @@ func run(ctx context.Context) error {
 	apiSrv.LoginMetrics(mset.Login)
 	apiSrv.RollbackMetrics(mset.Rollback) // T9.2:回滚面三计数器(D-t92 决策 10)
 	apiSrv.Tracing(traceProv.Tracer("braid/api"))
-	// OIDC 插件(T11.1,D-2026-09-28-t111-oidc-subject-anchor):BRAID_OIDC_*
-	// 组经 ConfigFromEnv 解析(半开启动即败);配置完整才构造——discovery
-	// 启动期拉取,issuer 错/不可达即启动失败。未配置零行为(路由不挂载),
-	// 内置 login 不受影响;主体映射 = 本地账号锚定(claim 值 == 本地账号名)。
-	if cfg.OIDC.Configured() {
-		oidcProv, err := auth.NewOIDCProvider(ctx, cfg.OIDC, dbh)
+	// OIDC 插件(T11.1,D-2026-09-28-t111-oidc-subject-anchor;T16.1 起协议
+	// 实现与配置组迁企业增值面 internal/enterprise/oidc,组合根直呼解析,
+	// api.Config 不再携带):BRAID_OIDC_* 组半开启动即败;配置完整才构造
+	// ——discovery 启动期拉取,issuer 错/不可达即启动失败。未配置零行为
+	//(路由不挂载),内置 login 不受影响;主体映射 = 本地账号锚定(claim
+	// 值 == 本地账号名,锚定缝 auth.AnchorLoginUser)。
+	oidcCfg, err := entoidc.ParseOIDCConfig(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("api: %w", err)
+	}
+	if oidcCfg.Configured() {
+		oidcProv, err := entoidc.NewOIDCProvider(ctx, oidcCfg, dbh)
 		if err != nil {
 			return fmt.Errorf("api: %w", err)
 		}
 		apiSrv.OIDCProvider(oidcProv)
-		slog.Info("api: oidc login enabled", "issuer", cfg.OIDC.Issuer, "claim", cfg.OIDC.Claim)
+		slog.Info("api: oidc login enabled", "issuer", oidcCfg.Issuer, "claim", oidcCfg.Claim)
 	}
 	router := apiSrv.Router()
 	// /metrics 与 /healthz 同端口同回环绑定(BRAID_API_ADDR 部署约定)。

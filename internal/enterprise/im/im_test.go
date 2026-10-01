@@ -1,9 +1,10 @@
-package notify
+package im
 
 // IMSender 测试(T14.3,D-t143):钉钉加签金向量(独立 Python 预计算)、
 // 卡片渲染(按钮对 cap/降级/信息卡/票向文案)、发送面集成(t13 真 MySQL
 // + httptest 钉钉桩:送达审计行、按轮去重、errcode 响亮失败、传输错误
-// 脱壳不带 webhook 凭证、短链 roundtrip)。
+// 脱壳不带 webhook 凭证、短链 roundtrip)。T16.1 随实现迁企业增值面
+// (D-2026-10-01-t161)。
 
 import (
 	"context"
@@ -23,9 +24,14 @@ import (
 	"braid/internal/auth"
 	"braid/internal/db/sqltest"
 	"braid/internal/engine"
+	"braid/internal/notify"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 )
+
+// imSchema:本包自开测试 base(notify fixtures 同款纪律;T16.1 切出后
+// 与 braid_notify_test 隔离),schema 名经 TestSchema 自动拼 worktree 后缀。
+const imSchema = "braid_ent_im_test"
 
 // 金向量:官方口径 key=secret、msg=`timestamp+"\n"+secret`(官方文档
 // Java/Python 样例逐字),本机 Python hmac/hashlib/base64 独立实算。
@@ -314,7 +320,7 @@ func newTestIMSender(t *testing.T, d *sql.DB, webhook, secret string) *IMSender 
 	cfg.Secret = secret
 	cfg.LinkSecret = "braid-im-link-secret-0123456789ab"
 	cfg.BaseURL = "https://braid.test.example"
-	s, err := NewIMSender(Deps{DB: d, IDs: ids, WorkerID: "test-worker"}, cfg)
+	s, err := NewIMSender(notify.Deps{DB: d, IDs: ids, WorkerID: "test-worker"}, cfg)
 	if err != nil {
 		t.Fatalf("NewIMSender: %v", err)
 	}
@@ -332,7 +338,7 @@ func imNotifiedCount(t *testing.T, d *sql.DB, execID uint64) int {
 }
 
 func TestIMSenderDeliversAndDedups(t *testing.T) {
-	d := sqltest.MustOpenAt(t, notifySchema)
+	d := sqltest.MustOpenAt(t, imSchema)
 	st := newDingStub(t, 0)
 	s := newTestIMSender(t, d, st.URL, "")
 	execID, nodeExecID := imSeed(t, d, []string{"carol", "dave"}, "all", nil)
@@ -356,7 +362,7 @@ func TestIMSenderDeliversAndDedups(t *testing.T) {
 	}
 
 	// 重投:去重锚命中 ⇒ 幂等哨兵,零新卡。
-	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1); !errors.Is(err, ErrAlreadyNotified) {
+	if err := s.NotifyApproval(context.Background(), execID, nodeExecID, "escalated", 1); !errors.Is(err, notify.ErrAlreadyNotified) {
 		t.Fatalf("want ErrAlreadyNotified, got %v", err)
 	}
 	if bodies, _ = st.snapshot(); len(bodies) != 1 {
@@ -379,7 +385,7 @@ func TestIMSenderDeliversAndDedups(t *testing.T) {
 }
 
 func TestIMSenderSignedRequest(t *testing.T) {
-	d := sqltest.MustOpenAt(t, notifySchema)
+	d := sqltest.MustOpenAt(t, imSchema)
 	st := newDingStub(t, 0)
 	s := newTestIMSender(t, d, st.URL, "SEC0123456789abcdef")
 	execID, nodeExecID := imSeed(t, d, []string{"carol"}, "any", nil)
@@ -412,7 +418,7 @@ func mustParseI64(t *testing.T, v string) int64 {
 }
 
 func TestIMSenderErrcodeFailsLoud(t *testing.T) {
-	d := sqltest.MustOpenAt(t, notifySchema)
+	d := sqltest.MustOpenAt(t, imSchema)
 	st := newDingStub(t, 310000)
 	s := newTestIMSender(t, d, st.URL, "")
 	execID, nodeExecID := imSeed(t, d, []string{"carol"}, "any", nil)
@@ -427,7 +433,7 @@ func TestIMSenderErrcodeFailsLoud(t *testing.T) {
 }
 
 func TestIMSenderTransportErrorSanitized(t *testing.T) {
-	d := sqltest.MustOpenAt(t, notifySchema)
+	d := sqltest.MustOpenAt(t, imSchema)
 	// 已关闭端口 + webhook 携带 access_token 凭证段:错误面不得带出 URL。
 	st := newDingStub(t, 0)
 	webhook := st.URL + "/robot/send?access_token=SECRETOKEN123"
@@ -447,7 +453,7 @@ func TestIMSenderTransportErrorSanitized(t *testing.T) {
 // MEDIUM 变异实证:dedup 谓词去 event_type 过滤全绿)——SMTP 的
 // approval.notified 行在场不得遮蔽 IM 通道(反之亦然,D-t143 决策 5)。
 func TestIMSenderChannelDedupIsolation(t *testing.T) {
-	d := sqltest.MustOpenAt(t, notifySchema)
+	d := sqltest.MustOpenAt(t, imSchema)
 	st := newDingStub(t, 0)
 	s := newTestIMSender(t, d, st.URL, "")
 	execID, nodeExecID := imSeed(t, d, []string{"carol"}, "any", nil)
@@ -487,7 +493,7 @@ func TestIMSenderChannelDedupIsolation(t *testing.T) {
 // TestIMSenderMissingErrcodeEnvelope:200 + 无 errcode 键 = 非钉钉信封
 // (误配面),响亮失败不落锚(对抗审计 LOW 修)。
 func TestIMSenderMissingErrcodeEnvelope(t *testing.T) {
-	d := sqltest.MustOpenAt(t, notifySchema)
+	d := sqltest.MustOpenAt(t, imSchema)
 	st := newDingStub(t, -1) // <0 = 无 errcode 键信封
 	s := newTestIMSender(t, d, st.URL, "")
 	execID, nodeExecID := imSeed(t, d, []string{"carol"}, "any", nil)
@@ -503,7 +509,7 @@ func TestIMSenderMissingErrcodeEnvelope(t *testing.T) {
 // TestIMSenderTenantGuard:租户闸(对抗审计 HIGH 修)——非平台租户执行
 // 响亮拒发,零卡零审计行;多租户部署的 IM 通道 = 契约禁用(D-t143 #6)。
 func TestIMSenderTenantGuard(t *testing.T) {
-	d := sqltest.MustOpenAt(t, notifySchema)
+	d := sqltest.MustOpenAt(t, imSchema)
 	st := newDingStub(t, 0)
 	s := newTestIMSender(t, d, st.URL, "")
 	execID, nodeExecID := imSeed(t, d, []string{"carol"}, "any", nil)
@@ -529,7 +535,7 @@ func TestIMSenderTenantGuard(t *testing.T) {
 }
 
 func TestIMSenderPartiallyVotedAndZeroPending(t *testing.T) {
-	d := sqltest.MustOpenAt(t, notifySchema)
+	d := sqltest.MustOpenAt(t, imSchema)
 	st := newDingStub(t, 0)
 	s := newTestIMSender(t, d, st.URL, "")
 

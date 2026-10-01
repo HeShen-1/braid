@@ -21,6 +21,7 @@ import (
 
 	"braid/internal/auth"
 	"braid/internal/db"
+	entim "braid/internal/enterprise/im"
 	"braid/internal/llm"
 	"braid/internal/metrics"
 	"braid/internal/nodes"
@@ -59,7 +60,7 @@ func buildNotifier(getenv func(string) string, db *sql.DB, ids *snowflake.Genera
 		}
 		chans = append(chans, notify.Channel{Label: "smtp", N: s})
 	}
-	imCfg, err := notify.IMConfigFromEnv(getenv)
+	imCfg, err := entim.IMConfigFromEnv(getenv)
 	if err != nil {
 		return nil, false, false, fmt.Errorf("worker: im config: %w", err)
 	}
@@ -70,7 +71,7 @@ func buildNotifier(getenv func(string) string, db *sql.DB, ids *snowflake.Genera
 		return nil, false, false, fmt.Errorf("worker: approval base url set but no notify channel (fix BRAID_SMTP_HOST / BRAID_IM_WEBHOOK_URL or clear BRAID_APPROVAL_BASE_URL)")
 	}
 	if imCfg.WebhookURL != "" {
-		im, err := notify.NewIMSender(notify.Deps{
+		im, err := entim.NewIMSender(notify.Deps{
 			DB: db, IDs: ids, WorkerID: workerID, Logger: slog.Default(),
 		}, imCfg)
 		if err != nil {

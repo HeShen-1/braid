@@ -2,6 +2,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"fmt"
 )
 
@@ -53,4 +54,28 @@ func (f ProviderFunc) Authenticate(ctx context.Context, username, password strin
 		return User{}, fmt.Errorf("%w: nil ProviderFunc", ErrInvalidInput)
 	}
 	return f(ctx, username, password)
+}
+
+// AnchorLoginUser 把外部身份源判定通过的主体锚定到本地账号(T16.1,
+// D-2026-10-01-t161:enterprise OIDC 完成面的核心侧缝——本地账号锚定是
+// 平台数据契约,角色/状态自本地库,D-t111):词域外/缺失 →
+// *CredentialsError(ReasonInvalidInput);本地无账号 → *CredentialsError
+// (ReasonUnknownUser);停用 → ErrUserDisabled;库故障原样上抛。错误族 =
+// 本文件 IdentityProvider 契约同款,api 登录面(401/403/500)按既有
+// 映射消费,不新开分类面。
+func AnchorLoginUser(ctx context.Context, dbh DBTX, username string) (User, error) {
+	if !validUsername(username) {
+		return User{}, &CredentialsError{Username: username, Reason: ReasonInvalidInput}
+	}
+	rec, err := findByUsername(ctx, dbh, username)
+	if errors.Is(err, errUserNotFound) {
+		return User{}, &CredentialsError{Username: username, Reason: ReasonUnknownUser}
+	}
+	if err != nil {
+		return User{}, err // 查询故障原样上抛,不吞不降级
+	}
+	if rec.Status == StatusDisabled {
+		return User{}, fmt.Errorf("%w: %q", ErrUserDisabled, username)
+	}
+	return rec.User, nil
 }

@@ -1,8 +1,10 @@
-package auth
+package oidc
 
 // OIDC redirect 流 provider(T11.1):StartAuth 形状锚(PKCE S256/nonce/
 // state)+ Complete 全错误族(经 oidctest 假 IdP 走真 exchange/verify)。
 // 触库用例走 t13(newDB);传输/协议面用例注入 nil dbh 证明零触库。
+// T16.1 随实现迁企业增值面(D-2026-10-01-t161);本地锚定走核心缝
+// auth.AnchorLoginUser,错误族断言面向 auth 包符号。
 //
 // 变异自查:StartAuth 去 nonce 参数 → nonce 断言红(假 IdP 回嵌空) +
 // nonce_mismatch 行红;去掉回显 state 比对 → state_echo_mismatch 行红;
@@ -22,7 +24,8 @@ import (
 	"testing"
 	"time"
 
-	"braid/internal/auth/oidctest"
+	"braid/internal/auth"
+	"braid/internal/enterprise/oidc/oidctest"
 )
 
 func sha256SumForTest(b []byte) string {
@@ -44,7 +47,7 @@ const oidcTestClientSecret = "unit-test-oidc-client-secret-words-placeholder"
 
 // newOIDCProvider 构造指向假 IdP 的 provider;claim 空 = 缺省
 // (preferred_username);dbh 可为 nil(传输/协议面零触库证明)。
-func newOIDCProvider(t *testing.T, idp *oidctest.FakeIdP, dbh DBTX, claim string) *OIDCProvider {
+func newOIDCProvider(t *testing.T, idp *oidctest.FakeIdP, dbh auth.DBTX, claim string) *OIDCProvider {
 	t.Helper()
 	cfg := OIDCConfig{
 		Issuer:       idp.Issuer(),
@@ -146,7 +149,7 @@ func TestOIDCStartAuthShape(t *testing.T) {
 // 视图 + subject 回传。
 func TestOIDCCompleteSuccess(t *testing.T) {
 	d := newDB(t)
-	createUser(t, d, "alice", "pw-unused-1", RoleAuthor, RoleApprover)
+	createUser(t, d, "alice", "pw-unused-1", auth.RoleAuthor, auth.RoleApprover)
 	idp := oidctest.New(t)
 	idp.Claims = map[string]any{"preferred_username": "alice"}
 	p := newOIDCProvider(t, idp, d, "")
@@ -158,10 +161,10 @@ func TestOIDCCompleteSuccess(t *testing.T) {
 	if subject != "alice" || user.Username != "alice" {
 		t.Fatalf("subject/user = %q/%q, want alice", subject, user.Username)
 	}
-	if len(user.Roles) != 2 || user.Roles[0] != RoleApprover || user.Roles[1] != RoleAuthor {
+	if len(user.Roles) != 2 || user.Roles[0] != auth.RoleApprover || user.Roles[1] != auth.RoleAuthor {
 		t.Fatalf("roles = %v, want 升序 [approver author]", user.Roles)
 	}
-	if user.Status != StatusActive {
+	if user.Status != auth.StatusActive {
 		t.Fatalf("status = %q", user.Status)
 	}
 }
@@ -173,21 +176,21 @@ func TestOIDCCompleteUnknownUser(t *testing.T) {
 	p := newOIDCProvider(t, idp, d, "")
 	cookie, state, code := driveAuthorize(t, p)
 	_, subject, err := p.Complete(context.Background(), cookie, state, code)
-	var creds *CredentialsError
-	if !errors.As(err, &creds) || creds.Reason != ReasonUnknownUser {
+	var creds *auth.CredentialsError
+	if !errors.As(err, &creds) || creds.Reason != auth.ReasonUnknownUser {
 		t.Fatalf("err = %v, want CredentialsError(unknown_user)", err)
 	}
 	if subject != "nobody-here" {
 		t.Fatalf("subject = %q, want nobody-here", subject)
 	}
-	if !errors.Is(err, ErrInvalidCredentials) {
+	if !errors.Is(err, auth.ErrInvalidCredentials) {
 		t.Fatalf("err 链缺 ErrInvalidCredentials")
 	}
 }
 
 func TestOIDCCompleteDisabled(t *testing.T) {
 	d := newDB(t)
-	createUser(t, d, "alice", "pw-unused-2", RoleAuthor)
+	createUser(t, d, "alice", "pw-unused-2", auth.RoleAuthor)
 	if _, err := d.Exec(`UPDATE users SET status = 'DISABLED' WHERE username = 'alice'`); err != nil {
 		t.Fatalf("disable: %v", err)
 	}
@@ -196,7 +199,7 @@ func TestOIDCCompleteDisabled(t *testing.T) {
 	p := newOIDCProvider(t, idp, d, "")
 	cookie, state, code := driveAuthorize(t, p)
 	_, subject, err := p.Complete(context.Background(), cookie, state, code)
-	if !errors.Is(err, ErrUserDisabled) {
+	if !errors.Is(err, auth.ErrUserDisabled) {
 		t.Fatalf("err = %v, want ErrUserDisabled", err)
 	}
 	if subject != "alice" {
@@ -207,13 +210,13 @@ func TestOIDCCompleteDisabled(t *testing.T) {
 // TestOIDCCompleteClaimMissing:默认 claim 缺失 → invalid_input(subject 空)。
 func TestOIDCCompleteClaimMissing(t *testing.T) {
 	d := newDB(t)
-	createUser(t, d, "alice", "pw-unused-3", RoleAuthor)
+	createUser(t, d, "alice", "pw-unused-3", auth.RoleAuthor)
 	idp := oidctest.New(t) // 不设 Claims:preferred_username 缺席
 	p := newOIDCProvider(t, idp, d, "")
 	cookie, state, code := driveAuthorize(t, p)
 	_, subject, err := p.Complete(context.Background(), cookie, state, code)
-	var creds *CredentialsError
-	if !errors.As(err, &creds) || creds.Reason != ReasonInvalidInput {
+	var creds *auth.CredentialsError
+	if !errors.As(err, &creds) || creds.Reason != auth.ReasonInvalidInput {
 		t.Fatalf("err = %v, want CredentialsError(invalid_input)", err)
 	}
 	if subject != "" {
@@ -225,7 +228,7 @@ func TestOIDCCompleteClaimMissing(t *testing.T) {
 // (opaque)拒绝。
 func TestOIDCCompleteSubClaim(t *testing.T) {
 	d := newDB(t)
-	createUser(t, d, "alice", "pw-unused-4", RoleApprover)
+	createUser(t, d, "alice", "pw-unused-4", auth.RoleApprover)
 	idp := oidctest.New(t)
 	idp.Claims = map[string]any{"sub": "alice"}
 	p := newOIDCProvider(t, idp, d, OIDCClaimSub)
@@ -238,8 +241,8 @@ func TestOIDCCompleteSubClaim(t *testing.T) {
 	p2 := newOIDCProvider(t, idp2, d, OIDCClaimSub)
 	cookie2, state2, code2 := driveAuthorize(t, p2)
 	_, subject2, err := p2.Complete(context.Background(), cookie2, state2, code2)
-	var creds *CredentialsError
-	if !errors.As(err, &creds) || creds.Reason != ReasonInvalidInput {
+	var creds *auth.CredentialsError
+	if !errors.As(err, &creds) || creds.Reason != auth.ReasonInvalidInput {
 		t.Fatalf("err = %v, want CredentialsError(invalid_input)", err)
 	}
 	if !strings.Contains(subject2, "|") {
@@ -265,19 +268,19 @@ func TestOIDCCompleteTransportRejections(t *testing.T) {
 	cookie, state, code := driveAuthorize(t, p)
 
 	t.Run("bad_state_cookie", func(t *testing.T) {
-		if _, _, err := p.Complete(context.Background(), "garbage", state, code); !errors.Is(err, ErrOIDCState) {
+		if _, _, err := p.Complete(context.Background(), "garbage", state, code); !errors.Is(err, auth.ErrOIDCState) {
 			t.Fatalf("err = %v, want ErrOIDCState", err)
 		}
 	})
 	t.Run("state_echo_mismatch", func(t *testing.T) {
 		// 注入面:cookie 有效但回显 state 不符 → 最早拒绝层(review 收口,
 		// 独立于 PKCE/nonce 兜底)。
-		if _, _, err := p.Complete(context.Background(), cookie, "tampered-echo-state", code); !errors.Is(err, ErrOIDCState) {
+		if _, _, err := p.Complete(context.Background(), cookie, "tampered-echo-state", code); !errors.Is(err, auth.ErrOIDCState) {
 			t.Fatalf("err = %v, want ErrOIDCState(state mismatch)", err)
 		}
 	})
 	t.Run("bad_code", func(t *testing.T) {
-		if _, _, err := p.Complete(context.Background(), cookie, state, "bogus-code"); !errors.Is(err, ErrOIDCCode) {
+		if _, _, err := p.Complete(context.Background(), cookie, state, "bogus-code"); !errors.Is(err, auth.ErrOIDCCode) {
 			t.Fatalf("err = %v, want ErrOIDCCode", err)
 		}
 	})
@@ -293,7 +296,7 @@ func TestOIDCCompleteTransportRejections(t *testing.T) {
 		}
 		// 签名有效但 verifier 与 authorize 时刻 challenge 不符:假 IdP 的
 		// PKCE 门必须拒(兑付链断),归 ErrOIDCCode。
-		if _, _, err := p.Complete(context.Background(), forged, state, code); !errors.Is(err, ErrOIDCCode) {
+		if _, _, err := p.Complete(context.Background(), forged, state, code); !errors.Is(err, auth.ErrOIDCCode) {
 			t.Fatalf("err = %v, want ErrOIDCCode(PKCE 拒)", err)
 		}
 	})
@@ -340,7 +343,7 @@ func TestOIDCCompleteExpiredState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
-	if _, _, err := p.Complete(context.Background(), expired, "any-state", "any-code"); !errors.Is(err, ErrOIDCState) {
+	if _, _, err := p.Complete(context.Background(), expired, "any-state", "any-code"); !errors.Is(err, auth.ErrOIDCState) {
 		t.Fatalf("err = %v, want ErrOIDCState", err)
 	}
 }

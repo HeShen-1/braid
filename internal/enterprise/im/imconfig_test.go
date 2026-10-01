@@ -1,4 +1,4 @@
-package notify
+package im
 
 // IMConfig 契约测试(T14.3,D-t143 决策 5):三道闸(webhook 设 ⇒
 // link_secret 熵地板 + base_url 必填;timeout 界;webhook URL 形状)+

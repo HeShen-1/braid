@@ -51,11 +51,13 @@ type Server struct {
 	// loginMetrics 是登录指标面(T6.4;nil = 观测关闭——测试默认,
 	// cmd/api 装配注入)。
 	loginMetrics *metrics.LoginSet
-	// oidc 是 OIDC 插件面(T11.1):nil = 未配置,路由不挂载。注入经
+	// oidc 是 OIDC 插件面(T11.1;T16.1 起协议实现迁企业增值面
+	// internal/enterprise/oidc):nil = 未配置,路由不挂载。注入经
 	// OIDCProvider setter(镜像 LoginMetrics/Tracing 先例),NewServer
 	// 签名不动——与并行任务的装配面冲突收敛到零。测试桩直赋字段
-	// (oidcAuther 缝),生产唯一实现 = *auth.OIDCProvider。
-	oidc oidcAuther
+	// (OIDCProvider 缝,oidc.go),生产唯一实现 = 企业树 *oidc.OIDCProvider
+	//(cmd 组合根装配;OSS 构建剔除企业树后登录面完好,路由零挂载)。
+	oidc OIDCProvider
 }
 
 // NewServer 构造 definition CRUD + execution 触发服务(dbh 为连接池;
@@ -96,12 +98,18 @@ func (s *Server) RollbackMetrics(m *metrics.RollbackSet) { s.rollbackMetrics = m
 // Tracing 注入 OTel tracer 面(T6.2;cmd/api 装配,测试默认 nil)。
 func (s *Server) Tracing(t trace.Tracer) { s.tracer = t }
 
-// OIDCProvider 注入 OIDC 插件面(T11.1;cmd/api 在 BRAID_OIDC_* 组配置
-// 完整时装配,见 D-2026-09-28-t111-oidc-subject-anchor)。nil 拒绝:静默
-// 缺配会把「忘了注入」伪装成「未配置」(路由面 404),可诊断性丢失。
-func (s *Server) OIDCProvider(p *auth.OIDCProvider) {
+// OIDCProvider 注入 OIDC 插件面(T11.1;T16.1 起实现 = 企业增值面
+// internal/enterprise/oidc,cmd/api 在 BRAID_OIDC_* 组配置完整时装配,见
+// D-2026-09-28-t111-oidc-subject-anchor)。nil 拒绝:静默缺配会把「忘了
+// 注入」伪装成「未配置」(路由面 404),可诊断性丢失。typed-nil 同拒
+// (接口化后接口值非 nil 但方法调用即 panic,NewServer idp 探测同款——
+// 对抗审计 LOW 收口)。
+func (s *Server) OIDCProvider(p OIDCProvider) {
 	if p == nil {
 		panic("api: nil OIDCProvider (oidc plugin seam)")
+	}
+	if v := reflect.ValueOf(p); (v.Kind() == reflect.Pointer || v.Kind() == reflect.Func) && v.IsNil() {
+		panic("api: typed-nil OIDCProvider (oidc plugin seam)")
 	}
 	s.oidc = p
 }

@@ -1,7 +1,7 @@
-package auth
+package oidc
 
 // 握手态签名 cookie(T11.1):roundtrip / 篡改 / 过期 / 错钥 / 不完整。
-// 零栈。
+// 零栈。T16.1 随实现迁企业增值面(D-2026-10-01-t161)。
 //
 // 变异自查:删除 hmac.Equal 比对 → tamper_* 行红;删除 Exp 复核 →
 // expired 行红;删除三字段非空断言 → incomplete 行红。
@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"braid/internal/auth"
 )
 
 func stateKeyForTest(t *testing.T, secret string) []byte {
@@ -25,7 +27,7 @@ func TestOIDCStateRoundtrip(t *testing.T) {
 	key := stateKeyForTest(t, "state-secret-words-placeholder-for-test")
 	st := oidcAuthState{
 		State: "state-value", Nonce: "nonce-value", Verifier: "verifier-value",
-		Exp: time.Now().Add(OIDCStateTTL).Unix(),
+		Exp: time.Now().Add(auth.OIDCStateTTL).Unix(),
 	}
 	v, err := signOIDCState(key, st)
 	if err != nil {

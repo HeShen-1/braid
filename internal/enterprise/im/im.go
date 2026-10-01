@@ -1,14 +1,14 @@
-package notify
-
-// IMSender 是 approval.notify 事件的钉钉卡片发送面(T14.3,D-2026-09-30
-// -t143 决策 1):与 SMTP Sender 并列的第二通知通道,结构化满足
-// worker.ApprovalNotifier(扇出装配见 fanout.go / cmd/worker.buildNotifier)。
+// Package im 是 IM 审批卡片(钉钉)发送面(T14.3,D-2026-09-30-t143
+// 决策 1;T16.1 切入企业增值面,D-2026-10-01-t161-engine-enterprise-split):
+// 与 SMTP Sender(notify 包,核心)并列的第二通知通道,结构化满足
+// worker.ApprovalNotifier(扇出装配 = 核心 notify.Fanout,组合根
+// cmd/worker.buildNotifier 注入本通道)。
 //
 // 单方法编排 = 去重查(approval.im_notified 审计行,per-channel 锚)→
 // 回表审批上下文 + 本轮票向 → 渲染 actionCard(按钮 = 鉴权短链,签名面
 // internal/auth imlink)→ 钉钉 webhook POST(可选加签)→ 送达审计行。
 // 失败面响亮上抛(worker 侧 error ⇒ asynq 重试后 archived),幂等收敛 =
-// ErrAlreadyNotified。
+// notify.ErrAlreadyNotified。
 //
 // 卡片语义(D-t143 决策 3):按钮对按 approver 维度签发(会签任意人数下
 // 身份显式);pending ≤ maxIMDirectApprovers 直出按钮对,超出/零 pending
@@ -16,6 +16,7 @@ package notify
 // round 重组,不另立字段)。0 pending(升级-消费窗内投票已齐)= 信息卡
 // 非响亮失败——窗内竞态是合法时序(票落在 reaper 扫描与 worker 消费
 // 之间),不是数据缺陷。
+package im
 
 import (
 	"bytes"
@@ -37,6 +38,7 @@ import (
 	"braid/internal/audit"
 	"braid/internal/auth"
 	"braid/internal/engine"
+	"braid/internal/notify"
 	"braid/internal/scheduler"
 )
 
@@ -46,7 +48,7 @@ const maxIMDirectApprovers = 3
 
 // IMSender 见包注释。
 type IMSender struct {
-	deps Deps
+	deps notify.Deps
 	cfg  IMConfig
 	log  *slog.Logger
 	now  func() time.Time
@@ -54,7 +56,7 @@ type IMSender struct {
 }
 
 // NewIMSender 构造发送器;依赖缺损或配置非法响亮报错(镜像 NewSender)。
-func NewIMSender(d Deps, cfg IMConfig) (*IMSender, error) {
+func NewIMSender(d notify.Deps, cfg IMConfig) (*IMSender, error) {
 	if d.DB == nil || d.IDs == nil {
 		return nil, errors.New("notify: nil DB or IDs")
 	}
@@ -139,7 +141,7 @@ SELECT n.execution_id, n.node_id, n.status, n.deadline_at, n.input_snapshot,
 		   AND JSON_EXTRACT(payload, '$.round') = ? LIMIT 1`,
 		execDate, execID, nodeExecID, audit.EventApprovalIMNotified, round).Scan(&one)
 	if err == nil {
-		return ErrAlreadyNotified
+		return notify.ErrAlreadyNotified
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return fmt.Errorf("notify: im dedup check node %d: %w", nodeExecID, err)
