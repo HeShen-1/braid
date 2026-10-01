@@ -220,10 +220,44 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: prebuild tokenizers: %w", err)
 	}
 
-	ids, err := snowflake.New(cfg.SnowflakeNode)
+	// T15.2 节点号租约仲裁(D-t151 决策 2):三层解析在 ConfigFromEnv,
+	// 仲裁在此——显式号(含内建默认 2)被持即拒启,auto 池线性抢注;
+	// SIGTERM 优雅释放;续期失败 = 停发 + 优雅下线 asynq 消费 + 响亮
+	// 退出(只停签发会把副本变成烧 MaxRetry=1 预算的任务黑洞)。
+	lease, err := snowflake.StartLease(ctx, mysqlDB, snowflake.LeaseConfig{
+		Kind:   snowflake.KindWorker,
+		Spec:   cfg.SnowflakeNode,
+		Holder: snowflake.DefaultHolder(),
+	})
+	if err != nil {
+		return fmt.Errorf("worker: snowflake lease: %w", err)
+	}
+	defer releaseLease("worker", lease)
+	ids, err := snowflake.New(lease.Node())
 	if err != nil {
 		return fmt.Errorf("worker: snowflake: %w", err)
 	}
+	lease.Guard(ids)
+	slog.Info("worker: snowflake lease acquired", "node", lease.Node(), "spec", cfg.SnowflakeNode)
+
+	// lost → 取消派生 ctx:worker.Run 的 <-ctx.Done()+srv.Shutdown() 即
+	// 「优雅下线 asynq 消费」(决策 2);排空完成后响亮返回非 Canceled
+	// 错误(main 走 Exit(1) 失败重启通道,复航 = 重启重新 acquire)。
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var lostErr error
+	lostDone := make(chan struct{})
+	go func() {
+		defer close(lostDone)
+		select {
+		case err, ok := <-lease.Lost():
+			if ok {
+				lostErr = err
+				cancel()
+			}
+		case <-ctx.Done():
+		}
+	}()
 	// Metrics 适配 = metrics.Set(T12.2 起:LLM 丢弃 + Redispatches{attempt_failed}
 	// 双发射;原 mset.LLM 单方法注入已随 Set 适配方法收编)。接线验证纪律
 	// (D-t64 两次漏接教训):grep 可见此行即接线面。
@@ -312,7 +346,7 @@ func run(ctx context.Context) error {
 		Prices: llmCfg.PriceTable,
 		DB:     mysqlDB,
 	}, toolExec, nodes.ApprovalExecutor{})
-	return worker.Run(ctx, worker.Deps{
+	runErr := worker.Run(ctx, worker.Deps{
 		DB:       mysqlDB,
 		IDs:      ids,
 		Executor: executor,
@@ -322,4 +356,24 @@ func run(ctx context.Context) error {
 		Metrics:  mset.Worker,                      // T6.4:notify 计数 + archived 探测(漏接 = 观测生产死代码)
 		Tracer:   traceProv.Tracer("braid/worker"), // T6.2:消费半边 payload extract 续链
 	}, cfg, asynq.RedisClientOpt{Addr: addr})
+	cancel() // 幂等:Run 早退错误路径也放行 <-lostDone(否则悬挂,review MEDIUM)
+	<-lostDone
+	if runErr != nil {
+		return runErr
+	}
+	if lostErr != nil {
+		return fmt.Errorf("worker: %w", lostErr)
+	}
+	return nil
+}
+
+// releaseLease 是 SIGTERM 语义半边(决策 2:优雅停机必须 DELETE 释放):
+// asynq 排空完成后删本行;lost 路径调用安全(行非本持,幂等)。独立
+// Background ctx——根 ctx 在停机路径已取消。
+func releaseLease(component string, lease *snowflake.Lease) {
+	rctx, cancel := context.WithTimeout(context.Background(), traceShutdownGrace)
+	defer cancel()
+	if err := lease.Release(rctx); err != nil {
+		slog.Warn(component+": snowflake lease release", "err", err)
+	}
 }

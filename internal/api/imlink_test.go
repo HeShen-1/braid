@@ -41,7 +41,7 @@ func newIMTestServerOpt(t *testing.T, linkSecret string) *gin.Engine {
 	if err != nil {
 		t.Fatalf("snowflake: %v", err)
 	}
-	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 11,
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(11),
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 100000, LoginLockout: time.Minute,
 		IMLinkSecret: linkSecret}
@@ -345,7 +345,7 @@ func TestIMLinkDeciderRaceBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("registry: %v", err)
 	}
-	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 12, IMLinkSecret: imLinkAPISecret}
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(12), IMLinkSecret: imLinkAPISecret}
 	s := NewServer(cfg, dbh, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{DB: dbh})
 
 	for _, tc := range []struct {

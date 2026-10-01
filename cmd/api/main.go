@@ -76,10 +76,25 @@ func run(ctx context.Context) error {
 	); err != nil {
 		return fmt.Errorf("api: %w", err)
 	}
-	ids, err := snowflake.New(cfg.SnowflakeNode)
+	// T15.2 节点号租约仲裁(D-t151 决策 2):三层解析在 ConfigFromEnv,
+	// 仲裁在此——显式号(含内建默认 1)被持即拒启(错误带持有者/到期/
+	// runbook),auto 池线性抢注;SIGTERM 优雅释放,续期失败 = 停发 +
+	// 响亮退出(复航 = 重启重新 acquire)。
+	lease, err := snowflake.StartLease(ctx, dbh, snowflake.LeaseConfig{
+		Kind:   snowflake.KindAPI,
+		Spec:   cfg.SnowflakeNode,
+		Holder: snowflake.DefaultHolder(),
+	})
+	if err != nil {
+		return fmt.Errorf("api: snowflake lease: %w", err)
+	}
+	defer releaseLease("api", lease)
+	ids, err := snowflake.New(lease.Node())
 	if err != nil {
 		return fmt.Errorf("api: snowflake: %w", err)
 	}
+	lease.Guard(ids)
+	slog.Info("api: snowflake lease acquired", "node", lease.Node(), "spec", cfg.SnowflakeNode)
 	// 发布白名单真源(T3.2 换源):tools.Registry 注册名。内置 http/
 	// file_read 按配置注册(T3.5,未配置即不注册 = 引用即发布被拒);
 	// api 与 worker 经 BuiltinToolsFromEnv 单源装配同一注册集。
@@ -163,10 +178,31 @@ func run(ctx context.Context) error {
 	select {
 	case err := <-errCh:
 		return err
+	case lerr := <-lease.Lost():
+		// 续期失败:停发闸已先置位(Guard);先有界排空在飞请求再响亮退出
+		//(镜像 ctx.Done 分支的优雅形态,review LOW),复航 = 重启重新
+		// acquire(非 context.Canceled,main 走 Exit(1) 失败重启通道)。
+		shCtx, lcancel := context.WithTimeout(context.Background(), shutdownGrace)
+		if serr := srv.Shutdown(shCtx); serr != nil {
+			slog.Warn("api: lost-path http drain", "err", serr)
+		}
+		lcancel()
+		return fmt.Errorf("api: %w", lerr)
 	case <-ctx.Done():
 		shCtx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
 		defer cancel()
 		return srv.Shutdown(shCtx)
+	}
+}
+
+// releaseLease 是 SIGTERM 语义半边(决策 2:优雅停机必须 DELETE 释放):
+// 排空完成后删本行;lost 路径调用安全(行非本持,DELETE 0 行幂等)。
+// 独立 Background ctx——根 ctx 在停机路径已取消。
+func releaseLease(component string, lease *snowflake.Lease) {
+	rctx, cancel := context.WithTimeout(context.Background(), shutdownGrace)
+	defer cancel()
+	if err := lease.Release(rctx); err != nil {
+		slog.Warn(component+": snowflake lease release", "err", err)
 	}
 }
 

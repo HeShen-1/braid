@@ -49,6 +49,11 @@ GRANT INSERT                  ON braid.login_audit        TO 'braid_api'@'%';
 -- chain_heads 列级先例);reaper janitor 超龄回收(DELETE 谓词列需
 -- SELECT,login_audit 同注记)。
 GRANT SELECT, INSERT, UPDATE (window_start, count, locked_until, updated_at) ON braid.login_throttle TO 'braid_api'@'%';
+-- snowflake_node_lease(T15.2,D-t151 决策 2):节点号租约仲裁面——
+-- acquire INSERT / 复占与过期接管 UPDATE / auto 池扫描 SELECT / 优雅
+-- 停机释放 DELETE(DELETE 是设计语义;表是运行态簿记非业务事实,不在
+-- append-only 断言表集,preflight 台账预登记)。
+GRANT SELECT, INSERT, UPDATE, DELETE ON braid.snowflake_node_lease TO 'braid_api'@'%';
 GRANT SELECT                  ON braid.users              TO 'braid_api'@'%';
 GRANT SELECT                  ON braid.user_role          TO 'braid_api'@'%';
 GRANT INSERT                  ON braid.outbox             TO 'braid_api'@'%';
@@ -66,6 +71,7 @@ GRANT SELECT, INSERT          ON braid.audit_log           TO 'braid_worker'@'%'
 GRANT INSERT                  ON braid.audit_pending       TO 'braid_worker'@'%';
 GRANT SELECT, INSERT, UPDATE (last_id, last_row_hash) ON braid.chain_heads TO 'braid_worker'@'%'; -- T9.3:列级最小授权同 api(写路径只推链尾两列)
 GRANT INSERT                  ON braid.outbox              TO 'braid_worker'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON braid.snowflake_node_lease TO 'braid_worker'@'%'; -- T15.2 租约仲裁(同 api 四权限面,注释见上)
 GRANT SELECT                  ON braid.users               TO 'braid_worker'@'%';
 GRANT SELECT                  ON braid.user_role           TO 'braid_worker'@'%';
 GRANT SELECT                  ON braid.schema_migrations   TO 'braid_worker'@'%';
@@ -93,5 +99,6 @@ GRANT SELECT, INSERT, DELETE  ON braid.outbox              TO 'braid_reaper'@'%'
 -- 谓词列需要 SELECT)。
 GRANT SELECT, DELETE          ON braid.login_audit         TO 'braid_reaper'@'%';
 GRANT SELECT, DELETE          ON braid.login_throttle      TO 'braid_reaper'@'%';
+GRANT SELECT, INSERT, UPDATE, DELETE ON braid.snowflake_node_lease TO 'braid_reaper'@'%'; -- T15.2 租约仲裁(同 api 四权限面,注释见上)
 GRANT SELECT                  ON braid.schema_migrations   TO 'braid_reaper'@'%';
 SQL

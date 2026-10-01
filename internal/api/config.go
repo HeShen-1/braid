@@ -25,9 +25,9 @@ const (
 	// DefaultAddr 监听地址默认值:仅绑回环——公开面由部署层显式打开,
 	// 与 dev 栈 MySQL/Redis/Asynqmon 同一默认姿态。8081 避开 Asynqmon 8080。
 	DefaultAddr = "127.0.0.1:8081"
-	// DefaultSnowflakeNode 是 api 进程的雪花节点号默认值。显式配置面当前仅
-	// api=1、worker=2;relay 无雪花生成器,reaper 缺省 PID 派生、可经
-	// BRAID_REAPER_SNOWFLAKE_NODE 显式配置(T7.1)。
+	// DefaultSnowflakeNode 是 api 进程的雪花节点号内建默认(1,视同显式
+	// claim,单副本现状零破坏;D-t151 决策 2 三层解析:显式 env 数字 >
+	// 内建默认 > 字面 "auto" 哨兵,缺省 = 本值)。
 	DefaultSnowflakeNode = 1
 	// DefaultResumeQueue 是审批续跑事件的默认队列(T4.2;见 Config.ResumeQueue)。
 	DefaultResumeQueue = "default"
@@ -62,9 +62,11 @@ type Config struct {
 	// BRAID_AUTH_JWT_SECRET env 注入,无默认值(缺省启动即败),不进
 	// 代码/日志/审计(铁律)。
 	JWTSecret string
-	// SnowflakeNode 雪花节点号,definition.id 应用侧生成(发布前可知,
-	// 供钉版引用)。跨进程重号唯一症状是业务表 PK 1062。
-	SnowflakeNode uint16
+	// SnowflakeNode 雪花节点号意向(三层解析产物,D-t151 决策 2),
+	// definition.id 应用侧生成(发布前可知,供钉版引用)。仲裁在租约表
+	// (cmd 装配 snowflake.StartLease);跨进程重号唯一症状是业务表 PK
+	// 1062。显式号限单副本/compose,k8s 多副本一律 auto。
+	SnowflakeNode snowflake.NodeSpec
 	// ResumeQueue 是审批续跑事件(execution.resume)的 outbox 队列名
 	// (T4.2)。必须在 worker ServeQueues 内,否则事件永挂 pending
 	// (outbox 包注释的已知边界)。缺省 "default"(与 scheduler.Deps.Queue
@@ -114,7 +116,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		Addr:              DefaultAddr,
-		SnowflakeNode:     DefaultSnowflakeNode,
+		SnowflakeNode:     snowflake.Explicit(DefaultSnowflakeNode),
 		ResumeQueue:       DefaultResumeQueue,
 		LoginRateLimit:    DefaultLoginRateLimit,
 		LoginRateWindow:   DefaultLoginRateWindow,
@@ -137,8 +139,8 @@ func (c Config) Validate() error {
 	if _, _, err := net.SplitHostPort(c.Addr); err != nil {
 		return fmt.Errorf("api: addr %q: %w", c.Addr, err)
 	}
-	if c.SnowflakeNode > snowflake.MaxNodeID {
-		return fmt.Errorf("api: snowflake node %d > %d", c.SnowflakeNode, snowflake.MaxNodeID)
+	if c.SnowflakeNode.Mode == snowflake.NodeExplicit && c.SnowflakeNode.Node > snowflake.MaxNodeID {
+		return fmt.Errorf("api: snowflake node %d > %d", c.SnowflakeNode.Node, snowflake.MaxNodeID)
 	}
 	if !queueNameRe.MatchString(c.ResumeQueue) {
 		return fmt.Errorf("api: resume queue %q violates ^[a-z][a-z0-9_-]{0,63}$", c.ResumeQueue)
@@ -196,16 +198,13 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if v := getenv("BRAID_API_ADDR"); v != "" {
 		c.Addr = v
 	}
-	if raw := getenv("BRAID_API_SNOWFLAKE_NODE"); raw != "" {
-		n, err := strconv.Atoi(raw)
-		// 越界在转换前拒绝:uint16 截断会把 [65536,66559] 折叠回合法
-		// 节点域,静默绕过 Validate 的 fail-fast(错误配置变成「看起来
-		// 合法的另一个节点号」,重号症状只剩 PK 1062,不可诊断)。
-		if err != nil || n < 0 || n > int(snowflake.MaxNodeID) {
-			return c, fmt.Errorf("api: BRAID_API_SNOWFLAKE_NODE=%q: want 0..%d", raw, snowflake.MaxNodeID)
-		}
-		c.SnowflakeNode = uint16(n)
+	// 三层解析(D-t151 决策 2):显式 env 数字 > 内建默认(1)> 字面
+	// "auto" 哨兵;越界在转换前拒绝(uint16 截断防护在 ParseNodeSpec)。
+	spec, err := snowflake.ParseNodeSpec(getenv("BRAID_API_SNOWFLAKE_NODE"), snowflake.Explicit(DefaultSnowflakeNode))
+	if err != nil {
+		return c, fmt.Errorf("api: BRAID_API_SNOWFLAKE_NODE: %w", err)
 	}
+	c.SnowflakeNode = spec
 	if v := getenv("BRAID_API_RESUME_QUEUE"); v != "" {
 		c.ResumeQueue = v
 	}

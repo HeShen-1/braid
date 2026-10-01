@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"braid/internal/db"
+	"braid/internal/snowflake"
 )
 
 func TestConfigValidate(t *testing.T) {
@@ -75,7 +76,7 @@ func TestConfigFromEnv(t *testing.T) {
 				HeartbeatInterval: 2 * time.Second,
 				RetryDelay:        500 * time.Millisecond,
 				ShutdownTimeout:   10 * time.Second,
-				SnowflakeNode:     3,
+				SnowflakeNode:     snowflake.Explicit(3),
 				Pool:              db.DefaultPoolConfig(),
 			},
 		},
@@ -94,6 +95,16 @@ func TestConfigFromEnv(t *testing.T) {
 			name:    "snowflake node over max",
 			env:     map[string]string{"BRAID_WORKER_SNOWFLAKE_NODE": "1024"},
 			wantErr: true,
+		},
+		{
+			// D-t151 决策 2:字面 "auto" 哨兵 → 租约池分配(k8s 多副本形态)。
+			name: "snowflake node auto sentinel",
+			env:  map[string]string{"BRAID_WORKER_SNOWFLAKE_NODE": "auto"},
+			want: func() Config {
+				c := DefaultConfig()
+				c.SnowflakeNode = snowflake.Auto()
+				return c
+			}(),
 		},
 		{
 			name:    "bad duration",

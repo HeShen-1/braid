@@ -33,12 +33,12 @@ type Config struct {
 	// ShutdownTimeout 是优雅停机上限:在飞 handler 收口窗口,超时强杀(留
 	// RUNNING attempt 归 T2.5 判死)。
 	ShutdownTimeout time.Duration
-	// SnowflakeNode 是本进程雪花节点号(attempt 行 id 应用侧生成)。显式
-	// 配置面当前仅 api=1、worker=2 两个常驻进程;relay 无雪花生成器,reaper
-	// 缺省 PID 派生、可经 BRAID_REAPER_SNOWFLAKE_NODE 显式配置(T7.1)——
-	// 理论可与 1/2 撞号,碰撞面 = reaper 仅产 outbox 事件行 id。跨进程重号
-	// 唯一症状是业务表 PK 1062;域校验在 snowflake.New(与 api 同规)。
-	SnowflakeNode uint16
+	// SnowflakeNode 是本进程雪花节点号意向(三层解析产物,D-t151 决策 2;
+	// attempt 行 id 应用侧生成)。内建默认 2(视同显式 claim,单副本现状
+	// 零破坏);仲裁在租约表(cmd 装配 snowflake.StartLease)。跨进程重号
+	// 唯一症状是业务表 PK 1062;显式号限单副本/compose,k8s 多副本一律
+	// auto。
+	SnowflakeNode snowflake.NodeSpec
 	// MySQLDSN 连接串(BRAID_MYSQL_DSN;含凭证,不进日志/审计)。T7.1 收编
 	// cmd 直读;必填断言在 cmd 读本字段(装配输入非旋钮)。
 	MySQLDSN string
@@ -65,7 +65,7 @@ func DefaultConfig() Config {
 		HeartbeatInterval: 10 * time.Second,
 		RetryDelay:        5 * time.Second,
 		ShutdownTimeout:   30 * time.Second,
-		SnowflakeNode:     2,
+		SnowflakeNode:     snowflake.Explicit(2),
 		Pool:              db.DefaultPoolConfig(),
 	}
 }
@@ -133,13 +133,13 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	if c.ShutdownTimeout, err = envDuration(getenv, "BRAID_WORKER_SHUTDOWN_TIMEOUT", c.ShutdownTimeout); err != nil {
 		return c, err
 	}
-	if raw := getenv("BRAID_WORKER_SNOWFLAKE_NODE"); raw != "" {
-		n, err := strconv.ParseUint(raw, 10, 16)
-		if err != nil || uint64(n) > uint64(snowflake.MaxNodeID) {
-			return c, fmt.Errorf("worker: BRAID_WORKER_SNOWFLAKE_NODE=%q: want 0..%d", raw, snowflake.MaxNodeID)
-		}
-		c.SnowflakeNode = uint16(n)
+	// 三层解析(D-t151 决策 2):显式 env 数字 > 内建默认(2)> 字面
+	// "auto" 哨兵;越界在转换前拒绝(防护在 ParseNodeSpec)。
+	spec, err := snowflake.ParseNodeSpec(getenv("BRAID_WORKER_SNOWFLAKE_NODE"), snowflake.Explicit(2))
+	if err != nil {
+		return c, fmt.Errorf("worker: BRAID_WORKER_SNOWFLAKE_NODE: %w", err)
 	}
+	c.SnowflakeNode = spec
 	if raw := getenv("BRAID_TOOL_TOKEN_SECRET"); raw != "" {
 		key, derr := hex.DecodeString(raw)
 		if derr != nil {

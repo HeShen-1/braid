@@ -46,7 +46,7 @@ func TestLoginDefenseAndAudit(t *testing.T) {
 	seedLoginUser(t, dbh, "bob", "bob-pass-123", "ACTIVE")
 	seedLoginUser(t, dbh, "alice", "alice-pass-123", "ACTIVE")
 
-	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
 		LoginRateLimit: 3, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 2, LoginLockout: 10 * time.Minute}
 	set, _ := metrics.NewSet()
@@ -130,7 +130,7 @@ func TestLoginDefenseAndAudit(t *testing.T) {
 func TestLoginAuditNoCredentialLeak(t *testing.T) {
 	dbh := newLoginDefenseDB(t)
 	seedLoginUser(t, dbh, "eve", "eve-secret-999", "ACTIVE")
-	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 100000, LoginLockout: time.Minute}
 	ids, _ := snowflake.New(1)

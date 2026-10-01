@@ -126,7 +126,7 @@ func newApprovalAPIServer(t *testing.T, d *sql.DB, queue string) *gin.Engine {
 	}
 	gin.SetMode(gin.TestMode)
 	return api.NewServer(api.Config{
-		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: 3, ResumeQueue: queue,
+		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: snowflake.Explicit(3), ResumeQueue: queue,
 	}, d, ids, reg, sched, auth.BuiltinProvider{DB: d}).Router()
 }
 

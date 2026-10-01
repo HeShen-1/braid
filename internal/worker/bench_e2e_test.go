@@ -130,7 +130,7 @@ func bootBenchPipeline(b *testing.B, conc int, relayIdle time.Duration) (*schedu
 	wcfg := Config{
 		Concurrency: conc, Queues: map[string]int{queue: 1}, WorkerID: "bench-worker",
 		HeartbeatInterval: 10 * time.Second, RetryDelay: 5 * time.Second,
-		ShutdownTimeout: 10 * time.Second, SnowflakeNode: benchWorkerNode,
+		ShutdownTimeout: 10 * time.Second, SnowflakeNode: snowflake.Explicit(benchWorkerNode),
 	}
 	wctx, wcancel := context.WithCancel(context.Background())
 	wids, err := snowflake.New(benchWorkerNode)

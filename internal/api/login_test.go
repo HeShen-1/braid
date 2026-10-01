@@ -196,7 +196,7 @@ func newBoundLoginServer(t *testing.T, mode TokenBindingMode) (*gin.Engine, *sql
 		t.Fatalf("registry: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
-	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 100000, LoginLockout: time.Minute,
 		TokenBinding: mode}

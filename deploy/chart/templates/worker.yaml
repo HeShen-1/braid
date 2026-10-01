@@ -55,7 +55,7 @@ spec:
             - name: BRAID_REDIS_QUEUE_ADDR
               value: {{ printf "%s:6379" (include "braid.redisHost" .) | quote }}
             - name: BRAID_WORKER_SNOWFLAKE_NODE
-              value: "2"
+              value: "auto" # T15.2(D-t151 决策 2):租约池分配——k8s 多副本一律 auto;静态钉 1/2/3 已摘钉
             - name: BRAID_WORKER_QUEUES
               value: default:1 # 须含 BRAID_API_RESUME_QUEUE 指定队列(T12.2 交叉校验)
             - name: BRAID_METRICS_ADDR

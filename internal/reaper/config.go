@@ -62,12 +62,13 @@ type Config struct {
 	// ID 是 reaper 实例标识(选主 token 前缀 + RedispatchNode 归因)。
 	// "reaper:"+ID 落 node_execution.worker_id(VARCHAR(64)),故 ≤57。
 	ID string
-	// SnowflakeNode 是 reaper 雪花节点号(BRAID_REAPER_SNOWFLAKE_NODE,
-	// T7.1 显式化):未设 → PID 派生(镜像 ID 的 hostname 兜底模式,原
-	// cmd 逻辑收编);域校验在 snowflake.New(与 api/worker 同规)。碰撞面
-	// = reaper 仅产 outbox 事件行 id,与 api/worker 重号症状 = 业务表
-	// PK 1062。
-	SnowflakeNode uint16
+	// SnowflakeNode 是 reaper 雪花节点号意向(三层解析产物,D-t151 决策 2)。
+	// 内建缺省 = auto(池分配)——PID 派生已随 T15.2 退役(容器 PID 恒 1,
+	// 与 api 内建默认 1 相撞 = 业务表 PK 1062);显式数字仍可经
+	// BRAID_REAPER_SNOWFLAKE_NODE 声明(限单副本/compose)。碰撞面 = reaper
+	// 仅产 outbox 事件行 id;域校验在 snowflake.ParseNodeSpec(与 api/worker
+	// 同规)。
+	SnowflakeNode snowflake.NodeSpec
 	// MySQLDSN 连接串(BRAID_MYSQL_DSN;含凭证,不进日志/审计)。T7.1 收编
 	// cmd 直读;必填断言在 cmd 读本字段(装配输入非旋钮)。
 	MySQLDSN string
@@ -96,6 +97,7 @@ func DefaultConfig() Config {
 		JanitorInterval:     time.Hour,
 		OutboxBatch:         500,
 		Queue:               "default",
+		SnowflakeNode:       snowflake.Auto(), // T15.2:PID 派生退役,内建缺省 = 池分配
 		Pool:                db.DefaultPoolConfig(),
 	}
 }
@@ -193,18 +195,14 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 			c.ID = fmt.Sprintf("reaper-%d", os.Getpid())
 		}
 	}
-	if raw := getenv("BRAID_REAPER_SNOWFLAKE_NODE"); raw != "" {
-		n, serr := strconv.Atoi(raw)
-		// 越界在转换前拒绝(镜像 api 的 uint16 截断防护:65536 mod 2^16 = 0
-		// 会静默折叠回合法节点域,重号症状只剩 PK 1062,不可诊断)。
-		if serr != nil || n < 0 || n > int(snowflake.MaxNodeID) {
-			return c, fmt.Errorf("reaper: BRAID_REAPER_SNOWFLAKE_NODE=%q: want 0..%d", raw, snowflake.MaxNodeID)
-		}
-		c.SnowflakeNode = uint16(n)
-	} else {
-		// 缺省 PID 派生(原 cmd 逻辑收编;MaxNodeID 同上分支——nodeBits 变更不分叉)
-		c.SnowflakeNode = uint16(os.Getpid() & snowflake.MaxNodeID)
+	// 三层解析(D-t151 决策 2):显式 env 数字 > 内建缺省(auto) > 字面
+	// "auto" 哨兵;越界在转换前拒绝(防护在 ParseNodeSpec)。PID 派生已
+	// 退役(容器 PID 恒 1 撞 api 默认 1)。
+	spec, serr := snowflake.ParseNodeSpec(getenv("BRAID_REAPER_SNOWFLAKE_NODE"), snowflake.Auto())
+	if serr != nil {
+		return c, fmt.Errorf("reaper: BRAID_REAPER_SNOWFLAKE_NODE: %w", serr)
 	}
+	c.SnowflakeNode = spec
 	c.MySQLDSN = getenv("BRAID_MYSQL_DSN")
 	c.RedisQueueAddr = getenv("BRAID_REDIS_QUEUE_ADDR")
 	c.MetricsAddr = getenv("BRAID_METRICS_ADDR")

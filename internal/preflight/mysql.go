@@ -150,6 +150,10 @@ const (
 // 注释同口径)。relay/reaper 自身的其他写权限(outbox UPDATE/DELETE、
 // audit_log ALTER、audit_pending SELECT/DELETE)不在本断言面——按组件
 // 授权方案见 deploy/README.md §5 与 deploy/UPGRADE.md(T7.4 定稿)。
+// 台账预登记(T15.2,D-t151 决策 2):snowflake_node_lease 三账号
+// INSERT/UPDATE/SELECT/DELETE(节点号租约仲裁 + SIGTERM 优雅释放,
+// DELETE 是设计语义;表是运行态簿记非业务事实,不在受保护表集
+// {audit_log, login_audit})——同属「预登记未断言」,断言面收口归 T17.3。
 func CheckAuditAppendOnly(ctx context.Context, dbh *sql.DB, allowLoginAuditDelete bool) error {
 	var acct, schema string
 	if err := dbh.QueryRowContext(ctx, `SELECT CURRENT_USER(), DATABASE()`).Scan(&acct, &schema); err != nil {

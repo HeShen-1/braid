@@ -1,5 +1,5 @@
 {{/* reaper(prod compose reaper 服务的 K8s 形态;4 键对齐)。
-     雪花节点 3 显式(容器 PID 恒 1,缺省派生必撞 api=1,compose 同注释)。 */}}
+     雪花节点 auto(租约池分配,T15.2 摘钉;compose 侧显式 3 单副本语义)。 */}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -35,6 +35,6 @@ spec:
             - name: BRAID_REDIS_QUEUE_ADDR
               value: {{ printf "%s:6379" (include "braid.redisHost" .) | quote }}
             - name: BRAID_REAPER_SNOWFLAKE_NODE
-              value: "3"
+              value: "auto" # T15.2(D-t151 决策 2):租约池分配(PID 派生已退役);静态钉 1/2/3 已摘钉
             - name: BRAID_METRICS_ADDR
               value: "0.0.0.0:9090"

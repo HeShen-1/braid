@@ -63,7 +63,7 @@ func newOIDCTestServer(t *testing.T, o oidcAuther) (*gin.Engine, *Server) {
 		t.Fatalf("registry: %v", err)
 	}
 	gin.SetMode(gin.TestMode)
-	srv := NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+	srv := NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 100000, LoginLockout: time.Minute},
 		nil, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{})
@@ -367,7 +367,7 @@ func TestOIDCFlowIntegration(t *testing.T) {
 			t.Fatalf("registry: %v", err)
 		}
 		gin.SetMode(gin.TestMode)
-		srv := NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+		srv := NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
 			LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 			LoginMaxFailures: 100000, LoginLockout: time.Minute},
 			dbh, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{DB: dbh})
@@ -481,7 +481,7 @@ func TestOIDCCallbackIssuesBoundToken(t *testing.T) {
 				t.Fatalf("registry: %v", err)
 			}
 			gin.SetMode(gin.TestMode)
-			srv := NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+			srv := NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
 				LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 				LoginMaxFailures: 100000, LoginLockout: time.Minute,
 				TokenBinding: mode},

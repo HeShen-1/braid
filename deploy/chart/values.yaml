@@ -39,11 +39,13 @@ redisQueue:
   storage: 8Gi
   storageClassName: ""
 
-# 副本:compose = 单副本等价面。api/worker/reaper 副本 >1 需外部雪花节点号
-# 分配(Deployment 无稳定 ordinal,进程内缺省派生必撞号 = 业务表 PK 1062);
-# worker 副本 >1 + egress 启用不再撞端口(一 worker 一网,D-t102④ 解除,
-# D-t151 决策 5/T15.4);上界 = 节点 daemon 地址池(缺省 ≈31 网,pod
-# recreate 每次泄漏一网,回收见 deploy/RUNBOOK.md)。
+# 副本:compose = 单副本等价面(默认 values 渲染 = prod compose 默认交付面
+# 的对拍契约,默认副本恒 1)。多副本三挡已全解:雪花节点号租约池化
+#(T15.2,D-t151 决策 2:三模板 BRAID_*_SNOWFLAKE_NODE=auto)+ egress
+# 一 worker 一网(T15.4)+ 沙箱清扫 owner 化(T15.3)——四组件副本 >1
+# 均可起,零人工节点号分配。容量注记:每 worker 一网,上界 = 节点
+# daemon 地址池(缺省 ≈31 网,pod recreate 每次泄漏一网,回收见
+# deploy/RUNBOOK.md);整体演练与 mode=all 硬闸 = T15.6。
 replicaCount:
   api: 1
   worker: 1
