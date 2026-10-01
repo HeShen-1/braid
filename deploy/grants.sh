@@ -38,12 +38,23 @@ CREATE USER IF NOT EXISTS 'braid_reaper'@'%' IDENTIFIED BY '${BRAID_DB_REAPER_PA
 
 -- api(写面 = 定义/执行 CRUD、审批事实、同步审计直写、登录审计、outbox 发射)
 GRANT SELECT, INSERT, UPDATE ON braid.workflow_definition TO 'braid_api'@'%';
-GRANT SELECT, INSERT          ON braid.workflow_execution TO 'braid_api'@'%';
-GRANT SELECT, INSERT          ON braid.node_execution     TO 'braid_api'@'%';
+GRANT SELECT, INSERT, UPDATE ON braid.workflow_execution TO 'braid_api'@'%'; -- UPDATE = 回滚/续跑缝的 RestartExecution 状态翻转(engine wfcas)+ 锁定读面,同 node_execution 注记
+-- node_execution 的 UPDATE 是锁定读面(T15.6 演练实证):MySQL 锁定读
+-- (SELECT ... FOR UPDATE)要求对应写权限——审批决定事务的 TOCTOU 守卫
+-- (approvalstore.lockApprovalNode)与 rollback/resume 缝(engine CAS +
+-- rollback.go 的 node_attempt 锁读)都在 api 连接上执行;无 UPDATE =
+-- least-privilege 部署下 1142 全红(t13 测试 root 连接不可见)。
+GRANT SELECT, INSERT, UPDATE ON braid.node_execution     TO 'braid_api'@'%';
+GRANT SELECT, UPDATE         ON braid.node_attempt      TO 'braid_api'@'%'; -- 回滚缝锁读 + CAS(同上;api 无 INSERT 面)
 GRANT SELECT, INSERT          ON braid.approval_decision  TO 'braid_api'@'%';
 GRANT SELECT, INSERT          ON braid.audit_log          TO 'braid_api'@'%';
 GRANT SELECT, INSERT, UPDATE (last_id, last_row_hash) ON braid.chain_heads TO 'braid_api'@'%'; -- T9.3 哈希链锚:列级最小授权——api 写路径只推链尾两列;闩/水位列(broken_*/verified_*)不可写 = 「闩复位=人工」的权限面承载
 GRANT INSERT                  ON braid.login_audit        TO 'braid_api'@'%';
+-- audit_pending(回滚缝,T15.6 演练臂 ⑦ 实证):rollback/resume 重派节点的
+-- node.state_changed 属热路径批量事件族(T6.1),走 Enqueue 暂存由 reaper
+-- flush 搬运——api 在回滚事务内 INSERT 暂存行(消费半边归 reaper,矩阵
+-- 的 api INSERT 与 worker 同款)。
+GRANT INSERT                  ON braid.audit_pending      TO 'braid_api'@'%';
 -- login_throttle(T11.3):登录防御状态簿记面——api 行锁单事务读-判-写
 -- (成功重置走 UPDATE,无 DELETE;UPDATE 列级收窄:kind 仅 INSERT 写,
 -- chain_heads 列级先例);reaper janitor 超龄回收(DELETE 谓词列需
