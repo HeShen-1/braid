@@ -1,21 +1,23 @@
-package auth
-
-// OIDC redirect 流插件(T11.1,D-2026-09-28-t111-oidc-subject-anchor)。
-// identity.go 的 IdentityProvider 是凭证核验型缝(口令 → User),OIDC 的
-// 302 形状装不进该接口——本文件是其姊妹面:StartAuth 产握手态,Complete
-// 兑换回调,错误族与 User→SignToken 契约原样复用(CredentialsError →
-// 401 / ErrUserDisabled → 403 / 其余 500)。
+// Package oidc 是 OIDC redirect 流插件实现(T11.1,D-2026-09-28-t111-
+// oidc-subject-anchor;T16.1 切入企业增值面,D-2026-10-01-t161-engine-
+// enterprise-split)。identity.go 的 IdentityProvider 是凭证核验型缝
+// (口令 → User),OIDC 的 302 形状装不进该接口——本包是其姊妹面:
+// StartAuth 产握手态,Complete 兑换回调,错误族与 User→SignToken 契约
+// 原样复用(CredentialsError → 401 / ErrUserDisabled → 403 / 其余 500;
+// 传输面哨兵与握手态 cookie 契约留核心 internal/auth/oidcseam.go,api
+// 回调 handler 直赖核心侧符号,本实现经 cmd 组合根注入)。
 //
-// 主体映射 = 本地账号锚定:claim(preferred_username/email/sub)值精确
-// 匹配 users.username 并过既有词域;角色/状态自本地库(IdP 不携带 braid
-// 角色,本地行结构性必需),IdP 只做身份核验。0002 头注释预登记的主体列
-// 加宽不回收(理由见 D- 条目)。
+// 主体映射 = 本地账号锚定(核心侧缝 auth.AnchorLoginUser):claim
+// (preferred_username/sub)值精确匹配 users.username 并过既有词域;
+// 角色/状态自本地库(IdP 不携带 braid 角色,本地行结构性必需),IdP 只做
+// 身份核验。0002 头注释预登记的主体列加宽不回收(理由见 D- 条目)。
 //
 // 握手态(state/nonce/PKCE verifier)由签名短时 cookie 承载:api 进程
 // 无状态、零 Redis;密钥自 ClientSecret HKDF 派生(域分隔),伪造/篡改/
 // 过期在 parseOIDCState 拒收。防枚举口径:OIDC 路径无口令比对面,未知
 // 本地账号的时序差(单次索引 miss)不构成 bcrypt 量级的存在性 oracle,
 // 且探测者须先持 IdP 核验过的身份——不引入 dummy 时序均衡。
+package oidc
 
 import (
 	"context"
@@ -35,6 +37,8 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"golang.org/x/oauth2"
+
+	"braid/internal/auth"
 )
 
 // 主体映射源 claim 词表(封闭):sub = OIDC 标准唯一标识(仅 issuer 内
@@ -52,27 +56,16 @@ const (
 
 var oidcClaimWords = []string{OIDCClaimSub, OIDCClaimPreferredUsername}
 
-// 传输面 sentinel:错误族(凭据判定)之外的分类面,api 层映射 400(传输/
-// 协议面)与 500(身份源故障);本地库故障原样上抛(500)。
-var (
-	// ErrOIDCState 回调携带的握手态 cookie 拒收(缺失/伪造/过期)。
-	ErrOIDCState = errors.New("auth: oidc state rejected")
-	// ErrOIDCCode authorization code 兑换失败(无效/过期/PKCE 不符)。
-	ErrOIDCCode = errors.New("auth: oidc code exchange failed")
-	// ErrOIDCIDToken ID token 拒收(缺 id_token/验签/nonce 不符):身份源
-	// 故障,不是登录判定结果。
-	ErrOIDCIDToken = errors.New("auth: oidc id token invalid")
-)
+// ErrOIDCIDToken ID token 拒收(缺 id_token/验签/nonce 不符):身份源
+// 故障,不是登录判定结果——api 回调 handler 落 default 500 分支,不按名
+// 引用,故随实现留本包。传输面哨兵(ErrOIDCState/ErrOIDCCode)留核心
+// auth(oidcseam.go,handler 错误映射面)。
+var ErrOIDCIDToken = errors.New("auth: oidc id token invalid")
 
-// OIDCStateCookie / OIDCStateTTL:握手态 cookie 的名字与寿命(api 层装配
-// 用);10 分钟覆盖人工完成 IdP 登录的常见时延。OIDCHTTPTimeout 界住出站
-// IdP 往返(discovery 拉取与 token 兑换/验签期 JWKS 拉取——x/oauth2 默认
-// client 无 deadline,慢/挂 IdP 会吊住启动或回调 handler,review MEDIUM)。
-const (
-	OIDCStateCookie = "braid_oidc_state"
-	OIDCStateTTL    = 10 * time.Minute
-	OIDCHTTPTimeout = 10 * time.Second
-)
+// OIDCHTTPTimeout 界住出站 IdP 往返(discovery 拉取与 token 兑换/验签期
+// JWKS 拉取——x/oauth2 默认 client 无 deadline,慢/挂 IdP 会吊住启动或
+// 回调 handler,review MEDIUM)。
+const OIDCHTTPTimeout = 10 * time.Second
 
 // OIDCConfig 是 OIDC 插件配置组(BRAID_OIDC_*)。半开语义:组整体缺省 =
 // OIDC 关闭(路由不挂载);任一键设而组不全 = 启动即败(正向/反向半配置
@@ -124,8 +117,9 @@ func (c OIDCConfig) Validate() error {
 	return nil
 }
 
-// ParseOIDCConfig 从 BRAID_OIDC_* 组构造(getenv 注入,ConfigFromEnv 惯例)。
-// 全组缺省返回零值(OIDC 关闭);Claim 缺省在此补齐;半开经 Validate 启动即败。
+// ParseOIDCConfig 从 BRAID_OIDC_* 组构造(getenv 注入,ConfigFromEnv 惯例;
+// T16.1 起消费方 = cmd/api 组合根直呼)。全组缺省返回零值(OIDC 关闭);
+// Claim 缺省在此补齐;半开经 Validate 启动即败。
 func ParseOIDCConfig(getenv func(string) string) (OIDCConfig, error) {
 	c := OIDCConfig{
 		Issuer:       getenv("BRAID_OIDC_ISSUER"),
@@ -241,11 +235,11 @@ func randomToken(n int) (string, error) {
 }
 
 // OIDCProvider 是 OIDC redirect 流插件实现:discovery/JWKS/ID token 验签
-// 委托 go-oidc(事实标准库),本地账号锚定复用 findByUsername。
+// 委托 go-oidc(事实标准库),本地账号锚定经核心缝 auth.AnchorLoginUser。
 type OIDCProvider struct {
 	oauth2   oauth2.Config
 	verifier *oidc.IDTokenVerifier
-	dbh      DBTX
+	dbh      auth.DBTX
 	claim    string
 	stateKey []byte
 }
@@ -254,7 +248,7 @@ type OIDCProvider struct {
 // T7.3 fail-fast 哲学;往返界 OIDCHTTPTimeout)。dbh 与 BuiltinProvider
 // 同式注入(本地锚定读面)。注意:构造后的 JWKS 拉取走 Verify 期 ctx,
 // 不被此处的超时窗覆盖(Complete 侧自理)。
-func NewOIDCProvider(ctx context.Context, cfg OIDCConfig, dbh DBTX) (*OIDCProvider, error) {
+func NewOIDCProvider(ctx context.Context, cfg OIDCConfig, dbh auth.DBTX) (*OIDCProvider, error) {
 	dctx, cancel := context.WithTimeout(ctx, OIDCHTTPTimeout)
 	defer cancel()
 	prov, err := oidc.NewProvider(dctx, cfg.Issuer)
@@ -282,27 +276,21 @@ func NewOIDCProvider(ctx context.Context, cfg OIDCConfig, dbh DBTX) (*OIDCProvid
 	}, nil
 }
 
-// OIDCStart 是 /auth/oidc/login 的产出:重定向目标与待下发的签名 cookie。
-type OIDCStart struct {
-	RedirectURL string
-	CookieValue string
-}
-
 // StartAuth 产握手态与重定向目标。PKCE S256(RFC 7636):challenge 进授权
 // 请求,verifier 留在签名 cookie(仅本服务可达),authorization code 被
 // 截获也无法兑付;nonce 进授权请求,由 IdP 回嵌 ID token。
-func (p *OIDCProvider) StartAuth() (OIDCStart, error) {
+func (p *OIDCProvider) StartAuth() (auth.OIDCStart, error) {
 	state, err := randomToken(32)
 	if err != nil {
-		return OIDCStart{}, err
+		return auth.OIDCStart{}, err
 	}
 	nonce, err := randomToken(32)
 	if err != nil {
-		return OIDCStart{}, err
+		return auth.OIDCStart{}, err
 	}
 	verifier, err := randomToken(32)
 	if err != nil {
-		return OIDCStart{}, err
+		return auth.OIDCStart{}, err
 	}
 	challenge := sha256.Sum256([]byte(verifier))
 	redirect := p.oauth2.AuthCodeURL(state,
@@ -312,12 +300,12 @@ func (p *OIDCProvider) StartAuth() (OIDCStart, error) {
 	)
 	cookie, err := signOIDCState(p.stateKey, oidcAuthState{
 		State: state, Nonce: nonce, Verifier: verifier,
-		Exp: time.Now().Add(OIDCStateTTL).Unix(),
+		Exp: time.Now().Add(auth.OIDCStateTTL).Unix(),
 	})
 	if err != nil {
-		return OIDCStart{}, err
+		return auth.OIDCStart{}, err
 	}
-	return OIDCStart{RedirectURL: redirect, CookieValue: cookie}, nil
+	return auth.OIDCStart{RedirectURL: redirect, CookieValue: cookie}, nil
 }
 
 // oidcIDClaims 是本插件消费的 claim 子集(标准词面,不含自由文本透传)。
@@ -327,26 +315,26 @@ type oidcIDClaims struct {
 
 // Complete 兑现回调:验 state cookie → 回显 state 比对 → code 换 token
 // (携 PKCE verifier)→ 验 ID token(签名/iss/aud/exp,go-oidc)+ nonce
-// 比对 → claim 抽取 → 本地账号锚定。返回的 subject 是解析出的 claim 值:
-// 身份判定失败时仍非空,供 api 层审计归因(口令登录的 req.Username 对应
-// 物);传输/协议面失败为空。
+// 比对 → claim 抽取 → 本地账号锚定(核心缝 auth.AnchorLoginUser)。返回
+// 的 subject 是解析出的 claim 值:身份判定失败时仍非空,供 api 层审计
+// 归因(口令登录的 req.Username 对应物);传输/协议面失败为空。
 //
 // 错误族(T5.3 契约复用):
-//   - ErrOIDCState / ErrOIDCCode → 传输面(400);
+//   - auth.ErrOIDCState / auth.ErrOIDCCode → 传输面(400);
 //   - ErrOIDCIDToken → 身份源故障(500);
-//   - *CredentialsError(claim 缺失/域外/本地无账号)→ 401;
-//   - ErrUserDisabled → 403;
+//   - *auth.CredentialsError(claim 缺失/域外/本地无账号)→ 401;
+//   - auth.ErrUserDisabled → 403;
 //   - 其余(本地库故障)原样上抛(500)。
-func (p *OIDCProvider) Complete(ctx context.Context, cookieValue, state, code string) (User, string, error) {
+func (p *OIDCProvider) Complete(ctx context.Context, cookieValue, state, code string) (auth.User, string, error) {
 	st, err := parseOIDCState(p.stateKey, cookieValue)
 	if err != nil {
-		return User{}, "", fmt.Errorf("%w: %v", ErrOIDCState, err)
+		return auth.User{}, "", fmt.Errorf("%w: %v", auth.ErrOIDCState, err)
 	}
 	// 回显 state 比对(OIDC Core 3.1.2.1 / OAuth 2.1 BCP):注入 code/state
 	// 的最早拒绝层,独立于 PKCE 与 nonce 兜底(review 收口:文档声称的
 	// 防御必须是真实存在的比较)。恒时比较。
 	if !hmac.Equal([]byte(state), []byte(st.State)) {
-		return User{}, "", fmt.Errorf("%w: state mismatch", ErrOIDCState)
+		return auth.User{}, "", fmt.Errorf("%w: state mismatch", auth.ErrOIDCState)
 	}
 	// 出站往返(token 兑换 + Verify 期 JWKS 拉取)统一预算:超时归
 	// ErrOIDCCode/ErrOIDCIDToken 既有错误族,不新增分类面。
@@ -354,39 +342,30 @@ func (p *OIDCProvider) Complete(ctx context.Context, cookieValue, state, code st
 	defer cancel()
 	tok, err := p.oauth2.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", st.Verifier))
 	if err != nil {
-		return User{}, "", fmt.Errorf("%w: %v", ErrOIDCCode, err)
+		return auth.User{}, "", fmt.Errorf("%w: %v", auth.ErrOIDCCode, err)
 	}
 	raw, _ := tok.Extra("id_token").(string)
 	if raw == "" {
-		return User{}, "", fmt.Errorf("%w: token response lacks id_token", ErrOIDCIDToken)
+		return auth.User{}, "", fmt.Errorf("%w: token response lacks id_token", ErrOIDCIDToken)
 	}
 	idt, err := p.verifier.Verify(ctx, raw)
 	if err != nil {
-		return User{}, "", fmt.Errorf("%w: %v", ErrOIDCIDToken, err)
+		return auth.User{}, "", fmt.Errorf("%w: %v", ErrOIDCIDToken, err)
 	}
 	if idt.Nonce == "" || !hmac.Equal([]byte(idt.Nonce), []byte(st.Nonce)) {
-		return User{}, "", fmt.Errorf("%w: nonce mismatch", ErrOIDCIDToken)
+		return auth.User{}, "", fmt.Errorf("%w: nonce mismatch", ErrOIDCIDToken)
 	}
 	var cl oidcIDClaims
 	if err := idt.Claims(&cl); err != nil {
-		return User{}, "", fmt.Errorf("%w: claims: %v", ErrOIDCIDToken, err)
+		return auth.User{}, "", fmt.Errorf("%w: claims: %v", ErrOIDCIDToken, err)
 	}
 	subject := p.subjectOf(idt, &cl)
-	if !validUsername(subject) {
-		// 含 claim 缺失、域外值、email 未验证:词表封闭,统一 invalid_input。
-		return User{}, subject, &CredentialsError{Username: subject, Reason: ReasonInvalidInput}
-	}
-	rec, err := findByUsername(ctx, p.dbh, subject)
-	if errors.Is(err, errUserNotFound) {
-		return User{}, subject, &CredentialsError{Username: subject, Reason: ReasonUnknownUser}
-	}
+	// 本地账号锚定(词域/存在性/停用判定 + 错误族)单点收敛在核心缝。
+	user, err := auth.AnchorLoginUser(ctx, p.dbh, subject)
 	if err != nil {
-		return User{}, subject, err // 查询故障原样上抛,不吞不降级
+		return auth.User{}, subject, err
 	}
-	if rec.Status == StatusDisabled {
-		return User{}, subject, fmt.Errorf("%w: %q", ErrUserDisabled, subject)
-	}
-	return rec.User, subject, nil
+	return user, subject, nil
 }
 
 // subjectOf 按 claim 配置取主体字符串(词表两值,见词表注释)。

@@ -1,8 +1,12 @@
-package auth
+// Package ldap 是 LDAP bind 插件(T11.1 留桩,T16.1 切入企业增值面,
+// D-2026-10-01-t161-engine-enterprise-split;实现归 T17.6)。
+package ldap
 
 import (
 	"context"
 	"fmt"
+
+	"braid/internal/auth"
 )
 
 // LDAPBindProvider 是 LDAP bind 插件的留桩(T11.1 验收「LDAP bind 留桩」,
@@ -19,6 +23,6 @@ type LDAPBindProvider struct {
 }
 
 // Authenticate 恒定失败:LDAP bind 实现归后续任务(T11.1 留桩)。
-func (p LDAPBindProvider) Authenticate(_ context.Context, _, _ string) (User, error) {
-	return User{}, fmt.Errorf("auth: ldap bind provider not implemented (stub, addr %q)", p.Addr)
+func (p LDAPBindProvider) Authenticate(_ context.Context, _, _ string) (auth.User, error) {
+	return auth.User{}, fmt.Errorf("auth: ldap bind provider not implemented (stub, addr %q)", p.Addr)
 }

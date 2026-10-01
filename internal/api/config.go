@@ -100,9 +100,6 @@ type Config struct {
 	// Pool 是 MySQL 连接池三值(T7.1,D-t63 移交回收):db.ParsePoolConfig
 	// 注入式解析 BRAID_DB_* 三键,施加点 cmd 的 db.ConfigurePool。
 	Pool db.PoolConfig
-	// OIDC 是 OIDC 插件配置组(T11.1,BRAID_OIDC_*):零值 = 关闭(路由
-	// 不挂载);半开在 auth.ParseOIDCConfig 启动即败(组全或无)。
-	OIDC auth.OIDCConfig
 	// IMLinkSecret 是 IM 鉴权短链验证密钥(T14.3,D-t143 决策 2/7):
 	// 与 worker/notify 签发侧同键(BRAID_IM_LINK_SECRET,双端同批供给
 	// ——跨组件半配置无法启动期互检,部署契约:worker 配了 api 没配 =
@@ -173,11 +170,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("api: http timeouts must be > 0 (got header=%s read=%s write=%s idle=%s)",
 			c.ReadHeaderTimeout, c.ReadTimeout, c.WriteTimeout, c.IdleTimeout)
 	}
-	// OIDC 组(T11.1):零值合法(关闭);程序化直构 Config 的半开组在此
-	// 拦下(env 面已由 auth.ParseOIDCConfig 拦,此为第二道)。
-	if err := c.OIDC.Validate(); err != nil {
-		return err
-	}
+	// OIDC 组(T11.1;T16.1 起配置随协议实现迁企业增值面
+	// internal/enterprise/oidc,cmd/api 组合根直呼 ParseOIDCConfig,
+	// Config 不再携带)。
 	// IM 短链密钥(T14.3):空 = 关闭(合法);非空须过熵地板(与 notify
 	// 签发侧同口径,auth.MinIMLinkSecretLen 单源——防「可暴破 capability
 	// 秘密」静默上线)。
@@ -256,13 +251,7 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 	}
 	// BRAID_TOOL_ALLOWLIST 已随 T3.2 退役:发布白名单真源 = tools.Registry
 	// 注册名(NewServer 注入;空 registry = 禁用一切工具,语义不变)。
-	// OIDC 组(T11.1):全组缺省 = 零值(关闭);半开启动即败。
-	oidcCfg, err := auth.ParseOIDCConfig(getenv)
-	if err != nil {
-		return c, err
-	}
-	c.OIDC = oidcCfg
-	// IM 短链密钥(T14.3):api 侧只验不签(签发在 worker/notify);空 =
+	// IM 短链密钥(T14.3):api 侧只验不签(签发在 worker 侧企业 im 包);空 =
 	// IM 审批入口关闭。跨组件半配置(worker 配了 api 没配 = 卡片链接
 	// 点击全 404;api 配了 worker 没配 = 卡片根本发不出)无法在本进程
 	// 判——部署契约 D-t143 决策 7。

@@ -1,13 +1,15 @@
 package api
 
-// OIDC 路由面(T11.1)。零栈面:挂载条件、start 形状(302/cookie 属性)、
-// callback 错误映射(400/401/403/500)+ 指标发射口径;配置解析
-// (ConfigFromEnv → OIDC 字段)。t13 面:假 IdP 全链 HTTP 旅程 + login_audit
-// 行断言(oidctest 基建)。
+// OIDC 路由面(T11.1;T16.1 收线,协议实现迁企业增值面)。零栈面:挂载
+// 条件、start 形状(302/cookie 属性)、callback 错误映射(400/401/403/500)
+// + 指标发射口径——全部经 OIDCProvider 缝桩(fakeOIDC),零企业依赖。
+// t13 全链旅程(真 provider × handler × login_audit)随实现迁企业侧
+// (internal/enterprise/oidc/apiflow_test.go);配置解析随 OIDC 字段
+// 消亡移除(企业侧 ParseOIDCConfig 测试承载)。
 //
 // 变异自查:Router 挂载去 nil 门 → not_mounted 行红;错误映射互换 →
 // mapping 表各行红;清 cookie 删除 → clears_cookie 行红;审计发射删除 →
-// integration 的 login_audit 行断言红。
+// integration 的 login_audit 行断言红(企业侧)。
 
 import (
 	"context"
@@ -24,14 +26,12 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"braid/internal/auth"
-	"braid/internal/auth/oidctest"
-	"braid/internal/db/sqltest"
 	"braid/internal/metrics"
 	"braid/internal/snowflake"
 	"braid/internal/tools"
 )
 
-// fakeOIDC 是 oidcAuther 桩(零栈面);记录入参供透传断言。
+// fakeOIDC 是 OIDCProvider 缝桩(零栈面);记录入参供透传断言。
 type fakeOIDC struct {
 	start       auth.OIDCStart
 	startErr    error
@@ -52,7 +52,7 @@ func (f *fakeOIDC) Complete(_ context.Context, cookieValue, state, code string) 
 // newOIDCTestServer 构造挂(或不挂)OIDC 桩的 server;登录防御旋钮放宽
 // (newIDPTestRouter 同判)。不触碰 newTestServer(t9.2 冲突面,issue #82
 // 注记 4)。返回 router 与 *Server(指标注入用)。
-func newOIDCTestServer(t *testing.T, o oidcAuther) (*gin.Engine, *Server) {
+func newOIDCTestServer(t *testing.T, o OIDCProvider) (*gin.Engine, *Server) {
 	t.Helper()
 	ids, err := snowflake.New(1)
 	if err != nil {
@@ -67,7 +67,7 @@ func newOIDCTestServer(t *testing.T, o oidcAuther) (*gin.Engine, *Server) {
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 100000, LoginLockout: time.Minute},
 		nil, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{})
-	srv.oidc = o // 测试桩直赋(生产唯一实现经 OIDCProvider setter)
+	srv.oidc = o // 测试桩直赋(生产唯一实现 = 企业树,经 OIDCProvider setter)
 	return srv.Router(), srv
 }
 
@@ -184,8 +184,11 @@ func TestOIDCCallbackErrorMapping(t *testing.T) {
 			wantCode: 403, wantErr: "user_disabled", wantMetric: metrics.ResultFailed,
 		},
 		{
+			// ErrOIDCIDToken 哨兵随实现迁企业侧(T16.1);本臂用普通故障
+			// 错误锚 default 500 分支——真哨兵经缝的 500 映射由企业侧
+			// apiflow_test 钉(internal/enterprise/oidc)。
 			name: "idtoken_fault_500", query: "code=c",
-			fake:     &fakeOIDC{completeErr: fmt.Errorf("%w: bad sig", auth.ErrOIDCIDToken)},
+			fake:     &fakeOIDC{completeErr: errors.New("idp: id token bad sig")},
 			wantCode: 500, wantErr: "internal", wantMetric: "",
 		},
 		{
@@ -264,204 +267,6 @@ func extractJSONField(t *testing.T, body, field string) string {
 		t.Fatalf("body %s 缺 %q", body, field)
 	}
 	return v
-}
-
-// TestConfigFromEnvOIDCGroup:api 配置面承接 BRAID_OIDC_ 组(半开在
-// ConfigFromEnv 即败;全组缺省 = 关闭零值)。
-func TestConfigFromEnvOIDCGroup(t *testing.T) {
-	t.Run("off", func(t *testing.T) {
-		c, err := ConfigFromEnv(func(k string) string {
-			if k == "BRAID_AUTH_JWT_SECRET" {
-				return testSecret
-			}
-			return ""
-		})
-		if err != nil {
-			t.Fatalf("err = %v", err)
-		}
-		if c.OIDC.Configured() {
-			t.Fatalf("off 组报告 configured")
-		}
-	})
-	t.Run("half_open_rejected", func(t *testing.T) {
-		_, err := ConfigFromEnv(func(k string) string {
-			if k == "BRAID_AUTH_JWT_SECRET" {
-				return testSecret
-			}
-			if k == "BRAID_OIDC_ISSUER" {
-				return "https://idp.example.com"
-			}
-			return ""
-		})
-		if err == nil || !strings.Contains(err.Error(), "half-configured") {
-			t.Fatalf("err = %v, want half-configured", err)
-		}
-	})
-	t.Run("full_group", func(t *testing.T) {
-		c, err := ConfigFromEnv(func(k string) string {
-			switch k {
-			case "BRAID_AUTH_JWT_SECRET":
-				return testSecret
-			case "BRAID_OIDC_ISSUER":
-				return "https://idp.example.com"
-			case "BRAID_OIDC_CLIENT_ID":
-				return "braid"
-			case "BRAID_OIDC_CLIENT_SECRET":
-				return "client-secret-words-placeholder"
-			case "BRAID_OIDC_REDIRECT_URL":
-				return "https://braid.example.com/api/v1/auth/oidc/callback"
-			default:
-				return ""
-			}
-		})
-		if err != nil {
-			t.Fatalf("err = %v", err)
-		}
-		if !c.OIDC.Configured() || c.OIDC.Claim != auth.DefaultOIDCClaim {
-			t.Fatalf("oidc = %+v", c.OIDC)
-		}
-	})
-}
-
-// TestOIDCFlowIntegration(t13):假 IdP 全链 HTTP 旅程——login 302 →
-// authorize 302 → callback 200 token 往返 + login_audit 行(成功/未知
-// 账号两臂)。真 OIDCProvider + 真 DB(本地锚定),装配经生产 setter。
-func TestOIDCFlowIntegration(t *testing.T) {
-	dbh := sqltest.MustOpenAt(t, "braid_api_test")
-	t.Cleanup(func() {
-		_, _ = dbh.Exec(`DELETE FROM user_role WHERE user_id IN (SELECT id FROM users WHERE username LIKE 'oidc-%')`)
-		_, _ = dbh.Exec(`DELETE FROM users WHERE username LIKE 'oidc-%'`)
-		_, _ = dbh.Exec(`DELETE FROM login_audit WHERE username LIKE 'oidc-%'`)
-	})
-	hash, err := auth.HashPassword("pw-unused-oidc-1", 4)
-	if err != nil {
-		t.Fatalf("hash: %v", err)
-	}
-	ids, err := snowflake.New(1)
-	if err != nil {
-		t.Fatalf("snowflake: %v", err)
-	}
-	if err := auth.WithTx(context.Background(), dbh, func(q auth.DBTX) error {
-		return auth.CreateUser(context.Background(), q, ids, auth.CreateUserParams{
-			Username: "oidc-alice", PasswordHash: hash, Roles: []auth.Role{auth.RoleApprover},
-		})
-	}); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-
-	build := func(claims map[string]any) *gin.Engine {
-		t.Helper()
-		idp := oidctest.New(t)
-		idp.Claims = claims
-		prov, err := auth.NewOIDCProvider(context.Background(), auth.OIDCConfig{
-			Issuer:       idp.Issuer(),
-			ClientID:     idp.ClientID,
-			ClientSecret: "integration-oidc-client-secret-placeholder",
-			RedirectURL:  "http://127.0.0.1:1/api/v1/auth/oidc/callback",
-		}, dbh)
-		if err != nil {
-			t.Fatalf("provider: %v", err)
-		}
-		reg, err := tools.NewRegistry()
-		if err != nil {
-			t.Fatalf("registry: %v", err)
-		}
-		gin.SetMode(gin.TestMode)
-		srv := NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
-			LoginRateLimit: 100000, LoginRateWindow: time.Minute,
-			LoginMaxFailures: 100000, LoginLockout: time.Minute},
-			dbh, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{DB: dbh})
-		srv.OIDCProvider(prov) // 生产 setter 装配面
-		return srv.Router()
-	}
-	// 全链驱动:login(本地)→ authorize(假 IdP,302)→ callback(本地),
-	// 浏览器语义零跟踪。
-	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
-	flow := func(t *testing.T, r *gin.Engine) (int, string) {
-		t.Helper()
-		w1 := doGet(t, r, "/api/v1/auth/oidc/login", nil)
-		if w1.Code != http.StatusFound {
-			t.Fatalf("login code = %d, body %s", w1.Code, w1.Body)
-		}
-		var stateCookie *http.Cookie
-		for _, c := range w1.Result().Cookies() {
-			if c.Name == auth.OIDCStateCookie {
-				stateCookie = c
-			}
-		}
-		if stateCookie == nil {
-			t.Fatalf("state cookie 缺席")
-		}
-		authz, err := client.Get(w1.Header().Get("Location"))
-		if err != nil {
-			t.Fatalf("authorize: %v", err)
-		}
-		authz.Body.Close() //nolint:errcheck // 诊断面
-		if authz.StatusCode != http.StatusFound {
-			t.Fatalf("authorize code = %d", authz.StatusCode)
-		}
-		cbReq, _ := http.NewRequest(http.MethodGet, authz.Header.Get("Location"), nil)
-		cbReq.AddCookie(stateCookie)
-		w := httptest.NewRecorder()
-		r.ServeHTTP(w, cbReq)
-		return w.Code, w.Body.String()
-	}
-
-	t.Run("success_token_roundtrip_and_audit", func(t *testing.T) {
-		r := build(map[string]any{"preferred_username": "oidc-alice"})
-		code, body := flow(t, r)
-		if code != http.StatusOK {
-			t.Fatalf("code = %d, body %s", code, body)
-		}
-		claims, err := auth.ParseToken(testSecret, extractJSONField(t, body, "token"))
-		if err != nil {
-			t.Fatalf("parse: %v", err)
-		}
-		if claims.Subject != "oidc-alice" || len(claims.Roles) != 1 || claims.Roles[0] != auth.RoleApprover {
-			t.Fatalf("claims = %+v", claims)
-		}
-	})
-	t.Run("unknown_user_401_and_audit", func(t *testing.T) {
-		r := build(map[string]any{"preferred_username": "oidc-ghost"})
-		code, body := flow(t, r)
-		if code != http.StatusUnauthorized || !strings.Contains(body, "invalid_credentials") {
-			t.Fatalf("code = %d body %s", code, body)
-		}
-	})
-
-	rows, err := dbh.Query(`SELECT event_type, username, reason FROM login_audit WHERE username IN ('oidc-alice','oidc-ghost')`)
-	if err != nil {
-		t.Fatalf("query: %v", err)
-	}
-	defer rows.Close() //nolint:errcheck // 测试收尾
-	var got []string
-	for rows.Next() {
-		var ev, un string
-		var reasonPtr *string
-		if err := rows.Scan(&ev, &un, &reasonPtr); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		reason := ""
-		if reasonPtr != nil {
-			reason = *reasonPtr
-		}
-		got = append(got, fmt.Sprintf("%s/%s/%s", ev, un, reason))
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("rows: %v", err)
-	}
-	want := []string{
-		"login.succeeded/oidc-alice/",
-		"login.failed/oidc-ghost/" + auth.ReasonUnknownUser,
-	}
-	if len(got) != len(want) {
-		t.Fatalf("login_audit 行 = %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("login_audit[%d] = %q, want %q", i, got[i], want[i])
-		}
-	}
 }
 
 // TestOIDCCallbackIssuesBoundToken:模式开启下回调签出的 token 携 bnd

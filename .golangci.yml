@@ -1,0 +1,32 @@
+# T16.1 import 边界门(D-2026-10-01-t161-engine-enterprise-split):本仓
+# 首个 golangci 配置,只为 depguard 边界执法而立。linters.enable 在默认集
+# (errcheck/govet/ineffassign/staticcheck/unused)之上追加,不动默认集。
+# 精确语义网 = internal/boundary(包图断言,含测试导入与 engine 纯净锁);
+# depguard 是 lint 腿的快速反馈面——规则口径变更须双侧同步。
+version: "2"
+linters:
+  enable:
+    - depguard
+  settings:
+    depguard:
+      rules:
+        # R1:core(enterprise 子树与 cmd 组合根除外)禁 import enterprise。
+        # cmd/ 是组合根,允许双向装配。deny 前缀匹配子包。
+        core-no-enterprise:
+          files:
+            - "!**/internal/enterprise/**"
+            - "!**/cmd/**"
+          deny:
+            - pkg: "braid/internal/enterprise"
+              desc: "core must not import enterprise (T16.1 one-way boundary: enterprise -> core only)"
+        # R2:engine 族(含 dsl)包文件禁 import 其他 internal 包(Q7 底座
+        # 纯净)。_test.go 豁免(sqltest/redistest 测试基建不构成运行期依赖);
+        # engine→engine/dsl 同族导入今日为零,未来若需要须有意识地改本规则
+        # ——边界变化应经过审视,静默放宽即门失守。
+        engine-purity:
+          files:
+            - "**/internal/engine/**"
+            - "!**/*_test.go"
+          deny:
+            - pkg: "braid/internal"
+              desc: "engine family must not import other internal packages (Q7 core base purity)"

@@ -1,4 +1,6 @@
-package notify
+// Package im 是 IM 审批卡片(钉钉)发送面(T14.3;T16.1 切入企业增值面,
+// D-2026-10-01-t161-engine-enterprise-split)。本文件持配置组。
+package im
 
 // IMConfig 是 IM 审批卡片(钉钉自定义群机器人 webhook,T14.3 / D-2026-09-30
 // -t143 决策 1)的全部可调参数。字段名即配置键语义(装配换装点
@@ -8,8 +10,8 @@ package notify
 //
 // 密钥纪律(铁律):Secret/LinkSecret 仅经 env 注入,不进代码/日志/审计;
 // 错误面只携带键名与长度事实,不回显值。LinkSecret 是 api/worker 双端键
-// (worker 签发短链、api 验证)——跨组件半配置无法启动期互检,部署契约
-// 见 D-t143 决策 7(两组件同批供给)。
+//(worker 侧本包签发短链、核心 api 验证)——跨组件半配置无法启动期互检,
+// 部署契约见 D-t143 决策 7(两组件同批供给)。
 
 import (
 	"fmt"
@@ -100,4 +102,14 @@ func IMConfigFromEnv(getenv func(string) string) (IMConfig, error) {
 		c.Timeout = d
 	}
 	return c, c.Validate()
+}
+
+// isLoopbackHost 与核心 notify 同形(词面三值;私有微助手的包内复制
+// 优于为一行词面表导出核心 API)。
+func isLoopbackHost(host string) bool {
+	switch host {
+	case "localhost", "127.0.0.1", "::1":
+		return true
+	}
+	return false
 }

@@ -1,7 +1,8 @@
-package auth
+package oidc
 
 // OIDC 配置面(T11.1):半开双闸(正向半配置 / 反向半配置孤儿)、claim
-// 词表、URL 形态(https,仅回环豁免 http)。零栈纯表驱动。
+// 词表、URL 形态(https,仅回环豁免 http)。零栈纯表驱动。T16.1 随实现
+// 迁企业增值面(D-2026-10-01-t161)。
 //
 // 变异自查:半开闸删除 → missing_* 行红;claim 词表放空 → bad_claim 行红;
 // 回环豁免删除 → http_loopback_* 行红(https 校验保留时非回环 http 红在

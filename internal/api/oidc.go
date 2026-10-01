@@ -35,9 +35,13 @@ import (
 	"braid/internal/metrics"
 )
 
-// oidcAuther 是 OIDCProvider 的消费面(测试桩替身缝;生产唯一实现 =
-// *auth.OIDCProvider,handler 只依赖这两个方法)。
-type oidcAuther interface {
+// OIDCProvider 是 OIDC 插件的核心侧消费缝(T11.1 立面;T16.1 收线,
+// D-2026-10-01-t161-engine-enterprise-split):协议实现迁企业增值面
+// internal/enterprise/oidc(企业树 *oidc.OIDCProvider 结构性满足本接口,
+// 经 cmd 组合根注入 setter;测试桩同缝)。握手态契约符号(cookie 名/
+// TTL/传输面哨兵/OIDCStart)留核心 auth/oidcseam.go——本文件 handler
+// 只依赖核心侧符号,企业实现只被组合根引用。
+type OIDCProvider interface {
 	StartAuth() (auth.OIDCStart, error)
 	Complete(ctx context.Context, cookieValue, state, code string) (auth.User, string, error)
 }
