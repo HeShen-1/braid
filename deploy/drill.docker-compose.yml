@@ -1,0 +1,240 @@
+# braid 多副本整体演练栈(T15.6;D-t151 决策 6):独立 multi-replica compose
+# × t8.1 故障注入形态——prod compose 钉 container_name 挡 --scale,故新建
+# 独立栈(t151-ha-target.md §4.5 二选一取独立文件,不动 prod 面)。
+#
+# 与 prod 栈的差异(全部为演练目的服务):
+#  - 零 container_name 键(worker×2 / reaper×2 多副本面,--scale 挡板解除);
+#  - worker 逐副本显式 hostname/BRAID_WORKER_ID(T15.3 部署契约多副本形态)
+#    + stop_grace_period 35s + docker.sock(沙箱 owner-scoped 清扫臂);
+#  - 全组件 SNOWFLAKE_NODE=auto(多副本语义,决策 2);
+#  - api 单副本 ×1:硬闸断言钉「新 api 收到的请求」,路由确定性(决策 6);
+#  - MySQL tmpfs(无 MySQL 重启臂,down 即清);Redis 队列 AOF everysec +
+#    具名卷(Redis 重启臂的恢复真相源,对齐 prod 契约);
+#  - api/mysql 按槽位发布回环端口(runner 断言面;其余组件零宿主端口);
+#  - 时间旋钮压缩(t8.1 惯例):reaper 扫描/宽限、relay 重连、worker 心跳
+#    全部亚秒-秒级;租约 TTL 保持缺省 30s(kill -9 残窗语义保真);
+#  - 凭证全部为演练占位值(非密钥,栈即弃):gitleaks 姿态与 t13 同。
+#
+# 用法(推荐经 runner:BRAID_TEST_REQUIRE_DRILL=1 go test ./internal/drill/):
+#   docker compose -f deploy/drill.docker-compose.yml -p braid-drill-t<slot> up -d --wait
+#   BRAID_DRILL_API_PORT / BRAID_DRILL_MYSQL_PORT / BRAID_DRILL_SLOT 由
+#   runner 注入(缺省 17400/17410/0,并行 worktree 按槽位错开)。
+# 镜像:runner 先构建 braid-drill-base:t<slot>(根 Dockerfile)与
+#   braid-drill:t<slot>(deploy/drill.Dockerfile,+docker-cli 供 worker
+#   沙箱面)与 braid-tool-sandbox:t<slot>(deploy/sandbox.Dockerfile)。
+x-drill-worker: &drill-worker
+  # worker×2 多副本:逐副本显式 hostname/BRAID_WORKER_ID(T15.3 部署契约
+  # ——owner 在并发活体间唯一且跨重启稳定)+ 35s 停机宽限 + docker.sock
+  # (沙箱 owner-scoped 清扫臂的实路径)。雪花 auto:双 worker 抢注互异
+  # 是断言面之一。sock 权限:演练栈取确定性跑 root(chart 生产面走
+  # supplementalGroups + host GID;drill 镜像即弃,root = 已授予的 sock
+  # 等效面,无增量暴露)。**host netns 是硬要求**:egress 拓扑
+  # (SandboxEgressStartup)把默认拒绝代理绑在宿主侧 per-worker 网桥的
+  # 网关 IP 上——容器 netns 内该地址结构性不可绑(EADDRNOTAVAIL,演练
+  # 实证);沙箱面容器化部署因此须 host network(mysql/redis 经按槽位
+  # 发布的回环端口,metrics 关闭),部署发现登记 D-t156。
+  image: braid-drill:t${BRAID_DRILL_SLOT:-0}
+  user: "0:0"
+  network_mode: host
+  restart: unless-stopped # prod 同存活面(kill -9 残窗臂用 stop -t 0 保持死亡)
+  stop_grace_period: 35s
+  entrypoint: ["/usr/local/bin/worker"]
+  environment: &worker-env
+    # host netns:mysql/redis 经按槽位发布的回环端口(compose 服务名 DNS
+    # 在 host netns 不可用)
+    BRAID_MYSQL_DSN: braid_worker:drill-worker@tcp(127.0.0.1:${BRAID_DRILL_MYSQL_PORT:-17410})/braid
+    BRAID_REDIS_QUEUE_ADDR: 127.0.0.1:${BRAID_DRILL_REDIS_PORT:-17420}
+    BRAID_WORKER_SNOWFLAKE_NODE: auto
+    BRAID_WORKER_QUEUES: default:1
+    BRAID_WORKER_ID: braid-drill-worker1 # 各副本覆盖
+    BRAID_METRICS_ADDR: "" # host netns 共享端口面,演练不消费即关
+    # 沙箱面(arm ③):真 probe/sweep 路径,镜像按槽位隔离
+    BRAID_TOOL_SANDBOX: docker
+    BRAID_TOOL_SANDBOX_IMAGE: braid-tool-sandbox:t${BRAID_DRILL_SLOT:-0}
+    # llm 组占位(approval-only 工作流零 LLM 调用;缺组 worker 拒启)
+    BRAID_LLM_BASE_URL: http://127.0.0.1:9
+    BRAID_LLM_API_KEY: drill-llm-placeholder
+    BRAID_LLM_PRICE_TABLE: '{"drill-m":{"input_per_mtok":"1","output_per_mtok":"1","currency":"CNY"}}'
+    # 时间压缩(t8.1 惯例;reaper DEAD_GRACE 20s > retry 1s + 心跳 0.5s)
+    BRAID_WORKER_HEARTBEAT_INTERVAL: 500ms
+    BRAID_WORKER_RETRY_DELAY: 1s
+  volumes:
+    - /var/run/docker.sock:/var/run/docker.sock
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    grants:
+      condition: service_completed_successfully
+    redis-queue:
+      condition: service_healthy
+
+x-drill-reaper: &drill-reaper
+  # reaper×2:leaderless 扫描(CAS 收敛)+ T15.6 定档 A 后的 flush/janitor
+  # 三键 leaderGate——定档证据面(稳态单跑,零 1062 风暴)。
+  image: braid-drill:t${BRAID_DRILL_SLOT:-0}
+  restart: unless-stopped
+  entrypoint: ["/usr/local/bin/reaper"]
+  environment: &reaper-env
+    BRAID_MYSQL_DSN: braid_reaper:drill-reaper@tcp(mysql:3306)/braid
+    BRAID_REDIS_QUEUE_ADDR: redis-queue:6379
+    BRAID_REAPER_SNOWFLAKE_NODE: auto
+    BRAID_METRICS_ADDR: 0.0.0.0:9090
+    # 时间压缩(判死接管臂收敛预算;Validate 地板:scan≥1s、dead grace
+    # ≥20s——取地板值,接管等待 ≈ 心跳回拨 20s + 1s 扫描)
+    BRAID_REAPER_SCAN_INTERVAL: 1s
+    BRAID_REAPER_DEAD_GRACE: 20s
+    BRAID_REAPER_EXEC_STALE: 5s
+    BRAID_REAPER_AUDIT_FLUSH_INTERVAL: 500ms
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    grants:
+      condition: service_completed_successfully
+    redis-queue:
+      condition: service_healthy
+
+services:
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_DATABASE: braid
+      MYSQL_ROOT_PASSWORD: drill-root
+    tmpfs:
+      - /var/lib/mysql
+    ports:
+      - "127.0.0.1:${BRAID_DRILL_MYSQL_PORT:-17410}:3306"
+    healthcheck:
+      # -h127.0.0.1 强制 TCP(T8.1 审计修,同 prod/t13)
+      test: ["CMD-SHELL", "mysqladmin ping -h127.0.0.1 -uroot -p\"$${MYSQL_ROOT_PASSWORD}\""]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis-queue:
+    # prod 契约镜像:noeviction + AOF everysec + 卷(Redis 重启臂依赖 AOF 恢复;
+    # t13 的无持久化形态在此不可用)。maxmemory 演练体量从简。
+    image: redis:7.4
+    command:
+      - redis-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    volumes:
+      - redis-queue-data:/data
+    ports:
+      # 仅供 host-netns worker 消费(沙箱 egress 拓扑要求 worker 与宿主
+      # 网桥同 netns,见 worker 锚注记);仅绑回环。
+      - "127.0.0.1:${BRAID_DRILL_REDIS_PORT:-17420}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  migrate:
+    image: migrate/migrate:v4.18.2
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - ../internal/db/migrations:/migrations:ro
+    environment:
+      MYSQL_ROOT_PASSWORD: drill-root
+    entrypoint:
+      - sh
+      - -c
+      - exec migrate -path /migrations -database "mysql://root:$${MYSQL_ROOT_PASSWORD}@tcp(mysql:3306)/braid?multiStatements=true" "$$@"
+      - migrate
+    command: ["up"]
+    restart: "no"
+
+  grants:
+    image: mysql:8.0
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    volumes:
+      - ./grants.sh:/grants.sh:ro
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_ROOT_PASSWORD: drill-root
+      BRAID_DB_API_PASSWORD: drill-api
+      BRAID_DB_WORKER_PASSWORD: drill-worker
+      BRAID_DB_RELAY_PASSWORD: drill-relay
+      BRAID_DB_REAPER_PASSWORD: drill-reaper
+    entrypoint: ["sh", "/grants.sh"]
+    restart: "no"
+
+  api:
+    # ×1:硬闸断言钉「新 api 收到的请求」(决策 6:api 路由钉死或单副本)。
+    image: braid-drill:t${BRAID_DRILL_SLOT:-0}
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/api"]
+    environment:
+      BRAID_MYSQL_DSN: braid_api:drill-api@tcp(mysql:3306)/braid
+      BRAID_API_ADDR: 0.0.0.0:8081
+      BRAID_API_SNOWFLAKE_NODE: auto # 多副本语义(决策 2:k8s/compose 多副本一律 auto)
+      BRAID_API_RESUME_QUEUE: default
+      BRAID_AUTH_JWT_SECRET: drill-jwt-secret-0123456789abcdef
+      BRAID_METRICS_ADDR: 0.0.0.0:9090
+    ports:
+      - "127.0.0.1:${BRAID_DRILL_API_PORT:-17400}:8081"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      grants:
+        condition: service_completed_successfully
+
+  worker1:
+    <<: *drill-worker
+    hostname: braid-drill-worker1
+    environment:
+      <<: *worker-env
+      BRAID_WORKER_ID: braid-drill-worker1
+
+  worker2:
+    <<: *drill-worker
+    hostname: braid-drill-worker2
+    environment:
+      <<: *worker-env
+      BRAID_WORKER_ID: braid-drill-worker2
+
+  relay:
+    image: braid-drill:t${BRAID_DRILL_SLOT:-0}
+    restart: unless-stopped
+    entrypoint: ["/usr/local/bin/relay"]
+    environment:
+      BRAID_MYSQL_DSN: braid_relay:drill-relay@tcp(mysql:3306)/braid
+      BRAID_REDIS_QUEUE_ADDR: redis-queue:6379
+      BRAID_METRICS_ADDR: 0.0.0.0:9090
+      # 重连压缩:Redis 重启臂的恢复 SLA(3×(idle+backoff)+3s → 秒级)
+      BRAID_RELAY_IDLE_INTERVAL: 200ms
+      BRAID_RELAY_BACKOFF_BASE: 100ms
+      BRAID_RELAY_BACKOFF_MAX: 1s
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      grants:
+        condition: service_completed_successfully
+      redis-queue:
+        condition: service_healthy
+
+  reaper1:
+    <<: *drill-reaper
+    environment:
+      <<: *reaper-env
+      BRAID_REAPER_ID: braid-drill-reaper1
+
+  reaper2:
+    <<: *drill-reaper
+    environment:
+      <<: *reaper-env
+      BRAID_REAPER_ID: braid-drill-reaper2
+
+volumes:
+  redis-queue-data:

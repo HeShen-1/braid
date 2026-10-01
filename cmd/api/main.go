@@ -85,6 +85,9 @@ func run(ctx context.Context) error {
 		Kind:   snowflake.KindAPI,
 		Spec:   cfg.SnowflakeNode,
 		Holder: snowflake.DefaultHolder(),
+		// T15.6 能力宣告(D-t151 决策 6):acquire 即写,api 硬闸按在场
+		// 全宣告放行 mode=all 发布/触发。
+		Capabilities: snowflake.DeclaredCapabilities(),
 	})
 	if err != nil {
 		return fmt.Errorf("api: snowflake lease: %w", err)
@@ -149,7 +152,8 @@ func run(ctx context.Context) error {
 	slog.Info("api: tracing", "exporter", traceCfg.Exporter)
 	apiSrv := api.NewServer(cfg, dbh, ids, toolReg, sched, auth.BuiltinProvider{DB: dbh})
 	apiSrv.LoginMetrics(mset.Login)
-	apiSrv.RollbackMetrics(mset.Rollback) // T9.2:回滚面三计数器(D-t92 决策 10)
+	apiSrv.RollbackMetrics(mset.Rollback)   // T9.2:回滚面三计数器(D-t92 决策 10)
+	apiSrv.FleetGateMetrics(mset.FleetGate) // T15.6:mode=all 硬闸拒绝计数
 	apiSrv.Tracing(traceProv.Tracer("braid/api"))
 	// OIDC 插件(T11.1,D-2026-09-28-t111-oidc-subject-anchor;T16.1 起协议
 	// 实现与配置组迁企业增值面 internal/enterprise/oidc,组合根直呼解析,

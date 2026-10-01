@@ -281,3 +281,51 @@ token 登记后续,不随 T15.2 实施。**同宿主同类双进程**(裸机手�
 满足),裸机多实例须逐实例显式 `BRAID_*_SNOWFLAKE_NODE` 或独立 hostname。
 另:**自 T15.2 回滚到旧版**的镜像共存窗(旧静态号 pod 起来时新副本租约
 行仍在续期)与 §2 首次升级例外同构——回滚同样先排空,见 §2。
+
+## 8. mode=all 会签混跑窗(人工纪律 + 启动期硬闸,T15.6)
+
+**背景**(D-t142①/D-t151 决策 6):会签 `mode=all` 语义由三方新逻辑共同
+支撑——api 定局守卫 / worker 续跑复核 / reaper 已定局判定。滚动混跑窗内
+旧二进制对 mode=all 挂起等价 any:旧 api **首票即定局**(1/N 票
+SUCCEEDED,否决权静默剥夺,不可逆)、旧 worker 无定局复核直接收条
+premature 事件、旧 reaper 对部分票节点空转重投且永不 escalate。
+
+**人工纪律(承载首个落地窗)**:api/worker/reaper **全量升级完成后**,
+才发布/触发 mode=all 工作流;混跑窗内已挂起的 all 节点属已知破坏窗
+(worker 侧定局复核响亮拒保住正确性,事件死信为预期噪音,勿告警升级)。
+
+**启动期能力硬闸(T15.6 落地)**:三类实例 acquire 雪花租约时宣告
+`approval_mode_all` 能力(`snowflake_node_lease.capabilities`);api 在
+**发布/触发含 mode=all 的工作流**前查「在场实例(api/worker/reaper 三类,
+未过期)全部宣告」,在场未宣告即拒(503 `fleet_capability_gate`;**发布面** body 带未宣告
+holder 清单,触发面仅分类码——明细在结构化日志与指标;在场查询失败同拒
+——误放 < 误拒)。拒绝痕迹 =
+结构化 ERROR 日志 + `braid_api_fleet_gate_rejections_total{reason}` 计数器
+(audit_log 是执行锚定域,物化前拒绝结构性落不进,零迁移不另建表)。
+观测:`max(rate(...)) > 0` 即混跑窗存在的值守信号。
+
+**闭合度如实登记(不高估)**:
+- 硬闸只对「租约表全舰队上线后」的后续升级生效。**首个落地窗**:旧二进制
+  不写租约表,闸看到的在场 = 新副本子集——旧 api 放行(它没有闸代码),
+  该窗仍由上方人工纪律承载;
+- **LB 路由旧 api = 零闸放行**(旧进程内无闸代码):多 api 副本滚动窗内
+  请求打到旧副本不受保护,同由人工纪律承载;
+- 判定后旧副本上线的**残余窗**同理;
+- 某 kind 零在场 = vacuous 放行(停摆 ≠ 破坏,发布序纪律兜底);
+- 回滚到旧二进制的残窗:旧(T15.2 代)acquire 三条写路径硬编码
+  `capabilities = NULL`——旧副本重启即把行宣告抹回 NULL,闸看到的在场
+  未宣告 → **误拒**(fail-closed 方向安全,升级回新版本即解);真正的
+  残留风险是「行未过期 + 旧副本未重启」的窗口里宣告仍在(误放方向),
+  由下方回滚前置 SELECT 承载。
+
+**回滚前置校验(D-t142②,硬闸是前置防线不是替代,保留)**:回退到
+mode=all 三方语义升级前的版本前必须执行——
+
+```sql
+SELECT COUNT(*) FROM node_execution
+ WHERE status='WAITING_APPROVAL'
+   AND JSON_UNQUOTE(JSON_EXTRACT(input_snapshot,'$.mode'))='all';
+```
+
+计数非 0 时先人工促票齐或明示接受破坏窗(旧判据 × 多票数据 = 部分票
+节点在回滚后首个续跑复核窗按首票定局),否则不回退。

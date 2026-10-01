@@ -9,6 +9,7 @@ package snowflake
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -38,6 +39,18 @@ const (
 	KindWorker LeaseKind = "worker"
 	KindReaper LeaseKind = "reaper"
 )
+
+// CapApprovalModeAll 是 v1 能力词表唯一条目(D-t151 决策 6):本二进制
+// 正确实现 T14.2 会签 mode=all 三方语义(api 定局守卫 / worker 续跑复核 /
+// reaper 已定局判定)。旧二进制不宣告(NULL = fail-closed),api 硬闸在
+// 发布/触发含 mode=all 的工作流前查在场实例全部宣告。
+const CapApprovalModeAll = "approval_mode_all"
+
+// DeclaredCapabilities 返回本二进制的 v1 能力宣告集(cmd 三入口装配
+// 单源;词表演进在此追加)。
+func DeclaredCapabilities() []string {
+	return []string{CapApprovalModeAll}
+}
 
 const (
 	// LeaseTTLDef 是租约 TTL 缺省(kill -9 残窗上界 = TTL;续期间隔 = TTL/3,
@@ -73,12 +86,17 @@ var (
 // LeaseConfig 是租约装配输入:Kind 三类之一;Holder 是实例身份(裸值,
 // 落库前拼 kind 前缀成 holder_id——跨类前缀防同宿主 api/worker 互认复占;
 // cmd 装配缺省 os.Hostname(),k8s pod 名/compose 容器名天然唯一且
-// restart 稳定);Spec 是三层解析产物;TTL 缺省 LeaseTTLDef。
+// restart 稳定);Spec 是三层解析产物;TTL 缺省 LeaseTTLDef;Capabilities
+// 是能力宣告(D-t151 决策 6:宣告时点 = acquire 启动期,无条件无旋钮;
+// 空切片 = 写 NULL 未宣告)。行内容始终反映本次 acquire 的二进制:复占/
+// 接管同样回写,不残留前身宣告(回滚到旧二进制的残窗误放由 D-t142②
+// 回滚前置 SELECT 承载,UPGRADE 登记)。
 type LeaseConfig struct {
-	Kind   LeaseKind
-	Spec   NodeSpec
-	Holder string
-	TTL    time.Duration
+	Kind         LeaseKind
+	Spec         NodeSpec
+	Holder       string
+	TTL          time.Duration
+	Capabilities []string
 }
 
 // Lease 是一个进程的节点号租约:acquire 成功即起续期 goroutine;lost 只发
@@ -90,6 +108,7 @@ type Lease struct {
 	spec   NodeSpec
 	node   uint16
 	ttl    time.Duration
+	caps   any // 宣告 JSON 字符串(空宣告 = nil → SQL NULL);三条写路径共用
 
 	lost        chan error
 	stopRenew   chan struct{}
@@ -104,7 +123,7 @@ func (l *Lease) cfgNode() uint16 { return l.spec.Node }
 // StartLease 按三层解析仲裁节点号并起续期:显式(env 数字/内建默认 1/2)
 // 按号直达——同 holder 复占即时、被他持拒启、过期行 CAS 接管;auto 线性
 // 取空闲号(缺行或过期行),INSERT 抢注、竞态 ≤3 次退避重扫后拒启。
-// capabilities 恒写 NULL(未宣告 fail-closed;宣告面 T15.6 消费)。
+// capabilities 随本次 acquire 宣告(T15.6 消费:NULL = 未宣告 fail-closed)。
 func StartLease(ctx context.Context, dbh *sql.DB, cfg LeaseConfig) (*Lease, error) {
 	switch cfg.Kind {
 	case KindAPI, KindWorker, KindReaper:
@@ -121,12 +140,21 @@ func StartLease(ctx context.Context, dbh *sql.DB, cfg LeaseConfig) (*Lease, erro
 	if ttl <= 0 {
 		ttl = LeaseTTLDef
 	}
+	var caps any
+	if len(cfg.Capabilities) > 0 {
+		b, err := json.Marshal(cfg.Capabilities)
+		if err != nil {
+			return nil, fmt.Errorf("snowflake: lease capabilities marshal: %w", err)
+		}
+		caps = string(b)
+	}
 	l := &Lease{
 		db:        dbh,
 		kind:      cfg.Kind,
 		holder:    string(cfg.Kind) + ":" + cfg.Holder,
 		spec:      cfg.Spec,
 		ttl:       ttl,
+		caps:      caps,
 		lost:      make(chan error, 1),
 		stopRenew: make(chan struct{}),
 		renewDone: make(chan struct{}),
@@ -210,9 +238,9 @@ func (l *Lease) acquireExplicit(ctx context.Context) (uint16, error) {
 		}
 		res, err := l.db.ExecContext(ctx,
 			`UPDATE snowflake_node_lease
-			 SET kind = ?, holder_id = ?, expires_at = DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), capabilities = NULL
+			 SET kind = ?, holder_id = ?, expires_at = DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), capabilities = ?
 			 WHERE node_id = ? AND (holder_id = ? OR expires_at < NOW(3))`,
-			string(l.kind), l.holder, l.ttl.Microseconds(), l.cfgNode(), l.holder)
+			string(l.kind), l.holder, l.ttl.Microseconds(), l.caps, l.cfgNode(), l.holder)
 		if err != nil {
 			return 0, fmt.Errorf("snowflake: lease explicit reclaim: %w", err)
 		}
@@ -283,9 +311,9 @@ func (l *Lease) claimFree(ctx context.Context, n uint16) error {
 	}
 	res, err := l.db.ExecContext(ctx,
 		`UPDATE snowflake_node_lease
-		 SET kind = ?, holder_id = ?, expires_at = DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), capabilities = NULL
+		 SET kind = ?, holder_id = ?, expires_at = DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), capabilities = ?
 		 WHERE node_id = ? AND expires_at < NOW(3)`,
-		string(l.kind), l.holder, l.ttl.Microseconds(), n)
+		string(l.kind), l.holder, l.ttl.Microseconds(), l.caps, n)
 	if err != nil {
 		return fmt.Errorf("snowflake: lease expired takeover: %w", err)
 	}
@@ -299,8 +327,8 @@ func (l *Lease) claimFree(ctx context.Context, n uint16) error {
 func (l *Lease) tryInsert(ctx context.Context, n uint16) error {
 	_, err := l.db.ExecContext(ctx,
 		`INSERT INTO snowflake_node_lease (node_id, kind, holder_id, expires_at, capabilities)
-		 VALUES (?, ?, ?, DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), NULL)`,
-		n, string(l.kind), l.holder, l.ttl.Microseconds())
+		 VALUES (?, ?, ?, DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), ?)`,
+		n, string(l.kind), l.holder, l.ttl.Microseconds(), l.caps)
 	if err == nil {
 		return nil
 	}
@@ -367,6 +395,51 @@ func sleepCtx(ctx context.Context) func(time.Duration) {
 		case <-time.After(wait):
 		}
 	}
+}
+
+// --- 在场查询(T15.6 mode=all 硬闸读面) ------------------------------------
+
+// FleetInstance 是一条在场租约行的读投影(供 api 硬闸判定与诊断详情)。
+type FleetInstance struct {
+	Node         uint16
+	Kind         LeaseKind
+	HolderID     string
+	ExpiresAt    time.Time
+	Capabilities []string // NULL = 未宣告(nil 切片)
+}
+
+// InFleet 返回在场实例(expires_at >= NOW(3),kind 三类全扫——relay 无
+// 生成器不在 ENUM),按 node_id 升序。过期判定与 acquire 一致全 DB 端
+// NOW(3);查询错误原样上抛(硬闸侧 fail-closed:误拒方向安全,D-t151
+// 决策 6)。
+func InFleet(ctx context.Context, dbh *sql.DB) ([]FleetInstance, error) {
+	rows, err := dbh.QueryContext(ctx,
+		`SELECT node_id, kind, holder_id, expires_at, capabilities
+		 FROM snowflake_node_lease
+		 WHERE expires_at >= NOW(3) AND kind IN ('api', 'worker', 'reaper')
+		 ORDER BY node_id`)
+	if err != nil {
+		return nil, fmt.Errorf("snowflake: fleet scan: %w", err)
+	}
+	defer func() { _ = rows.Close() }()
+	var out []FleetInstance
+	for rows.Next() {
+		var inst FleetInstance
+		var caps []byte
+		if err := rows.Scan(&inst.Node, &inst.Kind, &inst.HolderID, &inst.ExpiresAt, &caps); err != nil {
+			return nil, fmt.Errorf("snowflake: fleet scan row: %w", err)
+		}
+		if caps != nil {
+			if err := json.Unmarshal(caps, &inst.Capabilities); err != nil {
+				return nil, fmt.Errorf("snowflake: fleet capabilities parse (holder %s): %w", inst.HolderID, err)
+			}
+		}
+		out = append(out, inst)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("snowflake: fleet scan rows: %w", err)
+	}
+	return out, nil
 }
 
 // --- 续期 -------------------------------------------------------------------

@@ -165,6 +165,11 @@ const (
 	triggerNotFound triggerErrCode = "not_found"
 	triggerConflict triggerErrCode = "conflict"
 	triggerInternal triggerErrCode = "internal"
+	// triggerFleetGate:mode=all 混跑窗硬闸拒(T15.6,D-t151 决策 6)——
+	// 在场实例未全宣告 approval_mode_all / 在场查询失败,均 fail-closed。
+	// REST 映射 503(混跑窗暂时态,升级完成后重试即解);MCP 面 generic
+	// 文本(底层 = slog 响亮 + 计数器)。
+	triggerFleetGate triggerErrCode = fleetGateErrorCode
 )
 
 // triggerError 携带分类码;err 是 internal 面的底层错误(响亮日志用,
@@ -208,6 +213,12 @@ func (s *Server) triggerCore(ctx context.Context, claims auth.Claims, req trigge
 		default:
 			return triggerOutcome{}, &triggerError{code: triggerInternal, err: err}
 		}
+	}
+	// mode=all 混跑窗硬闸(T15.6):def.DSL 钉版快照判定,在场未全宣告
+	// 即拒(先于幂等键——重放同拒,误拒方向安全)。闸自身已落 slog +
+	// 计数器;此处 err 仅内部日志面。
+	if terr := s.gateTriggerFleetApprovalAll(ctx, def); terr != nil {
+		return triggerOutcome{}, terr
 	}
 	// 幂等键(D-t55 §5,T4.2 兑现):作用域哈希后透传;撞键重放见下。
 	if len(rawIdemKey) > maxIdempotencyKeyLen {
@@ -309,6 +320,10 @@ func writeTriggerError(c *gin.Context, terr *triggerError) {
 		c.JSON(http.StatusNotFound, gin.H{"error": "not_found"})
 	case triggerConflict:
 		c.JSON(http.StatusConflict, gin.H{"error": "conflict"})
+	case triggerFleetGate:
+		// 503:混跑窗暂时态(升级完成后重试即解);诊断列表在 slog/指标,
+		// 发布面 body 才携 undeclared 明细(此处触发核无 gin 上下文)。
+		c.JSON(http.StatusServiceUnavailable, gin.H{"error": string(triggerFleetGate)})
 	default:
 		if terr.err != nil {
 			slog.Error("api: trigger execution", "err", terr.err)

@@ -185,6 +185,144 @@ func TestLeaseAutoExhausted(t *testing.T) {
 	}
 }
 
+// --- 能力宣告(T15.6 mode=all 硬闸面;D-t151 决策 2/6) -----------------------
+
+// declaredCfg 在基础配置上叠能力宣告(宣告时点 = acquire 启动期,无旋钮)。
+func declaredCfg(kind LeaseKind, holder string, spec NodeSpec) LeaseConfig {
+	cfg := leaseCfg(kind, holder, spec)
+	cfg.Capabilities = []string{CapApprovalModeAll}
+	return cfg
+}
+
+// TestLeaseCapabilitiesWrite:宣告随 acquire 三写路径落库(INSERT 抢注 /
+// 同 holder 复占 / 过期接管),行内容始终反映本次 acquire 的二进制——空宣告
+// 复占也回写 NULL(自愈:宣告面不残留前身二进制的陈旧值);续期只推
+// expires_at,宣告保值。
+func TestLeaseCapabilitiesWrite(t *testing.T) {
+	t.Run("fresh insert declares", func(t *testing.T) {
+		dbh := openLeaseDB(t)
+		l, err := StartLease(context.Background(), dbh, declaredCfg(KindAPI, "h1", Explicit(5)))
+		if err != nil {
+			t.Fatalf("StartLease: %v", err)
+		}
+		defer func() { _ = l.Release(context.Background()) }()
+		_, _, _, caps, ok := leaseRow(t, dbh, 5)
+		if !ok {
+			t.Fatalf("lease row missing")
+		}
+		if b, ok := caps.([]byte); !ok || string(b) != `["approval_mode_all"]` {
+			t.Fatalf("capabilities = %#v, want JSON [\"approval_mode_all\"]", caps)
+		}
+	})
+	t.Run("reclaim redeclares and empty reclaims reset to NULL", func(t *testing.T) {
+		dbh := openLeaseDB(t)
+		ctx := context.Background()
+		first, err := StartLease(ctx, dbh, declaredCfg(KindAPI, "h1", Explicit(5)))
+		if err != nil {
+			t.Fatalf("declared StartLease: %v", err)
+		}
+		defer func() { _ = first.Release(ctx) }()
+		// 空宣告复占(旧二进制回滚形态的镜像)必须命中 CAS 复占 UPDATE 路径
+		//(行在场未过期 + 同 holder):不先 Release,二启即复占——行内容
+		// 回写 NULL,不残留前身宣告(fail-closed 方向自愈)。
+		second, err := StartLease(ctx, dbh, leaseCfg(KindAPI, "h1", Explicit(5)))
+		if err != nil {
+			t.Fatalf("undeclared reclaim StartLease: %v", err)
+		}
+		defer func() { _ = second.Release(ctx) }()
+		_, holder, _, caps, ok := leaseRow(t, dbh, 5)
+		if !ok || holder != "api:h1" {
+			t.Fatalf("row = (%q,%v), want api:h1 present(复占不换 holder)", holder, ok)
+		}
+		if caps != nil {
+			t.Fatalf("capabilities = %#v after empty reclaim, want NULL", caps)
+		}
+		// 再以宣告配置复占:行回到已宣告。
+		third, err := StartLease(ctx, dbh, declaredCfg(KindAPI, "h1", Explicit(5)))
+		if err != nil {
+			t.Fatalf("redeclared reclaim StartLease: %v", err)
+		}
+		defer func() { _ = third.Release(ctx) }()
+		if _, _, _, caps, _ := leaseRow(t, dbh, 5); caps == nil {
+			t.Fatalf("capabilities = NULL after redeclared reclaim, want declared")
+		}
+	})
+	t.Run("expired takeover declares", func(t *testing.T) {
+		dbh := openLeaseDB(t)
+		insertLease(t, dbh, 7, "worker:dead", -time.Second)
+		l, err := StartLease(context.Background(), dbh, declaredCfg(KindReaper, "r1", Explicit(7)))
+		if err != nil {
+			t.Fatalf("StartLease: %v", err)
+		}
+		defer func() { _ = l.Release(context.Background()) }()
+		if _, _, _, caps, _ := leaseRow(t, dbh, 7); caps == nil {
+			t.Fatalf("capabilities = NULL after takeover, want declared")
+		}
+	})
+	t.Run("renewal preserves declaration", func(t *testing.T) {
+		dbh := openLeaseDB(t)
+		l, err := StartLease(context.Background(), dbh, declaredCfg(KindWorker, "w1", Auto()))
+		if err != nil {
+			t.Fatalf("StartLease: %v", err)
+		}
+		defer func() { _ = l.Release(context.Background()) }()
+		time.Sleep(testTTL * 2) // ≥2 个续期 tick
+		if _, _, _, caps, _ := leaseRow(t, dbh, l.Node()); caps == nil {
+			t.Fatalf("capabilities lost after renewal, want preserved")
+		}
+	})
+	t.Run("auto claim declares", func(t *testing.T) {
+		dbh := openLeaseDB(t)
+		l, err := StartLease(context.Background(), dbh, declaredCfg(KindWorker, "w2", Auto()))
+		if err != nil {
+			t.Fatalf("StartLease: %v", err)
+		}
+		defer func() { _ = l.Release(context.Background()) }()
+		if _, _, _, caps, _ := leaseRow(t, dbh, l.Node()); caps == nil {
+			t.Fatalf("capabilities = NULL after auto claim, want declared")
+		}
+	})
+}
+
+// TestInFleet:在场查询只返回未过期行(kind 三类;NULL = 未宣告,解析为
+// nil 切片),按 node_id 升序;过期行与缺行一律不在场。
+func TestInFleet(t *testing.T) {
+	dbh := openLeaseDB(t)
+	// 行面:0 = 在场已宣告(worker)/ 1 = 在场未声明(api,NULL)/ 2 = 过期
+	// 已宣告(不在场)/ 3 = 缺行。
+	l0, err := StartLease(context.Background(), dbh, declaredCfg(KindWorker, "w0", Explicit(0)))
+	if err != nil {
+		t.Fatalf("StartLease: %v", err)
+	}
+	defer func() { _ = l0.Release(context.Background()) }()
+	l1, err := StartLease(context.Background(), dbh, leaseCfg(KindAPI, "a1", Explicit(1)))
+	if err != nil {
+		t.Fatalf("StartLease: %v", err)
+	}
+	defer func() { _ = l1.Release(context.Background()) }()
+	insertLease(t, dbh, 2, "reaper:dead", -time.Second)
+
+	got, err := InFleet(context.Background(), dbh)
+	if err != nil {
+		t.Fatalf("InFleet: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("fleet size = %d, want 2(过期行不在场): %+v", len(got), got)
+	}
+	if got[0].Node != 0 || got[0].Kind != KindWorker || got[0].HolderID != "worker:w0" {
+		t.Fatalf("got[0] = %+v, want node 0 worker:w0", got[0])
+	}
+	if len(got[0].Capabilities) != 1 || got[0].Capabilities[0] != CapApprovalModeAll {
+		t.Fatalf("got[0].Capabilities = %v, want [%s]", got[0].Capabilities, CapApprovalModeAll)
+	}
+	if got[1].Node != 1 || got[1].Kind != KindAPI || got[1].Capabilities != nil {
+		t.Fatalf("got[1] = %+v, want node 1 api 未宣告(nil)", got[1])
+	}
+	if got[1].ExpiresAt.IsZero() {
+		t.Fatalf("got[1].ExpiresAt zero, want row expiry(诊断详情面)")
+	}
+}
+
 // --- 续期 / lost / 停发闸 ----------------------------------------------------
 
 // TestLeaseRenewalAndLost:续期把 expires_at 向前推;行被他持/续期落空 →

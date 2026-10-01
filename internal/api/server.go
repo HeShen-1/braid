@@ -51,6 +51,9 @@ type Server struct {
 	// loginMetrics 是登录指标面(T6.4;nil = 观测关闭——测试默认,
 	// cmd/api 装配注入)。
 	loginMetrics *metrics.LoginSet
+	// fleetGateMetrics 是 mode=all 混跑窗硬闸拒绝计数(T15.6;nil = 观测
+	// 关闭——测试默认,cmd/api 装配注入;拒绝痕迹主面 = 结构化 slog)。
+	fleetGateMetrics *metrics.FleetGateSet
 	// oidc 是 OIDC 插件面(T11.1;T16.1 起协议实现迁企业增值面
 	// internal/enterprise/oidc):nil = 未配置,路由不挂载。注入经
 	// OIDCProvider setter(镜像 LoginMetrics/Tracing 先例),NewServer
@@ -94,6 +97,9 @@ func (s *Server) LoginMetrics(m *metrics.LoginSet) { s.loginMetrics = m }
 
 // RollbackMetrics 注入回滚面指标(T9.2;nil = 观测关闭,镜像 LoginMetrics)。
 func (s *Server) RollbackMetrics(m *metrics.RollbackSet) { s.rollbackMetrics = m }
+
+// FleetGateMetrics 注入 mode=all 硬闸拒绝计数(T15.6;镜像 LoginMetrics)。
+func (s *Server) FleetGateMetrics(m *metrics.FleetGateSet) { s.fleetGateMetrics = m }
 
 // Tracing 注入 OTel tracer 面(T6.2;cmd/api 装配,测试默认 nil)。
 func (s *Server) Tracing(t trace.Tracer) { s.tracer = t }

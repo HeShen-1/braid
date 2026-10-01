@@ -45,6 +45,10 @@ type Reaper struct {
 	cfg  Config
 	log  *slog.Logger
 	m    *metrics.ReaperSet
+	// leaderToken/scanLeaseTTL 由 Run 铸造(先于三 goroutine 启动,无竞态):
+	// 同一实例身份 token 三键共用,键面区分角色(T15.6 定档 A)。
+	leaderToken  string
+	scanLeaseTTL time.Duration
 }
 
 // New 构造 reaper;依赖缺损响亮报错(不静默空转)。Validate 归启动路径
@@ -68,34 +72,37 @@ func New(d Deps, cfg Config) (*Reaper, error) {
 // 复核 + CAS;flush 的预过滤 + 裸 INSERT 使 leaderless 重叠搬运收敛
 // ——1062 整批回滚 + 下轮预过滤核销,见 audit/flush.go)。
 func (r *Reaper) Run(ctx context.Context) error {
+	r.leaderToken = fmt.Sprintf("%s:%d:%d", r.cfg.ID, os.Getpid(), time.Now().UnixNano())
+	r.scanLeaseTTL = 2 * r.cfg.ScanInterval
 	jctx, jcancel := context.WithCancel(ctx)
 	defer jcancel()
 	jdone := make(chan struct{})
 	go func() {
 		defer close(jdone)
-		r.janitorLoop(jctx)
+		r.janitorLoop(jctx, r.leaderToken)
 	}()
 	fdone := make(chan struct{})
 	go func() {
 		defer close(fdone)
-		r.auditFlushLoop(jctx)
+		r.auditFlushLoop(jctx, r.leaderToken)
 	}()
 
-	token := fmt.Sprintf("%s:%d:%d", r.cfg.ID, os.Getpid(), time.Now().UnixNano())
-	ttl := 2 * r.cfg.ScanInterval
 	defer func() {
 		if r.deps.Locker == nil {
 			return
 		}
 		rctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
-		if err := r.deps.Locker.Release(rctx, token); err != nil {
-			r.log.Warn("leader.release_fail", "err", err)
+		// 三键全释放(正常停机加速接管;漏放 = TTL 过期兜底,语义同)。
+		for _, key := range []string{leaderKey, leaderKeyFlush, leaderKeyJanitor} {
+			if err := r.deps.Locker.Release(rctx, key, r.leaderToken); err != nil {
+				r.log.Warn("leader.release_fail", "err", err, "key", key)
+			}
 		}
 	}()
 
 	for {
-		if r.leaderGate(ctx, token, ttl) {
+		if r.leaderGate(ctx, leaderKey, r.leaderToken, r.scanLeaseTTL) {
 			if err := r.RunOnce(ctx); err != nil {
 				r.log.Error("reap.once_failed", "err", err)
 			}
@@ -111,12 +118,12 @@ func (r *Reaper) Run(ctx context.Context) error {
 }
 
 // leaderGate:本 tick 是否由本实例执行。true = 持锁/续期成功/leaderless/
-// 选主不可达(fail-open);false = 他人持锁。
-func (r *Reaper) leaderGate(ctx context.Context, token string, ttl time.Duration) bool {
+// 选主不可达(fail-open);false = 他人持锁。key 选锁(三键,T15.6 定档 A)。
+func (r *Reaper) leaderGate(ctx context.Context, key, token string, ttl time.Duration) bool {
 	if r.deps.Locker == nil {
 		return true
 	}
-	held, err := r.deps.Locker.AcquireOrRenew(ctx, token, ttl)
+	held, err := r.deps.Locker.AcquireOrRenew(ctx, key, token, ttl)
 	if err != nil {
 		r.log.Warn("leader.unavailable", "err", err)
 		return true
@@ -285,10 +292,10 @@ func (r *Reaper) doFlush(ctx context.Context) error {
 // auditFlushLoop 独立 goroutine:暂存审计行搬运(秒级 tick,与 janitor 的
 // 小时级分区作业分置——可见性滞后上界语义见 Config.AuditFlushInterval)。
 // 错误只记日志不退出(收敛性作业,下轮重试;与 janitorLoop 同形)。
-func (r *Reaper) auditFlushLoop(ctx context.Context) {
-	if err := r.flushOnce(ctx); err != nil {
-		r.log.Error("audit.flush_round_failed", "err", err)
-	}
+// 逐轮过自己的 leader 键(T15.6 定档 A,见 gatedRound)。
+func (r *Reaper) auditFlushLoop(ctx context.Context, token string) {
+	r.gatedRound(ctx, leaderKeyFlush, token, 2*r.cfg.AuditFlushInterval, "audit.flush",
+		r.flushOnce)
 	t := time.NewTicker(r.cfg.AuditFlushInterval)
 	defer t.Stop()
 	for {
@@ -296,9 +303,23 @@ func (r *Reaper) auditFlushLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := r.flushOnce(ctx); err != nil {
-				r.log.Error("audit.flush_round_failed", "err", err)
-			}
+			r.gatedRound(ctx, leaderKeyFlush, token, 2*r.cfg.AuditFlushInterval, "audit.flush",
+				r.flushOnce)
 		}
+	}
+}
+
+// gatedRound 是 T15.6 定档 A 的逐轮闸形态(D-t151 决策 7,随演练定档):
+// leader 键放行才执行本轮,他人持键整轮跳过——N 副本稳态单跑,消每批
+// N-1 次空转(读批 + 预过滤 + PK 锁阻塞的裸 INSERT + 1062 整批回滚)与
+// ERROR 日志 N× 放大;fail-open 保留(选主不可达 → 照跑,正确性由收敛
+// 结构承载,D-t61)。TTL = 2× 所属循环间隔(与扫描锁同 idiom);leader
+// 死亡后接管 ≤ TTL(janitor 2h 上界:分区前滚有 7 天缓冲,良性登记)。
+func (r *Reaper) gatedRound(ctx context.Context, key, token string, ttl time.Duration, job string, round func(context.Context) error) {
+	if !r.leaderGate(ctx, key, token, ttl) {
+		return
+	}
+	if err := round(ctx); err != nil {
+		r.log.Error(job+".round_failed", "err", err)
 	}
 }
