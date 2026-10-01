@@ -8,7 +8,7 @@
 
 ## M15 规模化与多副本 HA(P2 主轴)
 
-- [ ] T15.1 HA 目标形态 D- 立项 — L — 验收:多副本拓扑与单点逐一裁定的 D- 条目**经用户确认**(Redis 队列 HA 替代选型——含 Sentinel 丢写负样本论证、MySQL HA 取舍、雪花节点号分配机制、沙箱/egress 多副本口径、多副本演练口径);不重开 ARCHITECTURE 已锁决策,只裁多副本新面;本任务是 T15.2-T15.4、T15.6 的前置闸
+- [x] T15.1 HA 目标形态 D- 立项 — L — 验收:多副本拓扑与单点逐一裁定的 D- 条目**经用户确认**(Redis 队列 HA 替代选型——含 Sentinel 丢写负样本论证、MySQL HA 取舍、雪花节点号分配机制、沙箱/egress 多副本口径、多副本演练口径);不重开 ARCHITECTURE 已锁决策,只裁多副本新面;本任务是 T15.2-T15.4、T15.6 的前置闸
 - [ ] T15.2 副本身份与雪花节点号自动分配 — M — 依赖 T15.1 — 验收:租约注册或 stable ordinal 自动分配,消除人工外部分配 `BRAID_*_SNOWFLAKE_NODE`;Helm values 默认副本 >1 可起(D-t144 已知边界:Deployment 无稳定 ordinal)
 - [ ] T15.3 沙箱清扫互杀红线消除 — M — 依赖 T15.1 — 验收:多 worker 同网互杀面消除(t101-sandbox-baseline #11:kill -9 后死实例身份可知、孤儿回收不依赖全局 label 误伤;明文「多副本/k8s 滚动部署前必须先解」)
 - [ ] T15.4 egress 端口多副本分配面 — M — 依赖 T15.1 — 验收:同网多 worker 不撞端口拒启(D-t102④ + chart README 登记);rootless/受限 daemon 适用域一并复核
