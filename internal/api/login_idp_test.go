@@ -43,7 +43,7 @@ func newIDPTestRouter(t *testing.T, idp auth.IdentityProvider) *gin.Engine {
 	}
 	gin.SetMode(gin.TestMode)
 	// 登录防御旋钮放宽(同 newTestServer 判:防御行为由专用紧旋钮用例锚)。
-	return NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1,
+	return NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 100000, LoginLockout: time.Minute},
 		nil, ids, reg, fakeTrigger{id: 1}, idp).Router()

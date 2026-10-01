@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"braid/internal/db"
+	"braid/internal/snowflake"
 )
 
 // testSecret 满足 auth.MinSecretLen 的低熵占位词组(纯词组无 hex/熵段,
@@ -34,7 +35,16 @@ func TestConfigFromEnv(t *testing.T) {
 		{
 			name: "defaults with secret",
 			env:  map[string]string{"BRAID_AUTH_JWT_SECRET": testSecret},
-			want: Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: 1},
+			want: Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(DefaultSnowflakeNode)},
+		},
+		{
+			// D-t151 决策 2:字面 "auto" 哨兵 → 租约池分配(k8s 多副本形态)。
+			name: "snowflake node auto sentinel",
+			env: map[string]string{
+				"BRAID_AUTH_JWT_SECRET":    testSecret,
+				"BRAID_API_SNOWFLAKE_NODE": "auto",
+			},
+			want: Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Auto()},
 		},
 		{
 			name: "full env",
@@ -46,7 +56,7 @@ func TestConfigFromEnv(t *testing.T) {
 			want: Config{
 				Addr:          "10.0.0.1:9000",
 				JWTSecret:     testSecret,
-				SnowflakeNode: 7,
+				SnowflakeNode: snowflake.Explicit(7),
 			},
 		},
 		{
@@ -55,7 +65,7 @@ func TestConfigFromEnv(t *testing.T) {
 				"BRAID_AUTH_JWT_SECRET":    testSecret,
 				"BRAID_API_SNOWFLAKE_NODE": "1024",
 			},
-			wantErr: "want 0..1023",
+			wantErr: `want "auto" or 0..1023`,
 		},
 		{
 			name: "snowflake node negative rejected",
@@ -63,7 +73,7 @@ func TestConfigFromEnv(t *testing.T) {
 				"BRAID_AUTH_JWT_SECRET":    testSecret,
 				"BRAID_API_SNOWFLAKE_NODE": "-1",
 			},
-			wantErr: "want 0..1023",
+			wantErr: `want "auto" or 0..1023`,
 		},
 		{
 			// uint16 截断带:65536 mod 2^16 = 0,若在转换后才校验会静默
@@ -73,7 +83,7 @@ func TestConfigFromEnv(t *testing.T) {
 				"BRAID_AUTH_JWT_SECRET":    testSecret,
 				"BRAID_API_SNOWFLAKE_NODE": "65536",
 			},
-			wantErr: "want 0..1023",
+			wantErr: `want "auto" or 0..1023`,
 		},
 		{
 			name: "bad addr rejected",

@@ -4,7 +4,6 @@ package reaper
 // 变异自查:硬校验丢了 error 返回 → cross_fail 红;下限丢了 → validate 红。
 
 import (
-	"os"
 	"strings"
 	"testing"
 	"time"
@@ -53,7 +52,7 @@ func TestConfigValidateBounds(t *testing.T) {
 		{"audit_flush_interval_ok", func(c *Config) { c.AuditFlushInterval = 100 * time.Millisecond }, true},
 		{"audit_flush_batch_zero", func(c *Config) { c.AuditFlushBatch = 0 }, false},
 		{"audit_flush_batch_over", func(c *Config) { c.AuditFlushBatch = 2801 }, false},
-		{"audit_flush_batch_edge", func(c *Config) { c.AuditFlushBatch = 2700 }, true}, // T11.2:24 列(tenant_id)×2700=64800<65535,⌊65535/24⌋=2730(旧 2800 是 23 列时代,超限必败)
+		{"audit_flush_batch_edge", func(c *Config) { c.AuditFlushBatch = 2700 }, true},   // T11.2:24 列(tenant_id)×2700=64800<65535,⌊65535/24⌋=2730(旧 2800 是 23 列时代,超限必败)
 		{"audit_flush_budget_over", func(c *Config) { c.AuditFlushBatch = 2731 }, false}, // 2731×24=65544>65535:t13 实证临界,预算失守即拒启
 		{"janitor_floor", func(c *Config) { c.JanitorInterval = 4 * time.Minute }, false},
 		{"login_retention_floor", func(c *Config) { c.LoginAuditRetention = 23 * time.Hour }, false},
@@ -203,15 +202,6 @@ func TestConfigFromEnvInfra(t *testing.T) {
 		c.MetricsAddr != "127.0.0.1:9103" {
 		t.Fatalf("infra = %q/%q/%q", c.MySQLDSN, c.RedisQueueAddr, c.MetricsAddr)
 	}
-	t.Run("snowflake unset derives pid", func(t *testing.T) {
-		c, err := ConfigFromEnv(func(string) string { return "" })
-		if err != nil {
-			t.Fatalf("ConfigFromEnv: %v", err)
-		}
-		if want := uint16(os.Getpid() & snowflake.MaxNodeID); c.SnowflakeNode != want {
-			t.Fatalf("snowflake node = %d, want pid-derived %d", c.SnowflakeNode, want)
-		}
-	})
 	t.Run("snowflake explicit", func(t *testing.T) {
 		c, err := ConfigFromEnv(func(k string) string {
 			if k == "BRAID_REAPER_SNOWFLAKE_NODE" {
@@ -222,8 +212,19 @@ func TestConfigFromEnvInfra(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ConfigFromEnv: %v", err)
 		}
-		if c.SnowflakeNode != 5 {
-			t.Fatalf("snowflake node = %d, want 5", c.SnowflakeNode)
+		if c.SnowflakeNode != snowflake.Explicit(5) {
+			t.Fatalf("snowflake node = %+v, want explicit 5", c.SnowflakeNode)
+		}
+	})
+	// T15.2(D-t151 决策 2):PID 派生退役——缺省 = auto 池分配,不再是
+	// os.Getpid()&1023(容器 PID 恒 1 撞 api 默认 1 的防回退锚)。
+	t.Run("snowflake default is auto (PID derivation retired)", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(string) string { return "" })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.SnowflakeNode != snowflake.Auto() {
+			t.Fatalf("snowflake node = %+v, want auto", c.SnowflakeNode)
 		}
 	})
 	for raw := range map[string]bool{"1024": true, "65536": true, "-1": true, "x": true} {

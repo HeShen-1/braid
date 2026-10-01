@@ -164,7 +164,7 @@ func TestFaultWorkerKillMidRunConvergesTraceIntact(t *testing.T) {
 	t.Cleanup(func() { _ = traceProv.Shutdown(context.Background()) })
 	gin.SetMode(gin.TestMode)
 	apiSrv := api.NewServer(api.Config{
-		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: 3, ResumeQueue: queue,
+		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: snowflake.Explicit(3), ResumeQueue: queue,
 		// T6.4 登录防御旋钮放宽(doc e2e 同款;防御行为由 api 包用例锚定)。
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 100000, LoginLockout: time.Minute,
@@ -455,7 +455,7 @@ func TestFaultApprovalEnqueueFailureTraceIntact(t *testing.T) {
 	t.Cleanup(func() { _ = traceProv.Shutdown(context.Background()) })
 	gin.SetMode(gin.TestMode)
 	apiSrv := api.NewServer(api.Config{
-		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: 3, ResumeQueue: queue,
+		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: snowflake.Explicit(3), ResumeQueue: queue,
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
 		LoginMaxFailures: 100000, LoginLockout: time.Minute,
 	}, d, apiIDs, reg, apiSched, auth.BuiltinProvider{DB: d})

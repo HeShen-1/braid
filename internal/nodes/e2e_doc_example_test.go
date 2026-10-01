@@ -232,7 +232,7 @@ func newDocExampleEnv(t *testing.T, complianceVerdict string) *docExampleEnv {
 	}
 	t.Cleanup(func() { _ = traceProv.Shutdown(context.Background()) })
 	apiSrv := api.NewServer(api.Config{
-		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: 3, ResumeQueue: queue,
+		Addr: "127.0.0.1:0", JWTSecret: nodesE2ESecret, SnowflakeNode: snowflake.Explicit(3), ResumeQueue: queue,
 		// T6.4:登录防御旋钮放宽(三用例多轮 login 同 IP;防御行为由
 		// api 包 loginlimit/loginaudit 用例锚定,本链不动)。
 		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
