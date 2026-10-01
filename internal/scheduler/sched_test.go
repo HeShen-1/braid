@@ -37,7 +37,7 @@ var (
 	testIDs     *snowflake.Generator
 )
 
-func mustTestIDs(t *testing.T) *snowflake.Generator {
+func mustTestIDs(t testing.TB) *snowflake.Generator {
 	t.Helper()
 	testIDsOnce.Do(func() {
 		g, err := snowflake.New(uint16(os.Getpid() & 0x3ff))
@@ -62,7 +62,7 @@ func newSched(t *testing.T) (*Scheduler, *sql.DB) {
 }
 
 // seedDef 落一行带版本的 definition(合法 DSL 文档)并注册清理。
-func seedDef(t *testing.T, d *sql.DB, doc string) uint64 {
+func seedDef(t testing.TB, d *sql.DB, doc string) uint64 {
 	t.Helper()
 	defID, err := mustTestIDs(t).Next()
 	if err != nil {
@@ -81,7 +81,7 @@ func seedDef(t *testing.T, d *sql.DB, doc string) uint64 {
 }
 
 // inst 走生产入口物化(同事务含 execution.start 事件)并注册清理。
-func inst(t *testing.T, s *Scheduler, d *sql.DB, doc string, input string) (defID, execID uint64) {
+func inst(t testing.TB, s *Scheduler, d *sql.DB, doc string, input string) (defID, execID uint64) {
 	t.Helper()
 	defID = seedDef(t, d, doc)
 	execID, err := s.Instantiate(context.Background(), InstantiateParams{
@@ -94,7 +94,7 @@ func inst(t *testing.T, s *Scheduler, d *sql.DB, doc string, input string) (defI
 	return defID, execID
 }
 
-func cleanupExec(t *testing.T, d *sql.DB, execID uint64) {
+func cleanupExec(t testing.TB, d *sql.DB, execID uint64) {
 	t.Helper()
 	for _, q := range []string{
 		`DELETE FROM audit_log WHERE execution_id=?`,
@@ -124,7 +124,7 @@ type nodeSnapshotRow struct {
 	deadlineOK bool
 }
 
-func readNode(t *testing.T, d *sql.DB, execID uint64, nodeID string) nodeSnapshotRow {
+func readNode(t testing.TB, d *sql.DB, execID uint64, nodeID string) nodeSnapshotRow {
 	t.Helper()
 	var r nodeSnapshotRow
 	var deadline sql.NullTime
@@ -145,7 +145,7 @@ type execSnapshot struct {
 	errorCode sql.NullString
 }
 
-func readExec(t *testing.T, d *sql.DB, execID uint64) execSnapshot {
+func readExec(t testing.TB, d *sql.DB, execID uint64) execSnapshot {
 	t.Helper()
 	var r execSnapshot
 	err := d.QueryRow(`SELECT status, outputs, error_code FROM workflow_execution WHERE id=?`, execID).
@@ -158,7 +158,7 @@ func readExec(t *testing.T, d *sql.DB, execID uint64) execSnapshot {
 
 // seedAttempt 落一行 RUNNING attempt(模拟 T2.3 worker 的 claimAttempt 产物),
 // 返回 attempt id。幂等键/连接列与派发 TaskID 同值。
-func seedAttempt(t *testing.T, d *sql.DB, execID, nodeExecID uint64, attemptNo uint16) uint64 {
+func seedAttempt(t testing.TB, d *sql.DB, execID, nodeExecID uint64, attemptNo uint16) uint64 {
 	t.Helper()
 	id, err := mustTestIDs(t).Next()
 	if err != nil {
@@ -176,7 +176,7 @@ func seedAttempt(t *testing.T, d *sql.DB, execID, nodeExecID uint64, attemptNo u
 }
 
 // complete 是测试面的 Complete 快捷(成功/失败 + 输出)。
-func complete(t *testing.T, s *Scheduler, execID, nodeExecID, attemptID uint64,
+func complete(t testing.TB, s *Scheduler, execID, nodeExecID, attemptID uint64,
 	status engine.AttemptState, output json.RawMessage) error {
 	t.Helper()
 	return s.Complete(context.Background(), CompletionRequest{
@@ -185,7 +185,7 @@ func complete(t *testing.T, s *Scheduler, execID, nodeExecID, attemptID uint64,
 	})
 }
 
-func mustComplete(t *testing.T, s *Scheduler, execID, nodeExecID, attemptID uint64,
+func mustComplete(t testing.TB, s *Scheduler, execID, nodeExecID, attemptID uint64,
 	status engine.AttemptState, output json.RawMessage) {
 	t.Helper()
 	if err := complete(t, s, execID, nodeExecID, attemptID, status, output); err != nil {
@@ -194,7 +194,7 @@ func mustComplete(t *testing.T, s *Scheduler, execID, nodeExecID, attemptID uint
 }
 
 // completeNode 按节点 id 完成其当前 attempt(测试语义:每个节点顺序完成)。
-func completeNode(t *testing.T, s *Scheduler, d *sql.DB, execID uint64, nodeID string,
+func completeNode(t testing.TB, s *Scheduler, d *sql.DB, execID uint64, nodeID string,
 	status engine.AttemptState, output json.RawMessage) error {
 	t.Helper()
 	row := readNode(t, d, execID, nodeID)
@@ -203,7 +203,7 @@ func completeNode(t *testing.T, s *Scheduler, d *sql.DB, execID uint64, nodeID s
 }
 
 // taskEvents 返回该执行的全部 outbox task_id(顺序)。
-func taskEvents(t *testing.T, d *sql.DB, execID uint64) []string {
+func taskEvents(t testing.TB, d *sql.DB, execID uint64) []string {
 	t.Helper()
 	rows, err := d.Query(`SELECT task_id FROM outbox WHERE execution_id=? ORDER BY id`, execID)
 	if err != nil {

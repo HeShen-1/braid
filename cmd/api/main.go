@@ -94,7 +94,13 @@ func run(ctx context.Context) error {
 	// 触发缝真源(T5.5):scheduler.Instantiate 物化(钉版四件套 + 全节点行
 	// + outbox execution.start),Deps 仅 MySQL+snowflake——api 进程零 Redis,
 	// 推进链(outbox→relay→asynq→worker)在 worker/relay 进程侧。
-	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: ids})
+	// T15.5:回滚容量闸(锁窗守卫,BRAID_ROLLBACK_MAX_ROWS,缺省
+	// DefaultMaxRollbackRows 定档值;坏值启动即败)。
+	maxRollbackRows, err := scheduler.MaxRollbackRowsFromEnv(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("api: %w", err)
+	}
+	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: ids, MaxRollbackRows: maxRollbackRows})
 	if err != nil {
 		return fmt.Errorf("api: scheduler: %w", err)
 	}

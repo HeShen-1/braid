@@ -43,6 +43,8 @@ spec:
               value: "1" # 显式:撞号 = 业务表 PK 1062
             - name: BRAID_API_RESUME_QUEUE
               value: default
+            - name: BRAID_ROLLBACK_MAX_ROWS
+              value: {{ .Values.config.rollbackMaxRows | quote }} # T15.5 回滚容量闸(空 = 进程默认)
             - name: BRAID_AUTH_JWT_SECRET
               valueFrom:
                 secretKeyRef:

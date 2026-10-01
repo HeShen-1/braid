@@ -190,7 +190,7 @@ func decodeSem(t *testing.T, s string) any {
 }
 
 // instanceRowOf 读单实例行(含类型/instance_no 维度)。
-func instanceRowOf(t *testing.T, d *sql.DB, execID uint64, nodeID string, instanceNo uint16) nodeSnapshotRow {
+func instanceRowOf(t testing.TB, d *sql.DB, execID uint64, nodeID string, instanceNo uint16) nodeSnapshotRow {
 	t.Helper()
 	var r nodeSnapshotRow
 	var typ string
@@ -212,7 +212,7 @@ SELECT id, status, version, attempts, max_attempts, worker_id, input_snapshot, o
 }
 
 // runToFanReady 物化 + Start + 完成 pre,使 fan 到达派发位。返回 fan 实例行 id 集(输入序)。
-func runToFanReady(t *testing.T, s *Scheduler, d *sql.DB, doc, input string, fanID string) (execID uint64, instances []uint64) {
+func runToFanReady(t testing.TB, s *Scheduler, d *sql.DB, doc, input string, fanID string) (execID uint64, instances []uint64) {
 	t.Helper()
 	_, execID = inst(t, s, d, doc, input)
 	if err := s.Start(context.Background(), execID, "w1"); err != nil {
@@ -230,7 +230,7 @@ func runToFanReady(t *testing.T, s *Scheduler, d *sql.DB, doc, input string, fan
 	return execID, instances
 }
 
-func readAllInstanceRowsOf(t *testing.T, d *sql.DB, execID uint64, nodeID string) []struct {
+func readAllInstanceRowsOf(t testing.TB, d *sql.DB, execID uint64, nodeID string) []struct {
 	id         uint64
 	instanceNo uint16
 	status     engine.NodeState

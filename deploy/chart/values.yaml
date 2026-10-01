@@ -90,6 +90,7 @@ config:
   httpEndpoints: "" # JSON alias→https base URL(空 = 不注册 http 工具)
   filereadDirs: "" # JSON 数组绝对路径(空 = 不注册 file_read)
   apiTrustedProxies: "" # 反代部署必配(CIDR 列表;直连留空 fail-closed)
+  rollbackMaxRows: "" # T15.5 回滚容量闸(空 = 进程默认 4000;"0" = 关闭)
 
 # ---- 选通面(默认全关:渲染产物与 compose 逐键等价;开启才渲染对应键)----
 tools:

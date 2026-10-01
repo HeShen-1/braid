@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"math/rand/v2"
 	"sort"
+	"strconv"
 	"time"
 
 	"braid/internal/audit"
@@ -40,7 +41,30 @@ const (
 	// RollbackNoTarget:自动定位空集(无 FAILED 行且无前驱就绪的 PENDING
 	// 冻结行的 FAILED 执行——input_eval 型终败,resume 面的显式分面)。
 	RollbackNoTarget RollbackErrKind = "no_resume_target"
+	// RollbackTooLarge:全行集行数超 Deps.MaxRollbackRows(lockAllRows 的
+	// 锁面随行数线性增长,D-t24#6 全行锁)——容量闸拒绝面,T15.5 实测定档
+	// (api 409 + denied 审计同分面)。
+	RollbackTooLarge RollbackErrKind = "too_large"
 )
+
+// DefaultMaxRollbackRows 是 MaxRollbackRowsFromEnv 的缺省档:T15.5 压测定档
+// 值(docs/CAPACITY.md 锁窗曲线的 SLA 交点),生产装配缺省即受闸保护。
+const DefaultMaxRollbackRows uint32 = 4000
+
+// MaxRollbackRowsFromEnv 读 BRAID_ROLLBACK_MAX_ROWS(空 = DefaultMaxRollbackRows,
+// "0" = 显式关闭闸;cmd 层 env 缝,tracing.ConfigFromEnv 先例)。坏值启动
+// 即败:静默回退默认会把运维的显式配置错误吞成未知档位。
+func MaxRollbackRowsFromEnv(getenv func(string) string) (uint32, error) {
+	raw := getenv("BRAID_ROLLBACK_MAX_ROWS")
+	if raw == "" {
+		return DefaultMaxRollbackRows, nil
+	}
+	n, err := strconv.ParseUint(raw, 10, 32)
+	if err != nil {
+		return 0, fmt.Errorf("scheduler: BRAID_ROLLBACK_MAX_ROWS=%q: want 0..4294967295 (0 disables the cap)", raw)
+	}
+	return uint32(n), nil
+}
 
 // RollbackError 是回滚拒绝的结构化载荷(api 按 Kind 映射状态码,Detail/Blocked
 // 进响应体;审计 rollback.denied 同源消费)。
@@ -128,6 +152,22 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 	wf *dsl.Workflow, g *dag, wfInput json.RawMessage) (*RollbackResult, error) {
 	var res *RollbackResult
 	err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		// 0. 容量闸(T15.5,D-t92 停车场 MaxRollbackRows 兑现):COUNT 走
+		// uk_node_exec 索引范围扫;普通读足够——行集在 Instantiate 后固定
+		// (实例行随物化建,不随后续推进增减),且闸是容量面非正确性面,
+		// 锁定前拒绝零副作用。0 = 关闭(测试缺省)。
+		if max := s.deps.MaxRollbackRows; max > 0 {
+			var rowCnt int
+			if err := q.QueryRowContext(ctx,
+				`SELECT COUNT(*) FROM node_execution WHERE execution_id=?`, p.ExecID).Scan(&rowCnt); err != nil {
+				return fmt.Errorf("scheduler: rollback count rows %d: %w", p.ExecID, err)
+			}
+			if uint64(rowCnt) > uint64(max) { // 无符号比较:32 位平台 int(max) 可溢出为负翻转闸向
+				return &RollbackError{Kind: RollbackTooLarge,
+					Detail: fmt.Sprintf("execution has %d node rows, rollback cap %d (lock-window guard)", rowCnt, max)}
+			}
+		}
+
 		// 1. 全行锁(node-first 锁序铁律;当前读 = 守卫与重置的裁决基础)。
 		rows, err := lockAllRows(ctx, q, p.ExecID, g)
 		if err != nil {
