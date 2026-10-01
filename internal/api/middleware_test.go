@@ -330,6 +330,78 @@ func TestRequireAnyRole(t *testing.T) {
 	}
 }
 
+// TestRequireScopeMiddleware:REST scp 执法闸(T17.1,D-2026-10-01-t171)
+// 四面钉死——
+//   - scp 缺席(存量/手签形态,claim 不携带)→ 透传:全角色凭证现状
+//     兼容裁定(issue #118 钉死;与 MCP 面 fail-closed 刻意不同面);
+//   - scp 在场且持所需作用域 → 放行;
+//   - scp 在场但不持 → 403 forbidden(与角色闸同响应体,不泄露哪道闸);
+//   - 挂未认证路由 → 401 fail-closed(镜像 RequireAnyRoleWithoutAuth);
+//   - want 词表外 = 接线 bug → 500 响亮不伪造 403。
+func TestRequireScopeMiddleware(t *testing.T) {
+	sign := func(t *testing.T, scopes ...auth.Scope) string {
+		t.Helper()
+		s, err := auth.SignTokenScoped(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAdmin}, 0, "", scopes)
+		if err != nil {
+			t.Fatalf("sign token: %v", err)
+		}
+		return s
+	}
+	newScoped := func(want auth.Scope) *gin.Engine {
+		gin.SetMode(gin.TestMode)
+		r := gin.New()
+		r.GET("/x", Authenticate(testSecret, TokenBindingOff), RequireScope(want), func(c *gin.Context) {
+			c.String(http.StatusOK, "sub=%s", c.MustGet(claimsCtxKey).(auth.Claims).Subject)
+		})
+		return r
+	}
+	do := func(r *gin.Engine, token string) (int, string) {
+		w := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/x", nil)
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
+		r.ServeHTTP(w, req)
+		return w.Code, w.Body.String()
+	}
+
+	r := newScoped(auth.ScopeWorkflowsWrite)
+	if code, body := do(r, sign(t, auth.ScopeWorkflowsWrite)); code != 200 || body != "sub=alice" {
+		t.Fatalf("held scope: code=%d body=%q, want 200 sub=alice", code, body)
+	}
+	if code, body := do(r, sign(t, auth.ScopeWorkflowsRead, auth.ScopeExecutionsRead)); code != 403 || !strings.Contains(body, "forbidden") {
+		t.Fatalf("unheld scope: code=%d body=%q, want 403 forbidden", code, body)
+	}
+	if code, body := do(r, sign(t)); code != 200 || body != "sub=alice" {
+		t.Fatalf("absent scp must pass through (现状兼容钉死): code=%d body=%q, want 200", code, body)
+	}
+	if code, _ := do(r, ""); code != 401 {
+		t.Fatalf("no token: code=%d, want 401", code)
+	}
+
+	// 接线 bug 面:want 词表外 → 500 响亮(auth.RequireScope 判定核
+	// ErrInvalidInput 透传,不伪装成调用方 403)。
+	gin.SetMode(gin.TestMode)
+	bad := gin.New()
+	bad.GET("/x", Authenticate(testSecret, TokenBindingOff), RequireScope("audit:read"))
+	if code, body := do(bad, sign(t, auth.ScopeWorkflowsRead)); code != 500 || !strings.Contains(body, "internal") {
+		t.Fatalf("vocab-external want: code=%d body=%q, want 500 internal", code, body)
+	}
+}
+
+// TestRequireScopeWithoutAuth:scp 闸挂未认证路由恒 401(镜像角色闸
+// 接线错误面)。
+func TestRequireScopeWithoutAuth(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	r := gin.New()
+	r.GET("/x", RequireScope(auth.ScopeWorkflowsRead))
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
+	if w.Code != 401 {
+		t.Fatalf("code = %d, want 401", w.Code)
+	}
+}
+
 // TestRequireAnyRoleWithoutAuth 钉死接线错误面:角色闸挂在未认证路由上
 // 恒 401 fail-closed,不静默放行。
 func TestRequireAnyRoleWithoutAuth(t *testing.T) {

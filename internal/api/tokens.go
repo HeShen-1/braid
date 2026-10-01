@@ -45,37 +45,9 @@ type tokenResponse struct {
 	Scopes    []auth.Scope `json:"scopes"`
 }
 
-// scopesWithin 报告 want 是否逐项都在 allowed 内(子集判定;want 的
-// 词表/重复校验已由调用方前置,此处只比集合包含)。
-func scopesWithin(want, allowed []auth.Scope) bool {
-	for _, w := range want {
-		found := false
-		for _, a := range allowed {
-			if w == a {
-				found = true
-				break
-			}
-		}
-		if !found {
-			return false
-		}
-	}
-	return true
-}
-
-// intersectScopes 返回 a ∩ b(保 a 序;两集合均词表内,空交集 = 空上界)。
-func intersectScopes(a, b []auth.Scope) []auth.Scope {
-	out := make([]auth.Scope, 0, len(a))
-	for _, s := range a {
-		for _, t := range b {
-			if s == t {
-				out = append(out, s)
-				break
-			}
-		}
-	}
-	return out
-}
+// scopesWithin/intersectScopes 已收敛入 auth 包(T17.1,D-t131 登记⑤
+// 收编):集合代数与词表同源,api 不留第二套实现——本文件消费
+// auth.ScopesWithin / auth.IntersectScopes。
 
 func (s *Server) issueToken(c *gin.Context) {
 	claims, ok := ClaimsFrom(c)
@@ -106,9 +78,9 @@ func (s *Server) issueToken(c *gin.Context) {
 		// 链式封堵(评审 HIGH):呈现 token 自带 scp 时上界收紧为交集。
 		// 签出面已保证 scp ⊆ 角色默认,交集恒等 scp 自身——交集是防御性
 		// 双门(防直接手签的 scp ⊄ 角色默认的怪 token)。
-		allowed = intersectScopes(claims.Scopes, allowed)
+		allowed = auth.IntersectScopes(claims.Scopes, allowed)
 	}
-	if !scopesWithin(req.Scopes, allowed) {
+	if !auth.ScopesWithin(req.Scopes, allowed) {
 		// 超界 = 请求相对自身能力的非法输入(自窄化只窄不宽);拒绝面
 		// 不回显上界集——避免把角色能力面变成免费 oracle。
 		abort(c, http.StatusBadRequest, "invalid_scope")

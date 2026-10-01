@@ -7,10 +7,11 @@ import (
 )
 
 // TestAllScopesVocabPinned 钉死作用域词表与声明序(D-2026-09-30-t131
-// 决策 3 单源:消费面只认这三枚,追加 = 本文件 + 映射表同 PR 旅行)。
+// 决策 3 单源 + D-2026-10-01-t171 REST 执法扩表:消费面只认这五枚,
+// 追加 = 本文件 + 映射表同 PR 旅行)。
 func TestAllScopesVocabPinned(t *testing.T) {
 	got := AllScopes()
-	want := []Scope{ScopeWorkflowsRead, ScopeExecutionsRead, ScopeExecutionsWrite}
+	want := []Scope{ScopeWorkflowsRead, ScopeWorkflowsWrite, ScopeExecutionsRead, ScopeExecutionsWrite, ScopeApprovalsWrite}
 	if len(got) != len(want) {
 		t.Fatalf("AllScopes() = %v, want %v (len %d != %d)", got, want, len(got), len(want))
 	}
@@ -44,7 +45,7 @@ func TestValidScopes(t *testing.T) {
 		{"single", []Scope{ScopeExecutionsWrite}, false},
 		{"empty slice ok", []Scope{}, false},
 		{"nil ok", nil, false},
-		{"unknown scope", []Scope{ScopeWorkflowsRead, "workflows:write"}, true},
+		{"unknown scope", []Scope{ScopeWorkflowsRead, "audit:read"}, true},
 		{"bare word", []Scope{"read"}, true},
 		{"duplicate", []Scope{ScopeExecutionsRead, ScopeExecutionsRead}, true},
 	}
@@ -64,11 +65,12 @@ func TestValidScopes(t *testing.T) {
 	}
 }
 
-// TestDefaultScopesForRoles:角色默认映射钉死(admin|author 三枚全量,
-// approver 两枚只读;多角色并集)。login 签发默认与 /auth/tokens 自窄化
-// 上界同吃这张表(单源)。
+// TestDefaultScopesForRoles:角色默认映射钉死(admin|author 五枚全量,
+// approver 三枚 = 读两枚 + 审批写一枚——approver 决定面 REST 现状兼容
+// 刚需;多角色并集)。login 签发默认与 /auth/tokens 自窄化上界同吃这张
+// 表(单源)。
 func TestDefaultScopesForRoles(t *testing.T) {
-	full := []Scope{ScopeWorkflowsRead, ScopeExecutionsRead, ScopeExecutionsWrite}
+	full := []Scope{ScopeWorkflowsRead, ScopeWorkflowsWrite, ScopeExecutionsRead, ScopeExecutionsWrite, ScopeApprovalsWrite}
 	cases := []struct {
 		name  string
 		roles []Role
@@ -76,7 +78,7 @@ func TestDefaultScopesForRoles(t *testing.T) {
 	}{
 		{"admin full", []Role{RoleAdmin}, full},
 		{"author full", []Role{RoleAuthor}, full},
-		{"approver read-only", []Role{RoleApprover}, []Scope{ScopeWorkflowsRead, ScopeExecutionsRead}},
+		{"approver read+decide", []Role{RoleApprover}, []Scope{ScopeWorkflowsRead, ScopeExecutionsRead, ScopeApprovalsWrite}},
 		{"author+approver union", []Role{RoleAuthor, RoleApprover}, full},
 		{"no roles empty", nil, []Scope{}},
 	}
@@ -165,7 +167,7 @@ func TestSignTokenSugarNoScopesCompat(t *testing.T) {
 // 解析拒绝(镜像 bnd 格式闸:防线针对签发面 bug + 消费面信任载荷)。
 func TestParseTokenScopesFailClosed(t *testing.T) {
 	for _, scp := range [][]Scope{
-		{"workflows:write"},
+		{"audit:read"},
 		{ScopeWorkflowsRead, ScopeWorkflowsRead},
 	} {
 		c := validClaims("alice", []Role{RoleAuthor})
@@ -193,7 +195,47 @@ func TestRequireScope(t *testing.T) {
 	if !errors.Is(err, ErrForbidden) {
 		t.Fatalf("RequireScope(unheld) = %v, want ErrForbidden", err)
 	}
-	if err := RequireScope(c, "workflows:write"); !errors.Is(err, ErrInvalidInput) {
+	if err := RequireScope(c, "audit:read"); !errors.Is(err, ErrInvalidInput) {
 		t.Fatalf("RequireScope(unknown want) = %v, want ErrInvalidInput", err)
+	}
+}
+
+// TestScopesWithin:子集判定逐项包含(want 空 = 恒真;want ⊄ allowed =
+// 假)。词表/重复校验归调用方前置,此处只比集合包含(签发自窄化上界
+// 判定消费,T17.1 自 api 包收敛入 auth 与词表同源——D-t131 登记⑤收编)。
+func TestScopesWithin(t *testing.T) {
+	cases := []struct {
+		name   string
+		want   []Scope
+		allow  []Scope
+		expect bool
+	}{
+		{"subset", []Scope{ScopeWorkflowsRead}, []Scope{ScopeWorkflowsRead, ScopeExecutionsRead}, true},
+		{"equal set", []Scope{ScopeExecutionsWrite}, []Scope{ScopeExecutionsWrite}, true},
+		{"empty want always true", []Scope{}, []Scope{ScopeWorkflowsRead}, true},
+		{"missing one", []Scope{ScopeWorkflowsRead, ScopeApprovalsWrite}, []Scope{ScopeWorkflowsRead}, false},
+		{"disjoint", []Scope{ScopeExecutionsWrite}, []Scope{ScopeWorkflowsRead}, false},
+		{"allowed empty", []Scope{ScopeWorkflowsRead}, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := ScopesWithin(tc.want, tc.allow); got != tc.expect {
+				t.Fatalf("ScopesWithin(%v, %v) = %v, want %v", tc.want, tc.allow, got, tc.expect)
+			}
+		})
+	}
+}
+
+// TestIntersectScopes:交集保 a 序(输出序 = 声明序,词表单源序可预期);
+// 空交集 = 空上界(非 nil 防御面由调用方判 len)。
+func TestIntersectScopes(t *testing.T) {
+	a := []Scope{ScopeWorkflowsRead, ScopeExecutionsWrite, ScopeApprovalsWrite}
+	b := []Scope{ScopeApprovalsWrite, ScopeWorkflowsRead}
+	got := IntersectScopes(a, b)
+	if len(got) != 2 || got[0] != ScopeWorkflowsRead || got[1] != ScopeApprovalsWrite {
+		t.Fatalf("IntersectScopes(%v, %v) = %v, want [workflows:read approvals:write] (保 a 序)", a, b, got)
+	}
+	if got := IntersectScopes(a, []Scope{ScopeExecutionsRead}); len(got) != 0 {
+		t.Fatalf("IntersectScopes disjoint = %v, want empty", got)
 	}
 }
