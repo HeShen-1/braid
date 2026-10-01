@@ -167,6 +167,11 @@ func (s *Server) mapRollbackError(c *gin.Context, err error) {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "bad_node_id", "detail": re.Detail})
 		case scheduler.RollbackNoTarget:
 			c.JSON(http.StatusBadRequest, gin.H{"error": "no_resume_target"})
+		case scheduler.RollbackTooLarge:
+			// T15.5 容量闸:锁窗超档拒绝(与状态族同为 409——请求本身合法,
+			// 是当前资源形态不可受理)。闸是执行级前置判定,收窄目标不适用;
+			// 运维出路 = 拆执行 / 调 BRAID_ROLLBACK_MAX_ROWS(0 = 关闭),不重试。
+			c.JSON(http.StatusConflict, gin.H{"error": "rollback_too_large", "detail": re.Detail})
 		default:
 			slog.Error("api: rollback failure", "err", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "internal"})

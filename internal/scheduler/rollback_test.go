@@ -24,6 +24,7 @@ import (
 	"sync"
 	"testing"
 
+	"braid/internal/db/sqltest"
 	"braid/internal/engine"
 )
 
@@ -583,5 +584,100 @@ func TestRollbackAuditPayload(t *testing.T) {
 	}
 	if p.ResetCount != 1 {
 		t.Fatalf("reset_count = %d, want 1(失败源 b 恰一行重置)", p.ResetCount)
+	}
+}
+
+// newCappedSched 返回带行数上限的调度器(T15.5 容量闸测试专用;复用
+// braid_scheduler_test schema 与测试雪花)。
+func newCappedSched(t *testing.T, max uint32) (*Scheduler, *sql.DB) {
+	t.Helper()
+	d := sqltest.MustOpenAt(t, testSchema)
+	s, err := New(Deps{DB: d, IDs: mustTestIDs(t), Queue: "sched-test", MaxRollbackRows: max})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	return s, d
+}
+
+// TestRollbackRowCap:T15.5 容量闸(D-t92 停车场 MaxRollbackRows 兑现)——
+// 全行集行数(lockAllRows 锁面,含 parallel 实例行)超 Deps.MaxRollbackRows
+// 时拒 too_large;恰在上限、上限关闭(0)放行。闸是容量面非正确性面:
+// 拒绝后执行状态原样(wf FAILED、失败节点不动)。
+//
+// 变异自查:闸误放行 → over_cap 子测试红;闸误拦上限内 → at_cap 子测试红;
+// 0 不再是关闭哨兵 → zero_disables 子测试红;拒绝面写状态 → 状态断言红。
+func TestRollbackRowCap(t *testing.T) {
+	t.Run("over_cap_denied", func(t *testing.T) {
+		s, d := newCappedSched(t, 2) // rbChainDSL = 3 行
+		execID, _, _ := rbFailChain(t, s, d)
+		_, err := s.RollbackTo(context.Background(), RollbackParams{
+			ExecID: execID, WorkerID: "sched-test", ActorID: "tester"})
+		wantRollbackErr(t, err, RollbackTooLarge)
+		if e := readExec(t, d, execID); e.status != engine.WorkflowFailed {
+			t.Fatalf("拒绝后 wf = %s, want FAILED(闸零副作用)", e.status)
+		}
+		if b := readNode(t, d, execID, "b"); b.status != engine.NodeFailed {
+			t.Fatalf("拒绝后 b = %s, want FAILED", b.status)
+		}
+	})
+	t.Run("at_cap_passes", func(t *testing.T) {
+		s, d := newCappedSched(t, 3) // 恰等于行数:放行
+		execID, _, _ := rbFailChain(t, s, d)
+		if _, err := s.RollbackTo(context.Background(), RollbackParams{
+			ExecID: execID, WorkerID: "sched-test", ActorID: "tester"}); err != nil {
+			t.Fatalf("RollbackTo at cap: %v", err)
+		}
+		if e := readExec(t, d, execID); e.status != engine.WorkflowRunning {
+			t.Fatalf("回滚后 wf = %s, want RUNNING", e.status)
+		}
+	})
+	t.Run("zero_disables", func(t *testing.T) {
+		s, d := newCappedSched(t, 0)
+		execID, _, _ := rbFailChain(t, s, d)
+		if _, err := s.RollbackTo(context.Background(), RollbackParams{
+			ExecID: execID, WorkerID: "sched-test", ActorID: "tester"}); err != nil {
+			t.Fatalf("RollbackTo uncapped: %v", err)
+		}
+		if e := readExec(t, d, execID); e.status != engine.WorkflowRunning {
+			t.Fatalf("回滚后 wf = %s, want RUNNING", e.status)
+		}
+	})
+}
+
+// TestMaxRollbackRowsFromEnv:cmd 层 env 缝(tracing.ConfigFromEnv 先例)——
+// 空 = 默认定档值,0 = 显式关闭,负数/非数字/超 uint32 = 启动即败。
+func TestMaxRollbackRowsFromEnv(t *testing.T) {
+	cases := []struct {
+		name    string
+		env     map[string]string
+		want    uint32
+		wantErr string
+	}{
+		{name: "empty_is_default", env: nil, want: DefaultMaxRollbackRows},
+		{name: "explicit_value", env: map[string]string{"BRAID_ROLLBACK_MAX_ROWS": "500"}, want: 500},
+		{name: "zero_disables", env: map[string]string{"BRAID_ROLLBACK_MAX_ROWS": "0"}, want: 0},
+		{name: "not_a_number", env: map[string]string{"BRAID_ROLLBACK_MAX_ROWS": "x"},
+			wantErr: "BRAID_ROLLBACK_MAX_ROWS"},
+		{name: "negative", env: map[string]string{"BRAID_ROLLBACK_MAX_ROWS": "-1"},
+			wantErr: "BRAID_ROLLBACK_MAX_ROWS"},
+		{name: "over_uint32", env: map[string]string{"BRAID_ROLLBACK_MAX_ROWS": "4294967296"},
+			wantErr: "BRAID_ROLLBACK_MAX_ROWS"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := MaxRollbackRowsFromEnv(func(k string) string { return tc.env[k] })
+			if tc.wantErr != "" {
+				if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+					t.Fatalf("err = %v, want contains %q", err, tc.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("MaxRollbackRowsFromEnv: %v", err)
+			}
+			if got != tc.want {
+				t.Fatalf("= %d, want %d", got, tc.want)
+			}
+		})
 	}
 }

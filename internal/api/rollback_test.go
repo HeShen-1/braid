@@ -281,3 +281,49 @@ func nextRBID() uint64 {
 }
 
 var rbIDSeq uint32
+
+// TestHTTPRollbackTooLarge:T15.5 容量闸 api 面——行集超 MaxRollbackRows 时
+// 409 rollback_too_large + denied 审计(reason=too_large);resume 同漏斗继承。
+func TestHTTPRollbackTooLarge(t *testing.T) {
+	dbh := openAPITestDB(t)
+	schedIDs, err := snowflake.New(2)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: schedIDs, MaxRollbackRows: 2})
+	if err != nil {
+		t.Fatalf("scheduler: %v", err)
+	}
+	r, _, sign := newTestServerWithTrigger(t, sched)
+	author := sign(auth.RoleAuthor)
+	name := uniqName("rb-cap")
+	rbPublish(t, r, author, name, rbChainDoc(name))
+	execID, _ := rbDriveToFailed(t, r, sched, dbh, author, name)
+
+	code, body := doJSON(t, r, http.MethodPost,
+		fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author, []byte(`{"node_id":"b"}`))
+	if code != http.StatusConflict {
+		t.Fatalf("rollback: code %d body %v, want 409", code, body)
+	}
+	if body["error"] != "rollback_too_large" {
+		t.Fatalf("error = %v, want rollback_too_large", body["error"])
+	}
+	var denied int
+	if err := dbh.QueryRow(`SELECT COUNT(*) FROM audit_log
+		WHERE execution_id=? AND event_type='rollback.denied' AND actor_id=?`,
+		execID, "alice").Scan(&denied); err != nil || denied != 1 {
+		t.Fatalf("rollback.denied rows = %d(%v), want 1", denied, err)
+	}
+	var reason string
+	if err := dbh.QueryRow(`SELECT JSON_UNQUOTE(JSON_EXTRACT(payload,'$.reason'))
+		FROM audit_log WHERE execution_id=? AND event_type='rollback.denied'`, execID).Scan(&reason); err != nil || reason != "too_large" {
+		t.Fatalf("denied reason = %q(%v), want too_large", reason, err)
+	}
+
+	// resume 同漏斗:无 body 自动定位,同样落容量闸。
+	code, body = doJSON(t, r, http.MethodPost,
+		fmt.Sprintf("/api/v1/executions/%d/resume", execID), author, nil)
+	if code != http.StatusConflict || body["error"] != "rollback_too_large" {
+		t.Fatalf("resume: code %d body %v, want 409 rollback_too_large", code, body)
+	}
+}

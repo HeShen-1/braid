@@ -12,7 +12,7 @@
 - [ ] T15.2 副本身份与雪花节点号自动分配 — M — 依赖 T15.1 — 验收:租约注册或 stable ordinal 自动分配,消除人工外部分配 `BRAID_*_SNOWFLAKE_NODE`;Helm values 默认副本 >1 可起(D-t144 已知边界:Deployment 无稳定 ordinal)
 - [ ] T15.3 沙箱清扫互杀红线消除 — M — 依赖 T15.1 — 验收:多 worker 同网互杀面消除(t101-sandbox-baseline #11:kill -9 后死实例身份可知、孤儿回收不依赖全局 label 误伤;明文「多副本/k8s 滚动部署前必须先解」)
 - [ ] T15.4 egress 端口多副本分配面 — M — 依赖 T15.1 — 验收:同网多 worker 不撞端口拒启(D-t102④ + chart README 登记);rootless/受限 daemon 适用域一并复核
-- [ ] T15.5 引擎核心压测基线与容量模型 — L — 验收:基准套件落地(吞吐/时延/大 DAG 回滚锁窗量化);MaxRollbackRows 实测定档(D-t92 停车场悬项);容量模型文档;audit_trace_map 旁路表按延迟实测裁定(D-t63#3);锁窗修复若动 DBTX 形状须先 D-(D-t24#6 演进注记);产物为 T16.4 的输入
+- [x] T15.5 引擎核心压测基线与容量模型 — L — 验收:基准套件落地(吞吐/时延/大 DAG 回滚锁窗量化);MaxRollbackRows 实测定档(D-t92 停车场悬项);容量模型文档;audit_trace_map 旁路表按延迟实测裁定(D-t63#3);锁窗修复若动 DBTX 形状须先 D-(D-t24#6 演进注记);产物为 T16.4 的输入
 - [ ] T15.6 mode=all 混跑窗硬闸 + 多副本整体演练 — M — 依赖 T15.2、T15.3、T15.4 — 验收:启动期能力探测硬闸(替 UPGRADE.md 人工纪律,D-t142①);多副本整体演练验收(哈希链混合版本窗 D-t93③ 口径随演练复核)
 
 ## M16 开源与交付面(排 T15.5 中后段)

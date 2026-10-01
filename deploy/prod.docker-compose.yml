@@ -123,6 +123,7 @@ services:
       BRAID_API_ADDR: 0.0.0.0:8081 # 容器内网绑定;宿主零暴露,公开面经反代
       BRAID_API_SNOWFLAKE_NODE: "1" # 显式:容器 PID 无意义,撞号 = PK 1062
       BRAID_API_RESUME_QUEUE: default
+      BRAID_ROLLBACK_MAX_ROWS: ${BRAID_ROLLBACK_MAX_ROWS:-} # T15.5 回滚容量闸(空 = DefaultMaxRollbackRows;0 = 关闭)
       BRAID_AUTH_JWT_SECRET: ${BRAID_AUTH_JWT_SECRET:?BRAID_AUTH_JWT_SECRET 未设}
       # 工具面(可选;空 = 相应工具不注册,发布引用即拒):
       BRAID_HTTP_ENDPOINTS: ${BRAID_HTTP_ENDPOINTS:-}

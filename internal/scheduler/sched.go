@@ -167,6 +167,12 @@ type Deps struct {
 	Queue   string
 	Logger  *slog.Logger
 	Metrics MetricsSink
+	// MaxRollbackRows 限制单次回滚允许锁定的 node_execution 行集上界
+	// (控制行+parallel 实例行,= lockAllRows 的锁面);0 = 不限(测试缺省)。
+	// 超限拒绝 RollbackTooLarge——全行集 FOR UPDATE 是全库最长锁窗写事务
+	// (D-t24#6),大 DAG 回滚的容量闸;默认档见 DefaultMaxRollbackRows
+	// (T15.5 实测定档)。
+	MaxRollbackRows uint32
 }
 
 // Scheduler 是调度器实例(无内部状态,字段在构造时定格)。
