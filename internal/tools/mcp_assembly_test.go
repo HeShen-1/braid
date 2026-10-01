@@ -164,15 +164,15 @@ func TestSandboxEgressStartupMCPAllow(t *testing.T) {
 		"BRAID_TOOL_SANDBOX_EGRESS_PORT": "0",
 		"BRAID_MCP_SERVERS":              `{"m":"https://127.0.0.1:1"}`,
 		"BRAID_MCP_TOOLS":                `{"mcp_x":{"server":"m","tool":"t"}}`,
-	}))
+	}), "w1")
 	if err != nil {
 		t.Fatalf("startup: %v", err)
 	}
-	code, reason := egressProbe(t, u.Host, "127.0.0.1:1")
+	code, reason := egressProbe(t, u.ProxyURL.Host, "127.0.0.1:1")
 	if code != 403 || reason != egressReasonSSRFBlocked {
 		t.Fatalf("probe declared host = %d %q, want 403 %s (host in allow, loopback IP forbidden)", code, reason, egressReasonSSRFBlocked)
 	}
-	code, reason = egressProbe(t, u.Host, "evil.example:443")
+	code, reason = egressProbe(t, u.ProxyURL.Host, "evil.example:443")
 	if code != 403 || reason != egressReasonHostBlocked {
 		t.Fatalf("probe undeclared host = %d %q, want 403 %s", code, reason, egressReasonHostBlocked)
 	}

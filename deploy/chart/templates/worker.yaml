@@ -12,7 +12,7 @@ metadata:
   labels:
     {{- include "braid.labels" (dict "ctx" . "component" "worker") | nindent 4 }}
 spec:
-  replicas: {{ .Values.replicaCount.worker }} # >1 + sandbox egress = 同网撞端口拒启(D-t102 登记④)
+  replicas: {{ .Values.replicaCount.worker }} # >1 + egress = per-worker nets, no port clash (D-t102④ lifted, D-t151 #5/T15.4)
   selector:
     matchLabels:
       {{- include "braid.selectorLabels" (dict "ctx" . "component" "worker") | nindent 6 }}

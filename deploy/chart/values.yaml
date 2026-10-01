@@ -41,7 +41,9 @@ redisQueue:
 
 # 副本:compose = 单副本等价面。api/worker/reaper 副本 >1 需外部雪花节点号
 # 分配(Deployment 无稳定 ordinal,进程内缺省派生必撞号 = 业务表 PK 1062);
-# worker 副本 >1 且 sandbox egress 启用 = 同网撞端口拒启(D-t102 登记④)。
+# worker 副本 >1 + egress 启用不再撞端口(一 worker 一网,D-t102④ 解除,
+# D-t151 决策 5/T15.4);上界 = 节点 daemon 地址池(缺省 ≈31 网,pod
+# recreate 每次泄漏一网,回收见 deploy/RUNBOOK.md)。
 replicaCount:
   api: 1
   worker: 1
@@ -103,7 +105,7 @@ tools:
     cpus: "0.5"
     pids: 64
     maxConcurrency: 8
-    egressNetwork: braid-sbx-egress # 缺省网名(D-t102,env 可覆写)
+    egressNetwork: braid-sbx-egress # 网名基段(worker_id 实例段自动追加,D-t151 决策 5;env 可覆写)
     egressPort: 9210 # 0 = 内核指派
   # worker 挂载 host /var/run/docker.sock(sandbox docker 模式前置;节点
   # root 等价面,默认关——见 chart README §egress 边界)。
