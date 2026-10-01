@@ -28,10 +28,9 @@ func TestAnchorLoginUser(t *testing.T) {
 			t.Fatalf("disable: %v", err)
 		}
 		cases := []struct {
-			name       string
-			username   string
-			wantErrAs  func(error) bool // nil = 期望成功
-			wantReason string
+			name      string
+			username  string
+			wantErrAs func(error) bool // nil = 期望成功
 		}{
 			{
 				name:     "unknown_user",

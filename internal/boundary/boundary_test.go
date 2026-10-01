@@ -11,6 +11,11 @@
 // 实现为 go list 包图断言(真源包图,非文件名匹配);depguard
 // (.golangci.yml)是 lint 腿的快速反馈面,本测试是精确网——两者同 PR
 // 旅行,规则口径变更须双侧同步。
+//
+// 缓存口径(对抗审计 LOW 收口):go test 缓存键 = 本包输入,不含运行期
+// go list 扫视的源码树——本地改动他包后直接 `go test ./...` 可能回放
+// 本包旧 PASS,精确腿在该轮静默(实证)。查树态须 -count=1;CI 冷缓存
+// 不受影响,lint 腿(depguard)内容键亦不受影响。
 package boundary
 
 import (
@@ -52,9 +57,12 @@ func listPackages(t *testing.T) []pkg {
 }
 
 // isCore 报告包是否属于核心面:enterprise 子树(实现侧)与 cmd/(组合根,
-// 允许双向装配)豁免,其余全辖。
+// 允许双向装配)豁免,其余全辖。前缀带尾斜杠(对抗审计 LOW 收口):无斜杠
+// 的 "braid/internal/enterprise" 会误豁免假想的 braid/internal/
+// enterprisetools 类姊妹包,静默收窄执法门。
 func isCore(importPath string) bool {
-	return !strings.HasPrefix(importPath, "braid/internal/enterprise") &&
+	return !strings.HasPrefix(importPath, "braid/internal/enterprise/") &&
+		importPath != "braid/internal/enterprise" &&
 		!strings.HasPrefix(importPath, "braid/cmd/")
 }
 
@@ -73,7 +81,7 @@ func TestCoreDoesNotImportEnterprise(t *testing.T) {
 		}
 		for _, g := range groups {
 			for _, imp := range g.imps {
-				if strings.HasPrefix(imp, "braid/internal/enterprise") {
+				if strings.HasPrefix(imp, "braid/internal/enterprise/") || imp == "braid/internal/enterprise" {
 					t.Errorf("%s %s %s: core must not import enterprise (one-way boundary: enterprise -> core; cmd/ composition roots exempt)",
 						p.ImportPath, g.what, imp)
 				}
@@ -101,7 +109,7 @@ func TestEnginePurity(t *testing.T) {
 func TestEnterpriseTreePresent(t *testing.T) {
 	n := 0
 	for _, p := range listPackages(t) {
-		if strings.HasPrefix(p.ImportPath, "braid/internal/enterprise") {
+		if strings.HasPrefix(p.ImportPath, "braid/internal/enterprise/") {
 			n++
 		}
 	}

@@ -101,10 +101,15 @@ func (s *Server) Tracing(t trace.Tracer) { s.tracer = t }
 // OIDCProvider 注入 OIDC 插件面(T11.1;T16.1 起实现 = 企业增值面
 // internal/enterprise/oidc,cmd/api 在 BRAID_OIDC_* 组配置完整时装配,见
 // D-2026-09-28-t111-oidc-subject-anchor)。nil 拒绝:静默缺配会把「忘了
-// 注入」伪装成「未配置」(路由面 404),可诊断性丢失。
+// 注入」伪装成「未配置」(路由面 404),可诊断性丢失。typed-nil 同拒
+// (接口化后接口值非 nil 但方法调用即 panic,NewServer idp 探测同款——
+// 对抗审计 LOW 收口)。
 func (s *Server) OIDCProvider(p OIDCProvider) {
 	if p == nil {
 		panic("api: nil OIDCProvider (oidc plugin seam)")
+	}
+	if v := reflect.ValueOf(p); (v.Kind() == reflect.Pointer || v.Kind() == reflect.Func) && v.IsNil() {
+		panic("api: typed-nil OIDCProvider (oidc plugin seam)")
 	}
 	s.oidc = p
 }

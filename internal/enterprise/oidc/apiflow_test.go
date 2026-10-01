@@ -196,10 +196,14 @@ func TestOIDCFlowIntegration(t *testing.T) {
 			t.Fatalf("code = %d, body %s", code, body)
 		}
 		m := map[string]any{}
-		if err := json.Unmarshal([]byte(body), &m); err != nil || m["token"] == "" {
-			t.Fatalf("no token: %q err=%v", body, err)
+		if err := json.Unmarshal([]byte(body), &m); err != nil {
+			t.Fatalf("body: %v", err)
 		}
-		claims, err := auth.ParseToken(testSecret, m["token"].(string))
+		tok, ok := m["token"].(string)
+		if !ok || tok == "" {
+			t.Fatalf("no token: %q", body)
+		}
+		claims, err := auth.ParseToken(testSecret, tok)
 		if err != nil {
 			t.Fatalf("parse: %v", err)
 		}

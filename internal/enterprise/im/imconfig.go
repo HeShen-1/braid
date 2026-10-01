@@ -1,5 +1,4 @@
-// Package im 是 IM 审批卡片(钉钉)发送面(T14.3;T16.1 切入企业增值面,
-// D-2026-10-01-t161-engine-enterprise-split)。本文件持配置组。
+// IMConfig 配置组文件(包注释归 im.go 单一所有者,本文件普通文件注释)。
 package im
 
 // IMConfig 是 IM 审批卡片(钉钉自定义群机器人 webhook,T14.3 / D-2026-09-30
