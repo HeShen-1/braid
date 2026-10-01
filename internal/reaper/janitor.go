@@ -40,10 +40,9 @@ const (
 // login_audit 保留期清理(T7.1 接线,migration 0005 登记)。
 // 与扫描循环隔离(攻击 8/12 吸收):分区 DDL 的 MDL 等待被 lock_wait_timeout
 // 封顶,超时弃轮,永不冻结扫描 tick。
-func (r *Reaper) janitorLoop(ctx context.Context) {
-	if err := r.janitorOnce(ctx); err != nil {
-		r.log.Error("janitor.round_failed", "err", err)
-	}
+func (r *Reaper) janitorLoop(ctx context.Context, token string) {
+	r.gatedRound(ctx, leaderKeyJanitor, token, 2*r.cfg.JanitorInterval, "janitor",
+		r.janitorOnce)
 	t := time.NewTicker(r.cfg.JanitorInterval)
 	defer t.Stop()
 	for {
@@ -51,9 +50,8 @@ func (r *Reaper) janitorLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := r.janitorOnce(ctx); err != nil {
-				r.log.Error("janitor.round_failed", "err", err)
-			}
+			r.gatedRound(ctx, leaderKeyJanitor, token, 2*r.cfg.JanitorInterval, "janitor",
+				r.janitorOnce)
 		}
 	}
 }

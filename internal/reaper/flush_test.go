@@ -102,7 +102,7 @@ func TestAuditFlushLoopWiring(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
-	go func() { defer close(done); r.auditFlushLoop(ctx) }()
+	go func() { defer close(done); r.auditFlushLoop(ctx, "gate-test") }()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {
 		var n int
