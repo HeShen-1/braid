@@ -121,7 +121,7 @@ services:
       # 组件账号 DSN(README §5 授权矩阵;preflight append-only 断言启动即查)
       BRAID_MYSQL_DSN: braid_api:${BRAID_DB_API_PASSWORD:?BRAID_DB_API_PASSWORD 未设}@tcp(mysql:3306)/braid
       BRAID_API_ADDR: 0.0.0.0:8081 # 容器内网绑定;宿主零暴露,公开面经反代
-      BRAID_API_SNOWFLAKE_NODE: "1" # 显式:容器 PID 无意义,撞号 = PK 1062
+      BRAID_API_SNOWFLAKE_NODE: "1" # 显式(单副本/compose 语义,D-t151 决策 2):经租约表 claim;k8s 多副本一律 auto
       BRAID_API_RESUME_QUEUE: default
       BRAID_ROLLBACK_MAX_ROWS: ${BRAID_ROLLBACK_MAX_ROWS:-} # T15.5 回滚容量闸(空 = DefaultMaxRollbackRows;0 = 关闭)
       BRAID_AUTH_JWT_SECRET: ${BRAID_AUTH_JWT_SECRET:?BRAID_AUTH_JWT_SECRET 未设}
@@ -152,7 +152,7 @@ services:
     environment:
       BRAID_MYSQL_DSN: braid_worker:${BRAID_DB_WORKER_PASSWORD:?BRAID_DB_WORKER_PASSWORD 未设}@tcp(mysql:3306)/braid
       BRAID_REDIS_QUEUE_ADDR: redis-queue:6379
-      BRAID_WORKER_SNOWFLAKE_NODE: "2"
+      BRAID_WORKER_SNOWFLAKE_NODE: "2" # 显式(单副本/compose 语义,D-t151 决策 2):经租约表 claim;k8s 多副本一律 auto
       BRAID_WORKER_QUEUES: default:1 # 须含 BRAID_API_RESUME_QUEUE 指定队列,否则续跑永挂
       BRAID_METRICS_ADDR: 0.0.0.0:9090
       BRAID_TOOL_TOKEN_SECRET: ${BRAID_TOOL_TOKEN_SECRET:-}
@@ -204,7 +204,7 @@ services:
     environment:
       BRAID_MYSQL_DSN: braid_reaper:${BRAID_DB_REAPER_PASSWORD:?BRAID_DB_REAPER_PASSWORD 未设}@tcp(mysql:3306)/braid
       BRAID_REDIS_QUEUE_ADDR: redis-queue:6379 # 可选(leaderless);缺省同形态
-      BRAID_REAPER_SNOWFLAKE_NODE: "3" # 显式:容器 PID 恒 1,缺省派生必撞 api=1
+      BRAID_REAPER_SNOWFLAKE_NODE: "3" # 显式(单副本/compose 语义,D-t151 决策 2):经租约表 claim;缺省已改 auto(PID 派生退役——容器 PID 恒 1 撞 api 默认 1)
       BRAID_METRICS_ADDR: 0.0.0.0:9090
     depends_on:
       migrate:

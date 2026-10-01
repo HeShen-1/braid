@@ -95,7 +95,9 @@ compose 的 `migrate` one-shot 服务已参数化(entrypoint 透传 command):
   ```
 
   语句幂等(`CREATE USER IF NOT EXISTS` + `GRANT` 重跑 no-op);版本升级
-  带来新写面时(如 T7.4 的 login_audit),重新执行即完成增量扩权。
+  带来新写面时(如 T7.4 的 login_audit;T15.2 的 snowflake_node_lease
+  ——三账号 INSERT/UPDATE/SELECT + 优雅释放 DELETE,D-t151 决策 2),
+  重新执行即完成增量扩权。
 - **改密**:`ALTER USER 'braid_api'@'%' IDENTIFIED BY '<new>';` 后同步改
   `deploy/.env` 并滚动重启对应组件(IF NOT EXISTS 形态建账号不重设密码)。
   密码字符集限 `[A-Za-z0-9._~@+%-]`(grants.sh 的 SQL/shell 字面量安全闸)。
@@ -226,3 +228,33 @@ Asynqmon 确认行转 DISPATCHED。
    grants.sh 补 `SELECT,DELETE`(README §5 已登记通则)。
 
 **结论**:0004 → 0005 数据卷升级路径(§1 升级序 + §3 授权)演练通过。
+
+## 7. 雪花租约清行应急(T15.2 kill -9 残窗)
+
+**背景**:节点号已租约池化(0012 `snowflake_node_lease`,D-t151 决策 2)。
+正常停机(SIGTERM)组件自释放租约(DELETE);**kill -9 / 宿主灭失不留
+释放机会**——行留到 `expires_at`(TTL 缺省 30s)后被下一 claimant 懒回收
+接管,残窗 ≤ TTL 有界。应急清行只在两种情况需要:
+
+1. **显式号被拒启且等不及残窗**(错误形如 `node lease held by another
+   holder: node 2 by api:box-3 until ...`):
+2. **行脏了**(如迁移/演练后的幽灵行,`expires_at` 异常)。
+
+**步骤**(MySQL 端执行;先诊断后清行,清行 = 显式运维决策):
+
+```sql
+-- 诊断:谁持有哪些号、何时到期(过期判定全 DB 端 NOW(3))
+SELECT node_id, kind, holder_id, expires_at,
+       expires_at < NOW(3) AS expired
+FROM braid.snowflake_node_lease ORDER BY node_id;
+
+-- 清行:只清确认已死实例的行(holder = kind:hostname;勿清活体——
+-- 清活体 = 制造双持窗)
+DELETE FROM braid.snowflake_node_lease
+WHERE node_id = <N> AND holder_id = '<kind>:<hostname>';
+```
+
+**边界如实登记**(D-t151 决策 8-①):全 DB 端时钟只排除时钟漂移路径;
+MySQL 异步 failover 尾吞授予/续期 + 进程冻结的 zombie 双持窗存在(症状 =
+业务表 PK 1062 响亮写入中止,不损已提交数据),半同步收紧、fencing
+token 登记后续,不随 T15.2 实施。

@@ -40,7 +40,7 @@ spec:
             - name: BRAID_API_ADDR
               value: "0.0.0.0:8081" # 容器内网绑定;公开面经反代(Service/Ingress)
             - name: BRAID_API_SNOWFLAKE_NODE
-              value: "1" # 显式:撞号 = 业务表 PK 1062
+              value: "auto" # T15.2(D-t151 决策 2):租约池分配——k8s 多副本一律 auto(RollingUpdate 下 pinned-env 永久僵局);静态钉 1/2/3 已摘钉
             - name: BRAID_API_RESUME_QUEUE
               value: default
             - name: BRAID_ROLLBACK_MAX_ROWS

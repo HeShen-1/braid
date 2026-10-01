@@ -116,6 +116,7 @@ outbox UPDATE / audit_pending INSERT)已全部收回。
 | login_audit | INSERT | — | — | SELECT,DELETE |
 | login_throttle | SELECT,INSERT,UPDATE(window_start,count,locked_until,updated_at) | — | — | SELECT,DELETE |
 | users / user_role | SELECT | SELECT | — | — |
+| snowflake_node_lease | SELECT,INSERT,UPDATE,DELETE | SELECT,INSERT,UPDATE,DELETE | — | SELECT,INSERT,UPDATE,DELETE |
 | schema_migrations | SELECT | SELECT | SELECT | SELECT |
 
 - **append-only 铁律与启动断言**:api/worker 对 audit_log 仅
@@ -128,6 +129,14 @@ outbox UPDATE / audit_pending INSERT)已全部收回。
   哈希链的 per-execution 锚(head 行锁 = 串行化点,verified 轮换戳 =
   全链复走触发锚,broken 闩 = fail-closed 执法位),UPDATE 是设计语义
   ——不在 CheckAuditAppendOnly 断言表集 {audit_log, login_audit} 内。
+- **snowflake_node_lease 是运行态簿记面(T15.2,D-2026-10-01-t151
+  决策 2)**:雪花节点号租约仲裁(acquire INSERT / 复占与过期接管
+  UPDATE / auto 池扫描 SELECT / SIGTERM 优雅释放 DELETE——DELETE 是
+  设计语义,行生命周期 = 进程生命周期)。三账号同面(api/worker/
+  reaper);relay 无雪花生成器零面。不在 CheckAuditAppendOnly 断言表集,
+  preflight「预登记未断言」台账(internal/preflight/mysql.go);过期判定
+  全 DB 端 NOW(3),kill -9 残窗 ≤ TTL(缺省 30s),runbook 清行应急见
+  UPGRADE.md §7。
 - **login_throttle 同为簿记面(T11.3,D-2026-09-29-t113 #2)**:登录
   防御状态(连败锁定 + IP 固定窗口,多副本共享真相源),UPDATE 是设计
   语义、api 无 DELETE(成功重置走 UPDATE,且 UPDATE 列级收窄到四数据
