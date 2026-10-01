@@ -99,8 +99,8 @@ worker 以 uid 65532 跑,标准节点的 socket 属 root:docker——必须把
   网名带 worker_id 实例段,一 worker 一网、网关互异(D-t151 决策 5,
   T15.4)。上界 = 节点 daemon 地址池(缺省 ≈31 用户网;pod recreate
   每次泄漏一网,回收见 deploy/RUNBOOK.md)。沙箱清扫互杀面(R2)已随
-  T15.3 owner-scoped 化消除;多副本剩余前置 = 雪花节点号分配(T15.2)
-  与 mode=all 硬闸/整体演练(T15.6)。
+  T15.3 owner-scoped 化消除;雪花节点号分配(R1)已随 T15.2 租约池化
+  解除(auto 仲裁);多副本剩余前置 = mode=all 硬闸/整体演练(T15.6)。
 - T15.3 沙箱 owner 契约(D-t151 #5):worker 模板已钉
   `terminationGracePeriodSeconds: 35`(排水窗契约);沙箱容器 owner 身份 =
   pod 名,滚动重建换名——新 pod 清扫不互杀旧 pod 在飞容器,旧 pod 非优雅
@@ -116,9 +116,13 @@ worker 以 uid 65532 跑,标准节点的 socket 属 root:docker——必须把
 
 ## 已知边界(登记,非缺口)
 
-1. **副本 × 雪花**:api/worker/reaper 副本 >1 需外部雪花节点号分配
-   (Deployment 无稳定 ordinal,缺省派生必撞号 = 业务表 PK 1062);默认 1
-   = compose 等价。relay 无生成器,扩副本语义最简。
+1. **副本 × 雪花(已解除,T15.2)**:节点号经 MySQL 租约表仲裁
+   (`snowflake_node_lease`,迁移 0012),三组件模板 `BRAID_*_
+   SNOWFLAKE_NODE=auto`——副本 >1 零人工节点号分配。剩余边界:worker
+   副本 >1 仍受沙箱清扫互杀挡(T15.3,多 worker 同网互杀),解除前
+   values 保持 1;relay 无生成器,扩副本语义最简。**首次升级到本
+   chart 版段**的一次性排空条款见 `deploy/UPGRADE.md §2`(旧静态号
+   pod 与 auto 副本共存窗撞号)。
 2. **首装混跑窗**:hook 相位 post-install 下,组件先于 migrate/grants
    创建并 crash-loop 自愈(缺表/缺授权即拒启;一次性,非每升级);升级序
    不受影响(迁移先行)。这是 Helm 生命周期下的结构性代价(D- 审计收口①,

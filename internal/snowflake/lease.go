@@ -49,6 +49,10 @@ const (
 
 	// autoBackoffBase 是重扫退避基(50/100/200ms)。
 	autoBackoffBase = 50 * time.Millisecond
+
+	// releaseDeleteTimeout 是 Release 侧单行 PK DELETE 的独立短上界
+	//(不跟 caller ctx——ctx 超时走残窗语义,释放仍尽力)。
+	releaseDeleteTimeout = 5 * time.Second
 )
 
 var (
@@ -161,13 +165,22 @@ func (l *Lease) Lost() <-chan error { return l.lost }
 func (l *Lease) Guard(g *Generator) { l.guard.Store(g) }
 
 // Release 是优雅停机路径(SIGTERM 必须 DELETE 释放,决策 2):停续期、
-// 删本行。lost 后调用安全(行非本持,DELETE 0 行幂等)。
+// 删本行。lost 后调用安全(行非本持,DELETE 0 行幂等)。续期排空等待受
+// caller ctx 上界(续期 Exec 自带 ≤TTL 上界,但停机路径不应无限等);
+// 等待超时 = 走 kill -9 残窗语义(行 ≤TTL 过期收敛),DELETE 仍以独立
+// 短超时尽力执行(与在途续期竞态无害:进程退出,UPDATE 落空即 lost
+// 信号无人消费)。
 func (l *Lease) Release(ctx context.Context) error {
 	var err error
 	l.releaseOnce.Do(func() {
 		close(l.stopRenew)
-		<-l.renewDone
-		_, err = l.db.ExecContext(ctx,
+		select {
+		case <-l.renewDone:
+		case <-ctx.Done():
+		}
+		dctx, cancel := context.WithTimeout(context.Background(), releaseDeleteTimeout)
+		defer cancel()
+		_, err = l.db.ExecContext(dctx,
 			`DELETE FROM snowflake_node_lease WHERE node_id = ? AND holder_id = ?`, l.node, l.holder)
 	})
 	return err

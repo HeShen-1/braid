@@ -187,7 +187,8 @@ func TestConfigFromEnvPool(t *testing.T) {
 }
 
 // TestConfigFromEnvInfra:装配输入收编(T7.1)——DSN/Redis 队列(可选 =
-// leaderless)/指标地址 + 雪花节点显式化(缺省 PID 派生,原 cmd 逻辑)。
+// leaderless)/指标地址 + 雪花节点三层解析(T15.2:显式数字 > 缺省 auto,
+// PID 派生已退役)。
 func TestConfigFromEnvInfra(t *testing.T) {
 	env := map[string]string{
 		"BRAID_MYSQL_DSN":        "u:p@tcp(127.0.0.1:3306)/p",

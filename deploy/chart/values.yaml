@@ -40,12 +40,12 @@ redisQueue:
   storageClassName: ""
 
 # 副本:compose = 单副本等价面(默认 values 渲染 = prod compose 默认交付面
-# 的对拍契约,默认副本恒 1)。雪花节点号已租约池化(T15.2,D-t151 决策 2:
-# 三模板 BRAID_*_SNOWFLAKE_NODE=auto,MySQL 租约表仲裁)——副本 >1 零人工
-# 节点号分配;egress 撞端口已随 T15.4 解除(一 worker 一网,上界 = 节点
-# daemon 地址池,缺省 ≈31 网,pod recreate 每次泄漏一网,回收见
-# deploy/RUNBOOK.md);worker 剩余边界 = 沙箱清扫互杀(T15.3,多 worker
-# 同网互杀)——解除前保持 1。
+# 的对拍契约,默认副本恒 1)。多副本三挡已全解:雪花节点号租约池化
+#(T15.2,D-t151 决策 2:三模板 BRAID_*_SNOWFLAKE_NODE=auto)+ egress
+# 一 worker 一网(T15.4)+ 沙箱清扫 owner 化(T15.3)——四组件副本 >1
+# 均可起,零人工节点号分配。容量注记:每 worker 一网,上界 = 节点
+# daemon 地址池(缺省 ≈31 网,pod recreate 每次泄漏一网,回收见
+# deploy/RUNBOOK.md);整体演练与 mode=all 硬闸 = T15.6。
 replicaCount:
   api: 1
   worker: 1

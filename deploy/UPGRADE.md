@@ -77,6 +77,17 @@ compose 的 `migrate` one-shot 服务已参数化(entrypoint 透传 command):
 两阶段(先增后删、间隔一个发布窗),并在 `docs/DECISIONS.md` 登记决策——
 单阶段破坏性迁移会让窗口内旧二进制行为未定义。
 
+**T15.2 首次升级例外(一次性;0012 租约表落地窗)**:上述滚动序在
+「旧二进制 = 静态节点号、新二进制 = 租约 auto」配对上产生**确定性撞号
+窗**——旧静态持有者(1/2/3)在 `snowflake_node_lease` 无行,新副本的
+auto 线性取号看不见它们;k8s RollingUpdate 新旧 pod 共存窗内,新副本
+取 0/1/2 即与旧 api=1 / worker=2 同号双活,症状 = 业务表 PK 1062 响亮
+写入中止(不损已提交数据)。因此**首次升级到 T15.2、以及自 T15.2 回滚
+到旧版,必须先排空旧 pod**(临时 `--replicas=0`,或该次发布对 Deployment
+用 Recreate 策略)再换二进制;「迁移先行、滚动换代」的混跑合法性自
+**两端都是租约二进制**起恢复(后续升级无此条款)。compose 单副本
+`stop` → `up -d` 天然排空,不受影响。
+
 ## 3. 按组件账号授权
 
 **矩阵**(四账号 × 全表最小授权)与设计说明见 `deploy/README.md §5`;
@@ -240,9 +251,15 @@ Asynqmon 确认行转 DISPATCHED。
    holder: node 2 by api:box-3 until ...`):
 2. **行脏了**(如迁移/演练后的幽灵行,`expires_at` 异常)。
 
-**步骤**(MySQL 端执行;先诊断后清行,清行 = 显式运维决策):
+**步骤**(MySQL 端执行;先诊断后清行,清行 = 显式运维决策。**第一步必设
+会话时区**:`expires_at` 存 UTC 字面值,braid 进程的连接契约是
+`time_zone='+00:00'`,但手工客户端缺省跟随宿主时区——不设则 `NOW(3)`
+按本地时区求值,过期判定系统性误报,可能误清活租约):
 
 ```sql
+-- 0. 会话时区对齐连接契约(braid 进程侧同款;不设 = 误清活体面)
+SET time_zone = '+00:00';
+
 -- 诊断:谁持有哪些号、何时到期(过期判定全 DB 端 NOW(3))
 SELECT node_id, kind, holder_id, expires_at,
        expires_at < NOW(3) AS expired
@@ -257,4 +274,10 @@ WHERE node_id = <N> AND holder_id = '<kind>:<hostname>';
 **边界如实登记**(D-t151 决策 8-①):全 DB 端时钟只排除时钟漂移路径;
 MySQL 异步 failover 尾吞授予/续期 + 进程冻结的 zombie 双持窗存在(症状 =
 业务表 PK 1062 响亮写入中止,不损已提交数据),半同步收紧、fencing
-token 登记后续,不随 T15.2 实施。
+token 登记后续,不随 T15.2 实施。**同宿主同类双进程**(裸机手工起两个
+同类进程且共享 hostname ⇒ holder_id 相同):仲裁无法区分「本进程重启
+复航」与「另一活实例」,双双通过复占持有同号(决策 8-③ 活体同 owner
+冲突同族)——holder 唯一性是部署契约(k8s pod 名/compose 容器名天然
+满足),裸机多实例须逐实例显式 `BRAID_*_SNOWFLAKE_NODE` 或独立 hostname。
+另:**自 T15.2 回滚到旧版**的镜像共存窗(旧静态号 pod 起来时新副本租约
+行仍在续期)与 §2 首次升级例外同构——回滚同样先排空,见 §2。

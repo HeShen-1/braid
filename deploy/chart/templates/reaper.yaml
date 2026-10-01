@@ -1,5 +1,5 @@
 {{/* reaper(prod compose reaper 服务的 K8s 形态;4 键对齐)。
-     雪花节点 3 显式(容器 PID 恒 1,缺省派生必撞 api=1,compose 同注释)。 */}}
+     雪花节点 auto(租约池分配,T15.2 摘钉;compose 侧显式 3 单副本语义)。 */}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

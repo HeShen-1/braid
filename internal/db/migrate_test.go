@@ -350,6 +350,36 @@ SELECT COUNT(*) FROM information_schema.COLUMNS
 			t.Fatalf("0012 租约锚:%s NOT NULL 列缺失(want 1)", col)
 		}
 	}
+	// 列型钉死(对抗审计 advisory:列型放宽 = 池语义漂移静默通过):node_id
+	// 恒 smallint unsigned(10bit 池序号载体;INT 放宽 = 词域静默越
+	// MaxNodeID 的 DB 侧防线失守)、kind 恒 ENUM 三词表(T15.6 硬闸扫描
+	// 面;重排/加词须过迁移评审)、capabilities 恒 JSON(T15.6 消费契约)。
+	for col, wantType := range map[string]string{
+		"node_id":      "smallint unsigned", // MySQL 8 I_S 不带显示宽度(8.0.19 起弃用)
+		"kind":         "enum('api','worker','reaper')",
+		"capabilities": "json",
+	} {
+		var got string
+		if err := d.QueryRow(`
+SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'snowflake_node_lease'
+   AND COLUMN_NAME = ?`, col).Scan(&got); err != nil {
+			t.Fatalf("snowflake_node_lease.%s type: %v", col, err)
+		}
+		if got != wantType {
+			t.Fatalf("0012 租约锚:%s COLUMN_TYPE = %q, want %q", col, got, wantType)
+		}
+	}
+	var leaseChk string
+	if err := d.QueryRow(`
+SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS
+ WHERE CONSTRAINT_SCHEMA = DATABASE() AND CONSTRAINT_NAME = 'chk_lease_node'`,
+	).Scan(&leaseChk); err != nil {
+		t.Fatalf("chk_lease_node: %v", err)
+	}
+	if leaseChk != "(`node_id` <= 1023)" {
+		t.Fatalf("0012 租约锚:CHECK = %q, want node_id <= 1023", leaseChk)
+	}
 
 	// CHECK 约束齐备:12 个(definition 1 + node 3 + attempt 2 + audit 1 + users 3;
 	// node +1 = 0006 chk_node_instance;users +1 = 0009 chk_user_email;
