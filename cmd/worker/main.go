@@ -229,6 +229,8 @@ func run(ctx context.Context) error {
 		Kind:   snowflake.KindWorker,
 		Spec:   cfg.SnowflakeNode,
 		Holder: snowflake.DefaultHolder(),
+		// T15.6 能力宣告(D-t151 决策 6):worker 的 mode=all 续跑复核腿。
+		Capabilities: snowflake.DeclaredCapabilities(),
 	})
 	if err != nil {
 		return fmt.Errorf("worker: snowflake lease: %w", err)

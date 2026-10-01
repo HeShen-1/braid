@@ -176,15 +176,32 @@ type RollbackSet struct {
 	Denied    *prometheus.CounterVec // by reason
 }
 
+// FleetGateReason* are the T15.6 fleet capability gate rejection facets:
+// undeclared = in-fleet instance missing the capability (mixed-version
+// window); unavailable = fleet scan error (fail-closed, same reject path).
+const (
+	FleetGateReasonUndeclared  = "undeclared"
+	FleetGateReasonUnavailable = "fleet_unavailable"
+)
+
+// FleetGateSet covers the T15.6 mode=all fleet capability gate (api process;
+// D-2026-10-01-t151 decision 6). Rejections are the operator-facing signal of
+// a mixed-version rolling window (durable trail is the structured slog, not
+// audit_log — execution-anchored domain cannot take pre-materialization rows).
+type FleetGateSet struct {
+	Rejected *prometheus.CounterVec // by reason (undeclared | fleet_unavailable)
+}
+
 // Set aggregates every component subset; exactly one per process.
 type Set struct {
-	LLM      *LLMSet
-	Reaper   *ReaperSet
-	Worker   *WorkerSet
-	Relay    *RelaySet
-	Login    *LoginSet
-	Rollback *RollbackSet
-	DBPool   *DBPoolSet
+	LLM       *LLMSet
+	Reaper    *ReaperSet
+	Worker    *WorkerSet
+	Relay     *RelaySet
+	Login     *LoginSet
+	Rollback  *RollbackSet
+	FleetGate *FleetGateSet
+	DBPool    *DBPoolSet
 }
 
 // IncLLMCallDiscarded satisfies the scheduler MetricsSink seam (T6.4).
@@ -370,6 +387,12 @@ func NewSet() (*Set, *prometheus.Registry) {
 			Denied: f.NewCounterVec(prometheus.CounterOpts{
 				Name: "braid_rollback_denied_total",
 				Help: "Rejected rollback/resume requests by reason (role_denied/not_rollbackable/blocked_inflight/bad_node_id/no_resume_target).",
+			}, []string{"reason"}),
+		},
+		FleetGate: &FleetGateSet{
+			Rejected: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_api_fleet_gate_rejections_total",
+				Help: "mode=all publish/trigger requests rejected by the fleet capability gate (T15.6), by reason; undeclared = mixed-version window signal.",
 			}, []string{"reason"}),
 		},
 		DBPool: &DBPoolSet{

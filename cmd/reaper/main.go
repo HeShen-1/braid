@@ -84,6 +84,8 @@ func run(ctx context.Context) error {
 		Kind:   snowflake.KindReaper,
 		Spec:   cfg.SnowflakeNode,
 		Holder: snowflake.DefaultHolder(),
+		// T15.6 能力宣告(D-t151 决策 6):reaper 的 mode=all 已定局判定腿。
+		Capabilities: snowflake.DeclaredCapabilities(),
 	})
 	if err != nil {
 		return fmt.Errorf("reaper: snowflake lease: %w", err)
