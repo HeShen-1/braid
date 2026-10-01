@@ -421,12 +421,26 @@ func parseDaemonVersion(v string) (int, int, error) {
 	return major, minor, nil
 }
 
-// SandboxSweep 是 worker 启动按 label 清扫(braid.sandbox=1 注册面,基线
-// #13:cancel 窗僵尸与 kill -9 孤儿的兜底)。ps 枚举失败 = 响亮错误;单个
-// rm 失败跳过继续(best-effort,下次启动再扫)。返回成功移除的容器 id,
-// 由调用方记录。在 SandboxProbe 之后调用(probe 已保证 daemon 可达)。
-func SandboxSweep(ctx context.Context, dockerBin string) ([]string, error) {
-	out, err := exec.CommandContext(ctx, dockerBin, "ps", "-aq", "--filter", "label=braid.sandbox=1").Output()
+// SandboxSweep 是 worker 启动按 (braid.sandbox=1, owner) 二元组清扫
+// (T15.3/D-t151 #5:owner 化——多 worker 同 daemon 不互杀,k8s 滚动互杀
+// 消灭;基线 #13 的 cancel 窗僵尸兜底语义收窄到自家)。ps 枚举失败 =
+// 响亮错误;单个 rm 失败跳过继续(best-effort,下次启动再扫)。返回成功
+// 移除的容器 id,由调用方记录。在 SandboxProbe 之后调用(probe 已保证
+// daemon 可达)。
+//
+// owner 空/越域 = 响亮败——owner-scoped 是唯一代码路径形态,全局清扫
+// (kill -9 孤儿跨 owner 回收)是 runbook 显式原语,不提供函数面
+// (deploy/RUNBOOK.md §1.2;基线 #11「回收不依赖全局 label 误伤」)。
+func SandboxSweep(ctx context.Context, dockerBin, owner string) ([]string, error) {
+	if owner == "" {
+		return nil, fmt.Errorf("tools: sandbox sweep requires owner identity (owner-scoped sweep is the only code path; global sweep of kill -9 orphans is a runbook-only primitive, see deploy/README)")
+	}
+	if !sandboxOwnerRe.MatchString(owner) {
+		return nil, fmt.Errorf("tools: sandbox sweep owner %q invalid (want ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$)", owner)
+	}
+	out, err := exec.CommandContext(ctx, dockerBin, "ps", "-aq",
+		"--filter", "label=braid.sandbox=1",
+		"--filter", "label=braid.sandbox.owner="+owner).Output()
 	if err != nil {
 		return nil, fmt.Errorf("tools: sandbox sweep: docker ps: %v", err)
 	}
@@ -449,8 +463,9 @@ var sandboxSweepTimeout = 30 * time.Second
 // SandboxStartupCheck 是 worker 启动接线(T10.1 T6,基线 #7/#13):按
 // BRAID_TOOL_SANDBOX 词表决策——off(含未设)= 无操作零 docker 接触
 // (dev 栈照跑);docker = SandboxProbe 部署性前移(缺 bin/daemon 不可达/
-// 镜像缺失/版本低于下限 = 拒启,绝不静默回落 local)+ SandboxSweep label
-// 清扫(cancel 窗僵尸与 kill -9 孤儿的兜底;probe 已保证 daemon 可达,
+// 镜像缺失/版本低于下限 = 拒启,绝不静默回落 local)+ owner 必填闸
+// (T15.3:缺身份 = 拒启,清扫互杀面零回退)+ SandboxSweep 按 (全局,
+// owner) 二元组清扫(只清自家 cancel 窗僵尸;probe 已保证 daemon 可达,
 // sweep 失败同样响亮败)。返回成功移除的容器 id 供调用方记录。api 进程
 // 不调用本函数(不执行工具,BuiltinToolsFromEnv 构造已 docker-free)。
 //
@@ -466,6 +481,13 @@ func SandboxStartupCheck(ctx context.Context, getenv func(string) string) ([]str
 	if !cfg.Docker {
 		return nil, nil
 	}
+	// T15.3 owner 必填闸(D-t151 #5 部署契约的代码面):无身份的 worker
+	// 不许带 docker 沙箱启动——清扫无过滤面 = 互杀面回退。owner 由
+	// cmd/worker 从 WorkerID(BRAID_WORKER_ID 显式或 os.Hostname 兜底)
+	// 自写 env;解析层放行空值是为 api 装配路径,worker 侧到本闸必现。
+	if cfg.Owner == "" {
+		return nil, fmt.Errorf("tools: BRAID_TOOL_SANDBOX_OWNER is required in docker mode (worker startup sets it from BRAID_WORKER_ID or hostname; without an owner identity the startup sweep cannot be scoped to this worker and must refuse — D-t151 #5)")
+	}
 	if err := SandboxProbe(ctx, sandboxDockerBin, cfg.Image); err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr
@@ -474,7 +496,7 @@ func SandboxStartupCheck(ctx context.Context, getenv func(string) string) ([]str
 	}
 	sctx, cancel := context.WithTimeout(ctx, sandboxSweepTimeout)
 	defer cancel()
-	removed, err := SandboxSweep(sctx, sandboxDockerBin)
+	removed, err := SandboxSweep(sctx, sandboxDockerBin, cfg.Owner)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, ctxErr // 停机信号落在 sweep 窗,同上归因。

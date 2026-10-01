@@ -1,8 +1,9 @@
 package tools
 
 // 沙箱载体测试(T10.1):env 词表契约(D-t101)——unset=off=现状逐字节,
-// mode=docker 下六键全部构造期校验、坏值键名响亮败;off 模式对沙箱键零
-// 消费(零 docker 代码路径,api docker-free 的结构保证)。
+// mode=docker 下各键构造期校验、坏值键名响亮败(owner 非空才校验值域——
+// api 装配路径恒空,T15.3);off 模式对沙箱键零消费(零 docker 代码路径,
+// api docker-free 的结构保证)。
 
 import (
 	"net/url"
@@ -69,16 +70,47 @@ func TestSandboxConfigFromEnv(t *testing.T) {
 			"BRAID_TOOL_SANDBOX_MAX_CONCURRENCY": "16",
 			"BRAID_TOOL_SANDBOX_EGRESS_NETWORK":  "braid-egress-custom",
 			"BRAID_TOOL_SANDBOX_EGRESS_ADDR":     "http://172.18.0.1:9210",
+			"BRAID_TOOL_SANDBOX_OWNER":           "braid-prod-worker",
 		}))
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
 		if cfg.Image != "registry.local/braid/sandbox@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" ||
 			cfg.Memory != "512m" || cfg.CPUs != "2" || cfg.PidsLimit != 128 || cfg.MaxConcurrency != 16 ||
-			cfg.EgressNetwork != "braid-egress-custom" || cfg.EgressAddr == nil || cfg.EgressAddr.String() != proxy.String() {
+			cfg.EgressNetwork != "braid-egress-custom" || cfg.EgressAddr == nil || cfg.EgressAddr.String() != proxy.String() ||
+			cfg.Owner != "braid-prod-worker" {
 			t.Fatalf("cfg = %+v, want custom values preserved (egress %v)", cfg, proxy)
 		}
 	})
+
+	// T15.3 owner 键:值域(落 argv label/filter 位)非空才校验;空 = 解析
+	// 层放行(api 装配路径恒空——无 WorkerID 且永不 Run,必填闸在 worker
+	// 侧消费点 SandboxStartupCheck/buildSandboxRunArgv)。
+	t.Run("owner unset is legal empty for api assembly", func(t *testing.T) {
+		cfg, err := sandboxConfigFromEnv(envOf(map[string]string{"BRAID_TOOL_SANDBOX": "docker"}))
+		if err != nil {
+			t.Fatalf("err = %v", err)
+		}
+		if cfg.Owner != "" {
+			t.Fatalf("owner = %q, want empty", cfg.Owner)
+		}
+	})
+	for _, bad := range []string{
+		"-evil",     // 前导 dash 变旗标
+		"has space", // 空白
+		"a,b",       // 逗号
+		strings.Repeat("a", 65),
+	} {
+		t.Run("rejects owner "+bad, func(t *testing.T) {
+			_, err := sandboxConfigFromEnv(envOf(map[string]string{
+				"BRAID_TOOL_SANDBOX":       "docker",
+				"BRAID_TOOL_SANDBOX_OWNER": bad,
+			}))
+			if err == nil || !strings.Contains(err.Error(), "BRAID_TOOL_SANDBOX_OWNER") {
+				t.Fatalf("err = %v, want named-key rejection for owner %q", err, bad)
+			}
+		})
+	}
 
 	// T10.2 egress 键:网络名值域(argv 注入面)与代理地址词形单门;空
 	// ADDR 合法(worker 启动段恒写,api 恒空——nil proxy 的信封 omitted)。

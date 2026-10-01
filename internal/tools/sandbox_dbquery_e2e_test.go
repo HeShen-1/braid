@@ -69,6 +69,7 @@ func TestSandboxE2EDBQuery(t *testing.T) {
 		MaxConcurrency: 8,
 		EgressNetwork:  netName,
 		EgressAddr:     proxyURL,
+		Owner:          sandboxTestOwner(),
 	}
 	carrier, err := newSandboxCarrierDBQuery(cfg, dsn, newSandboxLimiter(8))
 	if err != nil {

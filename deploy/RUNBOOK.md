@@ -52,12 +52,39 @@ docker network rm <net>
 见 deploy/README.md §9 运维;`EGRESS_PORT=0` dev/test 不执法),不产生
 第二张网。
 
-### 1.2 孤儿沙箱容器(T15.3 面)——落位仲裁注记
+### 1.2 孤儿沙箱容器(T15.3)
 
-kill -9 残窗容器按 owner label 清扫的原语、边界与安全前提由 T15.3 承载。
-**落位仲裁(两 lane 现状,2026-10-01)**:t15.3 在飞分支当前把该 runbook
-写在 `deploy/README.md §7.1`(「沙箱 owner 与孤儿清扫 runbook」),本
-文件 §1 只收泄漏网。D-t151 决策 5 的「孤儿/泄漏网清扫合并一节」由后合
-者执行并节(任一方向:容器原语迁入本文件 §1.2,或本 §1.1 泄漏网原语
-迁入 README §7.1——合并后全仓只留一个 runbook 节,交叉引用同步改)。
-在 t15.3 合入前,附着容器非零的泄漏网一律不回收(第 4 步)。
+沙箱容器打 `braid.sandbox.owner=<WorkerID>` label,worker 启动清扫只清
+自家(全局清扫**无代码路径**——kill -9 孤儿、recreate 前身容器等跨
+owner 回收是本节显式原语)。死实例身份可知:owner label 与
+`node_attempt.worker_id` 对账面同源同词形。
+
+```sh
+# ① 枚举 + 归属判读:每只容器的 owner label 即归属身份(与 DB 的
+#    node_attempt.worker_id 对账可核)。
+docker ps -a --filter label=braid.sandbox=1 \
+  --format '{{.ID}} {{.Label "braid.sandbox.owner"}} {{.Status}}'
+
+# ② 按 owner 精确清(推荐:只动目标死者身份的容器)。filter 值整体加
+#    引号再替换占位符——worker_id 若取自 DB(node_attempt),其值域在
+#    off 模式 worker 下不受字符集约束,不过 ^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$
+#    的形态不可能是任何沙箱容器的主人(docker 模式启动闸挡死),按敌意
+#    输入对待、勿裸贴进 shell。
+docker ps -aq --filter label=braid.sandbox=1 \
+  --filter "label=braid.sandbox.owner=<死实例 WorkerID>" | xargs -r docker rm -f
+
+# ③ 全局清扫(最后手段:多实例同 daemon 时先确认无其他活体 worker)。
+docker ps -aq --filter label=braid.sandbox=1 | xargs -r docker rm -f
+```
+
+升级路径的 recreate 孤儿(自管部署未钉 hostname 的形态:前身容器带旧
+短 ID owner)同法回收——② 的 owner 取前身容器短 ID;交付 prod compose
+已钉 hostname,recreate 前后身份一致,由新实例启动清扫自收。**首个
+T15.3 升级窗特例**:旧二进制所起的前身容器没有 owner label,② 与启动
+清扫都结构性够不到,只能用 ③(先确认无其他活体 worker),此后再无此
+形态(详见 deploy/UPGRADE.md 注记)。
+
+边界(登记不修,D-t151 #8-③):手工同 hostname ×2 等活体同 owner 冲突
+会复活互杀面;「sweep 前租约活性复核」选型 = 部署契约承载(followup
+位,依赖 t15.2 租约表)。与 §1.1 泄漏网的耦合:附着容器非零的网一律
+不回收(§1.1 第 4 步),先按本节清容器再回收网。

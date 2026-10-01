@@ -10,7 +10,7 @@
 
 - [x] T15.1 HA 目标形态 D- 立项 — L — 验收:多副本拓扑与单点逐一裁定的 D- 条目**经用户确认**(Redis 队列 HA 替代选型——含 Sentinel 丢写负样本论证、MySQL HA 取舍、雪花节点号分配机制、沙箱/egress 多副本口径、多副本演练口径);不重开 ARCHITECTURE 已锁决策,只裁多副本新面;本任务是 T15.2-T15.4、T15.6 的前置闸
 - [ ] T15.2 副本身份与雪花节点号自动分配 — M — 依赖 T15.1 — 验收:租约注册或 stable ordinal 自动分配,消除人工外部分配 `BRAID_*_SNOWFLAKE_NODE`;Helm values 默认副本 >1 可起(D-t144 已知边界:Deployment 无稳定 ordinal)
-- [ ] T15.3 沙箱清扫互杀红线消除 — M — 依赖 T15.1 — 验收:多 worker 同网互杀面消除(t101-sandbox-baseline #11:kill -9 后死实例身份可知、孤儿回收不依赖全局 label 误伤;明文「多副本/k8s 滚动部署前必须先解」)
+- [x] T15.3 沙箱清扫互杀红线消除 — M — 依赖 T15.1 — 验收:多 worker 同网互杀面消除(t101-sandbox-baseline #11:kill -9 后死实例身份可知、孤儿回收不依赖全局 label 误伤;明文「多副本/k8s 滚动部署前必须先解」)— 已交付:D-t151 决策 5 全量落地(owner label + owner-scoped 清扫 + 部署契约 hostname/停机宽限 ≥35s + runbook 按-owner 原语;租约活性复核选型 = 部署契约承载,followup 位)
 - [x] T15.4 egress 端口多副本分配面 — M — 依赖 T15.1 — 验收:同网多 worker 不撞端口拒启(D-t102④ + chart README 登记);rootless/受限 daemon 适用域一并复核
 - [x] T15.5 引擎核心压测基线与容量模型 — L — 验收:基准套件落地(吞吐/时延/大 DAG 回滚锁窗量化);MaxRollbackRows 实测定档(D-t92 停车场悬项);容量模型文档;audit_trace_map 旁路表按延迟实测裁定(D-t63#3);锁窗修复若动 DBTX 形状须先 D-(D-t24#6 演进注记);产物为 T16.4 的输入
 - [ ] T15.6 mode=all 混跑窗硬闸 + 多副本整体演练 — M — 依赖 T15.2、T15.3、T15.4 — 验收:启动期能力探测硬闸(替 UPGRADE.md 人工纪律,D-t142①);多副本整体演练验收(哈希链混合版本窗 D-t93③ 口径随演练复核)

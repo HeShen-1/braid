@@ -60,7 +60,8 @@ func shimArgv(t *testing.T, dir string) []string {
 	return strings.Split(text, "\n")
 }
 
-// carrierCfg 测试基线配置(与 argv golden 同值;egress 网络位 T10.2)。
+// carrierCfg 测试基线配置(与 argv golden 同值;egress 网络位 T10.2,
+// owner 位 T15.3)。
 var carrierCfg = sandboxConfig{
 	Docker:         true,
 	Image:          "braid-tool-sandbox:1",
@@ -69,6 +70,7 @@ var carrierCfg = sandboxConfig{
 	PidsLimit:      64,
 	MaxConcurrency: 8,
 	EgressNetwork:  sandboxEgressNetworkDefault,
+	Owner:          "w1",
 }
 
 var sandboxNameRe = regexp.MustCompile(`^braid-sbx-(http|file_read)-[0-9a-f]{16}$`)
@@ -85,10 +87,12 @@ func newTestCarrier(t *testing.T, name string, toolConfig json.RawMessage, dirs 
 	return c
 }
 
-// expectedRunArgv 期望 argv 单行(基线旗标全矩阵硬编码,与 argv golden 同锚)。
+// expectedRunArgv 期望 argv 单行(基线旗标全矩阵硬编码,与 argv golden 同锚;
+// owner label 段 T15.3,恒 carrierCfg.Owner = w1)。
 func expectedRunArgv(name, tool, mount string) string {
 	base := "run --rm --interactive --name " + name +
 		" --label braid.sandbox=1 --label braid.tool=" + tool +
+		" --label braid.sandbox.owner=" + carrierCfg.Owner +
 		" --read-only --tmpfs /tmp:rw,noexec,nosuid,size=16m" +
 		" --memory 256m --memory-swap 256m --cpus 0.5 --pids-limit 64" +
 		" --ulimit nofile=1024:1024 --cap-drop ALL --security-opt no-new-privileges" +
@@ -238,6 +242,26 @@ echo '{"ok":true,"output":{"path":"/etc/hosts","bytes":12}}'
 		// 开销后落在 (9.8s, 10s];绝对秒锚已废弃(双钟锚缝,T5 审计)。
 		if deadlineMs < 9800 || deadlineMs > 10000 {
 			t.Fatalf("deadline_ms = %v, want remaining budget in (9800, 10000]", deadlineMs)
+		}
+	})
+
+	// T15.3:cfg 无 owner(api 装配路径形态)构造合法,但 Run 在 argv 构造
+	// 期响亮败——owner label 是清扫过滤面,缺位容器不可按家回收。
+	t.Run("run without owner fails loud before docker contact", func(t *testing.T) {
+		bin, dir := fakeDockerShim(t, "rec \"$@\"\nexit 9")
+		cfg := carrierCfg
+		cfg.Owner = ""
+		c, err := newSandboxCarrier("http", cfg, json.RawMessage(`{"endpoints":{"api":"https://a.test"}}`), nil, newSandboxLimiter(8))
+		if err != nil {
+			t.Fatalf("newSandboxCarrier: %v", err)
+		}
+		c.docker = bin
+		_, err = c.Run(context.Background(), Call{Inputs: map[string]any{"endpoint": "api", "path": "/x"}})
+		if err == nil || !strings.Contains(err.Error(), "owner") {
+			t.Fatalf("err = %v, want owner requirement at argv build", err)
+		}
+		if lines := shimArgv(t, dir); len(lines) != 0 {
+			t.Fatalf("invocations = %q, want zero docker contact", lines)
 		}
 	})
 
@@ -625,7 +649,9 @@ esac
 }
 
 func TestSandboxSweep(t *testing.T) {
-	t.Run("removes labeled leftovers", func(t *testing.T) {
+	// T15.3:清扫恒 owner-scoped(双 filter 与语义);owner 空/越域 = 响亮
+	// 败——全局清扫无代码路径,是 runbook 原语。
+	t.Run("removes own labeled leftovers with owner filter", func(t *testing.T) {
 		bin, dir := fakeDockerShim(t, `
 rec "$@"
 case "$1" in
@@ -634,7 +660,7 @@ rm) exit 0 ;;
 *) exit 9 ;;
 esac
 `)
-		removed, err := SandboxSweep(context.Background(), bin)
+		removed, err := SandboxSweep(context.Background(), bin, "w1")
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
@@ -642,7 +668,7 @@ esac
 			t.Fatalf("removed = %q", removed)
 		}
 		lines := shimArgv(t, dir)
-		if len(lines) != 3 || lines[0] != "ps -aq --filter label=braid.sandbox=1" ||
+		if len(lines) != 3 || lines[0] != "ps -aq --filter label=braid.sandbox=1 --filter label=braid.sandbox.owner=w1" ||
 			lines[1] != "rm -f abc123" || lines[2] != "rm -f def456" {
 			t.Fatalf("sweep invocations = %q", lines)
 		}
@@ -656,7 +682,7 @@ ps) exit 0 ;;
 *) exit 9 ;;
 esac
 `)
-		removed, err := SandboxSweep(context.Background(), bin)
+		removed, err := SandboxSweep(context.Background(), bin, "w1")
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
@@ -668,6 +694,28 @@ esac
 		}
 	})
 
+	t.Run("empty owner refuses global sweep", func(t *testing.T) {
+		bin, dir := fakeDockerShim(t, "rec \"$@\"\nexit 9")
+		_, err := SandboxSweep(context.Background(), bin, "")
+		if err == nil || !strings.Contains(err.Error(), "owner") {
+			t.Fatalf("err = %v, want owner requirement", err)
+		}
+		if lines := shimArgv(t, dir); len(lines) != 0 {
+			t.Fatalf("invocations = %q, want zero docker contact", lines)
+		}
+	})
+
+	t.Run("hostile owner is rejected before docker contact", func(t *testing.T) {
+		bin, dir := fakeDockerShim(t, "rec \"$@\"\nexit 9")
+		_, err := SandboxSweep(context.Background(), bin, "-evil")
+		if err == nil || !strings.Contains(err.Error(), "owner") {
+			t.Fatalf("err = %v, want owner value-domain rejection", err)
+		}
+		if lines := shimArgv(t, dir); len(lines) != 0 {
+			t.Fatalf("invocations = %q, want zero docker contact", lines)
+		}
+	})
+
 	t.Run("ps failure is loud", func(t *testing.T) {
 		bin, _ := fakeDockerShim(t, `
 case "$1" in
@@ -675,7 +723,7 @@ ps) exit 1 ;;
 *) exit 9 ;;
 esac
 `)
-		_, err := SandboxSweep(context.Background(), bin)
+		_, err := SandboxSweep(context.Background(), bin, "w1")
 		if err == nil || !strings.Contains(err.Error(), "docker ps") {
 			t.Fatalf("err = %v, want loud ps failure", err)
 		}
@@ -690,7 +738,7 @@ rm) [ "$3" = x1 ] && exit 1; exit 0 ;;
 *) exit 9 ;;
 esac
 `)
-		removed, err := SandboxSweep(context.Background(), bin)
+		removed, err := SandboxSweep(context.Background(), bin, "w1")
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
@@ -731,7 +779,10 @@ rm) exit 0 ;;
 esac
 `)
 		t.Setenv("PATH", filepath.Dir(bin))
-		removed, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "docker"}))
+		removed, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{
+			"BRAID_TOOL_SANDBOX":       "docker",
+			"BRAID_TOOL_SANDBOX_OWNER": "w1",
+		}))
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
@@ -741,7 +792,7 @@ esac
 		want := []string{
 			"info --format {{.ServerVersion}}",
 			"image inspect braid-tool-sandbox:1",
-			"ps -aq --filter label=braid.sandbox=1",
+			"ps -aq --filter label=braid.sandbox=1 --filter label=braid.sandbox.owner=w1",
 			"rm -f abc123",
 		}
 		lines := shimArgv(t, dir)
@@ -755,6 +806,20 @@ esac
 		}
 	})
 
+	// T15.3 必填闸:docker 模式缺 owner = 拒启(probe 之前,零 docker 接触)
+	// ——无身份的清扫无过滤面,互杀红线回退,只能 fail-closed。
+	t.Run("docker mode without owner refuses startup before probe", func(t *testing.T) {
+		bin, dir := fakeNamedDockerShim(t, "docker", "rec \"$@\"\nexit 9")
+		t.Setenv("PATH", filepath.Dir(bin))
+		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "docker"}))
+		if err == nil || !strings.Contains(err.Error(), "BRAID_TOOL_SANDBOX_OWNER") {
+			t.Fatalf("err = %v, want named-key owner requirement", err)
+		}
+		if lines := shimArgv(t, dir); len(lines) != 0 {
+			t.Fatalf("invocations = %q, want zero docker contact (refuse before probe)", lines)
+		}
+	})
+
 	t.Run("probe failure refuses startup without sweeping", func(t *testing.T) {
 		bin, dir := fakeNamedDockerShim(t, "docker", `
 rec "$@"
@@ -765,7 +830,10 @@ ps) exit 0 ;;
 esac
 `)
 		t.Setenv("PATH", filepath.Dir(bin))
-		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "docker"}))
+		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{
+			"BRAID_TOOL_SANDBOX":       "docker",
+			"BRAID_TOOL_SANDBOX_OWNER": "w1",
+		}))
 		if err == nil || !strings.Contains(err.Error(), "unreachable") {
 			t.Fatalf("err = %v, want probe rejection", err)
 		}
@@ -789,6 +857,7 @@ esac
 		if _, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{
 			"BRAID_TOOL_SANDBOX":       "docker",
 			"BRAID_TOOL_SANDBOX_IMAGE": "reg.local/braid/sandbox:2",
+			"BRAID_TOOL_SANDBOX_OWNER": "w1",
 		})); err != nil {
 			t.Fatalf("err = %v", err)
 		}
@@ -820,7 +889,10 @@ esac
 		t.Setenv("PATH", filepath.Dir(bin))
 		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		defer cancel()
-		_, err := SandboxStartupCheck(ctx, envOf(map[string]string{"BRAID_TOOL_SANDBOX": "docker"}))
+		_, err := SandboxStartupCheck(ctx, envOf(map[string]string{
+			"BRAID_TOOL_SANDBOX":       "docker",
+			"BRAID_TOOL_SANDBOX_OWNER": "w1",
+		}))
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("err = %v, want ctx deadline attribution", err)
 		}
@@ -834,7 +906,10 @@ esac
 		t.Cleanup(func() { sandboxSweepTimeout = old })
 		bin, _ := fakeNamedDockerShim(t, "docker", "case \"$1\" in\ninfo) echo 24.0.7 ;;\nimage) exit 0 ;;\nps) while :; do :; done ;;\n*) exit 9 ;;\nesac")
 		t.Setenv("PATH", filepath.Dir(bin))
-		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "docker"}))
+		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{
+			"BRAID_TOOL_SANDBOX":       "docker",
+			"BRAID_TOOL_SANDBOX_OWNER": "w1",
+		}))
 		if err == nil || !strings.Contains(err.Error(), "budget") {
 			t.Fatalf("err = %v, want sweep budget rejection", err)
 		}

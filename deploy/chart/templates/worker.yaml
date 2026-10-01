@@ -21,6 +21,13 @@ spec:
       labels:
         {{- include "braid.selectorLabels" (dict "ctx" . "component" "worker") | nindent 8 }}
     spec:
+      # T15.3 部署契约(D-t151 #5,k8s 侧同构):停机宽限 ≥35s——k8s 缺省
+      # 30s = BRAID_WORKER_SHUTDOWN_TIMEOUT,零余量会在排水中途 SIGKILL,
+      # 在飞沙箱容器变孤儿。owner 身份 = pod 名(hostname 缺省):并发活体
+      # 间天然唯一,免设;Deployment 滚动重建换名 ⇒ 新 pod 清扫不互杀旧 pod
+      # 在飞容器(owner 互异),旧 pod 非优雅死亡残留 = 带 pod 名 owner 的
+      # 孤儿,归 runbook 按-owner 原语(deploy/RUNBOOK.md §1.2,身份可知)。
+      terminationGracePeriodSeconds: 35
       {{- if and .Values.tools.dockerSocketMount .Values.tools.dockerSocketGid }}
       # socket 挂载通路(审计收口 ⑥):worker 以 uid 65532 跑,标准节点
       # /var/run/docker.sock 属 root:docker(GID 因发行版而异)——不配组

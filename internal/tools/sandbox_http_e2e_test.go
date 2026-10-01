@@ -233,6 +233,7 @@ func TestSandboxE2EHTTP(t *testing.T) {
 		MaxConcurrency: 8,
 		EgressNetwork:  netName,
 		EgressAddr:     proxyURL,
+		Owner:          sandboxTestOwner(),
 	}, eps, newSandboxLimiter(8))
 	if err != nil {
 		t.Fatalf("newSandboxCarrierHTTP: %v", err)
@@ -255,6 +256,7 @@ func TestSandboxE2EHTTP(t *testing.T) {
 		CPUs:      "0.5",
 		PidsLimit: 64, MaxConcurrency: 8,
 		EgressNetwork: netName,
+		Owner:         sandboxTestOwner(),
 	}
 
 	t.Run("hermetic https via build-time CA trust", func(t *testing.T) {

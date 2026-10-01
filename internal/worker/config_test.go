@@ -80,6 +80,17 @@ func TestConfigFromEnv(t *testing.T) {
 			},
 		},
 		{
+			// T15.3:WorkerID = 沙箱 owner 对账身份,空白(env 文件 CRLF
+			// 尾巴等)在解析点归一;空白串归零 = 落 hostname 兜底。
+			name: "worker id whitespace trimmed",
+			env:  map[string]string{"BRAID_WORKER_ID": "  worker-a\r\n"},
+			want: func() Config {
+				c := DefaultConfig()
+				c.WorkerID = "worker-a"
+				return c
+			}(),
+		},
+		{
 			name:    "snowflake node over max",
 			env:     map[string]string{"BRAID_WORKER_SNOWFLAKE_NODE": "1024"},
 			wantErr: true,

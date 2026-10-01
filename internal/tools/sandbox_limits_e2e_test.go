@@ -100,6 +100,7 @@ func TestSandboxE2EResourceLimits(t *testing.T) {
 		Memory:    "256m",
 		CPUs:      "0.5",
 		PidsLimit: t11PidsTier, MaxConcurrency: 8,
+		Owner: sandboxTestOwner(),
 	}
 
 	// probeArgv argv 手术:builder 全硬化 argv(file_read 形态,零挂载)
@@ -245,6 +246,9 @@ func TestSandboxE2EResourceLimits(t *testing.T) {
 			{"User=65532:65532", rows[0].Config.User != "65532:65532"},
 			{"label braid.sandbox=1", rows[0].Config.Labels["braid.sandbox"] != "1"},
 			{"label braid.tool=file_read", rows[0].Config.Labels["braid.tool"] != "file_read"},
+			// T15.3:owner label 在真 daemon 落盘——清扫过滤键与 e2e 残留
+			// 差分的枚举键本身被锚(argv golden 之外的第二层)。
+			{"label braid.sandbox.owner=" + cfg.Owner, rows[0].Config.Labels["braid.sandbox.owner"] != cfg.Owner},
 		}
 		for _, c := range checks {
 			if c.bad {

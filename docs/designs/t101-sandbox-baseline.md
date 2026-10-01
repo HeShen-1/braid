@@ -31,7 +31,7 @@
 | 10 | 非 root 用户 | `--user 65532:65532` | root-in-container 对 bind mount 按宿主 uid 判权;逃逸以 root 起跑半径远大于 65532 | probe 断言 Geteuid()==65532;写挂载目录 → EACCES;读白名单内文件成功(权限矩阵健全) |
 | 11 | 网络按载体拆分 | file_read:`--network none`;http:`--network bridge`(过渡,t10.2 单点换装) | file_read 零出网需求——none 是零成本纵深;http 出网执法完全依赖守卫随行(见 §4) | file_read 容器内拨任意地址 → unreachable;http 容器内 `https://127.0.0.1` / `https://169.254.169.254` → `tool_ssrf_blocked`(守卫在容器内执法的证明) |
 | 12 | env 从零构造 | 容器 env 仅 `PATH` / `LANG=C.UTF-8`;token、attempt_key、工具 config、inputs 全走 stdin 信封(GATE 1 拍板) | worker ambient env(DSN/LLM key/HMAC secret/代理变量)经 env 通道泄漏;`-e` 旗标把值写进 docker argv(`/proc/<pid>/cmdline` 宿主全局可读);docker inspect 对 daemon 可达主体可读 | command_test.go:14-46 双向断言模式上移:t.Setenv 假主凭证,容器内序列化全量 env,正半边(两成员在场)+ 负半边(假凭证键名与值双缺席);结构性防再入:所有 `BRAID_TOOL_SANDBOX*` 键永不进容器 env(构造式白名单天然成立 + 断言) |
-| 13 | 生命周期绑定 ctx | `--rm` + ctx.Done → `docker stop -t 3 <name>`(5s 有界)+ helper 内 watchdog(信封携相对剩余毫秒,与宿主 ctx 同单调钟锚;期限后 +grace 硬退兜底)+ worker 启动按 label 清扫 | cancel 窗僵尸容器占资源;worker kill -9 孤儿;时钟步进把 helper 期限提前致宿主误分类(绝对秒锚缝,T5 审计收口) | 短超时触发 cancel → 15s 内 label 查询容器清零;kill -9 残余窗 = watchdog 有界自灭,登记残余 |
+| 13 | 生命周期绑定 ctx | `--rm` + ctx.Done → `docker stop -t 3 <name>`(5s 有界)+ helper 内 watchdog(信封携相对剩余毫秒,与宿主 ctx 同单调钟锚;期限后 +grace 硬退兜底)+ worker 启动按 label 清扫(T15.3/D-t151 #5 起 owner-scoped:`braid.sandbox.owner=<WorkerID>` label + 双 filter 只清自家;kill -9 孤儿全局回收降级 runbook 原语,见 deploy/RUNBOOK.md §1.2) | cancel 窗僵尸容器占资源;worker kill -9 孤儿;时钟步进把 helper 期限提前致宿主误分类(绝对秒锚缝,T5 审计收口) | 短超时触发 cancel → 15s 内 label 查询容器清零;kill -9 残余窗 = watchdog 有界自灭,登记残余 |
 | 14 | daemon 日志封顶 | `--log-driver json-file --log-opt max-size=5m --log-opt max-file=1` | 工具无界 stderr 经 daemon 日志通道填宿主盘(stdout 已 16MiB 信封封顶,此为独立防线) | probe 写 52MiB stderr(非 5m 整倍数——整倍数轮转可清空驻留);inspect LogConfig 配置断言 + docker logs 双流合并截留 ≤ 5m+128KiB(容器 stderr 流走 CLI stderr,单收 stdout 是假绿;slack 依据 = daemon stdio copier 读块粒度)+ 尾部哨兵行在场(轮转删头留尾,哨兵必驻留 = 通道承载证明;宿主侧文件路径需 root,非测试可达面) |
 | 15 | tini 作 PID 1 | `--init` | 工具进程派生子进程后退出 → 孤儿僵尸堆积顶满 pids limit(与 #6 的复合失败) | inspect `HostConfig.Init`;probe 双 fork 孤儿派生,沉降轮询扫描 `/proc/*/stat` Z=0(瞬态收割窗容忍);负向对照 = 剥 `--init`(PID 1 = helper 自身不收割)断言孤儿僵尸滞留 >0——漂移红路径 + 探针检测力自证,并兑现复合形态半边(孤儿僵尸 × PID 1 不收割;堆积顶满 pids 的完整形态由 #6 链自终止 + 零残留分解覆盖) |
 
@@ -86,7 +86,7 @@
 8. cgroup v2 细粒度调优(memory.high 软限、cpu.weight、限额×扇出吞吐平衡)
 9. 宿主侧泄漏容器 watchdog(daemon 层带外监控,超越 per-call 结构化清理)
 10. 资源限额生产档位定档(当前为基线提案值)
-11. 启动清扫的实例身份维度(#13 现按全局 label `braid.sandbox=1` 清扫,T4 对抗审计确认 MEDIUM:同 daemon 多 worker 副本/滚动重启共存时,后起 worker 的启动清扫会误杀共存 worker 的在飞容器;当前单 worker 拓扑下不触发。实例化 label(如 `braid.worker=<id>`)需与「kill -9 后死实例身份不可知、孤儿回收依赖全局 label」再权衡,届时与 P1 reaper 收口一并议)
+11. ~~启动清扫的实例身份维度~~(**T15.3 消除**,D-t151 #5 定案:沙箱容器打 `braid.sandbox.owner=<WorkerID>` label,启动清扫双 filter 只清自家——多 worker 副本/滚动重启共存不互杀,「owner 唯一且跨重启稳定」升格部署契约(hostname 显式钉死 + 停机宽限 ≥35s,见 deploy/README §7.1);kill -9 死实例身份可知(owner label 即归属),孤儿回收 = runbook 显式按-owner 原语(deploy/RUNBOOK.md §1.2),不再依赖全局 label 误伤。残余边界 = 活体同 owner 冲突,D-t151 #8-③ 登记,选型「部署契约承载」)
 
 ## 9. 残余风险(已知晓、接受)
 
@@ -95,7 +95,7 @@
 3. **worker↔daemon 通道 root 等价**:worker 进程内任何 RCE 即宿主 root 级;沙箱保护的是工作流轴,不是 worker 轴。
 4. **http 载体桥网出网在 t10.2 前不受限**(过渡窗已命名;守卫被容器内漏洞击穿的场景拥有全量出网——窗口期长度是调度决定)。
 5. **alpine busybox shell 残余**(§3 披露)。
-6. **worker kill -9 后在飞容器存活至 watchdog deadline**(有界非零;label 化供启动清扫/P1 reaper 收口)。
+6. **worker kill -9 后在飞容器存活至 watchdog deadline**(有界非零;owner label 已落,T15.3 起启动清扫按家自收 + runbook 按-owner 原语兜底)。
 7. **CA 信任束内容**:alpine ca-certificates-bundle 内任何 CA 静默扩大容器内中间人能力;束内容随镜像构建固定,运行期不改,入镜像评审。
 8. **daemon 版本漂移**:CI 与 prod daemon 版本不对齐;启动 Probe 含版本下限检查,不满足响亮失败。
 9. **post-Probe 镜像丢失运维窗**(PR review 登记,§3 离线口径残余):镜像在 worker 启动后被删时,后续每次工具调用按 docker run 缺省 policy=missing 先发起 registry pull 尝试再失败(offline 环境下是拨号失败,online 环境下是意外拉取);`--pull never` 关闭该窗但需 CLI ≥20.10,高于 Probe 声明的 daemon 下限——待 CLI 下限抬升时随 argv 构造器一并收口。

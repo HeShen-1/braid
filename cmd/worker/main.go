@@ -116,6 +116,15 @@ func run(ctx context.Context) error {
 			return err
 		}
 	}
+	// T15.3 沙箱 owner 交接(D-t151 #5):owner = WorkerID,进程内 env 自写
+	// 自读(EGRESS_ADDR handoff 同款;egress addr 写在下、此处写上——两消
+	// 费点 SandboxStartupCheck 与 BuiltinToolsFromEnv 都在本行之后)。api
+	// 进程不写不读(api 不执行工具,owner 恒空 = 永不构造 owner label)。
+	// 值域若越界(hostname 异常形态),SandboxStartupCheck/argv 构造器响亮
+	// 败——多 worker 同 daemon 的清扫互杀红线 fail-closed。
+	if err := os.Setenv("BRAID_TOOL_SANDBOX_OWNER", cfg.WorkerID); err != nil {
+		return fmt.Errorf("worker: sandbox owner handoff: %w", err)
+	}
 	if cfg.MySQLDSN == "" { // T7.1 收编:cmd 直读 env 清零,断言读 cfg 字段
 		return errors.New("worker: BRAID_MYSQL_DSN is required")
 	}

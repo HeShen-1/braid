@@ -18,6 +18,7 @@ func TestSandboxArgvGolden(t *testing.T) {
 		CPUs:           "0.5",
 		PidsLimit:      64,
 		MaxConcurrency: 8,
+		Owner:          "w1", // T15.3 owner label 进 golden(第三条 label)
 	}
 
 	t.Run("file_read gets network none and mounts", func(t *testing.T) {
@@ -30,6 +31,7 @@ func TestSandboxArgvGolden(t *testing.T) {
 			"--name", "braid-sbx-1-2-abcd1234",
 			"--label", "braid.sandbox=1",
 			"--label", "braid.tool=file_read",
+			"--label", "braid.sandbox.owner=w1",
 			"--read-only",
 			"--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
 			"--memory", "256m", "--memory-swap", "256m",
@@ -70,6 +72,7 @@ func TestSandboxArgvGolden(t *testing.T) {
 			"--name", "braid-sbx-1-2-abcd1234",
 			"--label", "braid.sandbox=1",
 			"--label", "braid.tool=http",
+			"--label", "braid.sandbox.owner=w1",
 			"--read-only",
 			"--tmpfs", "/tmp:rw,noexec,nosuid,size=16m",
 			"--memory", "256m", "--memory-swap", "256m",
@@ -102,7 +105,7 @@ func TestSandboxArgvGolden(t *testing.T) {
 }
 
 func TestSandboxArgvRejectsHostile(t *testing.T) {
-	cfg := sandboxConfig{Docker: true, Image: "braid-tool-sandbox:1", Memory: "256m", CPUs: "0.5", PidsLimit: 64, MaxConcurrency: 8}
+	cfg := sandboxConfig{Docker: true, Image: "braid-tool-sandbox:1", Memory: "256m", CPUs: "0.5", PidsLimit: 64, MaxConcurrency: 8, Owner: "w1"}
 
 	hostile := []struct {
 		name   string
@@ -121,6 +124,28 @@ func TestSandboxArgvRejectsHostile(t *testing.T) {
 		{"tool with space", func() ([]string, error) {
 			return buildSandboxRunArgv(cfg, "braid-sbx-1-2-abcd1234", "http x", nil)
 		}, "tool"},
+		// T15.3 owner 门:空 owner = 清扫过滤面断链(容器不可按家回收);
+		// 值域外形态 = argv label 位注入面,与容器名同款纪律。
+		{"owner empty", func() ([]string, error) {
+			c := cfg
+			c.Owner = ""
+			return buildSandboxRunArgv(c, "braid-sbx-1-2-abcd1234", "http", nil)
+		}, "owner"},
+		{"owner with space", func() ([]string, error) {
+			c := cfg
+			c.Owner = "w 1"
+			return buildSandboxRunArgv(c, "braid-sbx-1-2-abcd1234", "http", nil)
+		}, "owner"},
+		{"owner leading dash", func() ([]string, error) {
+			c := cfg
+			c.Owner = "-evil"
+			return buildSandboxRunArgv(c, "braid-sbx-1-2-abcd1234", "http", nil)
+		}, "owner"},
+		{"owner over 64 chars", func() ([]string, error) {
+			c := cfg
+			c.Owner = strings.Repeat("a", 65)
+			return buildSandboxRunArgv(c, "braid-sbx-1-2-abcd1234", "http", nil)
+		}, "owner"},
 		{"mount dir with comma injects options", func() ([]string, error) {
 			return buildSandboxRunArgv(cfg, "braid-sbx-1-2-abcd1234", "file_read", []string{"/a,readonly"})
 		}, "mount"},

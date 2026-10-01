@@ -31,6 +31,16 @@ healthcheck(compose 依赖条件需要);braid 组件不配——存活面 = /hea
 metrics exposition 由外部监控探(镜像内 busybox wget 亦可人工探,
 `docker exec <容器> wget -qO- http://127.0.0.1:9090/metrics`)。
 
+**recreate 孤儿(T15.3)**:第 4 步 `up -d` 对变更配置的服务做 stop →
+recreate。交付 prod compose 的 worker 已钉 `hostname`(owner 身份跨
+recreate 稳定),新实例启动清扫按 owner 自收前身残留;自管部署若沿用
+compose 缺省 hostname(容器短 ID),recreate 必换身份,前身在飞沙箱容器
+成为带旧 owner 的孤儿——按 deploy/RUNBOOK.md §1.2 的按-owner 回收原语
+处理,不要用全局清扫(同 daemon 多 worker 时会误伤)。**首个 T15.3
+升级窗特例**:旧二进制所起的前身容器没有 owner label,按-owner 过滤与
+启动清扫都结构性地够不到它们,只能用 ③ 全局原语(先确认同 daemon 无
+其他活体 worker),此后再无此形态。
+
 迁移命令(交付栈内经 compose 内网;`multiStatements=true` 是 golang-migrate
 执行单文件多语句迁移的前提,缺它 0001 直接红):
 

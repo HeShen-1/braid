@@ -98,9 +98,13 @@ worker 以 uid 65532 跑,标准节点的 socket 属 root:docker——必须把
 - egress 启用时 worker 副本 >1 不再撞端口拒启(D-t102 登记④解除):
   网名带 worker_id 实例段,一 worker 一网、网关互异(D-t151 决策 5,
   T15.4)。上界 = 节点 daemon 地址池(缺省 ≈31 用户网;pod recreate
-  每次泄漏一网,回收见 deploy/RUNBOOK.md)。注意:撞端口面解除 ≠ 副本
-  >1 全面就绪——沙箱清扫仍是 daemon 全局 label 面(互杀红线 R2),
-  owner-scoped 清扫随 T15.3 落地后才开多副本。
+  每次泄漏一网,回收见 deploy/RUNBOOK.md)。沙箱清扫互杀面(R2)已随
+  T15.3 owner-scoped 化消除;多副本剩余前置 = 雪花节点号分配(T15.2)
+  与 mode=all 硬闸/整体演练(T15.6)。
+- T15.3 沙箱 owner 契约(D-t151 #5):worker 模板已钉
+  `terminationGracePeriodSeconds: 35`(排水窗契约);沙箱容器 owner 身份 =
+  pod 名,滚动重建换名——新 pod 清扫不互杀旧 pod 在飞容器,旧 pod 非优雅
+  死亡残留按 deploy/RUNBOOK.md §1.2 的按-owner 原语回收。
 - §9 前置契约的 K8s 原生形态(NetworkPolicy + 代理 sidecar/独立端点)
   需 Go 面改动,与「零 Go 代码」冲突 → **P1 deferred**(D- 决策 2 登记)。
 

@@ -214,6 +214,31 @@ clobber 式整体替换会静默断全部公网 https 出站)**,操作先于 USE
 机械锚(prod 段唯一 COPY = helper 二进制、零束操作、零 ENV 由锚钉死),
 属预期,锚随显式变更同步更新。
 
+### 7.1 沙箱 owner 部署契约(T15.3,D-t151 #5)
+
+**owner 部署契约**(多 worker 同 daemon 不互杀的前提,升格为部署面
+义务):worker 身份 = WorkerID(`BRAID_WORKER_ID` 显式或 hostname 兜底),
+沙箱容器打 `braid.sandbox.owner=<WorkerID>` label,worker 启动清扫
+**只清自家**(代码路径唯一形态,全局清扫无函数面)。因此要求:
+
+- 「owner 在并发活体间唯一且跨重启稳定」:prod compose 已显式钉
+  `hostname`(restart 与 recreate 均身份稳定,后者是 compose 缺省容器
+  短 ID 必换身份的场景);多副本 compose 须**逐副本**显式
+  hostname/BRAID_WORKER_ID;k8s 侧 pod 名并发活体间天然唯一、免设——
+  Deployment 滚动重建换名,「跨重启稳定」半边不成立:新 pod 清扫不互杀
+  旧 pod 在飞容器(owner 互异,互杀消除),旧 pod 非优雅死亡残留 = 带
+  旧 pod 名 owner 的孤儿,归 runbook 按-owner 原语(身份可知)。
+- `stop_grace_period ≥ 35s`(compose)/`terminationGracePeriodSeconds ≥ 35`
+  (chart):停机宽限须盖过 `BRAID_WORKER_SHUTDOWN_TIMEOUT`(30s)的
+  排水窗——缺省 10s/30s 会在排水中途被 SIGKILL,在飞沙箱容器变孤儿。
+- 已知边界(登记不修,D-t151 #8-③):手工同 hostname ×2 等活体同 owner
+  冲突会复活互杀面。本 lane 选型 = **部署契约承载**(零依赖);「sweep 前
+  租约活性复核」留作 followup 位(t15.2 租约表合入后可补,读面依赖)。
+
+kill -9 孤儿容器与泄漏 egress 网的**回收原语见 deploy/RUNBOOK.md §1**
+(与 T15.4 泄漏网同节;按-owner 精确清 + 全局最后手段,含首个 T15.3
+升级窗特例)。
+
 ## 8. 工具包签名(T10.3)
 
 工具定义的发布物 = **签名的工具定义清单**(tool package):工具名与安全

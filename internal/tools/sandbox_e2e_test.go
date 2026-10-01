@@ -35,11 +35,10 @@ func TestSandboxE2EFileRead(t *testing.T) {
 	})
 
 	// 零残留基线快照。差分法证明的精确命题:在「本测试串行持有 daemon 调用」
-	// 假设下,before→after 窗内新建的 braid.sandbox=1 容器全部退场(--rm)。
-	// 已知残余:并行 lane 若在同窗内新建且在 after 时点仍在飞的带标签容器会被
-	// 误计入(假红方向,非假绿;镜像 tag 有槽位隔离而 label 是全局的,与基线
-	// §8-11 启动清扫同构)。CI 单 lane;本机并行公约下 he lane 残留物落在
-	// before 集内被扣除,仅「窗口期恰好重叠的在飞容器」可触发。
+	// 假设下,before→after 窗内新建的 (braid.sandbox=1, owner=本槽位) 容器
+	// 全部退场(--rm)。已知残余(T15.3 收窄):残留差分按 owner 过滤,并行
+	// lane(异 owner)的容器结构性不入集——假红窗收窄到「同槽位双跑」公约
+	// 违例形态;镜像 tag 槽位隔离同口径。
 	before := sandboxLabeledContainerIDs(t)
 
 	// 白名单目录 ×2(多目录是 BRAID_FILEREAD_DIRS 的一等生产形态:≥2 个真实
@@ -102,6 +101,7 @@ func TestSandboxE2EFileRead(t *testing.T) {
 		CPUs:           "0.5",
 		PidsLimit:      64,
 		MaxConcurrency: 8,
+		Owner:          sandboxTestOwner(),
 	}, []string{dir1, dir2}, newSandboxLimiter(8))
 	if err != nil {
 		t.Fatalf("newSandboxCarrierFileRead: %v", err)
@@ -218,13 +218,17 @@ func TestSandboxE2EFileRead(t *testing.T) {
 	})
 }
 
-// sandboxLabeledContainerIDs 当前 braid.sandbox=1 容器 id 集合(零残留
-// 断言的快照原语;与 SandboxSweep 同枚举口径)。
+// sandboxLabeledContainerIDs 当前 (braid.sandbox=1, owner=本槽位) 容器 id
+// 集合(零残留断言的快照原语;与 SandboxSweep 同枚举口径——T15.3 起
+// owner-scoped:并行 lane 的在飞容器不再误入 after 集,文件头「已知残余」
+// 的假红形态随之收窄到同槽位违例)。
 func sandboxLabeledContainerIDs(t *testing.T) map[string]bool {
 	t.Helper()
-	out, err := exec.Command(sandboxDockerBin, "ps", "-aq", "--filter", "label=braid.sandbox=1").Output()
+	out, err := exec.Command(sandboxDockerBin, "ps", "-aq",
+		"--filter", "label=braid.sandbox=1",
+		"--filter", "label=braid.sandbox.owner="+sandboxTestOwner()).Output()
 	if err != nil {
-		t.Fatalf("docker ps (label=braid.sandbox=1): %v", err)
+		t.Fatalf("docker ps (label + owner=%s): %v", sandboxTestOwner(), err)
 	}
 	ids := make(map[string]bool)
 	for _, id := range strings.Fields(string(out)) {
