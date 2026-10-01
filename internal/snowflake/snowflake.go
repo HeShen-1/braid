@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -28,10 +29,12 @@ const (
 	nodeBits = 10
 	seqBits  = 12
 
-	// MaxNodeID 是节点号上界(10bit)。显式配置面 = api=1、worker=2;reaper
-	// 缺省 PID 派生、可经 BRAID_REAPER_SNOWFLAKE_NODE 显式化(T7.1);relay
-	// 无生成器。跨进程重号的唯一症状是 outbox/业务表 PK 1062(写入事务
-	// 中止 + 告警)。
+	// MaxNodeID 是节点号上界(10bit,也是租约池容量)。解析三层(D-t151
+	// 决策 2):显式 env 数字 > 内建默认(api=1、worker=2,视同显式 claim;
+	// reaper 内建缺省 = auto——PID 派生已随 T15.2 退役,容器 PID 恒 1 撞
+	// api 默认 1)> 字面 "auto" 哨兵(池分配)。节点号仲裁 = MySQL 租约表
+	// (migration 0012),relay 无生成器不参与。跨进程重号的唯一症状是
+	// outbox/业务表 PK 1062(写入事务中止 + 告警)。
 	MaxNodeID = 1<<nodeBits - 1 // 1023
 
 	maxSeq         = 1<<seqBits - 1 // 序列上界;同 ms 可产 4096 个(seq 0..4095)
@@ -45,6 +48,11 @@ const (
 // 调用方不应重试(重试只会再次失败),应触发 NTP 偏移告警。
 var ErrClockBackward = errors.New("snowflake: clock moved backward beyond tolerance")
 
+// ErrLeaseLost:节点租约丢失后的停发闸(D-t151 决策 2:续期失败 = 停止
+// 签发)。Block 置位后 Next 恒返回本错误——租约已失,继续签发 = 与接管
+// 者撞号(PK 1062 面);复航 = 进程退出后重新 acquire,无解除面。
+var ErrLeaseLost = errors.New("snowflake: node lease lost; issuance blocked")
+
 // Generator 是单进程雪花 ID 生成器。Next 可多 goroutine 并发调用(内部互斥,
 // 临界区仅本地算术,无 IO)。
 type Generator struct {
@@ -54,6 +62,7 @@ type Generator struct {
 	seq      uint16
 	now      func() time.Time
 	maxBackw time.Duration
+	blocked  atomic.Bool // 停发闸(单向;Block 置位,Next 首查)
 }
 
 // New 按节点号构造生成器(nodeID > MaxNodeID 报错)。同一部署内每个进程一个
@@ -72,9 +81,17 @@ func newGenerator(nodeID uint16, now func() time.Time, maxBackward time.Duration
 	return &Generator{node: nodeID, now: now, maxBackw: maxBackward}, nil
 }
 
+// Block 置停发闸(单向,幂等):租约丢失后由租约守护方调用。此后 Next
+// 恒返回 ErrLeaseLost——见 ErrLeaseLost 注释。
+func (g *Generator) Block() { g.blocked.Store(true) }
+
 // Next 生成下一个 ID。同毫秒内序列严格递增,跨毫秒时间戳递增 ⇒ 单调。
-// 时钟回拨在容忍界内阻塞等待追平;超界返回 ErrClockBackward。
+// 时钟回拨在容忍界内阻塞等待追平;超界返回 ErrClockBackward;停发闸
+// 置位后返回 ErrLeaseLost(闸优先)。
 func (g *Generator) Next() (uint64, error) {
+	if g.blocked.Load() {
+		return 0, ErrLeaseLost
+	}
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for {

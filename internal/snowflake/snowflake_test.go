@@ -221,3 +221,35 @@ func TestConcurrentUniqueness(t *testing.T) {
 		t.Fatalf("collected %d ids, want %d", total.Load(), workers*per)
 	}
 }
+
+// TestGeneratorBlock 停发闸(D-t151 决策 2:续期失败 = 停止签发):Block
+// 置位后 Next 立即返回 ErrLeaseLost(闸优先于回拨/序列逻辑);置位前的
+// 签发不受影响。单向闸,无解除面——复航 = 进程退出后重新 acquire。
+func TestGeneratorBlock(t *testing.T) {
+	g, err := New(7)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, err := g.Next(); err != nil {
+		t.Fatalf("Next before Block: %v", err)
+	}
+	g.Block()
+	if _, err := g.Next(); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("Next after Block: %v, want ErrLeaseLost", err)
+	}
+	// 并发面:闸原子可见,Block 后任意 goroutine 的 Next 恒拒。
+	var wg sync.WaitGroup
+	for range 4 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for range 10 {
+				if _, err := g.Next(); !errors.Is(err, ErrLeaseLost) {
+					t.Errorf("concurrent Next after Block: %v, want ErrLeaseLost", err)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
+}
