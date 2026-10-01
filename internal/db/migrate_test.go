@@ -107,7 +107,14 @@ var tenantTables = map[string]bool{
 	"tenants": true, // 0011(T11.2 租户模型)
 }
 
-var allDomainTables = []map[string]bool{engineTables, authTables, tenantTables}
+// instanceTables:0012 起实例注册域(T15.2,D-2026-10-01-t151 决策 2):
+// 雪花节点租约单表 = 节点号仲裁 + 实例身份/capabilities 注册面
+// (node_id 0..1023 全局单池,api/worker/reaper 共用;relay 无生成器不参与)。
+var instanceTables = map[string]bool{
+	"snowflake_node_lease": true, // 0012(T15.2 雪花租约)
+}
+
+var allDomainTables = []map[string]bool{engineTables, authTables, tenantTables, instanceTables}
 
 func tables(t *testing.T, d *sql.DB) map[string]bool {
 	t.Helper()
@@ -312,17 +319,49 @@ SELECT COUNT(*) FROM information_schema.STATISTICS
 			defTenantUK, defOldUK, defTenantList, execTenantList, execOldList)
 	}
 
-	// CHECK 约束齐备:11 个(definition 1 + node 3 + attempt 2 + audit 1 + users 3;
+	// 0012 雪花租约锚(T15.2,D-t151 决策 2 防回退):PK 单列于 node_id
+	//(INSERT 抢注面);capabilities 可空(NULL = 未宣告 fail-closed,
+	//T15.6 消费);holder_id/kind/expires_at 三身份列齐备。
+	var leasePK, leaseCapNull int
+	if err := d.QueryRow(`
+SELECT COUNT(*) FROM information_schema.KEY_COLUMN_USAGE
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'snowflake_node_lease'
+   AND CONSTRAINT_NAME = 'PRIMARY'`).Scan(&leasePK); err != nil {
+		t.Fatalf("snowflake_node_lease pk: %v", err)
+	}
+	if err := d.QueryRow(`
+SELECT COUNT(*) FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'snowflake_node_lease'
+   AND COLUMN_NAME = 'capabilities' AND IS_NULLABLE = 'YES'`).Scan(&leaseCapNull); err != nil {
+		t.Fatalf("snowflake_node_lease capabilities: %v", err)
+	}
+	if leasePK != 1 || leaseCapNull != 1 {
+		t.Fatalf("0012 租约锚:pk cols=%d(want 1)、capabilities nullable=%d(want 1)", leasePK, leaseCapNull)
+	}
+	for _, col := range []string{"kind", "holder_id", "expires_at"} {
+		var cnt int
+		if err := d.QueryRow(`
+SELECT COUNT(*) FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'snowflake_node_lease'
+   AND COLUMN_NAME = ? AND IS_NULLABLE = 'NO'`, col).Scan(&cnt); err != nil {
+			t.Fatalf("snowflake_node_lease.%s: %v", col, err)
+		}
+		if cnt != 1 {
+			t.Fatalf("0012 租约锚:%s NOT NULL 列缺失(want 1)", col)
+		}
+	}
+
+	// CHECK 约束齐备:12 个(definition 1 + node 3 + attempt 2 + audit 1 + users 3;
 	// node +1 = 0006 chk_node_instance;users +1 = 0009 chk_user_email;
-	// tenants +1 = 0011 chk_tenant_slug)
+	// tenants +1 = 0011 chk_tenant_slug;lease +1 = 0012 chk_lease_node)
 	var checks int
 	if err := d.QueryRow(
 		`SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
 		 WHERE CONSTRAINT_SCHEMA = DATABASE()`).Scan(&checks); err != nil {
 		t.Fatalf("check constraints: %v", err)
 	}
-	if checks != 11 {
-		t.Fatalf("check constraints = %d, want 11", checks)
+	if checks != 12 {
+		t.Fatalf("check constraints = %d, want 12", checks)
 	}
 
 	// T6.1 对账索引存在
