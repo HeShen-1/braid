@@ -76,10 +76,43 @@ func run(ctx context.Context) error {
 		slog.Warn("reaper: audit partition watermark", "err", err)
 	}
 
-	ids, err := snowflake.New(cfg.SnowflakeNode) // T7.1 显式化(缺省 PID 派生在 ConfigFromEnv)
+	// T15.2 节点号租约仲裁(D-t151 决策 2):三层解析在 ConfigFromEnv,
+	// 仲裁在此——内建缺省 auto(PID 派生已退役:容器 PID 恒 1 撞 api
+	// 默认 1),显式号被持即拒启;SIGTERM 优雅释放;续期失败 = 停发 +
+	// 响亮退出(复航 = 重启重新 acquire)。
+	lease, err := snowflake.StartLease(ctx, mysqlDB, snowflake.LeaseConfig{
+		Kind:   snowflake.KindReaper,
+		Spec:   cfg.SnowflakeNode,
+		Holder: snowflake.DefaultHolder(),
+	})
+	if err != nil {
+		return fmt.Errorf("reaper: snowflake lease: %w", err)
+	}
+	defer releaseLease("reaper", lease)
+	ids, err := snowflake.New(lease.Node())
 	if err != nil {
 		return fmt.Errorf("reaper: snowflake: %w", err)
 	}
+	lease.Guard(ids)
+	slog.Info("reaper: snowflake lease acquired", "node", lease.Node(), "spec", cfg.SnowflakeNode)
+
+	// lost → 取消派生 ctx:扫描/flush/janitor 循环优雅退出;排空完成后
+	// 响亮返回非 Canceled 错误(main 走 Exit(1) 失败重启通道)。
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	var lostErr error
+	lostDone := make(chan struct{})
+	go func() {
+		defer close(lostDone)
+		select {
+		case err, ok := <-lease.Lost():
+			if ok {
+				lostErr = err
+				cancel()
+			}
+		case <-ctx.Done():
+		}
+	}()
 	sched, err := scheduler.New(scheduler.Deps{DB: mysqlDB, IDs: ids, Queue: cfg.Queue})
 	if err != nil {
 		return fmt.Errorf("reaper: scheduler: %w", err)
@@ -139,5 +172,25 @@ func run(ctx context.Context) error {
 	// T9.3 启动自检:排空待校验链头(断链闩在此落定,写路径随即拒绝;
 	// infra 失败只响亮不阻断启动——flush/janitor 职责不因此停摆)。
 	r.StartupVerify(ctx)
-	return r.Run(ctx)
+	runErr := r.Run(ctx)
+	cancel() // 幂等:Run 早退错误路径也放行 <-lostDone(镜像 cmd/worker,review MEDIUM)
+	<-lostDone
+	if runErr != nil {
+		return runErr
+	}
+	if lostErr != nil {
+		return fmt.Errorf("reaper: %w", lostErr)
+	}
+	return nil
+}
+
+// releaseLease 是 SIGTERM 语义半边(决策 2:优雅停机必须 DELETE 释放):
+// 扫描循环退出后删本行;lost 路径调用安全(行非本持,幂等)。独立
+// Background ctx——根 ctx 在停机路径已取消。
+func releaseLease(component string, lease *snowflake.Lease) {
+	rctx, cancel := context.WithTimeout(context.Background(), traceShutdownGrace)
+	defer cancel()
+	if err := lease.Release(rctx); err != nil {
+		slog.Warn(component+": snowflake lease release", "err", err)
+	}
 }
