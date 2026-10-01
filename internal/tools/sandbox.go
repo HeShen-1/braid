@@ -13,7 +13,7 @@ package tools
 //	BRAID_TOOL_SANDBOX_CPUS            docker 旗标原样,默认 0.5
 //	BRAID_TOOL_SANDBOX_PIDS            整数 1..4096,默认 64
 //	BRAID_TOOL_SANDBOX_MAX_CONCURRENCY 并发容器上界 1..1000,默认 8
-//	BRAID_TOOL_SANDBOX_EGRESS_NETWORK  egress 内网名(docker 网络名值域),默认 braid-sbx-egress(T10.2)
+//	BRAID_TOOL_SANDBOX_EGRESS_NETWORK  egress 内网名基段(docker 网络名值域 ≤64;worker egress 启动段另限基段 ≤55——实例段 8 hex 预算,超限拒启),默认 braid-sbx-egress(T10.2/T15.4)
 //	BRAID_TOOL_SANDBOX_EGRESS_ADDR     egress 代理地址 http://host:port(worker 启动自算自写,装配单读;
 //	                                   api 进程不执行工具,缺省 nil = 信封不带 proxy 字段)
 //

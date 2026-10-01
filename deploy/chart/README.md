@@ -95,8 +95,12 @@ worker 以 uid 65532 跑,标准节点的 socket 属 root:docker——必须把
 /var/run/docker.sock`),否则挂载形同虚设。边界:
 
 - docker.sock = 节点 root 等价面;仅在高信任节点开启,默认关。
-- worker 副本 >1 且 egress 启用 = 同网撞端口拒启(D-t102 登记④,单
-  worker 现状)。
+- egress 启用时 worker 副本 >1 不再撞端口拒启(D-t102 登记④解除):
+  网名带 worker_id 实例段,一 worker 一网、网关互异(D-t151 决策 5,
+  T15.4)。上界 = 节点 daemon 地址池(缺省 ≈31 用户网;pod recreate
+  每次泄漏一网,回收见 deploy/RUNBOOK.md)。注意:撞端口面解除 ≠ 副本
+  >1 全面就绪——沙箱清扫仍是 daemon 全局 label 面(互杀红线 R2),
+  owner-scoped 清扫随 T15.3 落地后才开多副本。
 - §9 前置契约的 K8s 原生形态(NetworkPolicy + 代理 sidecar/独立端点)
   需 Go 面改动,与「零 Go 代码」冲突 → **P1 deferred**(D- 决策 2 登记)。
 

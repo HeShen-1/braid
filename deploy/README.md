@@ -287,10 +287,16 @@ api/worker 启动即验,失败 = 拒启(错误带分量定位,不含密钥材料
 `BRAID_TOOL_SANDBOX=docker` 下 http 工具容器的出网通道(与 §7 镜像同一
 沙箱面;file_read 恒 `--network none` 不变):
 
-- **内网**:worker 启动时幂等创建 `--internal` docker 网络(缺省名
-  `braid-sbx-egress`,`BRAID_TOOL_SANDBOX_EGRESS_NETWORK` 可覆写;daemon
-  ≥ 20.10,internal 隔离语义下限)。容器在内网上唯一可达面 = 网关地址,
-  直连外网/宿主其他地址在网络层结构性拒绝——默认拒绝由拓扑保证,不是
+- **内网(一 worker 一网,T15.4/D-t151 决策 5)**:worker 启动时幂等创建
+  `--internal` docker 网络,网名 = 基段 + worker_id 实例段
+  (`braid-sbx-egress-<sha256(worker_id) 前 8 hex>`;基段
+  `BRAID_TOOL_SANDBOX_EGRESS_NETWORK` 可覆写,≤55 字符——实例名须落
+  docker 网络名值域 ≤64;daemon ≥ 20.10,internal 隔离语义下限)。同
+  worker_id 跨重启同名幂等复用;异 worker 各持独立 bridge 子网——独立
+  网关 IP,同端口 9210 不撞,顺带 worker 间沙箱容器物理网络隔离。容器
+  在内网上唯一可达面 = 本 worker 网关地址,直连外网/宿主其他地址(含
+  他 worker 的沙箱网——同属宿主侧地址,隔离依据与下方「保证的适用域」
+  同一前提与实证)在网络层结构性拒绝——默认拒绝由拓扑保证,不是
   进程内策略保证。
 - **代理**:worker 进程内 CONNECT-only 代理,绑内网网关
   `BRAID_TOOL_SANDBOX_EGRESS_PORT`(缺省 9210;0 = 内核指派)。策略:
@@ -301,20 +307,37 @@ api/worker 启动即验,失败 = 拒启(错误带分量定位,不含密钥材料
   禁段整体拒(fail-closed),拨已解析 IP(DNS rebinding 无二次解析窗)。
   明文 http 不转发(CONNECT-only),端到端 TLS 在容器与目标之间,代理
   零明文可见。
-- **地址流**:worker 启动自算代理地址并写
-  `BRAID_TOOL_SANDBOX_EGRESS_ADDR`(进程内传递,非手配键),经 stdin
-  信封进容器——容器 env 恒无 `BRAID_*` 键(§7 §5 白名单不变量)。
-- **运维**:多 worker 副本同网同名会撞端口拒启(单 worker 现状);网络
-  属 daemon 持久对象,worker 重启幂等复用(daemon 重启若变更网关,worker
-  下次启动重读重绑)。拒绝姿态拆毁形态(同名网络非 `--internal`)启动
-  即拒。
+- **地址流**:worker 启动自算代理地址与实例网名,分别写
+  `BRAID_TOOL_SANDBOX_EGRESS_ADDR` / `BRAID_TOOL_SANDBOX_EGRESS_NETWORK`
+  (进程内传递,非手配键;后者覆写基段,容器 `--network` 位与建网/监听
+  三面同源);代理地址经 stdin 信封进容器——容器 env 恒无 `BRAID_*` 键
+  (§7 §5 白名单不变量)。
+- **运维(daemon 维度)**:多 worker 副本各持实例网、同端口不撞——撞
+  端口面解除 ≠ 副本 >1 全面就绪,沙箱清扫仍是 daemon 全局 label 面
+  (互杀红线 R2,owner-scoped 清扫随 T15.3 落地后才开多副本)。同
+  worker_id 二启 = 同网关同端口 bind 拒启——「owner 在并发活体间唯一
+  且跨重启稳定」部署契约的执法形态;限**显式端口**,`EGRESS_PORT=0`
+  内核指派 = dev/test 语义,不执法(同族登记边界;活体同 owner 冲突面
+  见 D-t151 决策 8-③);网络属
+  daemon 持久对象,worker 重启幂等复用(daemon 重启若变更网关,worker
+  下次启动重读重绑);拒绝姿态拆毁形态(同名网络非 `--internal`)启动
+  即拒。**地址池上界**:docker 缺省地址池 ≈31 个用户网/daemon(k8s
+  host docker.sock = 节点级 daemon 共享,上界按节点计;扩容 =
+  daemon.json `default-address-pools`);一 worker 一网 + 网络不自回收
+  ⇒ worker 身份变更(容器 recreate/升级路径)每次泄漏一网,回收原语见
+  deploy/RUNBOOK.md §1.1(孤儿容器清扫原语由 t15.3 落位,并节仲裁见
+  RUNBOOK §1.2 注记)。并发容器配额
+  `BRAID_TOOL_SANDBOX_MAX_CONCURRENCY` 是**进程级**语义(键注释见
+  deploy/.env.example,单副本口径不变),daemon 维度总额 = Σ 各副本。
 - **保证的适用域(登记,对抗审查收口)**:「结构性拒绝」限 **off-host 方向**、
   且以 **docker 托管 iptables 的宿主** 为前提——daemon 配 `--iptables=false`、
   firewalld 接管、或管理员把 FORWARD 链改回 ACCEPT 的旧 daemon(28 前无显式
   DOCKER-INTERNAL DROP)窗内,拒绝强度退化为宿主转发策略。rootless daemon 不
   支持(网关 IP 活在 rootlesskit netns,worker bind 即 EADDRNOTAVAIL 拒启,
   形态响亮);egress 网禁用 `gateway_mode=isolated`(Docker 28+ 选项,会删宿主
-  侧网关地址,与本设计「宿主侧监听」前提互斥)。
+  侧网关地址,与本设计「宿主侧监听」前提互斥)。T15.4 复核:实例段网名不
+  改变上述适用域——独立子网不豁免 rootlesskit netns 边界(rootless 拒启
+  形态不变),受限/非托管 iptables 退化语义同判(D-t102 followup ⑦ 原样)。
 - **t14.4(Helm)前置契约**:k8s 化时「网关 + 进程内代理」对应
   egress NetworkPolicy + 代理 sidecar/独立端点;env 键词表与
   `EgressAllowFromEndpoints` 单源在此两处复用,不再新增拓扑键。

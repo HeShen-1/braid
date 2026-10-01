@@ -252,16 +252,23 @@ func run(ctx context.Context) error {
 	// T10.2 egress 启动段先行(装配依赖其地址):docker 模式下幂等建
 	// --internal 内网 + 网关上起默认拒绝 CONNECT 代理,地址写回
 	// BRAID_TOOL_SANDBOX_EGRESS_ADDR 供下方装配单读(信封 proxy 字段与
-	// 代理 allow 集同源);off = nil 零接触。
-	egressAddr, err := tools.SandboxEgressStartup(ctx, os.Getenv)
+	// 代理 allow 集同源);off = nil 零接触。T15.4:网名带 worker_id
+	// 实例段(一 worker 一网,D-t151 决策 5)——实例名同样写回
+	// BRAID_TOOL_SANDBOX_EGRESS_NETWORK 覆写基段,容器 --network 位与
+	// 建网/监听三面同源;同 worker_id 二启 = 同网关同端口 bind 拒启
+	// (显式端口;EGRESS_PORT=0 内核指派 = dev/test,不执法)。
+	egress, err := tools.SandboxEgressStartup(ctx, os.Getenv, cfg.WorkerID)
 	if err != nil {
 		return fmt.Errorf("worker: sandbox egress startup: %w", err)
 	}
-	if egressAddr != nil {
-		if err := os.Setenv("BRAID_TOOL_SANDBOX_EGRESS_ADDR", egressAddr.String()); err != nil {
+	if egress != nil {
+		if err := os.Setenv("BRAID_TOOL_SANDBOX_EGRESS_ADDR", egress.ProxyURL.String()); err != nil {
 			return fmt.Errorf("worker: sandbox egress addr handoff: %w", err)
 		}
-		slog.Info("worker: sandbox egress proxy serving", "addr", egressAddr.String())
+		if err := os.Setenv("BRAID_TOOL_SANDBOX_EGRESS_NETWORK", egress.Network); err != nil {
+			return fmt.Errorf("worker: sandbox egress network handoff: %w", err)
+		}
+		slog.Info("worker: sandbox egress proxy serving", "addr", egress.ProxyURL.String(), "network", egress.Network)
 	}
 	builtins, err := tools.BuiltinToolsFromEnv(os.Getenv)
 	if err != nil {
