@@ -37,6 +37,18 @@ MySQL 侧:单实例默认 `max_connections` = 151(MySQL 8.0 出厂值;dev compos
 MySQL 侧,并遵守**只升不降**:`max_connections` 下调会杀既有连接(含在途
 事务),必须停机窗口内操作。
 
+**多副本显式算式(T15.6,R7 注记;D-t151 决策 7)**:全部常驻入口各 N
+副本时——
+
+```
+max_connections ≥ 100 × N + 30
+```
+
+MySQL 出厂 `max_connections` = 151,**N=2 即超**(需 ≥230):扩副本前
+必须同轮抬 `max_connections`,否则新副本的池在连接第 152 位起拿不到
+连接。观测对拍:`braid_db_pool_*`(下表)按副本分 instance 曝光,饱和
+会先出现在单个副本上。
+
 单进程软上限(T12.2,`db.MaxOpenSoftCap` = 100):`BRAID_DB_MAX_OPEN`
 配置值超过 100 时解析层收敛到 100 并打启动 warn(自伤型误配护栏——单
 进程超过全 fleet 默认预算即越过公式默认头寸)。真要单进程 >100 = 同轮
@@ -105,19 +117,27 @@ outbox UPDATE / audit_pending INSERT)已全部收回。
 | 表 | api | worker | relay | reaper |
 |----|-----|--------|-------|--------|
 | workflow_definition | SELECT,INSERT,UPDATE | SELECT | — | SELECT |
-| workflow_execution | SELECT,INSERT | SELECT,UPDATE | — | SELECT,UPDATE |
-| node_execution | SELECT,INSERT | SELECT,UPDATE | — | SELECT,UPDATE |
-| node_attempt | — | SELECT,INSERT,UPDATE | — | SELECT,UPDATE |
+| workflow_execution | SELECT,INSERT,UPDATE¹ | SELECT,UPDATE | — | SELECT,UPDATE |
+| node_execution | SELECT,INSERT,UPDATE¹ | SELECT,UPDATE | — | SELECT,UPDATE |
+| node_attempt | SELECT,UPDATE¹ | SELECT,INSERT,UPDATE | — | SELECT,UPDATE |
 | approval_decision | SELECT,INSERT | SELECT | — | SELECT |
 | outbox | INSERT | INSERT | SELECT,UPDATE | SELECT,INSERT,DELETE |
 | audit_log | SELECT,INSERT | SELECT,INSERT | — | SELECT,INSERT,ALTER,DROP |
-| audit_pending | — | INSERT | — | SELECT,DELETE |
+| audit_pending | INSERT² | INSERT | — | SELECT,DELETE |
 | chain_heads | SELECT,INSERT,UPDATE(last_id,last_row_hash) | SELECT,INSERT,UPDATE(last_id,last_row_hash) | — | SELECT,INSERT,UPDATE,DELETE |
 | login_audit | INSERT | — | — | SELECT,DELETE |
 | login_throttle | SELECT,INSERT,UPDATE(window_start,count,locked_until,updated_at) | — | — | SELECT,DELETE |
 | users / user_role | SELECT | SELECT | — | — |
 | snowflake_node_lease | SELECT,INSERT,UPDATE,DELETE | SELECT,INSERT,UPDATE,DELETE | — | SELECT,INSERT,UPDATE,DELETE |
 | schema_migrations | SELECT | SELECT | SELECT | SELECT |
+
+¹ api 的 node_execution/node_attempt UPDATE 是**锁定读权限面**,workflow_execution UPDATE 是**回滚/续跑缝的状态翻转面**(engine RestartExecution,对抗审计 HIGH 补)(T15.6
+演练实证):MySQL 的 `SELECT ... FOR UPDATE` 要求对应表写权限——审批决定
+事务的 TOCTOU 守卫(锁 node_execution)与 rollback/resume 缝(engine node
+CAS + node_attempt 锁读)都在 api 连接上执行,无 UPDATE =
+least-privilege 下 1142(t13 测试 root 连接不可见)。api 对两表无直接
+UPDATE 语句;权限跟随锁的写意图。² 回滚缝重派节点的 node.state_changed 走 Enqueue
+暂存(T6.1 批量事件族),flush 消费归 reaper——演练臂 ⑦ 实证。
 
 - **append-only 铁律与启动断言**:api/worker 对 audit_log 仅
   INSERT/SELECT;login_audit 业务面(api)仅 INSERT。`preflight.
@@ -426,3 +446,28 @@ GRANT SELECT ON `analytics`.* TO 'braid_ro'@'%';
 - 工具包签名态(T10.3):清单可声明 `{"tools":{"db_query":{}}}`
   (presence-only,不得携带 endpoints/dirs);DSN 仍经 env 注入——签名
   工件零凭证。
+
+## 11. 多副本部署注记(T15.6;D-t151 决策 7 R10)
+
+四组件(api/worker/relay/reaper)均可水平扩展(雪花租约 T15.2 / 沙箱
+owner 化 T15.3 / egress 一 worker 一网 T15.4 已解除三挡)。多副本清单:
+
+- **雪花节点号**:多副本一律 `*_SNOWFLAKE_NODE=auto`(compose 单副本可显式;
+  k8s RollingUpdate 下 pinned-env 永久僵局,决策 2)。
+- **worker 身份(owner)**:并发活体间唯一且跨重启稳定——compose 逐副本
+  显式 `hostname` + `BRAID_WORKER_ID`;k8s 用 pod 名(hostname 缺省天然
+  唯一)。`stop_grace_period ≥ 35s`(compose)/ `terminationGracePeriodSeconds
+  ≥ 35`(k8s),排水中途被 SIGKILL 会在飞沙箱容器变孤儿。
+- **连接容量**:见 §1 多副本算式(`max_connections ≥ 100×N+30`)。
+- **TrustedProxies(R10,必配)**:`BRAID_API_TRUSTED_PROXIES` 在多 api
+  副本 + 反代形态下**必须显式配置**——api 是 stateless 可水平扩展,但限流
+  键依赖客户端真实 IP;反代未登记进信任列表会折叠全部流量到单一限流桶
+  (共享 DoS 面:一个桶打满全体 403/429)。单值配置经 LB 对全部副本生效
+  (配置同源,非 per-replica)。
+- **观测聚合**:reaper SQL 快照 / worker-relay 的 Redis 探测类 gauge 多副本
+  各曝一份相同值,告警查询一律 `max`(T15.6 R9 重标定,
+  `deploy/prometheus/alerts.yml` 文件头口径)。
+- **滚动升级**:升级序见 UPGRADE.md §2;mode=all 会签工作流的发布/触发
+  另受启动期能力硬闸保护(UPGRADE.md §mode=all,T15.6)。
+- **演练**:`BRAID_TEST_REQUIRE_DRILL=1 go test ./internal/drill/`(五臂
+  故障注入,独立 compose 栈,docker 在场即真跑)。

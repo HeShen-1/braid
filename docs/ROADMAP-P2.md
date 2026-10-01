@@ -13,7 +13,7 @@
 - [x] T15.3 沙箱清扫互杀红线消除 — M — 依赖 T15.1 — 验收:多 worker 同网互杀面消除(t101-sandbox-baseline #11:kill -9 后死实例身份可知、孤儿回收不依赖全局 label 误伤;明文「多副本/k8s 滚动部署前必须先解」)— 已交付:D-t151 决策 5 全量落地(owner label + owner-scoped 清扫 + 部署契约 hostname/停机宽限 ≥35s + runbook 按-owner 原语;租约活性复核选型 = 部署契约承载,followup 位)
 - [x] T15.4 egress 端口多副本分配面 — M — 依赖 T15.1 — 验收:同网多 worker 不撞端口拒启(D-t102④ + chart README 登记);rootless/受限 daemon 适用域一并复核
 - [x] T15.5 引擎核心压测基线与容量模型 — L — 验收:基准套件落地(吞吐/时延/大 DAG 回滚锁窗量化);MaxRollbackRows 实测定档(D-t92 停车场悬项);容量模型文档;audit_trace_map 旁路表按延迟实测裁定(D-t63#3);锁窗修复若动 DBTX 形状须先 D-(D-t24#6 演进注记);产物为 T16.4 的输入
-- [ ] T15.6 mode=all 混跑窗硬闸 + 多副本整体演练 — M — 依赖 T15.2、T15.3、T15.4 — 验收:启动期能力探测硬闸(替 UPGRADE.md 人工纪律,D-t142①);多副本整体演练验收(哈希链混合版本窗 D-t93③ 口径随演练复核)
+- [x] T15.6 mode=all 混跑窗硬闸 + 多副本整体演练 — M — 依赖 T15.2、T15.3、T15.4 — 验收:启动期能力探测硬闸(替 UPGRADE.md 人工纪律,D-t142①);多副本整体演练验收(哈希链混合版本窗 D-t93③ 口径随演练复核)——实现 = capabilities 宣告随 acquire(snowflake 三写路径)+ api 发布/触发闸(triggerCore 单点盖 REST+MCP,503 fail-closed)+ 独立演练栈五臂故障注入(deploy/drill.docker-compose.yml × internal/drill,BRAID_TEST_REQUIRE_DRILL=1)+ flush/janitor 纳入三键 leaderGate(定档 A)+ R7/R9/R10 收口(告警共享态 gauge 统一 max / README 多副本注记);口径 = D-t151 决策 6/7/8,定档结论追加 D-2026-10-01-t156
 
 ## M16 开源与交付面(排 T15.5 中后段)
 
