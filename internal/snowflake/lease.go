@@ -176,8 +176,11 @@ func (l *Lease) Release(ctx context.Context) error {
 // --- acquire -----------------------------------------------------------------
 
 // acquireExplicit 显式号直达:INSERT 抢注;在场则 CAS 复占(同 holder 或
-// 已过期);被他持读行详情拒启。行在 UPDATE 与 SELECT 间消失(释放竞态)
-// 视作重扫信号,共用 ≤3 预算。
+// 已过期)。RowsAffected=0 后用 SELECT 仲裁:go-sql-driver 缺省
+// clientFoundRows=false(0 = changed 非 matched——engine CAS 语义依赖此
+// 口径,不动 DSN 契约),复占值与行完全同毫秒相同时 changed=0 但确已
+// 持有(CI 实证:首租约续期与重启复占同毫秒碰撞);holder==mine 即成功,
+// 否则被他持拒启。行消失(释放竞态)视作重扫信号,共用 ≤3 预算。
 func (l *Lease) acquireExplicit(ctx context.Context) (uint16, error) {
 	for attempt := 0; attempt < autoClaimAttempts; attempt++ {
 		if attempt > 0 {
@@ -201,7 +204,7 @@ func (l *Lease) acquireExplicit(ctx context.Context) (uint16, error) {
 			return 0, fmt.Errorf("snowflake: lease explicit reclaim: %w", err)
 		}
 		if n, err := res.RowsAffected(); err == nil && n == 1 {
-			return l.cfgNode(), nil // 同 holder 复占 / 过期接管
+			return l.cfgNode(), nil // 同 holder 复占 / 过期接管(changed ≥ 1)
 		}
 		var holder string
 		var expires time.Time
@@ -213,6 +216,11 @@ func (l *Lease) acquireExplicit(ctx context.Context) (uint16, error) {
 			continue // 行刚被释放:重扫
 		case qerr != nil:
 			return 0, fmt.Errorf("snowflake: lease explicit held-detail: %w", qerr)
+		}
+		if holder == l.holder {
+			// matched-unchanged:UPDATE 已匹配本持行但新旧值同毫秒完全一致
+			//(changed=0)。复占成立。
+			return l.cfgNode(), nil
 		}
 		return 0, fmt.Errorf("%w: node %d by %s until %v (kill -9 residual window ≤ TTL; runbook: deploy/UPGRADE.md §7 清行应急)",
 			ErrLeaseHeld, l.cfgNode(), holder, expires.UTC())
