@@ -193,8 +193,9 @@ func (s *Server) login(c *gin.Context) {
 	// token 绑定(T11.3):按当前模式携 bnd claim(off = 空串不带;
 	// 与 Authenticate 校验共用 bindingFingerprint 单点,oidc 回调同契约)。
 	// 租户快照(D-t112):user.TenantID → tnt claim;两签发点同契约。
-	// 作用域(D-t131 决策 3):login 签发按角色默认全量——REST 面不消费
-	// scp(行为零变化),MCP 面对新 token 全量、对存量(无 scp)fail-closed。
+	// 作用域(D-t131 决策 3 + T17.1/D-t171):login 签发按角色默认全量——
+	// REST 面逐端点执法该集(scp 在场即闸,缺席透传 = 存量兼容),MCP 面
+	// 对新 token 全量、对存量(无 scp)fail-closed。
 	token, err := auth.SignTokenScoped(s.cfg.JWTSecret, ttl, user.Username, user.Roles, user.TenantID,
 		bindingFingerprint(s.cfg.TokenBinding, c.Request.UserAgent(), ip),
 		auth.DefaultScopesForRoles(user.Roles))

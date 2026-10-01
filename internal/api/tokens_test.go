@@ -67,10 +67,36 @@ func TestIssueTokenSubsetRoundTrip(t *testing.T) {
 	}
 }
 
-// TestIssueTokenAdminFull:admin 请求三枚全量 → 200(默认集上界即全量)。
+// TestIssueTokenAdminFull:admin 请求词表全量 → 200(默认集上界即全量)。
 func TestIssueTokenAdminFull(t *testing.T) {
 	r, _, sign := newTestServer(t)
 	mintViaEndpoint(t, r, sign(auth.RoleAdmin), auth.AllScopes())
+}
+
+// TestIssueTokenNewVocabScopes:T17.1 词表 3→5 后的自窄化面——author
+// 可窄化 workflows:write、approver 可窄化 approvals:write(其决定面
+// 刚需);approver 请求 workflows:write = 超角色默认 → 400;旧窄 token
+// (3 词表时代签发)不得经再签发获得新词表项(链式封堵对新枚同判)。
+func TestIssueTokenNewVocabScopes(t *testing.T) {
+	r, _, sign := newTestServer(t)
+	mintViaEndpoint(t, r, sign(auth.RoleAuthor), []auth.Scope{auth.ScopeWorkflowsWrite})
+	mintViaEndpoint(t, r, sign(auth.RoleApprover), []auth.Scope{auth.ScopeApprovalsWrite})
+
+	code, body := doJSON(t, r, http.MethodPost, "/api/v1/auth/tokens", sign(auth.RoleApprover),
+		issueTokenBody(t, []auth.Scope{auth.ScopeWorkflowsWrite}, nil))
+	if code != http.StatusBadRequest || body["error"] != "invalid_scope" {
+		t.Fatalf("approver widen to workflows:write = %d %v, want 400 invalid_scope", code, body)
+	}
+
+	parent, err := auth.SignTokenScoped(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAuthor}, 0, "", []auth.Scope{auth.ScopeWorkflowsRead})
+	if err != nil {
+		t.Fatalf("sign parent: %v", err)
+	}
+	code, body = doJSON(t, r, http.MethodPost, "/api/v1/auth/tokens", parent,
+		issueTokenBody(t, []auth.Scope{auth.ScopeApprovalsWrite}, nil))
+	if code != http.StatusBadRequest || body["error"] != "invalid_scope" {
+		t.Fatalf("old narrow token gains new scope = %d %v, want 400 invalid_scope", code, body)
+	}
 }
 
 // TestIssueTokenScopeValidation:自窄化语义的拒绝面——超集(approver

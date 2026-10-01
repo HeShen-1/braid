@@ -4,18 +4,22 @@ import "fmt"
 
 // Scope 是 token 作用域(D-2026-09-30-t131-mcp-server):资源:动作形,
 // 与角色正交——角色答「你是谁」(Q13 词表锁死三种),scp 答「这枚
-// token 能做什么」。首个消费面 = MCP server 面(T13.1);REST 面迁移
-// 同词表 = P1 停车场登记,不在本词表外自造第二套。
+// token 能做什么」。首个消费面 = MCP server 面(T13.1);REST 面全端点
+// 执法同词表落地(T17.1,D-2026-10-01-t171-rest-scp),管理面补
+// workflows:write / approvals:write 两枚(词表 3→5:REST 写面与审批
+// 决定面不可语义错配到读类或触发类作用域),不在词表外自造第二套。
 type Scope string
 
 const (
 	ScopeWorkflowsRead   Scope = "workflows:read"   // 定义发现/读
-	ScopeExecutionsRead  Scope = "executions:read"  // 执行查询
-	ScopeExecutionsWrite Scope = "executions:write" // 执行触发
+	ScopeWorkflowsWrite  Scope = "workflows:write"  // 定义/草稿/发布/归档写
+	ScopeExecutionsRead  Scope = "executions:read"  // 执行查询(含审批态/待办/审计读)
+	ScopeExecutionsWrite Scope = "executions:write" // 执行触发/回滚/续跑
+	ScopeApprovalsWrite  Scope = "approvals:write"  // 审批决定
 )
 
 // allScopes 是词表唯一真源:声明序 = DefaultScopesForRoles 映射序。
-var allScopes = []Scope{ScopeWorkflowsRead, ScopeExecutionsRead, ScopeExecutionsWrite}
+var allScopes = []Scope{ScopeWorkflowsRead, ScopeWorkflowsWrite, ScopeExecutionsRead, ScopeExecutionsWrite, ScopeApprovalsWrite}
 
 // AllScopes 返回作用域词表快照(防御性拷贝,防调用方改词表)。
 func AllScopes() []Scope {
@@ -60,10 +64,12 @@ func ValidateScopes(ss []Scope) error {
 }
 
 // DefaultScopesForRoles 是角色 → 默认作用域映射的单一真源:admin|
-// author → 三枚全量(author 与 REST 触发面同权),approver → 两枚
-// 只读(镜像 REST 面:审批人只读执行与定义)。多角色并集。login 签发
-// 默认与 /api/v1/auth/tokens 自窄化上界同吃这张表——两处各自抄一份
-// 映射 = 漂移面,单源使「REST 权限与 token 默认作用域」的等价性可钉死。
+// author → 五枚全量(author 与 REST 触发面同权),approver → 读两枚
+// + approvals:write(镜像 REST 面:审批人只读执行与定义、可落审批
+// 决定——approver 默认集缺 approvals:write 会使 REST 执法拦下审批人
+// 的决定面,现状兼容刚需)。多角色并集。login 签发默认与 /api/v1/
+// auth/tokens 自窄化上界同吃这张表——两处各自抄一份映射 = 漂移面,
+// 单源使「REST 权限与 token 默认作用域」的等价性可钉死。
 func DefaultScopesForRoles(roles []Role) []Scope {
 	out := make([]Scope, 0, len(allScopes))
 	for _, s := range allScopes {
@@ -72,7 +78,7 @@ func DefaultScopesForRoles(roles []Role) []Scope {
 			case RoleAdmin, RoleAuthor:
 				// 管理与作者全量
 			case RoleApprover:
-				if s == ScopeExecutionsWrite {
+				if s == ScopeWorkflowsWrite || s == ScopeExecutionsWrite {
 					continue
 				}
 			default:
@@ -81,6 +87,41 @@ func DefaultScopesForRoles(roles []Role) []Scope {
 			}
 			out = append(out, s)
 			break
+		}
+	}
+	return out
+}
+
+// ScopesWithin 报告 want 是否逐项都在 allowed 内(子集判定;want 的
+// 词表/重复校验已由调用方前置,此处只比集合包含)。消费面 = /api/v1/
+// auth/tokens 自窄化上界判定(T17.1 自 api 包收敛入 auth:集合代数与
+// 词表同源,杜绝第二套实现各自演化——D-t131 登记⑤收编)。
+func ScopesWithin(want, allowed []Scope) bool {
+	for _, w := range want {
+		found := false
+		for _, a := range allowed {
+			if w == a {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// IntersectScopes 返回 a ∩ b(保 a 序;两集合均词表内,空交集 = 空上界)。
+// 消费面与收敛理由同 ScopesWithin。
+func IntersectScopes(a, b []Scope) []Scope {
+	out := make([]Scope, 0, len(a))
+	for _, s := range a {
+		for _, t := range b {
+			if s == t {
+				out = append(out, s)
+				break
+			}
 		}
 	}
 	return out

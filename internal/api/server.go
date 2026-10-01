@@ -124,9 +124,12 @@ func (s *Server) traceSpan() gin.HandlerFunc {
 }
 
 // Router 注册全部路由。角色面:写(author|admin)与读(任意有效 token)
-// 在路由声明,中间件形态见 middleware.go(T5.2 换装点)。草稿走独立
-// /api/v1/drafts 前缀:gin 路由树不允许同层 static 与 param 混挂
-// (/definitions/drafts/:id 与 /definitions/:name 冲突)。
+// 在路由声明,中间件形态见 middleware.go(T5.2 换装点)。scp 执法面
+// (T17.1,D-2026-10-01-t171-rest-scp):authed 组每条路由挂 RequireScope
+// 声明所需作用域(scp 在场才执法,缺席 = 全角色凭证现状兼容);端点×
+// 作用域矩阵的对抗枚举锚 = scope_enforce_test.go 策略表(两处同 PR 旅行)。
+// 草稿走独立 /api/v1/drafts 前缀:gin 路由树不允许同层 static 与 param
+// 混挂(/definitions/drafts/:id 与 /definitions/:name 冲突)。
 func (s *Server) Router() *gin.Engine {
 	r := gin.New()
 	r.Use(gin.Recovery())
@@ -165,48 +168,62 @@ func (s *Server) Router() *gin.Engine {
 	v1 := authed
 	// 自窄化 scoped token 签发面(T13.1,D-t131 决策 4):任意有效 token
 	// 请求自身默认作用域子集(只窄不宽)——外部 agent 窄 token 的运维面;
-	// 角色零门槛(读角色也允许自窄,上限由其角色默认集钉死)。
+	// 角色零门槛(读角色也允许自窄,上限由其角色默认集钉死)。scp 执法
+	// 豁免(T17.1):自窄化构造性单调收窄(上界 = 角色默认 ∩ 呈现 token
+	// 自身 scp),挂任何作用域要求都会打断窄 token 的链式再窄化——
+	// 授权面在此端点无增益可守。
 	v1.POST("/auth/tokens", s.issueToken)
-	v1.POST("/definitions", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.createDefinition)
-	v1.GET("/definitions", s.listDefinitions)
-	v1.GET("/definitions/:name", s.getLatestPublished)
-	v1.GET("/definitions/:name/versions", s.listVersions)
-	v1.GET("/definitions/:name/versions/:version", s.getVersion)
-	v1.POST("/definitions/:name/versions/:version/archive",
+	v1.POST("/definitions", RequireScope(auth.ScopeWorkflowsWrite),
+		RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.createDefinition)
+	v1.GET("/definitions", RequireScope(auth.ScopeWorkflowsRead), s.listDefinitions)
+	v1.GET("/definitions/:name", RequireScope(auth.ScopeWorkflowsRead), s.getLatestPublished)
+	v1.GET("/definitions/:name/versions", RequireScope(auth.ScopeWorkflowsRead), s.listVersions)
+	v1.GET("/definitions/:name/versions/:version", RequireScope(auth.ScopeWorkflowsRead), s.getVersion)
+	v1.POST("/definitions/:name/versions/:version/archive", RequireScope(auth.ScopeWorkflowsWrite),
 		RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.archiveVersion)
 
-	v1.GET("/drafts/:id", s.getDraft)
-	v1.PUT("/drafts/:id", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.updateDraft)
-	v1.POST("/drafts/:id/publish", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.publishDraft)
+	v1.GET("/drafts/:id", RequireScope(auth.ScopeWorkflowsRead), s.getDraft)
+	v1.PUT("/drafts/:id", RequireScope(auth.ScopeWorkflowsWrite),
+		RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.updateDraft)
+	v1.POST("/drafts/:id/publish", RequireScope(auth.ScopeWorkflowsWrite),
+		RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.publishDraft)
 
 	// execution 面(T5.5):触发是写操作(消耗 LLM 预算),闸同 definition
-	// 写面;查询/列表读面任意有效 token。
-	v1.POST("/executions", RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.triggerExecution)
-	v1.GET("/executions", s.listExecutions)
-	v1.GET("/executions/:id", s.getExecution)
+	// 写面;查询/列表读面任意有效 token。回滚/续跑(T9.2)同判
+	// executions:write(与触发同级执行域写操作)。
+	v1.POST("/executions", RequireScope(auth.ScopeExecutionsWrite),
+		RequireAnyRole(auth.RoleAuthor, auth.RoleAdmin), s.triggerExecution)
+	v1.GET("/executions", RequireScope(auth.ScopeExecutionsRead), s.listExecutions)
+	v1.GET("/executions/:id", RequireScope(auth.ScopeExecutionsRead), s.getExecution)
 	// 回滚/续跑(T9.2,D-2026-09-28-t92):author|admin in-handler 闸
 	// (拒绝落审计 rollback.denied,中间件做不到)——形态镜像审批决定面。
-	v1.POST("/executions/:id/rollback", s.rollbackExecution)
-	v1.POST("/executions/:id/resume", s.resumeExecution)
+	v1.POST("/executions/:id/rollback", RequireScope(auth.ScopeExecutionsWrite), s.rollbackExecution)
+	v1.POST("/executions/:id/resume", RequireScope(auth.ScopeExecutionsWrite), s.resumeExecution)
 
 	// 待办列表(T4.4):任意有效 token,主体过滤即读边界(名单真相源 =
-	// 快照 approvers,谓词面见 approvaltodo.go)。
-	v1.GET("/approvals/pending", s.listPendingApprovals)
+	// 快照 approvers,谓词面见 approvaltodo.go)。审批态读面同判
+	// executions:read(审批是执行子资源域)。
+	v1.GET("/approvals/pending", RequireScope(auth.ScopeExecutionsRead), s.listPendingApprovals)
 
 	// 审批面(T4.2 立,T5.2 换装后形态):POST 决定的门 = approver|admin
 	// 角色闸(handler 内,403 role_denied + approval.decision_denied 审计
 	// reason=role_denied)叠加 DSL approvers[](快照真相源,越权 403 +
 	// 同事件 reason=membership;DSL 名单是执行时权威)。GET 详情收窄到
 	// 名单内审批人(comment 自由文本唯一暴露面不再开放;快照缺失
-	// fail-closed,状态读面在 GET /executions/:id)。
-	v1.GET("/executions/:id/approvals/:node_id", s.getApproval)
-	v1.POST("/executions/:id/approvals/:node_id/decision", s.decideApproval)
+	// fail-closed,状态读面在 GET /executions/:id)。scp:决定 =
+	// approvals:write(approver 默认集携带——REST 现状兼容刚需),
+	// 详情 = executions:read。
+	v1.GET("/executions/:id/approvals/:node_id", RequireScope(auth.ScopeExecutionsRead), s.getApproval)
+	v1.POST("/executions/:id/approvals/:node_id/decision",
+		RequireScope(auth.ScopeApprovalsWrite), s.decideApproval)
 
 	// 审计查询面(T6.3):三维度互斥恰一(execution_id/trace_id/actor_id);
 	// 可见性 = 仅读 audit_log(高频四类 ≤ flush interval 滞后,D-t63 #1)。
 	// actor 维度 in-handler admin 闸(参数条件闸,路由中间件做不到——
 	// 形态镜像 T5.2 审批决定面);execution/trace 维度读面任意有效 token。
-	v1.GET("/audit", s.listAuditEvents)
+	// scp = executions:read(audit_log 事件域 = 执行域,读面与执行查询同级;
+	// actor 维度 admin 闸 in-handler 保留,与 scp 正交)。
+	v1.GET("/audit", RequireScope(auth.ScopeExecutionsRead), s.listAuditEvents)
 
 	// OIDC redirect 流(T11.1):authed 组外(凭据换 token 的入口同
 	// login),注入过 OIDCProvider 才挂载(未配置零行为)。挂载点收敛在
