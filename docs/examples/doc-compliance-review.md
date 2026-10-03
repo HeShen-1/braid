@@ -64,10 +64,9 @@ go run ./cmd/reaper   # 审计异步批量搬运 + 审批超时扫描——不�
                       # 四类事件滞留 audit_pending 暂存表,对账查询看不到(不丢)
 ```
 
-账号:当前版本无 CLI 建号入口;先用 MySQL 插入 author 与 approver 两个
-账号(`users` + `user_role`,密码列存 bcrypt hash,对应
-`internal/auth.HashPassword`),DSL 审批名单里的 `alice`/`bob` 须与
-approver 账号名一致。
+账号:T16.2 起 CLI 建号(`braid user create`,README §2.2 ④;DB 直连,
+bcrypt 与 `internal/auth.HashPassword` 同则),DSL 审批名单里的 `alice`/
+`bob` 须与 approver 账号名一致。
 
 走链(认证面 = login 换 Bearer token,全程同一个 api 入口):
 

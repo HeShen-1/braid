@@ -140,21 +140,23 @@ migrate -path internal/db/migrations \
   -database "mysql://root:braid_dev_root@tcp(127.0.0.1:3306)/braid?loc=UTC&parseTime=true&multiStatements=true&time_zone=%27%2B00%3A00%27" up
 # 重复执行是 no-op;dirty 恢复 runbook 见 docs/ROADMAP-P0.md T7.4(P0 归档)
 
-# ④ 建号(P0 无 CLI 建号入口;示例 DSL 审批名单 = alice / bob,账号名必须一致。
-#    口令经容器内环境变量取用(env_file 注入),不落宿主命令行参数;
-#    主键是固定小 id,重跑本块报 1062 重复键 = 已建过,属预期——彻底重置
-#    用 docker compose -f deploy/dev.docker-compose.yml down -v 后从 ② 重来。
-#    下面 hash 对应明文 dev-author-1 / dev-approver-1——纯 dev 占位,生产必须换强密码
-#    并自行生成 hash,如交互式:htpasswd -nBC 10 "" 然后输入密码,取输出接 tr -d ':\n')
-docker exec -i braid-dev-mysql sh -c 'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" braid' <<'EOF'
-INSERT INTO users (id, username, password_hash) VALUES
-  (9001, 'alice', '$2a$10$z.GbtBYJa/n.nsM0k8AJPuMb2h1pZWvR2e2Fm4/QtcF6pWa0cZSP.'),
-  (9002, 'bob',   '$2a$10$MD1r186iUjr0SsS7JtXH7OWtn2g710rTrlozsnBZASzi9xw2DfeXS');
-INSERT INTO user_role (id, user_id, role) VALUES
-  (9101, 9001, 'author'),
-  (9102, 9001, 'approver'),
-  (9103, 9002, 'approver');
-EOF
+# ④ 建号(T16.2 CLI,连接形态 D-2026-10-03-t162-cli-connection:DB 直连
+#    复用 auth 原语,词域/哈希/角色校验与服务端同则;示例 DSL 审批名单 =
+#    alice / bob,账号名必须一致。凭证纪律:口令只经 BRAID_CLI_PASSWORD
+#    env 注入,绝不写进命令行参数(shell history / ps 可见)——真实口令
+#    交互输入用 read -s(bash/zsh 通用:read -s pw;回车后 export
+#    BRAID_CLI_PASSWORD=$pw && unset pw)。下面两行 env 前缀明文写口令,
+#    仅因 dev 占位口令非机密;生产/真实口令一律走 read -s 形态。
+#    重跑报 "username already exists"(auth: conflict)= 已建过,属预期
+#    ——彻底重置用 docker compose -f deploy/dev.docker-compose.yml down -v
+#    后从 ② 重来。dev 占位口令生产必须换强密码。退出码:0 成功 / 1 失败 / 2 用法错。
+go build -o /tmp/braid ./cmd/braid
+BRAID_MYSQL_DSN='root:braid_dev_root@tcp(127.0.0.1:3306)/braid' \
+BRAID_CLI_PASSWORD='dev-author-1' \
+  /tmp/braid user create -username alice -roles author,approver
+BRAID_MYSQL_DSN='root:braid_dev_root@tcp(127.0.0.1:3306)/braid' \
+BRAID_CLI_PASSWORD='dev-approver-1' \
+  /tmp/braid user create -username bob -roles approver
 
 # ⑤ 四进程 —— 开四个终端,每个都先注入 env 再跑各自入口(不是顺序执行:
 #    每个进程都是前台常驻,少一个都是静默失败——执行停 PENDING 缺 relay/worker,
@@ -201,6 +203,21 @@ curl -s -X POST $API/executions/$EXEC/approvals/human_review/decision \
 
 # ⑤ 取报告(批准 → outputs.report;合规不过 → outputs.revision;驳回 → FAILED 无产物)
 curl -s $API/executions/$EXEC -H "Authorization: Bearer $TOKEN"
+```
+
+CLI 等价形态(T16.2):②(登录换 token)由 env 凭据自动完成,③ 提交+发布、
+触发各是一行命令;④ 审批决定与 ⑤ 取报告仍走上面的 API/UI 面。凭证纪律同
+建号:token/凭据只经 env 注入,不进命令行参数——CLI 的解析链 `BRAID_TOKEN`
+直用,否则 `BRAID_USERNAME`+`BRAID_PASSWORD` 自动 login 换 token(真实凭据
+用 read -s 输入后 export,勿明文):
+
+```bash
+set -a; source deploy/.env; set +a   # BRAID_API_ADDR 兼容 host:port 监听值与完整 URL(自动补 http://)
+export BRAID_USERNAME=alice BRAID_PASSWORD=dev-author-1
+/tmp/braid definition publish docs/examples/doc-compliance-review.json
+echo '{"doc_path":"<仓库绝对路径>/docs/examples/sample-doc.txt"}' \
+  | /tmp/braid execution trigger -definition doc-compliance-review -input -
+# 触发可带幂等键(同键重放 200 回显原执行,退出码同为 0):-idempotency-key <key>;钉版:-version <n>
 ```
 
 审计对账(高频四类事件经 reaper 搬运,默认 ≤1s 滞后;`execution.triggered` / `approval.*` 同步直写):
