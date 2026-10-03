@@ -243,6 +243,22 @@ glm-5.3 实测):
 幂等提示:触发可带 `Idempotency-Key` 头(重放 200 回显原执行);审批重放同为 200 回显(UI 双击安全)。
 完整走链文档(含驳回/合规不过的事件序表)见 [docs/examples/doc-compliance-review.md](docs/examples/doc-compliance-review.md)。
 
+### 2.4 交付镜像构建与导出(T16.5)
+
+发布通道 = 本地导出(零 Secrets 姿态;GHCR 评估结论与重访触发器见
+D-2026-10-03-t165-image-delivery):
+
+```
+deploy/release.sh build                 # braid:<short-sha> 钉版 + braid:prod 浮动
+deploy/release.sh save                  # dist/braid-<sha>.tar + .sha256
+deploy/release.sh load <tar>            # 目标机:验和后 docker load
+deploy/release.sh k3s-import <tar>      # k3s 面导入 containerd
+```
+
+钉版部署 = Helm `--set image.tag=<short-sha>`;完整口径(完整性校验、
+`--provenance=false`、GOPROXY 解析链、脏树守卫)见
+[deploy/README.md §12](deploy/README.md)。
+
 ## 3. 故障注入演示(T8.1 套件)
 
 耐久性承诺的可复现证明:**worker / relay / reaper 任意时刻 SIGKILL、队列断连(下表五臂注入面),

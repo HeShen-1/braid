@@ -1,5 +1,7 @@
 # 构建上下文瘦身 + 凭证面隔离(T7.4):.env/.testenv 永不进 build context
 # (密钥不进镜像层是铁律;gitleaks 同口径)。
+# T16.5 增补:dist/ 是 release.sh save 的导出面,log/ 是 dev 栈 host
+# 进程日志,node_modules 是画布前端依赖——三者构建一概不需要。
 .git
 .worktrees
 .handoff
@@ -7,3 +9,6 @@ deploy/.env
 **/.testenv
 docs
 *.md
+dist
+log
+web/canvas/node_modules
