@@ -219,30 +219,30 @@ func TestOIDCFlowIntegration(t *testing.T) {
 		}
 	})
 
-	rows, err := dbh.Query(`SELECT event_type, username, reason FROM login_audit WHERE username IN ('oidc-alice','oidc-ghost')`)
+	rows, err := dbh.Query(`SELECT event_type, IFNULL(method,''), username, reason FROM login_audit WHERE username IN ('oidc-alice','oidc-ghost')`)
 	if err != nil {
 		t.Fatalf("query: %v", err)
 	}
 	defer rows.Close() //nolint:errcheck // 测试收尾
 	var got []string
 	for rows.Next() {
-		var ev, un string
+		var ev, method, un string
 		var reasonPtr *string
-		if err := rows.Scan(&ev, &un, &reasonPtr); err != nil {
+		if err := rows.Scan(&ev, &method, &un, &reasonPtr); err != nil {
 			t.Fatalf("scan: %v", err)
 		}
 		reason := ""
 		if reasonPtr != nil {
 			reason = *reasonPtr
 		}
-		got = append(got, fmt.Sprintf("%s/%s/%s", ev, un, reason))
+		got = append(got, fmt.Sprintf("%s/%s/%s/%s", ev, method, un, reason))
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
 	}
 	want := []string{
-		"login.succeeded/oidc-alice/",
-		"login.failed/oidc-ghost/" + auth.ReasonUnknownUser,
+		"login.succeeded/oidc/oidc-alice/",
+		"login.failed/oidc/oidc-ghost/" + auth.ReasonUnknownUser,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("login_audit 行 = %v, want %v", got, want)

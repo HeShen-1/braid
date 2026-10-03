@@ -18,6 +18,8 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -97,10 +99,14 @@ func (s *Server) issueToken(c *gin.Context) {
 	}
 	// 寿命外扩封堵(评审 HIGH):子 TTL ≤ 呈现 token 剩余寿命——签发链
 	// 双维(作用域交集 + 寿命收窄)单调不宽,泄露 token 两跳内无法扩权
-	// 也无法续命。Authenticate 已拒过期 token,remaining ≤ 0 不可达防御。
+	// 也无法续命。Authenticate 已拒过期 token,remaining ≤ 0 不可达防御;
+	// 阈值取 1s 而非 0(评审 LOW 修):亚秒剩余经 clamp 会签出亚秒 token,
+	// 其审计行 ttl_seconds 秒截断为 0 被 writeScopedTokenAudit 防御闸拒收
+	// ——「每次签发必落行」契约出现确定性缺口,签发面前置闭合(亚秒
+	// token 本无运维意义,与「事实过期」同判)。
 	if claims.ExpiresAt != nil {
 		remaining := time.Until(claims.ExpiresAt.Time)
-		if remaining <= 0 {
+		if remaining < time.Second {
 			abort(c, http.StatusUnauthorized, "token_expired")
 			return
 		}
@@ -116,9 +122,15 @@ func (s *Server) issueToken(c *gin.Context) {
 		abort(c, http.StatusInternalServerError, "internal")
 		return
 	}
-	// 签发是账号域安全事实:日志承载主体/作用域/TTL(token 本身绝不进
-	// 日志——铁律);审计表扩展(login_audit 同域)非本任务验收面,登记。
+	// 签发是账号域安全事实(T17.2 收口,D-t131 登记④):login_audit 落
+	// scoped_token_issued 行——主体/作用域/TTL(clamp 后实际授予值)/
+	// token 哈希(SHA-256 hex,原值绝不入审计——铁律);best-effort 独立
+	// 小事务,旁路审计失败不翻转签发响应。slog 保留为运维快面,表 =
+	// 可 SQL 审计的历史半边。
 	slog.Info("api: scoped token issued", "username", logUsername(claims.Subject), "scopes", req.Scopes, "ttl", ttl)
+	sum := sha256.Sum256([]byte(token))
+	s.writeScopedTokenAudit(c.Request.Context(), c.ClientIP(), claims.Subject, req.Scopes,
+		int64(ttl/time.Second), hex.EncodeToString(sum[:]))
 	c.Header("Cache-Control", "no-store")
 	c.JSON(http.StatusOK, tokenResponse{
 		Token:     token,

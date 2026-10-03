@@ -76,10 +76,12 @@ func (s *Server) mLogin(result string) {
 }
 
 // loginAuditEvent 落审计行 + 指标(同一发射点双半边,词面单源映射)。
+// method = 登录方法(0013:口令/OIDC 可区分,调用面显式传参——
+// 漏传即 fail-closed 响亮,不静默落不可归因行)。
 // ctx = 请求上下文(镜像 writeTriggerAudit 契约,rev2 advisory)。
-func (s *Server) loginAuditEvent(ctx context.Context, eventType, ip, username, reason string) {
+func (s *Server) loginAuditEvent(ctx context.Context, eventType, method, ip, username, reason string) {
 	s.mLogin(loginResultLabel(eventType))
-	s.writeLoginAudit(ctx, eventType, ip, username, reason)
+	s.writeLoginAudit(ctx, eventType, method, ip, username, reason)
 }
 
 // loginDefenseGate 是认证前的防御闸(rev3 提取:防御逻辑单点)。两段:
@@ -173,11 +175,11 @@ func (s *Server) login(c *gin.Context) {
 			// 不对外,防枚举契约不受影响)。
 			slog.Info("api: login rejected", "username", logUsername(creds.Username), "reason", creds.Reason)
 			s.loginThrottle.record(c.Request.Context(), req.Username, false)
-			s.loginAuditEvent(c.Request.Context(), loginEventFailed, ip, creds.Username, creds.Reason)
+			s.loginAuditEvent(c.Request.Context(), loginEventFailed, loginMethodPassword, ip, creds.Username, creds.Reason)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		case errors.Is(err, auth.ErrUserDisabled):
 			s.loginThrottle.record(c.Request.Context(), req.Username, false)
-			s.loginAuditEvent(c.Request.Context(), loginEventFailed, ip, req.Username, "user_disabled")
+			s.loginAuditEvent(c.Request.Context(), loginEventFailed, loginMethodPassword, ip, req.Username, "user_disabled")
 			c.JSON(http.StatusForbidden, gin.H{"error": "user_disabled"})
 		default:
 			// 身份源故障不是登录判定结果:不计数不审计(与 500 同判,
@@ -188,7 +190,7 @@ func (s *Server) login(c *gin.Context) {
 		return
 	}
 	s.loginThrottle.record(c.Request.Context(), req.Username, true)
-	s.loginAuditEvent(c.Request.Context(), loginEventSucceeded, ip, user.Username, "")
+	s.loginAuditEvent(c.Request.Context(), loginEventSucceeded, loginMethodPassword, ip, user.Username, "")
 	ttl := auth.DefaultTokenTTL
 	// token 绑定(T11.3):按当前模式携 bnd claim(off = 空串不带;
 	// 与 Authenticate 校验共用 bindingFingerprint 单点,oidc 回调同契约)。

@@ -21,12 +21,13 @@ import (
 	"braid/internal/tools"
 )
 
-// TestKnownLoginEventsClosedVocabulary:词表闭集锚——DDL ENUM(0005)与
-// Go 侧四词同 PR 旅行,漂移在此红。
+// TestKnownLoginEventsClosedVocabulary:词表闭集锚——DDL ENUM(0005 四词
+// + 0013 签发词)与 Go 侧同 PR 旅行,漂移在此红。
 func TestKnownLoginEventsClosedVocabulary(t *testing.T) {
 	want := map[string]bool{
 		"login.succeeded": true, "login.failed": true,
 		"login.locked": true, "login.rate_limited": true,
+		"scoped_token_issued": true,
 	}
 	if len(knownLoginEvents) != len(want) {
 		t.Fatalf("knownLoginEvents = %v, want exactly %v", knownLoginEvents, want)
@@ -34,6 +35,21 @@ func TestKnownLoginEventsClosedVocabulary(t *testing.T) {
 	for w := range want {
 		if !knownLoginEvents[w] {
 			t.Errorf("word %q missing from Go-side vocabulary", w)
+		}
+	}
+}
+
+// TestKnownLoginMethodsClosedVocabulary:method 词域闭集锚(0013)——DDL
+// ENUM 与 Go 侧同 PR 旅行;末尾追加(ldap 预留 T17.6)须两处同步,
+// 漂移在此红。
+func TestKnownLoginMethodsClosedVocabulary(t *testing.T) {
+	want := map[string]bool{"oidc": true, "password": true}
+	if len(knownLoginMethods) != len(want) {
+		t.Fatalf("knownLoginMethods = %v, want exactly %v", knownLoginMethods, want)
+	}
+	for w := range want {
+		if !knownLoginMethods[w] {
+			t.Errorf("method %q missing from Go-side vocabulary", w)
 		}
 	}
 }
@@ -108,7 +124,7 @@ func TestLoginDefenseAndAudit(t *testing.T) {
 			_ = json.Unmarshal([]byte(st.body), &struct {
 				Username *string `json:"username"`
 			}{Username: &username})
-			assertLoginAuditRow(t, dbh, st.wantEvent, username, st.wantReason)
+			assertLoginAuditRow(t, dbh, st.wantEvent, loginMethodPassword, username, st.wantReason)
 		})
 	}
 
@@ -144,11 +160,12 @@ func TestLoginAuditNoCredentialLeak(t *testing.T) {
 		t.Fatalf("code = %d %v", code, body)
 	}
 	token, _ := body["token"].(string)
-	assertLoginAuditRow(t, dbh, "login.succeeded", "eve", nil)
-	// 凭证扫描:全表任何列不得含密码或签发 token 片段。
+	assertLoginAuditRow(t, dbh, "login.succeeded", loginMethodPassword, "eve", nil)
+	// 凭证扫描:全表任何列(0013 签发列组含内)不得含密码或签发 token 片段。
 	var hits int
 	if err := dbh.QueryRow(`SELECT COUNT(*) FROM login_audit
-	  WHERE CONCAT_WS('|', event_type, username, client_ip, IFNULL(reason,'')) LIKE ?`,
+	  WHERE CONCAT_WS('|', event_type, username, client_ip, IFNULL(reason,''),
+	    IFNULL(scopes,''), IFNULL(token_hash,'')) LIKE ?`,
 		"%eve-secret-999%").Scan(&hits); err != nil {
 		t.Fatalf("scan leak: %v", err)
 	}
@@ -207,20 +224,23 @@ func seedLoginUser(t *testing.T, dbh *sql.DB, username, password, status string)
 	}
 }
 
-// assertLoginAuditRow:最新一行的形状锚(event/username/reason;client_ip
-// 由 httptest RemoteAddr 非空即可)。
-func assertLoginAuditRow(t *testing.T, dbh *sql.DB, event, username string, wantReason any) {
+// assertLoginAuditRow:最新一行的形状锚(event/method/username/reason;
+// client_ip 由 httptest RemoteAddr 非空即可)。
+func assertLoginAuditRow(t *testing.T, dbh *sql.DB, event, method, username string, wantReason any) {
 	t.Helper()
-	var gotEvent, gotUser, gotIP string
+	var gotEvent, gotMethod, gotUser, gotIP string
 	var gotReason sql.NullString
-	err := dbh.QueryRow(`SELECT event_type, username, client_ip, reason
+	err := dbh.QueryRow(`SELECT event_type, IFNULL(method,''), username, client_ip, reason
 	  FROM login_audit ORDER BY id DESC LIMIT 1`).
-		Scan(&gotEvent, &gotUser, &gotIP, &gotReason)
+		Scan(&gotEvent, &gotMethod, &gotUser, &gotIP, &gotReason)
 	if err != nil {
 		t.Fatalf("read latest login_audit row: %v", err)
 	}
 	if gotEvent != event {
 		t.Errorf("event = %s, want %s", gotEvent, event)
+	}
+	if gotMethod != method {
+		t.Errorf("method = %q, want %q(0013:登录方法可区分)", gotMethod, method)
 	}
 	if wantUser := auditUsername(username); gotUser != wantUser {
 		t.Errorf("username = %s, want %s", gotUser, wantUser)
