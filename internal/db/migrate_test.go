@@ -2,10 +2,12 @@ package db
 
 import (
 	"database/sql"
+	"errors"
 	"os"
+	"strings"
 	"testing"
 
-	_ "github.com/go-sql-driver/mysql"
+	"github.com/go-sql-driver/mysql"
 	"github.com/golang-migrate/migrate/v4"
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
@@ -381,17 +383,65 @@ SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS
 		t.Fatalf("0012 租约锚:CHECK = %q, want node_id <= 1023", leaseChk)
 	}
 
-	// CHECK 约束齐备:12 个(definition 1 + node 3 + attempt 2 + audit 1 + users 3;
+	// 0013 login_audit 签发审计锚(T17.2 防回退,每迁移惯例):method 列
+	// 词型/可空/缺省(backfill 口径的 DB 半边——DEFAULT 'password' 使
+	// 存量行与省列 INSERT 同判);event_type ENUM 尾追加 scoped_token_issued
+	//(词表封闭仅末尾追加契约);签发观测列组(scopes ascii / ttl 秒 /
+	// token_hash char(64) ascii 镜像 audit_log 链列判)。行为半边(CHECK
+	// 执法与 DEFAULT 实测)= TestLoginAuditScopedTokenContract。
+	var methodType, methodNullable, methodDefault string
+	if err := d.QueryRow(`
+SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'login_audit'
+   AND COLUMN_NAME = 'method'`).Scan(&methodType, &methodNullable, &methodDefault); err != nil {
+		t.Fatalf("login_audit.method: %v", err)
+	}
+	if methodType != "enum('oidc','password')" || methodNullable != "YES" || methodDefault != "password" {
+		t.Fatalf("0013 method 锚:type=%q nullable=%q default=%q, want enum('oidc','password')/YES/password",
+			methodType, methodNullable, methodDefault)
+	}
+	for col, wantType := range map[string]string{
+		"event_type": "enum('login.succeeded','login.failed','login.locked','login.rate_limited','scoped_token_issued')",
+		"scopes":     "varchar(255)",
+		"ttl_seconds": "int unsigned",
+		"token_hash":  "char(64)",
+	} {
+		var got string
+		if err := d.QueryRow(`
+SELECT COLUMN_TYPE FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'login_audit'
+   AND COLUMN_NAME = ?`, col).Scan(&got); err != nil {
+			t.Fatalf("login_audit.%s type: %v", col, err)
+		}
+		if got != wantType {
+			t.Fatalf("0013 签发审计锚:%s COLUMN_TYPE = %q, want %q", col, got, wantType)
+		}
+	}
+	for _, col := range []string{"scopes", "token_hash"} {
+		var charset string
+		if err := d.QueryRow(`
+SELECT CHARACTER_SET_NAME FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'login_audit'
+   AND COLUMN_NAME = ?`, col).Scan(&charset); err != nil {
+			t.Fatalf("login_audit.%s charset: %v", col, err)
+		}
+		if charset != "ascii" {
+			t.Fatalf("0013 签发审计锚:%s charset = %q, want ascii(闭词表 ASCII 域)", col, charset)
+		}
+	}
+
+	// CHECK 约束齐备:13 个(definition 1 + node 3 + attempt 2 + audit 1 + users 3;
 	// node +1 = 0006 chk_node_instance;users +1 = 0009 chk_user_email;
-	// tenants +1 = 0011 chk_tenant_slug;lease +1 = 0012 chk_lease_node)
+	// tenants +1 = 0011 chk_tenant_slug;lease +1 = 0012 chk_lease_node;
+	// login_audit +1 = 0013 chk_login_audit_method)
 	var checks int
 	if err := d.QueryRow(
 		`SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS
 		 WHERE CONSTRAINT_SCHEMA = DATABASE()`).Scan(&checks); err != nil {
 		t.Fatalf("check constraints: %v", err)
 	}
-	if checks != 12 {
-		t.Fatalf("check constraints = %d, want 12", checks)
+	if checks != 13 {
+		t.Fatalf("check constraints = %d, want 13", checks)
 	}
 
 	// T6.1 对账索引存在
@@ -513,6 +563,97 @@ SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS
 	}
 	if headNullable["last_row_hash"] != "NO" {
 		t.Fatalf("chain_heads.last_row_hash IS_NULLABLE=%q, want NO(head 存在即有链尾)", headNullable["last_row_hash"])
+	}
+}
+
+// TestLoginAuditScopedTokenContract 是 0013 的行为半边(TestSchemaContract
+// 只锚结构):DEFAULT 'password' 缺省实测(backfill 口径的 DB 侧同源语义
+// ——省列 INSERT 与存量行回填同判)与 chk_login_audit_method 双向执法
+// (login.* 必携非空 method、scoped_token_issued 恒 NULL)。逐号断言
+// 3819(ER_CHECK_CONSTRAINT_VIOLATED)防「错源也当绿」:词法错误/列
+// 缺失同样报错,只看 err≠nil 会把结构缺陷误判成约束执法。
+func TestLoginAuditScopedTokenContract(t *testing.T) {
+	d := mustSQL(t)
+	m := newMigrator(t)
+	if err := m.Up(); err != nil && !errors.Is(err, migrate.ErrNoChange) {
+		t.Fatalf("up: %v", err)
+	}
+	// 固定测试 id + 前置清扫 + t.Cleanup:测试可重复执行,不依赖执行序。
+	const (
+		idDefault   = 880001 // 省列 INSERT(DEFAULT 口径)
+		idNoMethod  = 880002 // login.* + method NULL ⇒ 拒
+		idBadIssued = 880003 // scoped_token_issued + method 值 ⇒ 拒
+		idIssued    = 880004 // 签发行完整形态 ⇒ 过
+		idOIDC      = 880005 // login.* + method='oidc' ⇒ 过(正控)
+	)
+	sweep := func() {
+		_, _ = d.Exec(`DELETE FROM login_audit WHERE id IN (?, ?, ?, ?, ?)`,
+			idDefault, idNoMethod, idBadIssued, idIssued, idOIDC)
+	}
+	sweep()
+	t.Cleanup(sweep)
+
+	// ① DEFAULT:省 method 列 ⇒ 'password'(与存量行 backfill 同源语义)。
+	if _, err := d.Exec(`INSERT INTO login_audit (id, event_type, username, client_ip)
+		VALUES (?, 'login.succeeded', 't172_default', '127.0.0.1')`, idDefault); err != nil {
+		t.Fatalf("insert default-method row: %v", err)
+	}
+	var def string
+	if err := d.QueryRow(`SELECT method FROM login_audit WHERE id = ?`, idDefault).Scan(&def); err != nil {
+		t.Fatalf("read default method: %v", err)
+	}
+	if def != "password" {
+		t.Fatalf("省列 INSERT method = %q, want password(0013 backfill 口径同源)", def)
+	}
+
+	// ② CHECK 双向执法:违例 INSERT 必须 3819,不是任意错误。
+	for _, tc := range []struct {
+		name string
+		id   int64
+		sql  string
+	}{
+		{"login row without method", idNoMethod, `INSERT INTO login_audit (id, event_type, username, client_ip, method)
+			VALUES (?, 'login.succeeded', 't172_nomethod', '127.0.0.1', NULL)`},
+		{"issuance row with method", idBadIssued, `INSERT INTO login_audit (id, event_type, username, client_ip, method, scopes, ttl_seconds, token_hash)
+			VALUES (?, 'scoped_token_issued', 't172_bad', '127.0.0.1', 'oidc', 'executions:read', 60, '00')`},
+	} {
+		if _, err := d.Exec(tc.sql, tc.id); err == nil {
+			t.Fatalf("%s: 违例行被接受(chk_login_audit_method 未执法)", tc.name)
+		} else {
+			var me *mysql.MySQLError
+			if !errors.As(err, &me) || me.Number != 3819 {
+				t.Fatalf("%s: err = %v, want MySQL 3819 check violation", tc.name, err)
+			}
+		}
+	}
+
+	// ③ 签发行完整形态过闸 + 回读字段原样(scopes/ttl/hash 的 ASCII 域)。
+	if _, err := d.Exec(`INSERT INTO login_audit (id, event_type, username, client_ip, method, scopes, ttl_seconds, token_hash)
+		VALUES (?, 'scoped_token_issued', 't172_issued', '127.0.0.1', NULL, 'workflows:read,executions:write', 3600, ?)`,
+		idIssued, strings.Repeat("ab", 32)); err != nil {
+		t.Fatalf("insert issuance row: %v", err)
+	}
+	var scopes string
+	var ttlSecs uint32
+	var hash string
+	var method sql.NullString
+	var reason sql.NullString
+	if err := d.QueryRow(`SELECT method, scopes, ttl_seconds, token_hash, reason
+		FROM login_audit WHERE id = ?`, idIssued).
+		Scan(&method, &scopes, &ttlSecs, &hash, &reason); err != nil {
+		t.Fatalf("read issuance row: %v", err)
+	}
+	if method.Valid || reason.Valid {
+		t.Fatalf("签发行 method/reason 应恒 NULL,得 %q/%q", method.String, reason.String)
+	}
+	if scopes != "workflows:read,executions:write" || ttlSecs != 3600 || len(hash) != 64 {
+		t.Fatalf("签发行字段回读失真:scopes=%q ttl=%d hashlen=%d", scopes, ttlSecs, len(hash))
+	}
+
+	// ④ 正控:login.* + method='oidc' 合法(词域开放给 OIDC 路)。
+	if _, err := d.Exec(`INSERT INTO login_audit (id, event_type, username, client_ip, method)
+		VALUES (?, 'login.succeeded', 't172_oidc', '127.0.0.1', 'oidc')`, idOIDC); err != nil {
+		t.Fatalf("insert oidc login row: %v", err)
 	}
 }
 
