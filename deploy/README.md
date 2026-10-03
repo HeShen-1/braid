@@ -471,3 +471,39 @@ owner 化 T15.3 / egress 一 worker 一网 T15.4 已解除三挡)。多副本清
   另受启动期能力硬闸保护(UPGRADE.md §mode=all,T15.6)。
 - **演练**:`BRAID_TEST_REQUIRE_DRILL=1 go test ./internal/drill/`(五臂
   故障注入,独立 compose 栈,docker 在场即真跑)。
+
+## 12. 镜像构建与发布(T16.5;D-2026-10-03-t165-image-delivery)
+
+发布通道裁定 = **本地导出**(零 Secrets 姿态维持;GHCR 评估与重访触发器见
+D- 条目)。`deploy/release.sh` 四臂:
+
+| 命令 | 作用 |
+|------|------|
+| `deploy/release.sh build [--allow-dirty]` | 构建双 tag:`braid:<short-sha>` 钉版 + `braid:prod` 浮动(compose 契约名) |
+| `deploy/release.sh save [tag] [dir]` | 导出 `dist/braid-<tag>.tar` + `.sha256`(默认 tag = 当前 HEAD) |
+| `deploy/release.sh load <tar>` | 验和后 `docker load`(缺 `.sha256` 或哈希不匹配即拒) |
+| `deploy/release.sh k3s-import <tar> [容器名]` | 验和后导入 k3s containerd(k3s 面部署形态) |
+
+- **钉版部署**:Helm 侧 `--set image.tag=<short-sha>`;compose 侧 prod 栈
+  名即 `braid:prod`(build 段缺席时自动触发同源构建)。tar 内双 RepoTags
+  同随镜像走,目标机 load / k3s-import 后双名齐落。
+- **完整性校验(防误传/损坏,非防篡改)**:sha256 由 save 单点生成;
+  load / k3s-import 一律先 `sha256sum -c`,缺失或不匹配即拒(RC=1)。
+  tar 与 .sha256 同通道搬运,防的是离线搬运中的误传与损坏;防篡改须
+  带外通道比对哈希(镜像签名属 GHCR 重访触发器域)。
+- **`--provenance=false` 钉死**(build 臂内置,非可选):BuildKit attestation
+  会把镜像做成 OCI index,`docker save` / `ctr import` 双双
+  `content digest not found`(本机实证)。
+- **GOPROXY 解析链**:shell env 优先,缺省回落 `go env GOPROXY`(受限网络
+  出口常经 `go env -w` 配置,不落 shell env;不透传则容器内打
+  proxy.golang.org,本机 EOF 不可达)。
+- **脏树守卫**:build 默认拒脏树,判脏口径 = `git status --porcelain`
+  (staged/unstaged/**untracked 三态**——未跟踪文件经 `COPY . .` 烘进
+  镜像,游离迁移文件会经 migrate Job 真执行;gitignored 面不误报);
+  `--allow-dirty` 豁免时 tag 追加 `-dirty` 后缀保真溯源。
+- **k3s 名归一**:K8s/CRI 把 `braid:<tag>` 归一成 `docker.io/library/braid:<tag>`
+  再查本地;实证(k3s v1.31.4)单段名 `ctr import` 自动归一,脚本保留
+  重标名防御分支(不归一形态兜底,幂等)。
+- **构建上下文**:`.dockerignore` 随本任务增补 `dist`/`log`/
+  `web/canvas/node_modules`(T7.4 凭证面隔离口径之上,导出面与依赖面
+  不进 context)。
