@@ -1,14 +1,20 @@
 package api
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"net/http"
 	"testing"
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 
 	"braid/internal/auth"
+	"braid/internal/metrics"
+	"braid/internal/snowflake"
+	"braid/internal/tools"
 )
 
 // issueTokenBody 构造 POST /api/v1/auth/tokens 请求体。
@@ -261,5 +267,136 @@ func TestIssueTokenTTLCappedByParent(t *testing.T) {
 		if child.ExpiresAt.After(pc.ExpiresAt.Add(2 * time.Second)) {
 			t.Fatalf("ttl %v: child exp %v outlives parent exp %v", ttlReq, child.ExpiresAt, pc.ExpiresAt)
 		}
+	}
+}
+
+// TestIssueTokenAuditRowAndMetricPurity(T17.2 验收面):签发成功落
+// scoped_token_issued 审计行——主体(username 列)/作用域(comma-join,
+// 请求序保持)/TTL(clamp 后实际授予值:显式 60 原样、超父剩余回收到
+// 父剩余秒)/token 哈希(SHA-256 hex,对返回 token 可复算——原值绝不
+// 入行,铁律);method/reason 恒 NULL(chk_login_audit_method 的 Go 侧
+// 同判)。指标纯度:登录四 label 计数全零——登录指标是登录判定的观测
+// 半边,签发计数混入会把 label 词面污染成不可归因混合体。
+func TestIssueTokenAuditRowAndMetricPurity(t *testing.T) {
+	dbh := newLoginDefenseDB(t)
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
+		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
+		LoginMaxFailures: 100000, LoginLockout: time.Minute}
+	set, _ := metrics.NewSet()
+	ids, err := snowflake.New(1)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	reg, err := tools.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	gin.SetMode(gin.TestMode)
+	srv := NewServer(cfg, dbh, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{DB: dbh})
+	srv.loginMetrics = set.Login
+	r := srv.Router()
+
+	parent, err := auth.SignTokenScoped(testSecret, time.Hour, "alice",
+		[]auth.Role{auth.RoleAuthor}, 0, "", []auth.Scope{auth.ScopeWorkflowsRead, auth.ScopeExecutionsWrite})
+	if err != nil {
+		t.Fatalf("sign parent: %v", err)
+	}
+
+	// 第一枚:显式 ttl=60(远小于父剩余,不被 clamp)。
+	code, body := doJSON(t, r, http.MethodPost, "/api/v1/auth/tokens", parent,
+		issueTokenBody(t, []auth.Scope{auth.ScopeWorkflowsRead, auth.ScopeExecutionsWrite}, 60))
+	if code != http.StatusOK {
+		t.Fatalf("issue #1: code %d body %v", code, body)
+	}
+	tok1, _ := body["token"].(string)
+	sum := sha256.Sum256([]byte(tok1))
+
+	// 第二枚:ttl = MaxTokenTTL(604800,守卫上界)且超父剩余(1h)→
+	// 行里记 clamp 后实际授予值(≈3600,秒截断容 3599)。
+	code, body = doJSON(t, r, http.MethodPost, "/api/v1/auth/tokens", parent,
+		issueTokenBody(t, []auth.Scope{auth.ScopeExecutionsWrite}, int64(auth.MaxTokenTTL/time.Second)))
+	if code != http.StatusOK {
+		t.Fatalf("issue #2: code %d body %v", code, body)
+	}
+
+	rows, err := dbh.Query(`SELECT event_type, IFNULL(method,''), username, client_ip,
+	    scopes, ttl_seconds, token_hash, IFNULL(reason,'')
+	  FROM login_audit WHERE event_type = 'scoped_token_issued' ORDER BY id`)
+	if err != nil {
+		t.Fatalf("query issuance rows: %v", err)
+	}
+	defer func() { _ = rows.Close() }() //nolint:errcheck // 测试收尾
+	var got [][]any
+	for rows.Next() {
+		var ev, method, user, ip, scopes, hash, reason string
+		var ttl uint32
+		if err := rows.Scan(&ev, &method, &user, &ip, &scopes, &ttl, &hash, &reason); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		got = append(got, []any{ev, method, user, ip, scopes, ttl, hash, reason})
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("rows: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("scoped_token_issued rows = %d, want 2(拒绝路径零行): %v", len(got), got)
+	}
+	// 行 1:显式 TTL 原样 + 双作用域请求序保持 + 哈希可复算 + method/reason 恒空。
+	r1 := got[0]
+	if r1[0] != "scoped_token_issued" || r1[1] != "" || r1[2] != "alice" || r1[3] == "" {
+		t.Fatalf("row1 形状: %v", r1)
+	}
+	if r1[4] != "workflows:read,executions:write" {
+		t.Fatalf("row1 scopes = %v, want 请求序 comma-join", r1[4])
+	}
+	if r1[5] != uint32(60) {
+		t.Fatalf("row1 ttl = %v, want 60(显式值不被 clamp)", r1[5])
+	}
+	if r1[6] != hex.EncodeToString(sum[:]) {
+		t.Fatalf("row1 token_hash 不可复算: %v", r1[6])
+	}
+	if r1[7] != "" {
+		t.Fatalf("row1 reason = %v, want 恒 NULL", r1[7])
+	}
+	// 行 2:clamp 后实际授予值(父剩余 ≈3600,秒截断容 3599)。
+	if ttl := got[1][5].(uint32); ttl < 3599 || ttl > 3600 {
+		t.Fatalf("row2 ttl = %d, want clamp 至父剩余 [3599,3600]", ttl)
+	}
+
+	// 指标纯度:签发两枚后登录四 label 全零。
+	for _, label := range []string{metrics.ResultSucceeded, metrics.ResultFailed,
+		metrics.ResultLocked, metrics.ResultRateLimited} {
+		if c := testutil.ToFloat64(set.Login.Attempts.WithLabelValues(label)); c != 0 {
+			t.Errorf("login_attempts{%s} = %v, want 0(签发不进登录指标)", label, c)
+		}
+	}
+}
+
+// TestIssueTokenSubSecondParentRejected(评审 LOW 修的防回退锚):父 token
+// 剩余 < 1s 时签发面前置拒绝 401 token_expired——若不拦,亚秒剩余经
+// clamp 会签出亚秒 token,其审计行 ttl_seconds 秒截断为 0 被
+// writeScopedTokenAudit 防御闸拒收,「每次签发必落行」契约出现确定性
+// 缺口(200 签出零审计痕迹)。与 Authenticate 过期路径同映射,断言
+// 确定性不受请求处理时序影响(两路皆 401 token_expired)。
+func TestIssueTokenSubSecondParentRejected(t *testing.T) {
+	r, dbh, _ := newTestServer(t)
+	if _, err := dbh.Exec(`DELETE FROM login_audit WHERE event_type = 'scoped_token_issued'`); err != nil {
+		t.Fatalf("pre-clean: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = dbh.Exec(`DELETE FROM login_audit WHERE event_type = 'scoped_token_issued'`)
+	})
+	parent, err := auth.SignTokenScoped(testSecret, 300*time.Millisecond, "alice",
+		[]auth.Role{auth.RoleAuthor}, 0, "", []auth.Scope{auth.ScopeWorkflowsRead})
+	if err != nil {
+		t.Fatalf("sign parent: %v", err)
+	}
+	code, body := doJSON(t, r, http.MethodPost, "/api/v1/auth/tokens", parent,
+		issueTokenBody(t, []auth.Scope{auth.ScopeWorkflowsRead}, nil))
+	if code != http.StatusUnauthorized || body["error"] != "token_expired" {
+		t.Fatalf("code = %d body %v, want 401 token_expired(亚秒剩余 = 事实过期)", code, body)
+	}
+	if n := loginAuditRows(t, dbh); n != 0 {
+		t.Fatalf("login_audit rows = %d, want 0(拒绝路径零签发行)", n)
 	}
 }

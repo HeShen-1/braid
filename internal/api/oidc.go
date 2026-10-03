@@ -107,12 +107,12 @@ func (s *Server) oidcCallback(c *gin.Context) {
 		case errors.As(err, &creds):
 			// Reason 是日志词(auth/errors.go 契约),绝不进响应。
 			slog.Info("api: oidc login rejected", "username", logUsername(creds.Username), "reason", creds.Reason)
-			s.loginAuditEvent(c.Request.Context(), loginEventFailed, ip, creds.Username, creds.Reason)
+			s.loginAuditEvent(c.Request.Context(), loginEventFailed, loginMethodOIDC, ip, creds.Username, creds.Reason)
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid_credentials"})
 		case errors.Is(err, auth.ErrUserDisabled):
 			// subject 是 Complete 解析出的 claim 值(口令登录 req.Username
 			// 的对应物),审计归因不缺位。
-			s.loginAuditEvent(c.Request.Context(), loginEventFailed, ip, subject, "user_disabled")
+			s.loginAuditEvent(c.Request.Context(), loginEventFailed, loginMethodOIDC, ip, subject, "user_disabled")
 			c.JSON(http.StatusForbidden, gin.H{"error": "user_disabled"})
 		default:
 			// 身份源/本地库故障:不是登录判定结果,不计数不审计。
@@ -121,7 +121,7 @@ func (s *Server) oidcCallback(c *gin.Context) {
 		}
 		return
 	}
-	s.loginAuditEvent(c.Request.Context(), loginEventSucceeded, ip, user.Username, "")
+	s.loginAuditEvent(c.Request.Context(), loginEventSucceeded, loginMethodOIDC, ip, user.Username, "")
 	ttl := auth.DefaultTokenTTL
 	// token 绑定(T11.3):与口令登录同契约——按当前模式携 bnd claim,
 	// 指纹取回调请求的 UA/IP(与后续 API 调用同一浏览器会话)。

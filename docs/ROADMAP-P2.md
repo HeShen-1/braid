@@ -27,7 +27,7 @@
 ## M17 安全与可靠性清账(穿插池:lane 间隙消化,不占波次)
 
 - [x] T17.1 REST 全端点 scp 执法 — M — **红线优先** — 验收:scope 执法中间件覆盖 REST 全端点;scopesWithin/intersectScopes 与 auth 包词表单源收敛;MCP 面零回退;红线解除登记(D-t131 登记②⑤ 悬空移交收编:未执法前 scoped token 不得发不完全受信方)(D-2026-10-01-t171-rest-scp)
-- [ ] T17.2 scoped token 审计 + login method 列 — S — 验收:scoped_token_issued 审计事件(主体/作用域/TTL/token 哈希至多)+ login_audit method 列迁移(OIDC 与口令登录可区分);迁移序号按台账排队
+- [x] T17.2 scoped token 审计 + login method 列 — S — 验收:scoped_token_issued 审计事件(主体/作用域/TTL/token 哈希至多)+ login_audit method 列迁移(OIDC 与口令登录可区分);迁移序号按台账排队
 - [ ] T17.3 T7.4 授权断言收口 — M — 验收:outbox UPDATE/DELETE、audit_log ALTER 组件级授权断言;CheckAuditAppendOnly 表枚举扩 login_audit;RequeueNode runbook 手工原语文档化;按组件授权方案
 - [ ] T17.4 asynq 双执行硬化 + 告警补面 — M — 验收:Inspector 硬化双执行残余窗(D-t25#10);告警四组:5a premature/fabricated、reaper 毒快照、DB 连接池、im_notified 投递对账
 - [ ] T17.5 IM 签名短链预取闭合 — M — 验收:确认页第二跳/按钮改 POST(D-t143 决策6);instructions markdown 行内词法中和(D-t45 钓鱼面同族)
