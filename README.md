@@ -126,6 +126,24 @@ BRAID_LLM_PRICE_TABLE={"glm-5.3":{"input_per_mtok":"2","output_per_mtok":"8","cu
 BRAID_FILEREAD_DIRS=["<仓库绝对路径>/docs/examples"]
 ```
 
+**一键形态(T16.3,`braid seed`)**——配置后单命令跑通整条链:
+
+```bash
+docker compose -f deploy/dev.docker-compose.yml up -d   # 起基础设施
+deploy/dev-up.sh
+# dev-up.sh = MySQL 就绪等待 → seed db 段(迁移 + 建 alice/bob 演示号)→
+# 四进程 → seed rest 段(发布 agent-council + 触发一次评审 + 等待落点)。
+# 全程幂等,重跑安全(迁移 no-op / 已建号跳过 / 定义按名判存 / 触发幂等
+# 键命中回显);BRAID_DEV_SEED=0 跳过 seed 只起进程。
+# seed ⑤ 行即落点:WAITING_APPROVAL → 开 /ui/ 用 alice 或 bob 登录批准
+# (dev 默认口令 dev-author-1 / dev-approver-1;经 BRAID_SEED_*_PASSWORD
+# 覆盖,覆盖后不回显)。触发幂等键含输入摘要:改 seed 内置演示方案文案
+# → 下次重跑触发新执行。跳过 demo seed 独立重跑:`go run ./cmd/braid seed`
+# (栈已在跑时的 all 形态)。
+```
+
+分步形态(交互式调试 / 理解每一步;dev-up.sh 已把 ②③④⑤ 的机械部分自动化):
+
 ```bash
 # ② 起基础设施(MySQL 3306 / 队列 Redis 6379 / 缓存 Redis 6380 / Asynqmon 8080,均仅绑回环)
 docker compose -f deploy/dev.docker-compose.yml up -d
@@ -133,8 +151,10 @@ docker compose -f deploy/dev.docker-compose.yml up -d
 until docker exec braid-dev-mysql mysqladmin ping -uroot -pbraid_dev_root --silent 2>/dev/null; do sleep 1; done
 
 # ③ 建库(golang-migrate CLI 指向仓内迁移;DSN 四参数是全库连接契约,缺一不可。
-#    装到 $(go env GOPATH)/bin,不在 PATH 的机器先 export PATH="$PATH:$(go env GOPATH)/bin";
-#    DSN 口令按 .env 的 MYSQL_ROOT_PASSWORD 默认占位写死,改过口令则同步改)
+#    一键形态不需要此步:seed db 段进程内跑同一套嵌入迁移,CLI 安装仅分步
+#    形态需要。装到 $(go env GOPATH)/bin,不在 PATH 的机器先 export
+#    PATH="$PATH:$(go env GOPATH)/bin";DSN 口令按 .env 的
+#    MYSQL_ROOT_PASSWORD 默认占位写死,改过口令则同步改)
 go install -tags 'mysql' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.20.1
 migrate -path internal/db/migrations \
   -database "mysql://root:braid_dev_root@tcp(127.0.0.1:3306)/braid?loc=UTC&parseTime=true&multiStatements=true&time_zone=%27%2B00%3A00%27" up
@@ -142,7 +162,9 @@ migrate -path internal/db/migrations \
 
 # ④ 建号(T16.2 CLI,连接形态 D-2026-10-03-t162-cli-connection:DB 直连
 #    复用 auth 原语,词域/哈希/角色校验与服务端同则;示例 DSL 审批名单 =
-#    alice / bob,账号名必须一致。凭证纪律:口令只经 BRAID_CLI_PASSWORD
+#    alice / bob,账号名必须一致——一键形态的 seed db 段即下面两条命令的
+#    幂等版(口令走 BRAID_SEED_*_PASSWORD,dev 默认同占位值)。
+#    凭证纪律:口令只经 BRAID_CLI_PASSWORD
 #    env 注入,绝不写进命令行参数(shell history / ps 可见)——真实口令
 #    交互输入用 read -s(bash/zsh 通用:read -s pw;回车后 export
 #    BRAID_CLI_PASSWORD=$pw && unset pw)。下面两行 env 前缀明文写口令,
@@ -235,7 +257,9 @@ SELECT id, event_type, node_id, actor_id, trace_id, linked_trace_id FROM audit_l
 `docs/examples/agent-council.json`:技术方案评审会——主持人提炼 →
 架构/安全/成本三评审员**并行评审**(DAG 分叉)→ 首席仲裁**菱形汇合**裁决 →
 人工审批(审批语义 = 放行/否决,与仲裁结论正交)→ branch 按仲裁 verdict 路由
-approve 臂(决策层终报)或 revise 臂(分条修订计划)。同 2.2 走链提交发布后触发:
+approve 臂(决策层终报)或 revise 臂(分条修订计划)。§2.2 的一键 seed
+触发的就是本示例(输入 = seed 内置演示方案文案 `demoProposal`);手动
+走链提交发布后触发:
 
 ```bash
 curl -s -X POST $API/executions -H "Authorization: Bearer $TOKEN" \
