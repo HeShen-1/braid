@@ -22,7 +22,7 @@
 - [x] T16.3 一键 demo — M — 依赖 T16.2 — 验收:seed 脚本(迁移+建号+示例定义发布+触发)接入 dev-up.sh
 - [x] T16.4 性能数字进 README — S — 依赖 T15.5 — 验收:benchmark 数字成章 + agent-council 示例守护测试(README:241 自认无守护)
 - [x] T16.5 镜像构建/发布流水线 — M — 验收:零 Secrets 姿态下 registry push 方案评估与落地(GHCR GITHUB_TOKEN vs 本地导出)
-- [ ] T16.6 回滚-重跑 UI + Playwright e2e — M — 验收:画布/执行详情回滚操作面(§5 留白 + rollback.go 零回滚入口);浏览器级 e2e(D-t141#2 登记回收)
+- [x] T16.6 回滚-重跑 UI + Playwright e2e — M — 验收:画布/执行详情回滚操作面(§5 留白 + rollback.go 零回滚入口);浏览器级 e2e(D-t141#2 登记回收)(D-2026-10-04-t166-playwright-e2e)
 
 ## M17 安全与可靠性清账(穿插池:lane 间隙消化,不占波次)
 
