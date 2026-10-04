@@ -88,3 +88,76 @@ T15.3 升级窗特例**:旧二进制所起的前身容器没有 owner label,② 
 会复活互杀面;「sweep 前租约活性复核」选型 = 部署契约承载(followup
 位,依赖 t15.2 租约表)。与 §1.1 泄漏网的耦合:附着容器非零的网一律
 不回收(§1.1 第 4 步),先按本节清容器再回收网。
+
+## 2. 调度手工原语(T17.3,T7.4 收口)
+
+调度推进是事件驱动(scheduler.Instantiate 派发根节点、完成事件推进
+后继);判死收敛是 reaper 的自动路径(T2.5:心跳陈旧 attempt 判 DEAD、
+deadline 到期的 EXECUTING 预算内 RedispatchNode)。本节收**自动路径
+结构性不可达时**的运维手工原语——正常态一律等自动路径,勿用本节。
+
+### 2.1 RequeueNode:EXECUTING→PENDING 手工重入队
+
+**适用**:EXECUTING 行卡死且 reaper 扫描够不到——`deadline_at IS NULL`
+的不可扫描行(T2.5 扫描谓词对 NULL 恒假,数据缺陷形态)、reaper 长期
+停摆窗内的数据修复。**红线:reaper 在场且 deadline 在期时禁用本节**——
+重入队会造出 reaper 不扫的 PENDING 行(自动路径只认 EXECUTING),等于
+亲手关掉自动恢复通道;等 reaper 收敛(RedispatchNode)才是正路。
+
+原语 = `engine.RequeueNode`(internal/engine/nodecas.go;状态机唯一
+EXECUTING→PENDING 边,D-t25#5「保留为 runbook 手工原语」)。同族辅助
+原语 = `engine.CloseAttemptDead`(残留 RUNNING attempt 收口;不收口则
+api 回滚的守卫② 拒 409 BlockedInflight)。**核验先行**(镜像 UPGRADE.md
+§5 outbox DEAD 重置纪律):迟到的同 attempt 任务会被 worker 接管重跑
+(claimAttempt 对 RUNNING 行的接管分支),不核验就重置 = 双烧。
+
+```sql
+-- ① 定位 + 读版本(所有 CAS 手术的裁决基础;0 行 = 状态已变,重读重判):
+SELECT id, node_id, status, version, worker_id, deadline_at,
+       attempts, attempts_base
+  FROM node_execution WHERE id=<node_execution_id>;
+-- 适用面自核:status='EXECUTING'(快照灭失不妨碍重派:重认领时
+-- ClaimNode 同语句重写 input_snapshot,engine/snapshot.go 契约)。
+
+-- ② 核验无活执行面(三查缺一不可):
+--    a. attempt 侧:最近 attempt 非 RUNNING,或 RUNNING 但心跳陈旧
+SELECT id, status, worker_id, heartbeat_at FROM node_attempt
+ WHERE node_execution_id=<node_execution_id> ORDER BY id DESC LIMIT 1;
+--    b. worker 侧:该 worker_id 无活体(容器/进程在不在,§1.2 同款核对);
+--    c. 队列侧:asynq 无该任务活副本(task_id = att:<id>:<当前 attempts>)
+SELECT id, task_id, status FROM outbox
+ WHERE task_id=CONCAT('att:', <node_execution_id>, ':', <当前 attempts>);
+-- redis-cli -h <queue-host> --scan --pattern 'asynq:*' | grep -F '<task_id>'
+-- 非空 = 先处理 Redis 侧(等终态 / del),否则重入队后迟到任务撞接管分支。
+
+-- ③ 残留 RUNNING attempt 手工收口(CloseAttemptDead 原语形态):
+UPDATE node_attempt
+   SET status='DEAD', error_code='manual_requeue',
+       error_message='ops manual requeue (RUNBOOK §2.1)'
+ WHERE id=<attempt_id> AND status='RUNNING';
+
+-- ④ 重入队本体(RequeueNode 原语形态;CAS 带 status+version 双谓词,
+--    全清形态:快照/租约/截止/非终局错误一并清,恢复干净 PENDING):
+UPDATE node_execution
+   SET status='PENDING', worker_id=NULL, input_snapshot=NULL, deadline_at=NULL,
+       error_code=NULL, error_message=NULL, status_changed_at=NOW(3),
+       version=version+1
+ WHERE id=<node_execution_id> AND status='EXECUTING' AND version=<① 读到的版本>;
+-- RowsAffected=0 = 并发方(迟到 Complete / reaper)先动了,回 ① 重读重判。
+```
+
+**再派发**(PENDING 无扫描者——这是 D-t25#5 不启用自动重入队的原因,
+手工路径同样适用):重入队本身不触发任何调度。两条正路按场景选:
+
+- 前驱未全终态:等前驱完成事件级联(advance 会扫到该 PENDING 后继)。
+- 前驱全 SUCCEEDED 的冻结行:**api 回滚的自动解析**——执行落到 FAILED
+  后 `POST /executions/{id}/rollback`(不带 target)按字典序取「前驱
+  全就绪的 PENDING 冻结行」为目标(input_eval 型终败的 resume 面),
+  其全图 advance 会带着新鲜快照重派本行。执行还在 RUNNING 的:先让
+  失败收敛(reaper 判死 / 业务终败)进 FAILED 白名单,守卫② 要求全图
+  零 EXECUTING/WAITING_APPROVAL 残留(本节 ②③ 已保证该行不阻塞)。
+
+**留痕**:手工 SQL 不写 audit_log(append-only 面本就无 UPDATE 通道;
+状态迁移经审计链的自动化路径才有审计行)。操作证据归运维通道:变更单、
+操作日志、§2.1 步骤号引用。WAITING_APPROVAL 行不适用本节(归审批流
+T4.3:超时 fail 策略或审批决定,手工改写会绕过审批事实)。

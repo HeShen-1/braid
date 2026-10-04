@@ -70,10 +70,12 @@ func run(ctx context.Context) error {
 
 	// T7.3 安装自检:api 是审计写方(触发审计二段事务),MySQL 三项全硬拒;
 	// 错误自带修复提示,经 main 的 fatal 口径输出(slog.Error + Exit(1))。
+	// T17.3 按组件授权断言:api 的租约仲裁面(snowflake_node_lease 四面)。
 	if err := errors.Join(
 		preflight.CheckSchemaVersion(ctx, dbh),
 		preflight.CheckAuditAppendOnly(ctx, dbh, preflight.AppendOnlyStrict),
 		preflight.CheckAuditPartitions(ctx, dbh),
+		preflight.CheckComponentGrants(ctx, dbh, preflight.ComponentAPI),
 	); err != nil {
 		return fmt.Errorf("api: %w", err)
 	}
