@@ -1,0 +1,64 @@
+{
+  "dsl": "1.0",
+  "name": "e2e-rollback-journey",
+  "description": "T16.6 浏览器 e2e 旅程:双门审批(第一轮驳回驱动 FAILED,回滚/续跑两路翻活)→ file_read 并行扇出(实例行渲染)→ 会签收口(中间态渲染)。",
+  "inputs": [
+    { "name": "docs", "type": "array", "required": true, "description": "file_read 白名单内绝对路径数组" }
+  ],
+  "nodes": [
+    {
+      "id": "gate1",
+      "type": "approval",
+      "title": "门一(alice)",
+      "approvers": ["alice"],
+      "mode": "any",
+      "timeout_hours": 24,
+      "on_timeout": "fail",
+      "instructions": "e2e 旅程:第一轮驳回(驱动执行 FAILED);作者回滚后第二轮批准。",
+      "outputs": { "decision": "string" }
+    },
+    {
+      "id": "gate2",
+      "type": "approval",
+      "title": "门二(bob)",
+      "approvers": ["bob"],
+      "mode": "any",
+      "timeout_hours": 24,
+      "on_timeout": "fail",
+      "instructions": "e2e 旅程:第一轮驳回(驱动执行 FAILED);作者续跑后第二轮批准。",
+      "outputs": { "decision": "string" }
+    },
+    {
+      "id": "fan",
+      "type": "parallel",
+      "title": "并行读取",
+      "parallel": {
+        "foreach": "{{inputs.docs}}",
+        "on_failure": "wait_all",
+        "body": {
+          "type": "tool",
+          "tool": "file_read",
+          "inputs": { "path": "{{item}}" },
+          "outputs": { "content": "string" }
+        }
+      }
+    },
+    {
+      "id": "sign",
+      "type": "approval",
+      "title": "会签收口",
+      "approvers": ["alice", "bob"],
+      "mode": "all",
+      "timeout_hours": 24,
+      "on_timeout": "fail",
+      "instructions": "e2e 会签中间态:alice 先批(待投名单收缩断言),bob 后批收口。",
+      "outputs": { "decision": "string", "decided_by": "string" }
+    }
+  ],
+  "edges": [
+    { "from": "gate1", "to": "gate2" },
+    { "from": "gate2", "to": "fan" },
+    { "from": "fan", "to": "sign" }
+  ],
+  "outputs": { "decision": "{{nodes.sign.output.decision}}" }
+}

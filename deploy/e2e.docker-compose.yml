@@ -1,0 +1,57 @@
+# T16.6 Playwright e2e 栈的数据面(D-2026-10-04-t166-playwright-e2e #5):
+# MySQL + 队列 Redis 两实例,端口与 t13(13306/16379)、dev(3306/6379-6380)、
+# drill(17410/17420)全错开——栈有真实 asynq 键空间,不满足零键空间共租
+# 条件,不进 Redis 测试槽位表,独立实例分址。本地与 CI 同一真源:均经
+# `deploy/e2e-up.sh` 起本文件(CI e2e 作业同脚本;Redis 的 AOF 契约是
+# services 传不了 CMD 尾参的替代解)。tmpfs 两挂:down 即清,每次全新库,
+# e2e 可重复。
+# 用法:docker compose -f deploy/e2e.docker-compose.yml -p braid-e2e up -d
+# (服务命名/healthcheck/回环绑定姿势与 migrate-test.docker-compose.yml 同款)
+services:
+  mysql:
+    image: mysql:8.0
+    container_name: braid-e2e-mysql
+    ports:
+      - "127.0.0.1:13307:3306" # 仅绑回环,不暴露局域网
+    environment:
+      # 本地一次性验证容器的占位凭证,非任何真实系统凭证(与 t13 同判:
+      # 此栈 down 即清,凭证不进 .env)。
+      MYSQL_ROOT_PASSWORD: braid_dev_root
+      MYSQL_DATABASE: braid
+    healthcheck:
+      # -h127.0.0.1 强制 TCP(与 t13/ci.yml 同步):初始化期临时 server
+      # --skip-networking 仅应答 socket ping。
+      test: ["CMD", "mysqladmin", "ping", "-h127.0.0.1", "-uroot", "-pbraid_dev_root"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /var/lib/mysql
+
+  redis-queue:
+    # 队列实例:flags 与 dev 栈队列实例逐字对齐(worker preflight
+    # CheckRedisQueue 硬闸:noeviction + appendonly yes + appendfsync
+    # everysec 缺一即拒启——t13 栈的 --appendonly no 在这里不可复制,那套
+    # 契约服务 Go 测试而非真 worker)。tmpfs 承载 AOF:持久化语义在、
+    # down 即清的 e2e 可重复性也在。
+    image: redis:7.4
+    container_name: braid-e2e-redis-queue
+    command:
+      - redis-server
+      - --maxmemory
+      - 256mb
+      - --maxmemory-policy
+      - noeviction
+      - --appendonly
+      - "yes"
+      - --appendfsync
+      - everysec
+    ports:
+      - "127.0.0.1:16380:6379" # 仅绑回环
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      - /data

@@ -13,5 +13,8 @@ log/
 # canvas frontend (D-2026-09-30-t141-canvas-pipeline): deps stay local,
 # build output lives in internal/api/web/canvas (committed for go:embed)
 web/canvas/node_modules/
+# playwright e2e artifacts (D-2026-10-04-t166-playwright-e2e)
+web/canvas/playwright-report/
+web/canvas/test-results/
 # release.sh save output (T16.5 image export tars + checksums)
 dist/
