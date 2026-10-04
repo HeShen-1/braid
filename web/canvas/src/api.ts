@@ -16,12 +16,18 @@ export class ApiError extends Error {
   status: number
   code: string
   issues: Issue[]
+  /** 回滚 409 族(not_rollbackable/blocked_inflight/too_large)携带的补充说明。 */
+  detail?: string
+  /** blocked_inflight 的行清单("node_id:instance_no")。 */
+  blocked?: string[]
 
-  constructor(status: number, code: string, issues: Issue[]) {
+  constructor(status: number, code: string, issues: Issue[], detail?: string, blocked?: string[]) {
     super(`api ${status} ${code}`)
     this.status = status
     this.code = code
     this.issues = issues
+    this.detail = detail
+    this.blocked = blocked
   }
 }
 
@@ -49,8 +55,8 @@ export const tokenStore = {
   },
 }
 
-async function call<T>(method: string, path: string, body?: string): Promise<T> {
-  const headers: Record<string, string> = {}
+async function call<T>(method: string, path: string, body?: string, extraHeaders?: Record<string, string>): Promise<T> {
+  const headers: Record<string, string> = { ...extraHeaders }
   const token = tokenStore.get()
   if (token !== null) headers.Authorization = `Bearer ${token}`
   if (body !== undefined) headers['Content-Type'] = 'application/json'
@@ -59,10 +65,17 @@ async function call<T>(method: string, path: string, body?: string): Promise<T> 
     let code = `http_${res.status}`
     let issues: Issue[] = []
     try {
-      const payload = (await res.json()) as { error?: string; issues?: Issue[] }
+      const payload = (await res.json()) as {
+        error?: string
+        issues?: Issue[]
+        detail?: string
+        blocked?: string[]
+      }
       if (payload.error !== undefined) code = payload.error
       if (Array.isArray(payload.issues)) issues = payload.issues
-    } catch {
+      throw new ApiError(res.status, code, issues, payload.detail, payload.blocked)
+    } catch (err) {
+      if (err instanceof ApiError) throw err
       /* 非 JSON 错误体:保底 code */
     }
     throw new ApiError(res.status, code, issues)
@@ -93,6 +106,118 @@ export interface LoginResponse {
   expires_at: string
 }
 
+// ---- 契约面(T16.6 执行域:executionDTO / executionDetailDTO /
+// rollbackDTO / approvalDetailDTO / auditEventDTO,字段镜像 internal/api)----
+
+/** 状态词表(DDL ENUM,执行/节点共用子集;渲染层只显不判)。 */
+export const EXECUTION_STATUSES = ['PENDING', 'RUNNING', 'WAITING_APPROVAL', 'SUCCEEDED', 'FAILED', 'CANCELLED'] as const
+
+export interface Page {
+  limit: number
+  offset: number
+  total: number
+}
+
+export interface ExecutionSummary {
+  id: string
+  definition_id: string
+  definition_name: string
+  definition_version: number
+  status: string
+  trigger_type: string
+  triggered_by: string
+  error_code: string | null
+  error_message: string | null
+  created_at: string
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface NodeExecution {
+  id: string
+  node_id: string
+  instance_no: number
+  type: string
+  status: string
+  attempts: number
+  max_attempts: number
+  error_code: string | null
+  error_message: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface ExecutionDetail extends ExecutionSummary {
+  definition_hash: string
+  input: unknown
+  outputs: unknown
+  nodes: NodeExecution[]
+  audit: { exec_date: string; trace_id: string | null }
+}
+
+export interface TriggerAck {
+  id: string
+  definition_name: string
+  definition_version: number
+  status: string
+  trigger_type: string
+  triggered_by: string
+}
+
+export interface RollbackAck {
+  execution_id: string
+  target_node_id: string
+  rerun_target: boolean
+  reset_count: number
+}
+
+export interface ApprovalDecisionRow {
+  id: string
+  execution_id: string
+  node_id: string
+  round: number
+  decision: string
+  decided_by: string
+  comment: string | null
+  decided_at: string
+  /** omitempty:仅终轮投票行携带 true,中间票整字段缺席。 */
+  final?: boolean
+}
+
+export interface ApprovalDetail {
+  execution_id: string
+  node_id: string
+  node_status: string
+  deadline_at: string | null
+  approvers?: string[]
+  /** omitempty:缺省 = any 语义(approvalmode.go)。 */
+  mode?: string
+  timeout_hours?: number
+  on_timeout?: string
+  instructions?: string
+  pending_approvers: string[]
+  decisions: ApprovalDecisionRow[]
+}
+
+export interface AuditEvent {
+  id: string
+  exec_date: string
+  event_at: string
+  created_at: string
+  event_type: string
+  execution_id: string
+  node_execution_id: string | null
+  node_id: string | null
+  attempt_id: string | null
+  actor_type: string
+  actor_id: string
+  trace_id: string | null
+  pii_masked: boolean
+  prev_hash: string
+  row_hash: string | null
+  payload: unknown
+}
+
 // 端点全字面量(不拼前缀):bundle 端点锚与 grep 语义都锚在完整路径上
 // (web_test canvas bundle 锚同 app.js 纪律)。
 export const api = {
@@ -113,5 +238,50 @@ export const api = {
   },
   publishDraft(id: string): Promise<DraftDetail> {
     return call('POST', `/api/v1/drafts/${id}/publish`)
+  },
+  // ---- 执行域(T16.6)----
+  listPublished(): Promise<{ items: DraftSummary[] }> {
+    return call('GET', '/api/v1/definitions?status=PUBLISHED')
+  },
+  getVersion(name: string, version: number): Promise<DraftDetail> {
+    return call('GET', `/api/v1/definitions/${name}/versions/${version}`)
+  },
+  listExecutions(query?: { status?: string; name?: string; limit?: number; offset?: number }): Promise<{
+    items: ExecutionSummary[]
+    page: Page
+  }> {
+    const params = new URLSearchParams()
+    if (query?.status !== undefined && query.status !== '') params.set('status', query.status)
+    if (query?.name !== undefined && query.name !== '') params.set('name', query.name)
+    if (query?.limit !== undefined) params.set('limit', String(query.limit))
+    if (query?.offset !== undefined) params.set('offset', String(query.offset))
+    const qs = params.toString()
+    return call('GET', `/api/v1/executions${qs === '' ? '' : `?${qs}`}`)
+  },
+  getExecution(id: string): Promise<ExecutionDetail> {
+    return call('GET', `/api/v1/executions/${id}`)
+  },
+  triggerExecution(definitionName: string, input: unknown, idempotencyKey: string): Promise<TriggerAck> {
+    // 幂等键由 UI 每次提交新生成(crypto.randomUUID):双击/重放收敛为
+    // 200 原执行回显,而非双执行(服务端 uk_exec_idem 永久窗)。
+    return call(
+      'POST',
+      '/api/v1/executions',
+      JSON.stringify({ definition_name: definitionName, input }),
+      { 'Idempotency-Key': idempotencyKey },
+    )
+  },
+  rollbackExecution(id: string, nodeId: string): Promise<RollbackAck> {
+    return call('POST', `/api/v1/executions/${id}/rollback`, JSON.stringify({ node_id: nodeId }))
+  },
+  resumeExecution(id: string): Promise<RollbackAck> {
+    return call('POST', `/api/v1/executions/${id}/resume`)
+  },
+  getApproval(executionId: string, nodeId: string): Promise<ApprovalDetail> {
+    return call('GET', `/api/v1/executions/${executionId}/approvals/${nodeId}`)
+  },
+  listAuditEvents(executionId: string, limit?: number): Promise<{ items: AuditEvent[]; next_cursor: string }> {
+    const l = limit === undefined ? '' : `&limit=${limit}`
+    return call('GET', `/api/v1/audit?execution_id=${executionId}${l}`)
   },
 }
