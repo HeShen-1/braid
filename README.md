@@ -426,7 +426,8 @@ go test ./internal/reaper -run 'FlushKillMidDrain' -v -count=1
 | [docs/examples/](docs/examples/) | 端到端示例:DSL、样例输入、走链文档、审计事件序表 |
 | [deploy/README.md](deploy/README.md) | 部署配额与容量:连接池公式、Redis 契约、保留期、账号授权矩阵 |
 | [deploy/.env.example](deploy/.env.example) | env 旋钮单源(逐键注释) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 路线图(P2 活文档,M15-M17) |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 路线图(P3 活文档,M18-M20) |
+| [docs/ROADMAP-P2.md](docs/ROADMAP-P2.md) | P2 交付归档(M15-M17 + P2-DELIVERY) |
 | [docs/ROADMAP-P1.md](docs/ROADMAP-P1.md) | P1 交付归档(18 任务注记 + P1-DELIVERY) |
 | [docs/ROADMAP-P0.md](docs/ROADMAP-P0.md) | P0 交付归档(38 任务全量注记) |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 全部实现级决策条目(D-<date>-<slug>) |
