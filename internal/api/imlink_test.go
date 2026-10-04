@@ -1,17 +1,21 @@
 package api
 
-// IM 鉴权短链端点测试(T14.3,D-t143 决策 2/4):authed 组外路由(零
-// Authorization)、capability 验证(过期/篡改/词面外)、决定事务单点消费
-//(via=im_link 审计、any/all 定局语义、resume 事件、重放/冲突/已决/
-// 轮次过)、通道关闭 404、结果页安全头。t13 真 MySQL,不可达自动 skip。
+// IM 鉴权短链端点测试(T14.3,D-t143 决策 2/4;T17.5 确认页第二跳,
+// D-2026-10-04-t175 决策 1):authed 组外路由(零 Authorization)、
+// capability 验证(过期/篡改/词面外)、GET 只读确认页零落票(预取扫描器
+// 模拟)、POST 表单提交进决定事务单点消费(via=im_link 审计、any/all
+// 定局语义、resume 事件、重放/冲突/已决/轮次过)、通道关闭 404、确认页/
+// 结果页安全头。t13 真 MySQL,不可达自动 skip。
 //
 // 变异自查:via 归因丢失 → 审计断言红;轮绑定守卫移除 → 轮次过用例红;
-// 短链绕过名单门 → mallory 用例红;定局守卫对短链入口失效 → 已决用例红。
+// 短链绕过名单门 → mallory 用例红;定局守卫对短链入口失效 → 已决用例红;
+// GET 恢复直达落票 → 预取安全用例红(结构性闭合回归锚)。
 
 import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -53,9 +57,9 @@ func newIMTestServerOpt(t *testing.T, linkSecret string) *gin.Engine {
 	return NewServer(cfg, dbh, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{DB: dbh}).Router()
 }
 
-// imLinkPath 签发一张按钮短链(seed 恒 node_id=boss、round=1;exp 不可自定
-// ——过期链接用 imLinkExpiredAt 直改轮次/时间由 SignIMLink 语义出)。
-func imLinkPath(t *testing.T, execID, nodeExecID uint64, approver, action string) string {
+// imLinkCreds 签发一张按钮短链的凭据对(seed 恒 node_id=boss、round=1;
+// exp 不可自定——过期链接用时间回拨由 SignIMLink 语义出)。
+func imLinkCreds(t *testing.T, execID, nodeExecID uint64, approver, action string) (d, s string) {
 	t.Helper()
 	d, s, err := auth.SignIMLink(imLinkAPISecret, auth.IMLinkPayload{
 		ExecutionID: execID, NodeExecID: nodeExecID, NodeID: "boss",
@@ -64,6 +68,13 @@ func imLinkPath(t *testing.T, execID, nodeExecID uint64, approver, action string
 	if err != nil {
 		t.Fatalf("sign im link: %v", err)
 	}
+	return d, s
+}
+
+// imLinkPath 签发并拼 GET 链接(卡片按钮/在野旧链接形态)。
+func imLinkPath(t *testing.T, execID, nodeExecID uint64, approver, action string) string {
+	t.Helper()
+	d, s := imLinkCreds(t, execID, nodeExecID, approver, action)
 	return "/api/v1/im/approval?d=" + d + "&s=" + s
 }
 
@@ -87,6 +98,69 @@ func doIMGet(t *testing.T, r *gin.Engine, path string) *httptest.ResponseRecorde
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, req)
 	return w
+}
+
+// doIMSubmit 发确认页表单同形 POST(原生 x-www-form-urlencoded,零 JS;
+// d/s 是 base64url 词面,form body 无需转义)。
+func doIMSubmit(t *testing.T, r *gin.Engine, d, s string) *httptest.ResponseRecorder {
+	t.Helper()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/im/approval",
+		strings.NewReader("d="+d+"&s="+s))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	w := httptest.NewRecorder()
+	r.ServeHTTP(w, req)
+	return w
+}
+
+// imHiddenRe 从确认页 HTML 提取 hidden 凭据回传值(d/s 是 base64url 词面,
+// html.EscapeString 对其恒等,提取值 = 提交值)。
+var imHiddenRe = regexp.MustCompile(`<input type="hidden" name="d" value="([^"]*)">\s*<input type="hidden" name="s" value="([^"]*)">`)
+
+// doIMVote 走真实第二跳链:GET 确认页 → 从页面 HTML 提取 hidden d/s
+// (表单提交的凭据必须来自页面回传,不是带外签发值——对抗审计 HIGH 修:
+// 带外凭据会绕开回传面,页面值变异时测试假绿)→ POST 提交页面值。
+func doIMVote(t *testing.T, r *gin.Engine, execID, nodeExecID uint64, approver, action string) *httptest.ResponseRecorder {
+	t.Helper()
+	d, s := imLinkCreds(t, execID, nodeExecID, approver, action)
+	w := doIMGet(t, r, "/api/v1/im/approval?d="+d+"&s="+s)
+	m := imHiddenRe.FindStringSubmatch(w.Body.String())
+	if m == nil {
+		t.Fatalf("confirm page missing hidden d/s inputs: %s", w.Body.String())
+	}
+	return doIMSubmit(t, r, m[1], m[2])
+}
+
+// imConfirmWant 断言 GET 响应是只读确认页:状态 + 身份/动作事实展示 +
+// POST 表单 + hidden 凭据值与签发值逐字相等(回传面契约)+ 三安全头
+// (决策 1:页面内嵌 capability,CSP/XFO/no-store 缺一即缓存/注入面重开)
+// + Referrer-Policy(决策 1 实现期加固:Referer 不得回带 d/s)。
+func imConfirmWant(t *testing.T, w *httptest.ResponseRecorder, approver, actionZh, d, s string) {
+	t.Helper()
+	if w.Code != http.StatusOK {
+		t.Fatalf("confirm code = %d want 200; body: %s", w.Code, w.Body.String())
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
+		t.Fatalf("content-type = %q", ct)
+	}
+	if got := w.Header().Get("Content-Security-Policy"); got != "default-src 'none'" {
+		t.Fatalf("csp = %q", got)
+	}
+	if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("xfo = %q", got)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cache-control = %q", got)
+	}
+	if got := w.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("referrer-policy = %q", got)
+	}
+	body := w.Body.String()
+	for _, want := range []string{"审批确认", approver, actionZh, `method="POST"`, `name="d"`, `name="s"`,
+		`value="` + d + `"`, `value="` + s + `"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("confirm body missing %q: %s", want, body)
+		}
+	}
 }
 
 func imBodyWant(t *testing.T, w *httptest.ResponseRecorder, status int, want ...string) {
@@ -141,14 +215,24 @@ func imResumeCount(t *testing.T, dbh *sql.DB, execID uint64) int {
 	return n
 }
 
-// TestIMLinkApprovalAppliesDecision:any 模式首票 = 定局:短链 GET 落票 +
-// via=im_link 审计 + resume 事件 + 结果页安全头。
+// TestIMLinkApprovalAppliesDecision:any 模式首票 = 定局:GET 只读确认页
+// (零写入)→ POST 落票 + via=im_link 审计 + resume 事件 + 结果页安全头
+// (在野旧链接 = 同一 GET 链接,第二跳兼容即闭环)。
 func TestIMLinkApprovalAppliesDecision(t *testing.T) {
 	r := newIMTestServer(t)
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
 	execID, nodeExecID := seedSuspendedApproval(t, dbh, "WAITING_APPROVAL", "WAITING_APPROVAL", "carol")
 
-	w := doIMGet(t, r, imLinkPath(t, execID, nodeExecID, "carol", "approve"))
+	// 第一跳:确认页(只读展示身份/动作,不落票;hidden 值 = 签发值)。
+	d, s := imLinkCreds(t, execID, nodeExecID, "carol", "approve")
+	w := doIMGet(t, r, "/api/v1/im/approval?d="+d+"&s="+s)
+	imConfirmWant(t, w, "carol", "批准", d, s)
+	if n := imDecisionCount(t, dbh, execID); n != 0 {
+		t.Fatalf("GET must not vote: %d", n)
+	}
+
+	// 第二跳:表单 POST 落票。
+	w = doIMVote(t, r, execID, nodeExecID, "carol", "approve")
 	imBodyWant(t, w, http.StatusOK, "投票已记录", "carol 已批准", "已定局")
 
 	if got := w.Header().Get("Content-Security-Policy"); got != "default-src 'none'" {
@@ -180,6 +264,31 @@ func TestIMLinkApprovalAppliesDecision(t *testing.T) {
 	}
 }
 
+// TestIMLinkGetIsPrefetchSafe:预取扫描器模拟(SafeLinks/unfurl 只发 GET)
+// ——签名有效链接被 GET 任意多次,恒得确认页,approval_decision / 审计
+// decided / denied 零写入(结构性闭合回归锚:GET 恢复直达落票即红)。
+func TestIMLinkGetIsPrefetchSafe(t *testing.T) {
+	r := newIMTestServer(t)
+	dbh := sqltest.MustOpenAt(t, "braid_api_test")
+	execID, nodeExecID := seedSuspendedApproval(t, dbh, "WAITING_APPROVAL", "WAITING_APPROVAL", "carol")
+
+	d, s := imLinkCreds(t, execID, nodeExecID, "carol", "approve")
+	path := "/api/v1/im/approval?d=" + d + "&s=" + s
+	for i := 0; i < 3; i++ {
+		imConfirmWant(t, doIMGet(t, r, path), "carol", "批准", d, s)
+	}
+	if n := imDecisionCount(t, dbh, execID); n != 0 {
+		t.Fatalf("prefetch GETs must not vote: %d", n)
+	}
+	var n int
+	if err := dbh.QueryRow(`SELECT COUNT(*) FROM audit_log WHERE execution_id=?`, execID).Scan(&n); err != nil {
+		t.Fatalf("count audit: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("prefetch GETs must not audit: %d", n)
+	}
+}
+
 // TestIMLinkAllModeIntermediateThenFinal:会签中间态票零续跑意图,末票
 // 定局才 resume(D-t142 契约经短链入口不变形)。
 func TestIMLinkAllModeIntermediateThenFinal(t *testing.T) {
@@ -187,13 +296,13 @@ func TestIMLinkAllModeIntermediateThenFinal(t *testing.T) {
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
 	execID, nodeExecID := seedSuspendedApprovalMode(t, dbh, "WAITING_APPROVAL", "WAITING_APPROVAL", "all", "carol", "dave")
 
-	w := doIMGet(t, r, imLinkPath(t, execID, nodeExecID, "carol", "approve"))
+	w := doIMVote(t, r, execID, nodeExecID, "carol", "approve")
 	imBodyWant(t, w, http.StatusOK, "等待其余审批人投票")
 	if n := imResumeCount(t, dbh, execID); n != 0 {
 		t.Fatalf("intermediate vote must not resume: %d", n)
 	}
 
-	w = doIMGet(t, r, imLinkPath(t, execID, nodeExecID, "dave", "approve"))
+	w = doIMVote(t, r, execID, nodeExecID, "dave", "approve")
 	imBodyWant(t, w, http.StatusOK, "本轮已定局")
 	if n := imResumeCount(t, dbh, execID); n != 1 {
 		t.Fatalf("final vote must resume: %d", n)
@@ -209,15 +318,18 @@ func TestIMLinkReplayAndConflict(t *testing.T) {
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
 	execID, nodeExecID := seedSuspendedApprovalMode(t, dbh, "WAITING_APPROVAL", "WAITING_APPROVAL", "all", "carol", "dave")
 
-	approve := imLinkPath(t, execID, nodeExecID, "carol", "approve")
-	doIMGet(t, r, approve)
-	w := doIMGet(t, r, approve)
+	w := doIMVote(t, r, execID, nodeExecID, "carol", "approve")
+	imBodyWant(t, w, http.StatusOK, "投票已记录", "等待其余审批人投票")
+	// 重放 = 再走一次完整第二跳(确认页 + POST),幂等面在决定事务。
+	d, s := imLinkCreds(t, execID, nodeExecID, "carol", "approve")
+	doIMGet(t, r, "/api/v1/im/approval?d="+d+"&s="+s)
+	w = doIMSubmit(t, r, d, s)
 	imBodyWant(t, w, http.StatusOK, "已投过票", "未产生新写入")
 	if n := imDecisionCount(t, dbh, execID); n != 1 {
 		t.Fatalf("replay must not write: %d", n)
 	}
 
-	w = doIMGet(t, r, imLinkPath(t, execID, nodeExecID, "carol", "reject"))
+	w = doIMVote(t, r, execID, nodeExecID, "carol", "reject")
 	imBodyWant(t, w, http.StatusConflict, "投票冲突", "不可改判")
 	if n := imDecisionCount(t, dbh, execID); n != 1 {
 		t.Fatalf("conflict must not write: %d", n)
@@ -230,8 +342,8 @@ func TestIMLinkAlreadyDecided(t *testing.T) {
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
 	execID, nodeExecID := seedSuspendedApproval(t, dbh, "WAITING_APPROVAL", "WAITING_APPROVAL", "carol", "dave")
 
-	doIMGet(t, r, imLinkPath(t, execID, nodeExecID, "carol", "approve"))
-	w := doIMGet(t, r, imLinkPath(t, execID, nodeExecID, "dave", "approve"))
+	doIMVote(t, r, execID, nodeExecID, "carol", "approve")
+	w := doIMVote(t, r, execID, nodeExecID, "dave", "approve")
 	imBodyWant(t, w, http.StatusConflict, "已定局")
 	if n := imDecisionCount(t, dbh, execID); n != 1 {
 		t.Fatalf("post-final vote must not write: %d", n)
@@ -247,7 +359,7 @@ func TestIMLinkRoundStale(t *testing.T) {
 	if _, err := dbh.Exec(`UPDATE node_execution SET attempts=2 WHERE id=?`, nodeExecID); err != nil {
 		t.Fatalf("bump attempts: %v", err)
 	}
-	w := doIMGet(t, r, imLinkPath(t, execID, nodeExecID, "carol", "approve"))
+	w := doIMVote(t, r, execID, nodeExecID, "carol", "approve")
 	imBodyWant(t, w, http.StatusConflict, "链接已失效", "轮次已过")
 	if n := imDecisionCount(t, dbh, execID); n != 0 {
 		t.Fatalf("stale link must not vote: %d", n)
@@ -264,12 +376,17 @@ func TestIMLinkGuards(t *testing.T) {
 	t.Run("expired", func(t *testing.T) {
 		p := imLinkAt(t, execID, nodeExecID, "carol", "approve", time.Now().Add(-auth.IMLinkTTL-time.Minute))
 		imBodyWant(t, doIMGet(t, r, p), http.StatusGone, "链接已过期")
+		// POST 同面:凭据过期不因提交动作复活(两跳各自验签)。
+		parts := strings.SplitN(strings.TrimPrefix(p, "/api/v1/im/approval?d="), "&s=", 2)
+		imBodyWant(t, doIMSubmit(t, r, parts[0], parts[1]), http.StatusGone, "链接已过期")
 	})
 	t.Run("tampered signature", func(t *testing.T) {
 		p := imLinkPath(t, execID, nodeExecID, "carol", "approve")
 		b := []byte(p)
 		b[len(b)-2]++ // 签名尾段变异
 		imBodyWant(t, doIMGet(t, r, string(b)), http.StatusForbidden, "链接无效")
+		parts := strings.SplitN(strings.TrimPrefix(string(b), "/api/v1/im/approval?d="), "&s=", 2)
+		imBodyWant(t, doIMSubmit(t, r, parts[0], parts[1]), http.StatusForbidden, "链接无效")
 	})
 	t.Run("action outside vocabulary", func(t *testing.T) {
 		// 签名有效但 action 词面外 = 签发面漂移/伪造,不进决定事务。
@@ -281,10 +398,11 @@ func TestIMLinkGuards(t *testing.T) {
 			t.Fatalf("sign: %v", err)
 		}
 		imBodyWant(t, doIMGet(t, r, "/api/v1/im/approval?d="+d+"&s="+s), http.StatusForbidden, "链接无效")
+		imBodyWant(t, doIMSubmit(t, r, d, s), http.StatusForbidden, "链接无效")
 	})
 	t.Run("approver outside list", func(t *testing.T) {
-		imBodyWant(t, doIMGet(t, r, imLinkPath(t, execID, nodeExecID, "mallory", "approve")),
-			http.StatusForbidden, "无权投票")
+		w := doIMVote(t, r, execID, nodeExecID, "mallory", "approve")
+		imBodyWant(t, w, http.StatusForbidden, "无权投票")
 		if n := imDecisionCount(t, dbh, execID); n != 0 {
 			t.Fatalf("membership gate must hold: %d", n)
 		}
@@ -300,15 +418,26 @@ SELECT JSON_UNQUOTE(JSON_EXTRACT(payload, '$.reason')) FROM audit_log
 	})
 	t.Run("node not waiting", func(t *testing.T) {
 		execID2, nodeExecID2 := seedSuspendedApproval(t, dbh, "RUNNING", "SUCCEEDED", "carol")
-		imBodyWant(t, doIMGet(t, r, imLinkPath(t, execID2, nodeExecID2, "carol", "approve")),
-			http.StatusConflict, "已收口")
+		w := doIMVote(t, r, execID2, nodeExecID2, "carol", "approve")
+		imBodyWant(t, w, http.StatusConflict, "已收口")
 	})
 	t.Run("node_exec mismatch", func(t *testing.T) {
-		imBodyWant(t, doIMGet(t, r, imLinkPath(t, execID, nodeExecID+1, "carol", "approve")),
-			http.StatusInternalServerError, "暂时无法处理")
+		w := doIMVote(t, r, execID, nodeExecID+1, "carol", "approve")
+		imBodyWant(t, w, http.StatusInternalServerError, "暂时无法处理")
 		if n := imDecisionCount(t, dbh, execID); n != 0 {
 			t.Fatalf("mismatch must not vote: %d", n)
 		}
+	})
+	t.Run("oversized body collapses to invalid-link face", func(t *testing.T) {
+		// 未认证 POST 臂读体上限(对抗审计 MEDIUM/LOW 修):4KiB 上限之外
+		// 的大包/multipart 洪泛在验签前被截断,收口到 403 无效链接面——
+		// 无凭据读取、无内存/临时盘放大(镜像 readBodyLimited 读体纪律)。
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/im/approval",
+			strings.NewReader("d="+strings.Repeat("a", 64<<10)))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		imBodyWant(t, w, http.StatusForbidden, "链接无效")
 	})
 }
 
@@ -327,6 +456,11 @@ func TestIMLinkDisabledWithoutSecret(t *testing.T) {
 	w := doIMGet(t, r, "/api/v1/im/approval?d="+d+"&s="+s)
 	if w.Code != http.StatusNotFound {
 		t.Fatalf("code = %d want 404; body: %s", w.Code, w.Body.String())
+	}
+	// POST 同面:通道关闭对两跳一致(不因提交动作复活)。
+	w = doIMSubmit(t, r, d, s)
+	if w.Code != http.StatusNotFound {
+		t.Fatalf("post code = %d want 404; body: %s", w.Code, w.Body.String())
 	}
 }
 

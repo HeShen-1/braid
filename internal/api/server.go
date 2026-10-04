@@ -171,12 +171,14 @@ func (s *Server) Router() *gin.Engine {
 	// login_audit 表,旋钮见 Config;DB 锚定升级归 P1 停车场)。
 	r.POST("/api/v1/auth/login", s.login)
 
-	// IM 审批短链(T14.3,D-t143 决策 4):authed 组外——凭据 = 签名 URL
-	//(HMAC capability,验证面 imlink.go);密钥未配(BRAID_IM_LINK_SECRET
-	// 空)= 面关闭(端点恒挂载,404 收口,路由表不随配置漂移)。GET 带
-	// 落票副作用是 capability link 的既定形态(重放幂等 + 结果页兜底,
-	// 已知边界登记见 D-t143 决策 4/6)。
-	r.GET("/api/v1/im/approval", s.imApproval)
+	// IM 审批短链(T14.3,D-t143 决策 4;T17.5 确认页第二跳,D-2026-10-04
+	// -t175 决策 1):authed 组外——凭据 = 签名 URL(HMAC capability,
+	// 验证面 imlink.go);密钥未配(BRAID_IM_LINK_SECRET 空)= 面关闭
+	//(端点恒挂载,404 收口,路由表不随配置漂移)。GET = 只读确认页
+	//(零落票,链路扫描器预取面结构性闭合),POST = 表单提交落票(重放
+	// 幂等 + 结果页兜底,已知边界登记见 D-t143 决策 4/6)。
+	r.GET("/api/v1/im/approval", s.imApprovalConfirm)
+	r.POST("/api/v1/im/approval", s.imApprovalSubmit)
 
 	authed := r.Group("/api/v1", s.traceSpan(), Authenticate(s.cfg.JWTSecret, s.cfg.TokenBinding))
 	v1 := authed

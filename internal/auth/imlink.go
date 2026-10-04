@@ -4,12 +4,14 @@ package auth
 // 平台 API 的凭据 = 对 payload 的 HMAC-SHA256 签名(否决一次性 token:
 // 零存储/零迁移/api 零新依赖,「首点即焚」由 decision 既有幂等承担)。
 //
-// 消费链位置:
+// 消费链位置(T17.5 起两跳形态,D-2026-10-04-t175 决策 1):
 //
 //	notify(IMSender 渲染卡片) --SignIMLink--> actionURL =
 //	  {BRAID_APPROVAL_BASE_URL}/api/v1/im/approval?d=…&s=…
-//	  → api imApproval handler --VerifyIMLink--> 决定事务单点(与 Bearer
-//	    投票同源:锁行/名单门/定局守卫/重放语义全一致)
+//	  → api imApprovalConfirm(GET --VerifyIMLink--> 只读确认页,零落票
+//	    ——预取扫描器结构性拿不到消费面)→ 表单 POST imApprovalSubmit
+//	    (--VerifyIMLink--> 决定事务单点,与 Bearer 投票同源:锁行/名单门/
+//	    定局守卫/重放语义全一致;凭据走 form body)
 //
 // 安全性质:payload 签名但不加密(id/approver 是公开事实,秘密只在签名);
 // 短链证明「持有者可代所指 approver 投票」,不证明点击者身份——信任

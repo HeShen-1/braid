@@ -225,7 +225,8 @@ SELECT n.execution_id, n.node_id, n.status, n.deadline_at, n.input_snapshot,
 
 // renderCard 产出钉钉 actionCard 请求体:markdown 文本(上下文与 SMTP
 // render 同源面)+ 按钮(短链直投或降级审批页)。instructions 自由文本
-// 逐行 "> " 引用前缀(D-t45 防钓鱼面同款:无法冒充平台顶格文案行)。
+// 逐行 "> " 引用前缀(D-t45 防钓鱼面同款:无法冒充平台顶格文案行)+ 行内
+// 词法中和(neutralizeIMMarkdown,链接词法必死)。
 func (s *IMSender) renderCard(execID, nodeExecID uint64, nodeID string, deadline sql.NullTime,
 	defName string, defVersion uint64, snap scheduler.ApprovalInput,
 	reason string, round int, voted map[string]string, pending []string) ([]byte, error) {
@@ -264,8 +265,11 @@ func (s *IMSender) renderCard(execID, nodeExecID uint64, nodeID string, deadline
 	if len(pending) == 0 {
 		b.WriteString("\n该轮投票已齐(定局),工作流将自动收口,无需操作。\n")
 	}
-	for _, line := range strings.Split(strings.ReplaceAll(snap.Instructions, "\r\n", "\n"), "\n") {
-		fmt.Fprintf(&b, "> %s\n", line)
+	// 行切分规范化 \r\n 与孤立 \r 双形态(对抗审计 LOW 修:孤立 \r 若被
+	// 渲染方言视为断行,续行逃出 "> " 引用前缀的容纳边;代码侧统一收回,
+	// 与 SMTP sender.go 同款双改)。
+	for _, line := range strings.Split(strings.ReplaceAll(strings.ReplaceAll(snap.Instructions, "\r\n", "\n"), "\r", "\n"), "\n") {
+		fmt.Fprintf(&b, "> %s\n", neutralizeIMMarkdown.Replace(line))
 	}
 	fmt.Fprintf(&b, "\n[查看审批页](%s)\n", s.pageURL(execID, nodeID))
 	card.Card.Text = b.String()
@@ -293,6 +297,22 @@ func (s *IMSender) renderCard(execID, nodeExecID uint64, nodeID string, deadline
 	}
 	return json.Marshal(card)
 }
+
+// neutralizeIMMarkdown 是 instructions 行内词法中和(T17.5,D-2026-10-04
+// -t175 决策 2,档 1 黑名单全角化):卡片是 instructions 的首个 markdown
+// 渲染面(SMTP 纯文本无此面),author|admin 特权文本可在引用块内以
+// `[仿冒文案](url)` 词法在原生按钮旁注入可点击链接(D-t143 决策 6 LOW⑨
+// 登记)。`[` 是链接与图片词法的必要字符,全角化即词法必死;反引号顺手
+// 全角化 = 防钉钉未来支持 code span 的方言漂移面(零成本)。确定性字符
+// 替换,不依赖引擎方言语义(否决 `\[` 转义与反引号包裹:钉钉 markdown
+// 子集两者语义均未经证)。裸 URL 自动链接面不中和(档 1 边界,决策 2
+// 登记:所见即所得欺骗性有限,中和 scheme 会杀死贴链接供复制的合法场景);
+// `*` 强调不动(引用块内无钓鱼面)。
+var neutralizeIMMarkdown = strings.NewReplacer(
+	"[", "【",
+	"]", "】",
+	"`", "'",
+)
 
 // pageURL 是 Web 审批页链接(登录路径,与 SMTP approvalLink 同形)。
 func (s *IMSender) pageURL(execID uint64, nodeID string) string {
