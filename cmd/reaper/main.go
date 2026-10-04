@@ -14,6 +14,7 @@ import (
 	"time"
 
 	_ "github.com/go-sql-driver/mysql"
+	"github.com/hibiken/asynq"
 	"github.com/redis/go-redis/v9"
 
 	"braid/internal/db"
@@ -144,6 +145,17 @@ func run(ctx context.Context) error {
 			slog.Warn("reaper: redis queue policy preflight", "err", err)
 		}
 		deps.Locker = reaper.RedisLocker(redis.NewClient(&redis.Options{Addr: cfg.RedisQueueAddr}))
+		// T17.4(D-2026-10-04-t174):asynq 活性对拍 probe——分支 B 重派前的
+		// 陈旧 DISPATCHED 死证据复核(积压 ≠ 死,D-t25#10 残余窗收口)。
+		// 生命周期随 run;按需调用(只在 reapAttempt 哨兵路径),无后台探测。
+		// ReadTimeout 显式钉 3s(黑洞 Redis 下单次探测至多 ~3s,不吞 tick;
+		// Inspector 无 ctx 面,超时预算在连接层承载,review LOW 修)。
+		insp := asynq.NewInspector(asynq.RedisClientOpt{
+			Addr:        cfg.RedisQueueAddr,
+			ReadTimeout: 3 * time.Second,
+		})
+		defer func() { _ = insp.Close() }() //nolint:errcheck // 停机路径,关闭错误无处置义
+		deps.AsynqProbe = inspectorProbe{insp: insp}
 		slog.Info("reaper: leader lock enabled", "addr", cfg.RedisQueueAddr)
 	} else {
 		slog.Warn("reaper: BRAID_REDIS_QUEUE_ADDR unset; running leaderless")

@@ -266,9 +266,11 @@ SELECT node_id, status, version, attempts, worker_id, deadline_at, escalated_at,
 		// 锚行只承 DecisionID 与 output 归属)。
 		var snap scheduler.ApprovalInput
 		if err := json.Unmarshal(snapshot, &snap); err != nil {
+			r.mPoisonSnapshot(metrics.PoisonReasonDecode)
 			return fmt.Errorf("reaper: approval snapshot node %d: %w", nodeExecID, err)
 		}
 		if snap.Mode != "" && snap.Mode != scheduler.ApprovalModeAny && snap.Mode != scheduler.ApprovalModeAll {
+			r.mPoisonSnapshot(metrics.PoisonReasonMode)
 			return fmt.Errorf("reaper: approval node %d mode %q outside vocabulary (snapshot drift)", nodeExecID, snap.Mode)
 		}
 		var approved, rejected int
@@ -352,6 +354,7 @@ SELECT node_id, status, version, attempts, worker_id, deadline_at, escalated_at,
 			return nil
 
 		default:
+			r.mPoisonSnapshot(metrics.PoisonReasonOnTimeout)
 			return fmt.Errorf("reaper: approval node %d on_timeout %q outside vocabulary (snapshot drift)",
 				nodeExecID, snap.OnTimeout)
 		}

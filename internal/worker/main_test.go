@@ -24,6 +24,7 @@ import (
 	"braid/internal/db"
 	"braid/internal/db/sqltest"
 	"braid/internal/engine"
+	"braid/internal/metrics"
 	"braid/internal/redistest"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
@@ -255,18 +256,28 @@ func startWorkerOpt(t *testing.T, d *sql.DB, ex Executor, cfg Config, n Approval
 func startWorkerOptTraced(t *testing.T, d *sql.DB, ex Executor, cfg Config, n ApprovalNotifier, tr trace.Tracer) (queue string) {
 	t.Helper()
 	queue = nextQueue(t)
-	startWorkerOnQueueOptTraced(t, d, ex, cfg, queue, n, tr)
+	startWorkerOnQueueOptTracedMetrics(t, d, ex, cfg, queue, n, tr, nil)
+	return queue
+}
+
+// startWorkerOptMetrics = startWorkerOpt + Metrics 注入(T17.4:5a 拒绝面
+// 计数的链路级断言用;生产装配同形经 cmd/worker)。
+func startWorkerOptMetrics(t *testing.T, d *sql.DB, ex Executor, cfg Config, m *metrics.WorkerSet) (queue string) {
+	t.Helper()
+	queue = nextQueue(t)
+	startWorkerOnQueueOptTracedMetrics(t, d, ex, cfg, queue, nil, nil, m)
 	return queue
 }
 
 // startWorkerOnQueueOpt 是全部 startWorker* 变体的实体(Notifier 注入面)。
 func startWorkerOnQueueOpt(t *testing.T, d *sql.DB, ex Executor, cfg Config, queue string, n ApprovalNotifier) {
 	t.Helper()
-	startWorkerOnQueueOptTraced(t, d, ex, cfg, queue, n, nil)
+	startWorkerOnQueueOptTracedMetrics(t, d, ex, cfg, queue, n, nil, nil)
 }
 
-// startWorkerOnQueueOptTraced 是带 Tracer 的实体(其余变体经 nil 直通)。
-func startWorkerOnQueueOptTraced(t *testing.T, d *sql.DB, ex Executor, cfg Config, queue string, n ApprovalNotifier, tr trace.Tracer) {
+// startWorkerOnQueueOptTracedMetrics 是带 Tracer 与 Metrics 的实体(其余
+// 变体经 nil 直通)。
+func startWorkerOnQueueOptTracedMetrics(t *testing.T, d *sql.DB, ex Executor, cfg Config, queue string, n ApprovalNotifier, tr trace.Tracer, m *metrics.WorkerSet) {
 	t.Helper()
 	opt := redistest.MustOpt(t)
 	cfg.Queues = map[string]int{queue: 1}
@@ -297,7 +308,7 @@ func startWorkerOnQueueOptTraced(t *testing.T, d *sql.DB, ex Executor, cfg Confi
 	wctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
 	go func() {
-		done <- Run(wctx, Deps{DB: d, IDs: ids, Executor: ex, Sched: sched, Notifier: n, Tracer: tr}, cfg, opt)
+		done <- Run(wctx, Deps{DB: d, IDs: ids, Executor: ex, Sched: sched, Notifier: n, Tracer: tr, Metrics: m}, cfg, opt)
 	}()
 	t.Cleanup(func() {
 		cancel()

@@ -464,6 +464,12 @@ func (h *attHandler) handleNodeResume(ctx context.Context, t *asynq.Task) error 
 		AttemptNo:  p.AttemptNo,
 		WorkerID:   h.cfg.WorkerID,
 	}); err != nil {
+		// 5a 守卫族拒绝按面计数(T17.4):哨兵可辨 = 伪/早产/旧轮事件,
+		// infra 错误族(网络/DB)不在此面。上抛语义不变(重试一次 → archived
+		// 是该面既定死信可见性)。
+		if facet := resumeRejectFacet(err); facet != "" {
+			h.mResumeRejected(facet)
+		}
 		return fmt.Errorf("worker: resume node %d (task %s): %w", p.NodeExecutionID, taskID, err)
 	}
 	h.log.Info("approval.resume_processed",
@@ -583,6 +589,30 @@ func (h *attHandler) probeAsynqArchived(ctx context.Context, opt asynq.RedisClie
 func (h *attHandler) mNotify(outcome string) {
 	if h.deps.Metrics != nil {
 		h.deps.Metrics.NotifyResults.WithLabelValues(outcome).Inc()
+	}
+}
+
+// resumeRejectFacet 把 scheduler.Resume 的拒绝错误映到 5a 计数面(T17.4)。
+// 空串 = 非 5a 族(infra/外族错误),不计数——词面锚 = scheduler 哨兵 ↔
+// metrics.ResumeReject* 的唯一映射点(worker 测试钉死四面)。
+func resumeRejectFacet(err error) string {
+	switch {
+	case errors.Is(err, scheduler.ErrResumeStaleRound):
+		return metrics.ResumeRejectStaleRound
+	case errors.Is(err, scheduler.ErrResumeFabricatedEvent):
+		return metrics.ResumeRejectFabricated
+	case errors.Is(err, scheduler.ErrResumePrematureEvent):
+		return metrics.ResumeRejectPremature
+	case errors.Is(err, scheduler.ErrResumeAnchorDrift):
+		return metrics.ResumeRejectAnchorDrift
+	}
+	return ""
+}
+
+// mResumeRejected 是 5a 拒绝面计数的 nil-safe 发射(T17.4)。
+func (h *attHandler) mResumeRejected(facet string) {
+	if h.deps.Metrics != nil {
+		h.deps.Metrics.ResumeRejected.WithLabelValues(facet).Inc()
 	}
 }
 

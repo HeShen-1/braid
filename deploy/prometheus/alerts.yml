@@ -129,6 +129,62 @@ groups:
           summary: "队列 Redis 内存水位 {{ $value | humanizePercentage }}"
           description: "noeviction 实例写满 = 入队开始失败(noerr OOM),队列面静默停摆(ARCHITECTURE §2 队列实例水线告警)。0.8 = 扩容/排水行动线。"
 
+      # T17.4 DB 连接池双条:水位预警 + 等待事实。容量契约真源 = deploy/
+      # README.md §1(BRAID_DB_MAX_OPEN 默认 25、常驻四入口 Σ=100、MySQL
+      # max_connections 151 − 预留 ≥30、单进程软上限 100);CAPACITY.md §1
+      # 方差带(负载窗 ±2×)由 for 窗吸收、§4 结论 3(并发度 = f(DB 写延迟))
+      # 是池满的结构性成因锚。指标面 = T7.1 dbpool 采集器(braid_db_pool_*),
+      # 本任务只落规则。
+      - alert: DbPoolSaturated
+        # 逐进程比值(in_use/max_open 同 label 集自动对齐)再取 max:共享
+        # 态聚合口径(镜像文件头 T15.6 重标定),单入口饱和即触发。
+        expr: max(braid_db_pool_in_use_connections / braid_db_pool_max_open_connections) > 0.8
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB 连接池水位 {{ $value | humanizePercentage }}(存在饱和入口)"
+          description: "in_use/max_open 持续超 0.8 行动线(0.8 镜像 QueueRedisMemoryWatermark)。池满 = DB 写串行段顶格(CAPACITY.md §4 结论 3:吞吐帽在 relay/DB 写侧,加并发先过写串行段)。先查慢事务与锁窗(CAPACITY.md §5 回滚锁窗斜率),再按 deploy/README.md §1 公式(Σ MAX_OPEN ≤ max_connections − 30)调 BRAID_DB_MAX_OPEN。"
+      - alert: DbPoolWaiting
+        expr: sum(increase(braid_db_pool_wait_total[15m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "DB 池获取等待 {{ $value }} 次(15m 窗)"
+          description: "DBStats.WaitCount 增长 = 池饱和已发生排队(事实信号,非水位预警;各入口事件流 sum 语义正确)。单次等待会让条件在 15m 增量窗内保持为真(fire ~15m 后自愈,可接受的一次性噪声);反复自愈复燃 = 持续饱和,与 DbPoolSaturated 同路处置,扩池前先核 README §1 公式余量。"
+
+  # T17.4 完整性补面:5a 拒绝 / reaper 毒快照 / im_notified 对账。前两条是
+  # 防御触发类(warning 家族,同 LoginBruteForce 判据),第三条是通知丢失
+  # 面(critical 家族,同 ApprovalNotifyMissing 判据与门闸形态)。
+  - name: braid-integrity
+    rules:
+      - alert: ResumeEventRejected
+        expr: sum(increase(braid_resume_events_rejected_total[15m])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "{{ $value }} 次 resume 事件被 5a 守卫拒绝(15m 窗)"
+          description: "execution.resume 事件按面拒绝:stale_round(旧轮重放)/ fabricated(决定行缺或锚错)/ premature(未定局)/ anchor_drift(方向不符)。事件本身仍走 asynq 重试→archived(既有死信可见性不变),本告警补的是防御面观测:持续触发 = 重放源未停、发射面漂移或越权直插。查 reason 分布与对应 approval_decision 行。"
+      - alert: ReaperPoisonSnapshot
+        expr: sum(increase(braid_reaper_poison_snapshots_total[1h])) > 0
+        labels:
+          severity: warning
+        annotations:
+          summary: "审批快照毒行拒绝 {{ $value }} 次(1h 窗)"
+          description: "input_snapshot 解码失败或 mode/on_timeout 词表外(快照漂移):行保持 WAITING_APPROVAL 且每 tick 重试——永不自动通过也永不自动失败(镜像 AuditFlushPoisonRows 判据)。多为钉版 DSL 与快照物化不一致(升级混跑窗)或外部改写;查 reason 面与 node_execution.input_snapshot。"
+      - alert: ApprovalIMNotifyMissing
+        # 门闸 unless 形(镜像 ApprovalNotifyMissing / D-t45 #3):max==0
+        # (IM 全 fleet 未配置)才静默;braid_im_configured 系列缺席(worker
+        # 未起 / scrape 未及)时 unless 右侧为空 → 照发(观测 fail-open)。
+        expr: max(braid_approval_im_notified_missing_rows) > 0 unless on() max(braid_im_configured) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} 个 IM 卡片送达丢失(escalated 有行、im_notified 缺行)"
+          description: "IM 通道对账缺口(T17.4,镜像 SMTP 面 D-t45 #1):升级意图已落、超 15m 宽限窗无 approval.im_notified 行——钉钉 webhook 投递链故障的统一信号(relay 耗尽 / worker archived / webhook 持久失败)。braid_im_configured==1 门闸:IM 未配置时缺失是设计行为,不告警。"
+
   - name: braid-auth
     rules:
       - alert: LoginBruteForceSuspected

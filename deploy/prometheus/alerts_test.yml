@@ -280,3 +280,148 @@ tests:
       - eval_time: 15m
         alertname: AuditChainBroken
         exp_alerts: []
+
+  # T17.4 ①:5a 拒绝计数(15m 窗出现 1 次)→ 立即 firing(无 for,镜像
+  # LLMBilledCallDiscarded 判据)。
+  - interval: 1m
+    input_series:
+      - series: 'braid_resume_events_rejected_total{reason="stale_round"}'
+        values: '0+0x10 1+0x10'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ResumeEventRejected
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "1 次 resume 事件被 5a 守卫拒绝(15m 窗)"
+              description: "execution.resume 事件按面拒绝:stale_round(旧轮重放)/ fabricated(决定行缺或锚错)/ premature(未定局)/ anchor_drift(方向不符)。事件本身仍走 asynq 重试→archived(既有死信可见性不变),本告警补的是防御面观测:持续触发 = 重放源未停、发射面漂移或越权直插。查 reason 分布与对应 approval_decision 行。"
+
+  # T17.4 ②:毒快照计数(1h 窗 2 次)→ firing。
+  - interval: 1m
+    input_series:
+      - series: 'braid_reaper_poison_snapshots_total{reason="decode"}'
+        values: '0+0x30 2+0x30'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: ReaperPoisonSnapshot
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "审批快照毒行拒绝 2 次(1h 窗)"
+              description: "input_snapshot 解码失败或 mode/on_timeout 词表外(快照漂移):行保持 WAITING_APPROVAL 且每 tick 重试——永不自动通过也永不自动失败(镜像 AuditFlushPoisonRows 判据)。多为钉版 DSL 与快照物化不一致(升级混跑窗)或外部改写;查 reason 面与 node_execution.input_snapshot。"
+
+  # T17.4 ③:IM 对账——configured=1 门开,gauge 1 持续 10m → firing;
+  # configured=0 门关静默;series 缺席(观测 fail-open)照发。
+  - interval: 1m
+    input_series:
+      - series: 'braid_approval_im_notified_missing_rows'
+        values: '1+0x20'
+      - series: 'braid_im_configured'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: ApprovalIMNotifyMissing
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: ApprovalIMNotifyMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "1 个 IM 卡片送达丢失(escalated 有行、im_notified 缺行)"
+              description: "IM 通道对账缺口(T17.4,镜像 SMTP 面 D-t45 #1):升级意图已落、超 15m 宽限窗无 approval.im_notified 行——钉钉 webhook 投递链故障的统一信号(relay 耗尽 / worker archived / webhook 持久失败)。braid_im_configured==1 门闸:IM 未配置时缺失是设计行为,不告警。"
+  - interval: 1m
+    input_series:
+      - series: 'braid_approval_im_notified_missing_rows'
+        values: '1+0x20'
+      - series: 'braid_im_configured'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: ApprovalIMNotifyMissing
+        exp_alerts: []
+  - interval: 1m
+    input_series:
+      - series: 'braid_approval_im_notified_missing_rows'
+        values: '1+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: ApprovalIMNotifyMissing
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+            exp_annotations:
+              summary: "1 个 IM 卡片送达丢失(escalated 有行、im_notified 缺行)"
+              description: "IM 通道对账缺口(T17.4,镜像 SMTP 面 D-t45 #1):升级意图已落、超 15m 宽限窗无 approval.im_notified 行——钉钉 webhook 投递链故障的统一信号(relay 耗尽 / worker archived / webhook 持久失败)。braid_im_configured==1 门闸:IM 未配置时缺失是设计行为,不告警。"
+
+  # T17.4 ④:DB 池水位——in_use 24/25 = 96% 持续 10m → firing;10/25 =
+  # 40% 不 fire。逐进程比值同 label 集对齐后取 max。
+  - interval: 1m
+    input_series:
+      - series: 'braid_db_pool_in_use_connections{instance="api"}'
+        values: '24+0x20'
+      - series: 'braid_db_pool_max_open_connections{instance="api"}'
+        values: '25+0x20'
+    alert_rule_test:
+      - eval_time: 5m
+        alertname: DbPoolSaturated
+        exp_alerts: []
+      - eval_time: 12m
+        alertname: DbPoolSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "DB 连接池水位 96%(存在饱和入口)"
+              description: "in_use/max_open 持续超 0.8 行动线(0.8 镜像 QueueRedisMemoryWatermark)。池满 = DB 写串行段顶格(CAPACITY.md §4 结论 3:吞吐帽在 relay/DB 写侧,加并发先过写串行段)。先查慢事务与锁窗(CAPACITY.md §5 回滚锁窗斜率),再按 deploy/README.md §1 公式(Σ MAX_OPEN ≤ max_connections − 30)调 BRAID_DB_MAX_OPEN。"
+  - interval: 1m
+    input_series:
+      - series: 'braid_db_pool_in_use_connections{instance="api"}'
+        values: '10+0x20'
+      - series: 'braid_db_pool_max_open_connections{instance="api"}'
+        values: '25+0x20'
+    alert_rule_test:
+      - eval_time: 15m
+        alertname: DbPoolSaturated
+        exp_alerts: []
+
+  # T17.4 ⑤:DB 池等待——WaitCount 每分钟 +1(increase[15m]=15 恒成立)
+  # 持续 10m → firing(事实信号:饱和排队已发生)。
+  - interval: 1m
+    input_series:
+      - series: 'braid_db_pool_wait_total{instance="api"}'
+        values: '0+1x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: DbPoolWaiting
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "DB 池获取等待 15 次(15m 窗)"
+              description: "DBStats.WaitCount 增长 = 池饱和已发生排队(事实信号,非水位预警;各入口事件流 sum 语义正确)。单次等待会让条件在 15m 增量窗内保持为真(fire ~15m 后自愈,可接受的一次性噪声);反复自愈复燃 = 持续饱和,与 DbPoolSaturated 同路处置,扩池前先核 README §1 公式余量。"
+
+  # T17.4 ⑥(review 修):逐进程比值语义钉死——双实例仅其一饱和(api 24/25
+  # = 96%,worker 10/25 = 40%)→ firing;变异为 sum(in_use)/sum(max_open)
+  # = 34/50 = 68% 不 fire,本用例红。
+  - interval: 1m
+    input_series:
+      - series: 'braid_db_pool_in_use_connections{instance="api"}'
+        values: '24+0x20'
+      - series: 'braid_db_pool_max_open_connections{instance="api"}'
+        values: '25+0x20'
+      - series: 'braid_db_pool_in_use_connections{instance="worker"}'
+        values: '10+0x20'
+      - series: 'braid_db_pool_max_open_connections{instance="worker"}'
+        values: '25+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: DbPoolSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "DB 连接池水位 96%(存在饱和入口)"
+              description: "in_use/max_open 持续超 0.8 行动线(0.8 镜像 QueueRedisMemoryWatermark)。池满 = DB 写串行段顶格(CAPACITY.md §4 结论 3:吞吐帽在 relay/DB 写侧,加并发先过写串行段)。先查慢事务与锁窗(CAPACITY.md §5 回滚锁窗斜率),再按 deploy/README.md §1 公式(Σ MAX_OPEN ≤ max_connections − 30)调 BRAID_DB_MAX_OPEN。"
