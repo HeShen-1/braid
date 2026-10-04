@@ -20,6 +20,16 @@ import (
 // 已收敛 / 活事件闸拦下)。WithTx 回滚该空事务(零写),外层识别为成功。
 var errSkip = errors.New("reaper: skip (recheck decided no action)")
 
+// asynqVerifyError 是分支 B 的活性和解哨兵(T17.4,D-2026-10-04-t174):
+// 事务内发现死证据只剩「当前 attempt 的陈旧 DISPATCHED 行」→ 空事务回滚
+// (零写),携带 task_id 交外层在事务外核验 asynq 活性(Redis 调用不持
+// 行锁);核验后携 verified 二次入事务,锁后复核全量重跑。
+type asynqVerifyError struct{ taskID string }
+
+func (e *asynqVerifyError) Error() string {
+	return fmt.Sprintf("reaper: asynq liveness verification required for %s", e.taskID)
+}
+
 // maxTransientRetries 与 scheduler 同款:1213/1205 抖动重试上限。
 const maxTransientRetries = 3
 
@@ -99,10 +109,14 @@ SELECT id, node_execution_id, execution_id
 }
 
 // reapAttempt 处置事务外层:Transient(1213/1205)抖动重试 ≤3(照抄
-// scheduler.Complete 循环形状;不重跑处置逻辑之外的东西)。
+// scheduler.Complete 循环形状;不重跑处置逻辑之外的东西)。T17.4 追加
+// 活性和解轮:asynqVerifyError 哨兵 → 事务外对拍 AsynqProbe → 活则本
+// tick 让位,非活/探测失败携 verified 二次入事务(核验不占 transient
+// 预算,verified 哨兵旁路保证至多一轮)。
 func (r *Reaper) reapAttempt(ctx context.Context, nodeExecID, execID uint64, ent entry) error {
+	verified := false
 	for attempt := 0; ; attempt++ {
-		delegate, err := r.reapOnce(ctx, nodeExecID, execID, ent)
+		delegate, err := r.reapOnce(ctx, nodeExecID, execID, ent, verified)
 		if err == nil {
 			if delegate {
 				// T9.1:实例耗尽委托在 reapOnce 事务提交后执行(DEAD 收口先落地;
@@ -113,6 +127,31 @@ func (r *Reaper) reapAttempt(ctx context.Context, nodeExecID, execID uint64, ent
 				}
 			}
 			return nil
+		}
+		var ve *asynqVerifyError
+		if errors.As(err, &ve) {
+			alive, perr := r.deps.AsynqProbe.TaskAlive(ctx, r.cfg.Queue, ve.taskID)
+			switch {
+			case perr != nil:
+				// fail-open(D-t25#2 同族):探测不可达 ≠ 死证据;回落现行
+				// DispatchStale 有界残余窗语义(重派照旧)。
+				r.log.Warn("node.redispatch_asynq_probe_unreachable",
+					"node_execution_id", nodeExecID, "task_id", ve.taskID, "err", perr,
+					"hint", "fail-open: dispatch-stale window governs (D-t25#10)")
+			case alive:
+				// 积压不是死:本 tick 让位,下 tick 重检——任务仍由队列消化;
+				// 节点滞留面由 StuckNodeCandidatesHigh(水位 >10)兜底,每 tick
+				// 结构化 warn 可溯(误报边界:活判错方向 = 少重派,不制造新
+				// 双执行面)。
+				r.mAsynqAliveDefer()
+				r.log.Warn("node.redispatch_deferred_asynq_alive",
+					"node_execution_id", nodeExecID, "task_id", ve.taskID,
+					"hint", "task alive in asynq (backlog, not death); re-checked next tick")
+				return nil
+			}
+			verified = true
+			attempt-- // 核验轮不占 transient 预算
+			continue
 		}
 		if errors.Is(err, errSkip) {
 			return nil
@@ -140,7 +179,9 @@ func (r *Reaper) reapAttempt(ctx context.Context, nodeExecID, execID uint64, ent
 // 节点级终败/控制器收口须在提交后委托 scheduler.ReapInstanceExhausted
 // (T9.1,对抗审计 HIGH②:事务内镜像 completeOnce 会让 wait_all 退化
 // fail_fast 且控制器滞留 EXECUTING;委托面自带全行锁序与同款语义)。
-func (r *Reaper) reapOnce(ctx context.Context, nodeExecID, execID uint64, ent entry) (delegate bool, err error) {
+// verified(T17.4):外层已完成 asynq 活性核验,分支 B 陈旧 DISPATCHED
+// 哨兵旁路(至多一轮,防核验-重入死循环)。
+func (r *Reaper) reapOnce(ctx context.Context, nodeExecID, execID uint64, ent entry, verified bool) (delegate bool, err error) {
 	delegate = false
 	err = engine.WithTx(ctx, r.deps.DB, func(q engine.DBTX) error {
 		// [1] 锁 node 行。
@@ -236,6 +277,26 @@ SELECT COUNT(*) FROM outbox
 					"node_execution_id", nodeExecID, "live_events", live,
 					"hint", "dispatch in flight; re-checked next tick")
 				return errSkip
+			}
+			// T17.4(D-2026-10-04-t174):死证据只剩「当前 attempt 的陈旧
+			// DISPATCHED 行」时先对拍 asynq 活性——outbox 时效证据在积压
+			// 场景会说谎(任务仍在队列里),按它重派 = 用新 TaskID 制造
+			// 第二活副本(D-t25#10 残余窗)。对拍在事务外做(Redis 调用
+			// 不持行锁):此处只发射哨兵空回滚。probe 缺席/已核验 = 直接
+			// 走原路径(有界接受语义)。
+			if !verified && r.deps.AsynqProbe != nil {
+				curTask := fmt.Sprintf("att:%d:%d", nodeExecID, attempts)
+				var staleCur int
+				if err := q.QueryRowContext(ctx, `
+SELECT COUNT(*) FROM outbox
+ WHERE task_id=? AND status='DISPATCHED'
+   AND dispatched_at < NOW(3) - INTERVAL ? MICROSECOND`,
+					curTask, r.cfg.DispatchStale.Microseconds()).Scan(&staleCur); err != nil {
+					return fmt.Errorf("reaper: stale dispatch gate node %d: %w", nodeExecID, err)
+				}
+				if staleCur > 0 {
+					return &asynqVerifyError{taskID: curTask}
+				}
 			}
 			// → [4](无 attempt 可收)。
 

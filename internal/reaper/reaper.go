@@ -31,12 +31,28 @@ type Deps struct {
 	// Metrics 是观测面(T6.4):nil = 关闭(测试默认)。gauge 采集器也在
 	// 其上(collect.go 每 tick SQL 快照)。
 	Metrics *metrics.ReaperSet
+	// AsynqProbe 对拍 asynq 任务活性(T17.4,D-2026-10-04-t174):分支 B
+	// 重派前的 Redis 侧证据复核——死证据只剩陈旧 DISPATCHED 行时,先确认
+	// 任务是否仍活在 asynq(积压 ≠ 死)。nil = 关闭(D-t25#10 有界残余窗
+	// 语义照旧,测试缺省)。实现持 Inspector,装配在 cmd/reaper 组合根,
+	// 本包不 import asynq。
+	AsynqProbe AsynqProbe
 	// Tracer 是 OTel 观测面(D-t121 #4):nil = 关闭(测试默认)。tick 根
 	// span + 每作业子 span + flush/janitor span——**span 恒不进发射 ctx**
 	// (作业函数收调用方原始 ctx):reaper 自生审计行保持 D-t62 如实化
 	// NULL 口径,notify 事件 outbox 行列值/payload 双写原则不被 tick trace
 	// 撬动;与 relay 的 span 入 ctx 形态分立,理由见 D- 条目。
 	Tracer trace.Tracer
+}
+
+// AsynqProbe 是 asynq 活性对拍缝(T17.4,D-2026-10-04-t174):TaskAlive 报告
+// taskID 在 queue 是否仍处活态(pending/active/retry/scheduled/aggregating)。
+// false + nil error = 非活(NotFound/archived/completed);非 nil error =
+// 探测不可达——调用方 fail-open 回落 DispatchStale 有界窗(D-t25#2 同族)。
+// ctx 由调用方透传(探测在处置事务外,不持行锁);asynq Inspector 自身
+// 无 ctx 面,实现可忽略。
+type AsynqProbe interface {
+	TaskAlive(ctx context.Context, queue, taskID string) (bool, error)
 }
 
 // Reaper 是 reconciler 实例(无内部状态,字段在构造时定格)。
@@ -231,6 +247,22 @@ func (r *Reaper) mApprovalEscalated() {
 func (r *Reaper) mBacklog(scan string) {
 	if r.m != nil {
 		r.m.ScanBacklog.WithLabelValues(scan).Inc()
+	}
+}
+
+// mPoisonSnapshot 记一次快照漂移拒绝(T17.4):行保持 WAITING_APPROVAL 且
+// 每 tick 重试,counter 是运维信号(镜像 audit flush poison 判据)。
+func (r *Reaper) mPoisonSnapshot(reason string) {
+	if r.m != nil {
+		r.m.PoisonSnapshots.WithLabelValues(reason).Inc()
+	}
+}
+
+// mAsynqAliveDefer 记一次分支 B 重派因 asynq 活性让位(T17.4,
+// D-2026-10-04-t174:Inspector 对拍关闭一个 D-t25#10 残余窗)。
+func (r *Reaper) mAsynqAliveDefer() {
+	if r.m != nil {
+		r.m.AsynqAliveDefers.Inc()
 	}
 }
 

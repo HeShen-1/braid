@@ -6,6 +6,8 @@ import (
 	"errors"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus"
+
 	"braid/internal/metrics"
 )
 
@@ -38,6 +40,7 @@ func (r *Reaper) collectMetrics(ctx context.Context) error {
 	r.collectStuckCandidates(ctx)
 	r.collectResumeStuck(ctx)
 	r.collectNotifyMissing(ctx)
+	r.collectIMNotifyMissing(ctx)
 	return nil
 }
 
@@ -157,6 +160,23 @@ SELECT COUNT(*)
 // 统一观测信号。SMTP 未配置时 notified 设计性缺席,由消费侧
 // braid_smtp_configured==1 门闸告警(D-t45 #3 假阳性防御)。
 func (r *Reaper) collectNotifyMissing(ctx context.Context) {
+	r.collectNotifyReconcile(ctx, "approval.notified", r.m.ApprovalNotifyMissing)
+}
+
+// collectIMNotifyMissing 是 IM 通道的同构对账(T17.4):escalated 有、
+// approval.im_notified 审计行缺且过宽限 = 卡片送达缺口。IM 未配置时
+// im_notified 设计性缺席,消费侧 braid_im_configured==1 门闸告警
+// (metrics.go IMConfigured 注释预留的本任务面)。宽限窗复用
+// notifyReconcileGrace(同一事件管道:asynq MaxRetry=1 + relay 退避 +
+// webhook 单次 Timeout)。
+func (r *Reaper) collectIMNotifyMissing(ctx context.Context) {
+	r.collectNotifyReconcile(ctx, "approval.im_notified", r.m.IMNotifyMissing)
+}
+
+// collectNotifyReconcile 是双通道对账实体:notified/im_notified 的候选集
+// (escalated_at 驱动)与逐候选分区点查(镜像 sender.go 去重查形态,
+// idx_audit_exec 最左前缀入口)完全同构,仅 event_type 与落点 gauge 分立。
+func (r *Reaper) collectNotifyReconcile(ctx context.Context, eventType string, gauge prometheus.Gauge) {
 	rs, err := r.deps.DB.QueryContext(ctx, `
 SELECT ne.id, we.id, DATE_FORMAT(we.created_at, '%Y-%m-%d')
   FROM node_execution ne
@@ -166,7 +186,7 @@ SELECT ne.id, we.id, DATE_FORMAT(we.created_at, '%Y-%m-%d')
    AND we.status IN ('RUNNING','WAITING_APPROVAL')
  LIMIT ?`, notifyReconcileGrace.Microseconds(), notifyReconcileCap)
 	if err != nil {
-		r.log.Warn("metrics.notify_missing candidates", "err", err)
+		r.log.Warn("metrics.notify_missing candidates", "event_type", eventType, "err", err)
 		return
 	}
 	type cand struct {
@@ -200,16 +220,17 @@ SELECT ne.id, we.id, DATE_FORMAT(we.created_at, '%Y-%m-%d')
 		// 无索引,每候选每 tick 全分区扫描——观测面在病理态自我放大)。
 		err := r.deps.DB.QueryRowContext(ctx, `
 SELECT 1 FROM audit_log
- WHERE exec_date=? AND execution_id=? AND node_execution_id=? AND event_type='approval.notified'
- LIMIT 1`, c.execDate, c.execID, c.id).Scan(&one)
+ WHERE exec_date=? AND execution_id=? AND node_execution_id=? AND event_type=?
+ LIMIT 1`, c.execDate, c.execID, c.id, eventType).Scan(&one)
 		if errors.Is(err, sql.ErrNoRows) {
 			missing++
 			continue
 		}
 		if err != nil {
-			r.log.Warn("metrics.notify_missing probe", "node_execution_id", c.id, "err", err)
+			r.log.Warn("metrics.notify_missing probe", "event_type", eventType,
+				"node_execution_id", c.id, "err", err)
 			return
 		}
 	}
-	r.m.ApprovalNotifyMissing.Set(float64(missing))
+	gauge.Set(float64(missing))
 }

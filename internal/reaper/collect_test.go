@@ -167,3 +167,50 @@ func TestCollectNilMetricsIsNoop(t *testing.T) {
 		t.Fatalf("collectMetrics(nil m): %v", err)
 	}
 }
+
+// TestCollectIMNotifyMissingGauges(T17.4):im_notified 对账——升级超宽限、
+// 无 im_notified 行 → missing=1;补行归零(与 SMTP 通道同构收敛锚)。
+func TestCollectIMNotifyMissingGauges(t *testing.T) {
+	r, m, d := newCollectReaper(t)
+	s := seedApproval(t, d, "RUNNING", time.Hour, "escalate", true)
+	if _, err := d.Exec(`UPDATE node_execution SET escalated_at = NOW(3) - INTERVAL 20 MINUTE
+	  WHERE id=?`, s.nodeExecID); err != nil {
+		t.Fatalf("backdate escalated_at: %v", err)
+	}
+	ctx := context.Background()
+	if err := r.collectMetrics(ctx); err != nil {
+		t.Fatalf("collectMetrics: %v", err)
+	}
+	if got := testutil.ToFloat64(m.IMNotifyMissing); got != 1 {
+		t.Errorf("approval_im_notified_missing = %v, want 1(升级无卡片送达)", got)
+	}
+
+	// 补 im_notified 送达行 → 归零。
+	if _, err := d.Exec(`INSERT INTO audit_log
+	  (id, exec_date, event_at, event_type, execution_id, node_execution_id, node_id,
+	   actor_type, actor_id, payload)
+	  VALUES (?, DATE((SELECT created_at FROM workflow_execution WHERE id=?)), NOW(3),
+	          'approval.im_notified', ?, ?, 'boss', 'worker', 'w1', '{}')`,
+		nextID(t), s.execID, s.execID, s.nodeExecID); err != nil {
+		t.Fatalf("seed im_notified row: %v", err)
+	}
+	if err := r.collectMetrics(ctx); err != nil {
+		t.Fatalf("collectMetrics(2): %v", err)
+	}
+	if got := testutil.ToFloat64(m.IMNotifyMissing); got != 0 {
+		t.Errorf("approval_im_notified_missing after delivery = %v, want 0", got)
+	}
+}
+
+// TestCollectIMNotifyGraceWindow(T17.4 负例):宽限窗内的升级不计缺失
+// (在途正常,镜像 TestCollectNotifyMissingGraceWindow)。
+func TestCollectIMNotifyGraceWindow(t *testing.T) {
+	r, m, d := newCollectReaper(t)
+	seedApproval(t, d, "RUNNING", time.Hour, "escalate", true) // escalated 1 分钟前
+	if err := r.collectMetrics(context.Background()); err != nil {
+		t.Fatalf("collectMetrics: %v", err)
+	}
+	if got := testutil.ToFloat64(m.IMNotifyMissing); got != 0 {
+		t.Errorf("approval_im_notified_missing(窗内) = %v, want 0", got)
+	}
+}

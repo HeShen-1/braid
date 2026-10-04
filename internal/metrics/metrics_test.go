@@ -57,6 +57,10 @@ var metricNames = map[string]dto.MetricType{
 	"braid_db_pool_idle_connections":            dto.MetricType_GAUGE,
 	"braid_db_pool_max_open_connections":        dto.MetricType_GAUGE,
 	"braid_db_pool_wait_total":                  dto.MetricType_COUNTER,
+	"braid_reaper_poison_snapshots_total":       dto.MetricType_COUNTER, // T17.4:快照漂移毒行
+	"braid_approval_im_notified_missing_rows":   dto.MetricType_GAUGE,   // T17.4:im_notified 对账
+	"braid_resume_events_rejected_total":        dto.MetricType_COUNTER, // T17.4:5a premature/fabricated
+	"braid_reaper_asynq_alive_defers_total":     dto.MetricType_COUNTER, // T17.4:Inspector 活性让位
 }
 
 func gatherMetricTypes(t *testing.T, reg *prometheus.Registry) map[string]dto.MetricType {
@@ -105,7 +109,9 @@ func touchAll(s *Set) {
 	s.Relay.Deliveries.WithLabelValues(DeliverDispatched)
 	s.Relay.QueueTasks.WithLabelValues("default")
 	s.Login.Attempts.WithLabelValues(ResultSucceeded)
-	s.Rollback.Denied.WithLabelValues("role_denied") // T9.2:vec 子项实例化后闭集锚才可见
+	s.Rollback.Denied.WithLabelValues("role_denied")                // T9.2:vec 子项实例化后闭集锚才可见
+	s.Reaper.PoisonSnapshots.WithLabelValues(PoisonReasonDecode)    // T17.4
+	s.Worker.ResumeRejected.WithLabelValues(ResumeRejectFabricated) // T17.4
 }
 
 func TestNewSetRegistersClosedVocabulary(t *testing.T) {

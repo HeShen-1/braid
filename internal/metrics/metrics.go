@@ -83,6 +83,23 @@ const (
 	ResultFailed      = "failed"
 	ResultLocked      = "locked"
 	ResultRateLimited = "rate_limited"
+
+	// Poison snapshot facets (T17.4): which validation of the approval
+	// input_snapshot failed in the reaper's ⑤a disposition tree. Rows stay
+	// WAITING_APPROVAL and re-fail every tick — the counter is the operator
+	// signal, mirroring the audit flush poison precedent.
+	PoisonReasonDecode    = "decode"
+	PoisonReasonMode      = "mode"
+	PoisonReasonOnTimeout = "on_timeout"
+
+	// Resume event rejection facets (T17.4): why scheduler.Resume refused an
+	// execution.resume event (5a premature/fabricated defense surface).
+	// Literals are pinned to scheduler sentinel errors by the worker anchor
+	// test; stable across the errors.Is boundary.
+	ResumeRejectStaleRound  = "stale_round"
+	ResumeRejectFabricated  = "fabricated"
+	ResumeRejectPremature   = "premature"
+	ResumeRejectAnchorDrift = "anchor_drift"
 )
 
 // LLMSet covers the LLM adapter retry loop and the scheduler discard path.
@@ -140,6 +157,20 @@ type ReaperSet struct {
 	StuckCandidates       *prometheus.GaugeVec
 	ResumeStuck           prometheus.Gauge
 	ApprovalNotifyMissing prometheus.Gauge
+	// PoisonSnapshots counts approval snapshot validation failures in the ⑤a
+	// disposition tree (T17.4): decode failure, mode/on_timeout outside the
+	// DSL vocabulary (snapshot drift). Rows are permanently re-tried each
+	// tick — increase() > 0 is the alert basis.
+	PoisonSnapshots *prometheus.CounterVec
+	// IMNotifyMissing mirrors ApprovalNotifyMissing for the IM approval-card
+	// channel (approval.im_notified reconciliation, T17.4); gated on the
+	// consumer side by braid_im_configured.
+	IMNotifyMissing prometheus.Gauge
+	// AsynqAliveDefers counts branch-B redispatches deferred because the
+	// stale-DISPATCHED task turned out alive in asynq (Inspector cross-check,
+	// D-2026-10-04-t174). Each defer is one double-execution residual window
+	// closed (D-t25#10).
+	AsynqAliveDefers prometheus.Counter
 }
 
 // WorkerSet covers notify outcomes, SMTP availability, and asynq archived
@@ -149,6 +180,11 @@ type WorkerSet struct {
 	SMTPConfigured prometheus.Gauge
 	IMConfigured   prometheus.Gauge
 	AsynqArchived  prometheus.Gauge
+	// ResumeRejected counts execution.resume events the scheduler refused as
+	// stale/fabricated/premature (5a defense surface, T17.4). The error is
+	// still propagated (asynq retry → archived stays the visible dead letter);
+	// the counter makes the defense surface observable per facet.
+	ResumeRejected *prometheus.CounterVec
 }
 
 // RelaySet covers outbox delivery outcomes and queue-Redis health.
@@ -332,6 +368,18 @@ func NewSet() (*Set, *prometheus.Registry) {
 				Name: "braid_approval_notify_missing_rows",
 				Help: "Escalated approvals with no approval.notified row past the grace window (escalated-vs-notified reconciliation, D-t45).",
 			}),
+			PoisonSnapshots: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_reaper_poison_snapshots_total",
+				Help: "Approval input_snapshot validation failures in the reaper disposition tree (decode / mode / on_timeout drift); rows re-fail every tick, see the ReaperPoisonSnapshot alert (T17.4).",
+			}, []string{"reason"}),
+			IMNotifyMissing: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_approval_im_notified_missing_rows",
+				Help: "Escalated approvals with no approval.im_notified row past the grace window (IM channel reconciliation, T17.4); gates on braid_im_configured==1.",
+			}),
+			AsynqAliveDefers: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_reaper_asynq_alive_defers_total",
+				Help: "Branch-B redispatch decisions deferred because the stale-DISPATCHED task is still alive in asynq (Inspector cross-check, D-2026-10-04-t174); per-decision, not per-node — a node re-examined by a second scan in the same tick can defer twice.",
+			}),
 		},
 		Worker: &WorkerSet{
 			NotifyResults: f.NewCounterVec(prometheus.CounterOpts{
@@ -350,6 +398,10 @@ func NewSet() (*Set, *prometheus.Registry) {
 				Name: "braid_asynq_archived_tasks",
 				Help: "Tasks in asynq archived state (dead letters with no DB trace).",
 			}),
+			ResumeRejected: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_resume_events_rejected_total",
+				Help: "execution.resume deliveries refused by scheduler.Resume as stale/fabricated/premature/anchor-drift (5a defense, T17.4); per-delivery (redeliveries re-observe), durable twin = the archived task + scheduler error log.",
+			}, []string{"reason"}),
 		},
 		Relay: &RelaySet{
 			Deliveries: f.NewCounterVec(prometheus.CounterOpts{

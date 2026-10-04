@@ -94,12 +94,22 @@ func nextID(t *testing.T) uint64 {
 // newReaper 构造被测实例(Locker=nil leaderless;毫秒级阈值由用例注入)。
 func newReaper(t *testing.T, cfg Config) (*Reaper, *sql.DB) {
 	t.Helper()
+	return newReaperDeps(t, cfg, nil)
+}
+
+// newReaperDeps = newReaper + Deps 修改器(T17.4:Metrics/AsynqProbe 注入)。
+func newReaperDeps(t *testing.T, cfg Config, mod func(*Deps)) (*Reaper, *sql.DB) {
+	t.Helper()
 	d := sqltest.MustOpenAt(t, reaperSchema)
 	s, err := scheduler.New(scheduler.Deps{DB: d, IDs: mustTestIDs(t), Queue: "reap-test"})
 	if err != nil {
 		t.Fatalf("scheduler New: %v", err)
 	}
-	r, err := New(Deps{DB: d, Sched: s, IDs: mustTestIDs(t), Logger: testLogger(t)}, cfg)
+	deps := Deps{DB: d, Sched: s, IDs: mustTestIDs(t), Logger: testLogger(t)}
+	if mod != nil {
+		mod(&deps)
+	}
+	r, err := New(deps, cfg)
 	if err != nil {
 		t.Fatalf("reaper New: %v", err)
 	}
