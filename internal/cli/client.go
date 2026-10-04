@@ -117,6 +117,30 @@ func postJSON(ctx context.Context, hc *http.Client, url, token string, payload [
 		return 0, nil, err
 	}
 	defer resp.Body.Close() //nolint:errcheck // 只读路径
+	return finishResp(resp, wantStatuses)
+}
+
+// getJSON 发带 Bearer 的 GET(T16.3 seed:定义探针 {200,404} 双接受、
+// 执行轮询 {200});响应处理与 postJSON 同则(finishResp 单源)。
+func getJSON(ctx context.Context, hc *http.Client, url, token string, wantStatuses ...int) (int, []byte, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return 0, nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	resp, err := hc.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer resp.Body.Close() //nolint:errcheck // 只读路径
+	return finishResp(resp, wantStatuses)
+}
+
+// finishResp 是 GET/POST 共享的响应尾:全量读(上限 maxRespBody)、
+// 状态集匹配,集外错误带摘录(8KiB)。
+func finishResp(resp *http.Response, wantStatuses []int) (int, []byte, error) {
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxRespBody+1))
 	if err != nil {
 		return resp.StatusCode, nil, fmt.Errorf("read response: %w", err)
