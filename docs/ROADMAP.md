@@ -31,7 +31,7 @@
 - [x] T17.3 T7.4 授权断言收口 — M — 验收:outbox UPDATE/DELETE、audit_log ALTER 组件级授权断言;CheckAuditAppendOnly 表枚举扩 login_audit;RequeueNode runbook 手工原语文档化;按组件授权方案 — 交付:CheckComponentGrants 四入口组件级断言(relay outbox / reaper outbox+audit_log / 三入口 snowflake_node_lease 四面,T15.2 台账收口)+ grants.sh 解析对拍三测试族(parity equality / 五账号快照 / REVOKE 红臂)+ RUNBOOK §2.1 RequeueNode 手工原语 + README §5 五账号化(D-2026-10-04-t173;login_audit 扩面已随 P0 T7.4 d8b2677 在案,零新代码)
 - [x] T17.4 asynq 双执行硬化 + 告警补面 — M — 验收:Inspector 硬化双执行残余窗(D-t25#10);告警四组:5a premature/fabricated、reaper 毒快照、DB 连接池、im_notified 投递对账(D-2026-10-04-t174)
 - [x] T17.5 IM 签名短链预取闭合 — M — 验收:确认页第二跳/按钮改 POST(D-t143 决策6);instructions markdown 行内词法中和(D-t45 钓鱼面同族)
-- [ ] T17.6 LDAP bind 桩实现 — M — 验收:IdentityProvider 缝面换 Authenticate 本体 + 构造装配(桩已钉死形状);容器化测试目录为验收方案
+- [x] T17.6 LDAP bind 桩实现 — M — 验收:IdentityProvider 缝面换 Authenticate 本体 + 构造装配(桩已钉死形状);容器化测试目录为验收方案 — 交付:search-then-bind 真实现(服务端返回 DN,注入结构性消亡)+ BRAID_LDAP_* 半开配置组 + 启动探测 + 容器化 e2e 七臂(osixia/openldap:1.5.0 测试内起,零 ci.yml)+ login_audit method='ldap'(0014 尾追加,D-2026-10-04-t176)——P2 全收
 
 ## P2 停车场(不排期,防遗忘)
 
