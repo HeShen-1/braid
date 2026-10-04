@@ -1,53 +1,42 @@
-# braid 路线图(P1)
+# braid 路线图(P2)
 
-> 任务定义与依赖真源 = 本文件;执行状态真源 = GitHub issues(认领/进行中/闭环,`gh issue list`)。勾选**仅作历史镜像**、不作为状态真源;勾选提交随任务 PR,merge 即生效,PR 描述带 `Closes #N` 自动关 issue(D-2026-09-22-git-native-collab)。新任务追加到对应里程碑末尾(标注发现日期);砍掉的任务划线注明原因,不删除。
-> 规模:S = 半天内,M = 1-2 天,L = 3+ 天(全职当量)。约 18 任务:全职当量 8-10 周,断续投入约 3-4 个月。
-> 里程碑依赖:M9 → (M10 ∥ M12)→ M11 → M13 → M14。任务级依赖单独标注,**冲突时以任务级为准**;P1 停车场见文末。
-> P0(38 任务,2026-09-27 全量交付)的冻结交付记录与全部交付注记见 **docs/ROADMAP-P0.md**。
-> **P1 收官(2026-09-30):18/18 任务全量交付**(六波次 ≤3 并行 lane,PR #83-#115);交付总结见 **docs/P1-DELIVERY.md**;停车场裁定(维持不排期 + 唤醒触发器)见文末。
-> **P2 已立项(2026-09-30,主轴 = 规模化与多副本 HA):任务定义真源 = docs/ROADMAP-P2.md;本文件自此为 P1 冻结记录。**
+> 任务定义与依赖真源 = 本文件;执行状态真源 = GitHub issues(认领/进行中/闭环,`gh issue list`)。勾选仅作历史镜像;勾选提交随任务 PR、merge 即生效,PR 描述带 `Closes #N`(注:远端 Closes 关键字偶发不触发,合并后 `gh issue close` 人工补)。
+> 规模:S = 半天内,M = 1-2 天,L = 3+ 天(全职当量)。
+> 里程碑依赖:M15(主轴)→(M16 ∥ M17 穿插池)。任务级依赖单独标注,冲突时以任务级为准。
+> 方向拍板:2026-09-30 用户选定 Track 1「规模化与多副本 HA」为 P2 主轴(4 track 候选与 127 条前瞻义务全录见 `braid-p2-survey.json`,仓外);T17 为穿插清账池、不占波次,T16 排 T15.5 中后段吃压测数字。
+> P0 冻结记录 = docs/ROADMAP-P0.md;P1 冻结记录 = docs/ROADMAP-P1.md + docs/P1-DELIVERY.md;P1 停车场三项继承唤醒触发器(docs/ROADMAP-P1.md 文末),不重复排期。本文件原为 docs/ROADMAP-P2.md,2026-10-04 转正为 ROADMAP.md。
 
-## M9 引擎纵深(并行/回滚/防篡改)
+## M15 规模化与多副本 HA(P2 主轴)
 
-- [x] T9.1 并行节点(Scatter-Gather)— L — 验收:DSL 新增 parallel 节点(foreach 集合展开 fan-out + gather 汇聚);调度器入度推进复用,并发执行断言(多 attempt 同时 RUNNING);部分失败语义显式建模(fail-fast 收敛 vs 继续收齐再判,gather 处钉死一种并文档化);表驱动 + 真 asynq e2e(≥3 路并行恰一次汇合)全绿
-- [x] T9.2 回滚 / 断点续跑 — L — 验收:回到指定节点以 input_snapshot 重跑(ARCHITECTURE 底层假设:回滚 = 节点重跑非补偿);下游节点按拓扑重派;新 attempt 不覆盖旧终态(审计可追溯两条路径);续跑(进程崩溃后 execution 恢复推进)与回滚同基座;语义拍板先行(D- 条目:同 execution 分支 vs 派生 execution);e2e:回滚→重跑→终态 + 审计链完整
-- [x] T9.3 审计哈希链 — M — 依赖 T9.2(先钉回滚不改写历史的语义)— 验收:append 时 prev_hash = H(prev_hash ‖ 本行关键列),启动自检 + 定期校验断链(断链 = 响亮拒绝新 append);reaper 搬运路径同链;性能:逐行链 vs 批内链的权衡拍板(D- 条目);篡改检测测试(改一行 → 校验红)
+- [x] T15.1 HA 目标形态 D- 立项 — L — 验收:多副本拓扑与单点逐一裁定的 D- 条目**经用户确认**(Redis 队列 HA 替代选型——含 Sentinel 丢写负样本论证、MySQL HA 取舍、雪花节点号分配机制、沙箱/egress 多副本口径、多副本演练口径);不重开 ARCHITECTURE 已锁决策,只裁多副本新面;本任务是 T15.2-T15.4、T15.6 的前置闸
+- [x] T15.2 副本身份与雪花节点号自动分配 — M — 依赖 T15.1 — 验收:租约注册或 stable ordinal 自动分配,消除人工外部分配 `BRAID_*_SNOWFLAKE_NODE`;Helm values 默认副本 >1 可起(D-t144 已知边界:Deployment 无稳定 ordinal)——实现 = 迁移 0012 租约表 + 三层解析(env 数字 > 内建默认 > "auto")+ auto 池抢注/复占/接管 + 续期/lost 停发 + SIGTERM 释放 + chart 摘钉转 auto(口径 = D-2026-10-01-t151 决策 2;rebase 时 T15.3/T15.4 已在 master——worker >1 的雪花/egress/清扫三挡全解)
+- [x] T15.3 沙箱清扫互杀红线消除 — M — 依赖 T15.1 — 验收:多 worker 同网互杀面消除(t101-sandbox-baseline #11:kill -9 后死实例身份可知、孤儿回收不依赖全局 label 误伤;明文「多副本/k8s 滚动部署前必须先解」)— 已交付:D-t151 决策 5 全量落地(owner label + owner-scoped 清扫 + 部署契约 hostname/停机宽限 ≥35s + runbook 按-owner 原语;租约活性复核选型 = 部署契约承载,followup 位)
+- [x] T15.4 egress 端口多副本分配面 — M — 依赖 T15.1 — 验收:同网多 worker 不撞端口拒启(D-t102④ + chart README 登记);rootless/受限 daemon 适用域一并复核
+- [x] T15.5 引擎核心压测基线与容量模型 — L — 验收:基准套件落地(吞吐/时延/大 DAG 回滚锁窗量化);MaxRollbackRows 实测定档(D-t92 停车场悬项);容量模型文档;audit_trace_map 旁路表按延迟实测裁定(D-t63#3);锁窗修复若动 DBTX 形状须先 D-(D-t24#6 演进注记);产物为 T16.4 的输入
+- [x] T15.6 mode=all 混跑窗硬闸 + 多副本整体演练 — M — 依赖 T15.2、T15.3、T15.4 — 验收:启动期能力探测硬闸(替 UPGRADE.md 人工纪律,D-t142①);多副本整体演练验收(哈希链混合版本窗 D-t93③ 口径随演练复核)——实现 = capabilities 宣告随 acquire(snowflake 三写路径)+ api 发布/触发闸(triggerCore 单点盖 REST+MCP,503 fail-closed)+ 独立演练栈五臂故障注入(deploy/drill.docker-compose.yml × internal/drill,BRAID_TEST_REQUIRE_DRILL=1)+ flush/janitor 纳入三键 leaderGate(定档 A)+ R7/R9/R10 收口(告警共享态 gauge 统一 max / README 多副本注记);口径 = D-t151 决策 6/7/8,定档结论追加 D-2026-10-01-t156
 
-## M10 工具沙箱(护城河:安全审查级)
+## M16 开源与交付面(排 T15.5 中后段)
 
-- [x] T10.1 容器沙箱执行器 — L — 验收:ToolRunner 容器级落地(每工具调用隔离容器:只读根 fs、资源上限、无特权);file_read/http 迁入沙箱路径跑通;降级开关(env)保 dev 栈可用;e2e:沙箱内路径逃逸/资源超限被拒
-- [x] T10.2 egress 默认拒绝代理 — M — 依赖 T10.1 — 验收:沙箱出网仅经本地代理;DNS/IP 白名单策略面(env);默认拒绝下 http 工具经代理可达白名宿主;非白名解析/直连被拒的 e2e
-- [x] T10.3 工具包签名 — M — 验收:工具定义发布带签名;加载侧验签失败即拒;密钥管理走 env(不进代码/日志)
-- [x] T10.4 db_query 内置工具 — M — 依赖 T10.2 — 验收:只读账号(连接串 env 注入)、参数化强制(非参数化拒)、结果集上限;凭证作用域 = 仅该工具
+- [x] T16.1 engine/enterprise 分层划线 — L — 验收:归属裁定清单(tenant/OIDC/MCP/IM 卡片/canvas 划线)+ module 拆分评估 + import 边界 lint 门(Q7 落地;现状 0% 物理分层)(D-2026-10-01-t161)
+- [x] T16.2 braid CLI 最小命令面 — M — 验收:建号/定义发布/触发三命令(README:143 明言 P0 无 CLI 建号入口)(D-2026-10-03-t162-cli-connection)
+- [x] T16.3 一键 demo — M — 依赖 T16.2 — 验收:seed 脚本(迁移+建号+示例定义发布+触发)接入 dev-up.sh
+- [x] T16.4 性能数字进 README — S — 依赖 T15.5 — 验收:benchmark 数字成章 + agent-council 示例守护测试(README:241 自认无守护)
+- [x] T16.5 镜像构建/发布流水线 — M — 验收:零 Secrets 姿态下 registry push 方案评估与落地(GHCR GITHUB_TOKEN vs 本地导出)
+- [x] T16.6 回滚-重跑 UI + Playwright e2e — M — 验收:画布/执行详情回滚操作面(§5 留白 + rollback.go 零回滚入口);浏览器级 e2e(D-t141#2 登记回收)(D-2026-10-04-t166-playwright-e2e)
 
-## M11 身份与多租户
+## M17 安全与可靠性清账(穿插池:lane 间隙消化,不占波次)
 
-- [x] T11.1 OIDC 插件 — M — 验收:IdentityProvider 缥兑现(redirect 流,回调路由面新立);错误族复用 T5.3 契约(CredentialsError→401 / ErrUserDisabled→403 / 其余 500);LDAP bind 留桩;配置半开启动即败
-- [x] T11.2 SaaS 多租户 — L — 依赖 T11.1、M9 — 验收:tenant 模型 + 行级隔离(隔离机制拍板 D- 条目:中间件注入 vs MySQL 层);审计读面收紧 + tool.call.denied 账号态字段暴露重议(D-t63 #5,**外部读者出现前必须重议**——本任务即触发);跨租户访问被拒的对抗测试(语句→caller 反证口径)
-- [x] T11.3 auth 纵深批 — M — 验收:token 绑定(D-t44 §7-⑦)、登录防御 DB 锚定(D-t64:多副本部署升级)、username 定向锁定 DoS 纵深评估(结论入 D-);三项一 PR,各自独立验收(W3 仲裁拆两 PR:①③+拍板 = #96,②落地 = 本 PR 0010)
+- [x] T17.1 REST 全端点 scp 执法 — M — **红线优先** — 验收:scope 执法中间件覆盖 REST 全端点;scopesWithin/intersectScopes 与 auth 包词表单源收敛;MCP 面零回退;红线解除登记(D-t131 登记②⑤ 悬空移交收编:未执法前 scoped token 不得发不完全受信方)(D-2026-10-01-t171-rest-scp)
+- [x] T17.2 scoped token 审计 + login method 列 — S — 验收:scoped_token_issued 审计事件(主体/作用域/TTL/token 哈希至多)+ login_audit method 列迁移(OIDC 与口令登录可区分);迁移序号按台账排队
+- [ ] T17.3 T7.4 授权断言收口 — M — 验收:outbox UPDATE/DELETE、audit_log ALTER 组件级授权断言;CheckAuditAppendOnly 表枚举扩 login_audit;RequeueNode runbook 手工原语文档化;按组件授权方案
+- [ ] T17.4 asynq 双执行硬化 + 告警补面 — M — 验收:Inspector 硬化双执行残余窗(D-t25#10);告警四组:5a premature/fabricated、reaper 毒快照、DB 连接池、im_notified 投递对账
+- [ ] T17.5 IM 签名短链预取闭合 — M — 验收:确认页第二跳/按钮改 POST(D-t143 决策6);instructions markdown 行内词法中和(D-t45 钓鱼面同族)
+- [ ] T17.6 LDAP bind 桩实现 — M — 验收:IdentityProvider 缝面换 Authenticate 本体 + 构造装配(桩已钉死形状);容器化测试目录为验收方案
 
-## M12 可观测与运维(M9 后可与 M10 并行)
+## P2 停车场(不排期,防遗忘)
 
-- [x] T12.1 OTel P1 — M — 验收:Jaeger exporter(env 切换,off/stdout 保留);W3C traceparent 外发注入(llm/http 出站带);relay/reaper 进程 span 补齐(现两进程零观测);任务协议携真 span id(payload 可伪造的内部信任边界按 D-t62 修订注收口);notify 消费侧 middleware 短路(孤儿链口径)
-- [x] T12.2 运维加固批 — M — 验收六项:审计查询 keyset 分页(D-t63 #5)、BRAID_DB_MAX_OPEN 软上限护栏(#67 系)、BRAID_SMTP_CA_FILE env 化(D-t45 §7 蒸发回收)、队列旋钮启动交叉校验(D-t43 §7 蒸发回收)、Redispatches{attempt_failed} 词表发射(D-t64 留位)、按 approver 扇出投递(D-t45 #2:用户资料 email 列 + 逐人收件);一项不落逐项验收
-
-## M13 生态(MCP)
-
-- [x] T13.1 MCP server 面 — L — 验收:平台工作流暴露为 MCP 工具(外部 agent 可发现/触发/查询);鉴权走 token 作用域;协议版本钉死
-- [x] T13.2 MCP 消费面 — M — 依赖 T13.1 — 验收:外部 MCP 工具接入 tools.Registry(与内置工具同权限模型);白名单/沙箱约束不降级
-
-## M14 交互层
-
-- [x] T14.1 画布(React Flow) — L — 验收:DSL 元数据(节点位置)驱动的可视化编辑;画布 → DSL 导出过发布校验;并行/分支/审批节点全类型支持;纯前端静态资源进 /ui/(零后端新端点优先)
-- [x] T14.2 会签 — M — 验收:approval mode=all(全部批准才过,任一驳回即败);部分批准的中间态可视化;超时语义与或签一致(escalate)
-- [x] T14.3 IM 审批卡片 — M — 依赖 T14.2 — 验收:至少一个 IM 平台(钉钉/飞书 webhook 形态);卡片动作回平台 API(鉴权短链);与 SMTP 升级通知共存
-- [x] T14.4 Helm chart — M — 验收:values 覆盖镜像/密钥/副本;preflight 与 init 作业模板化;与 prod compose 交付面等价
-
-## P1 停车场(不排期,防遗忘)
-
-完整 taint 追踪、PII 脱敏放开评估(D-t61 #5:当前词表无自由文本 ⇒ P0 净效果零掩蔽,放开自由文本 payload 前评估)、metrics exposition 无认证(T7.1 评审登记:api /metrics 与组件 BRAID_METRICS_ADDR 同模式,仅文档契约「绑回环/留内网」代码不强制;内网部署可接受,公开面部署需反代封禁)。
-
-> 2026-09-30 收官裁定(P1 全收后用户授权会话定):三项维持不排期,钉唤醒触发器——
-> ① 完整 taint 追踪:触发 = 外部读者 / 公网暴露 / 真实多租户运营出现,或需要「数据安全纵深」简历叙事;届时立独立 M 任务。
-> ② PII 脱敏放开评估:触发 = 自由文本 payload 面即将放开(当前无此面,对空集评估无产出);届时先评估后放开,D-t61 #5 即前置。
-> ③ metrics 无认证:文档契约接受态;触发 = 公网 / 不可信网络部署需求出现,届时加 D- 条目 + 反代封禁部署文档(文档活,非代码任务)。
+- P1 三项(完整 taint 追踪 / PII 脱敏放开评估 / metrics exposition 无认证):继承 docs/ROADMAP-P1.md 文末唤醒触发器,原样引用
+- 多租户重契约族(租户命名自治、idempotencyScopeV2、跨租户雇佣/平台跨租户读、IM per-tenant webhook):均须独立 D- 且重开已锁契约(login/uk_exec_idem/OIDC/审计归因/防枚举),无真实多租户运营诉求不立项
+- SSRF 扩禁段(NAT64 64:ff9b::/96 等):待用户拍板;拍板后同步 ssrf_test 锚点、t10.1 e2e 网段重选、D-t102 代理口径继承
+- 动态 DAG / 子工作流 / LLM 流式输出:仅 D- 评估条目按需插入,实现不排期
+- 其余登记不修族维持原状,全录见 `braid-p2-survey.json`(仓外);本文不复制第二真源
