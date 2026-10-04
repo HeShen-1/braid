@@ -61,10 +61,13 @@ func run(ctx context.Context) error {
 	}
 
 	// T7.3 安装自检:迁移版本 + append-only 硬拒;relay 零审计写,分区水位
-	// 破约仅 warn(不该把投递链 brick 在审计水位上)。
+	// 破约仅 warn(不该把投递链 brick 在审计水位上)。T17.3 按组件授权断言:
+	// relay 的唯一业务写面 outbox(SELECT,UPDATE——投递状态迁移),缺面 =
+	// 起得来、每投递一单 1142。
 	if err := errors.Join(
 		preflight.CheckSchemaVersion(ctx, mysqlDB),
 		preflight.CheckAuditAppendOnly(ctx, mysqlDB, preflight.AppendOnlyStrict),
+		preflight.CheckComponentGrants(ctx, mysqlDB, preflight.ComponentRelay),
 	); err != nil {
 		return fmt.Errorf("relay: %w", err)
 	}

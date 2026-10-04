@@ -6,6 +6,11 @@
 # 密码从环境变量读取(deploy/.env 交付栈段);账号名与 compose 各服务的
 # BRAID_MYSQL_DSN 一致。幂等:CREATE USER IF NOT EXISTS + GRANT 重跑 no-op
 # (IF NOT EXISTS 形态不重设密码,改密走 ALTER USER,UPGRADE.md §3)。
+# 断言对拍(T17.3):本文件的表级 GRANT 语句被 internal/preflight 的
+# TestComponentGrantsParity / TestComponentGrantsSnapshot 解析消费——
+# 组件断言面(componentRequired)与本文逐表全量 equality,改本文的表级
+# 面必须同轮改断言面(否则测试红);第五账号 sandbox-exec 零 DB 面不建号
+# (矩阵见 README §5)。
 set -eu
 
 # 密码必设(fail-fast 优于半配置栈:缺密码账号建不出来,组件起不来,栈首启即红):

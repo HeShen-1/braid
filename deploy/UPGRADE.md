@@ -90,7 +90,8 @@ auto 线性取号看不见它们;k8s RollingUpdate 新旧 pod 共存窗内,新�
 
 ## 3. 按组件账号授权
 
-**矩阵**(四账号 × 全表最小授权)与设计说明见 `deploy/README.md §5`;
+**矩阵**(五账号 × 全表最小授权:四个 MySQL 业务账号 + sandbox-exec
+零 DB 面)与设计说明见 `deploy/README.md §5`;
 **可执行语句真源 = `deploy/grants.sh`**。三条路径:
 
 - **首装**(交付栈):`prod.docker-compose.yml` 的 **grants one-shot 服务**

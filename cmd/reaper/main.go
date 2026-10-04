@@ -63,12 +63,14 @@ func run(ctx context.Context) error {
 
 	// T7.3 安装自检:迁移版本 + append-only 硬拒;reaper 是分区水位的自愈者
 	// (janitor 首 tick 即补 +7d),水位破约仅 warn——硬拒会造出「没人补
-	// 分区 → 永远起不来」的死锁。
+	// 分区 → 永远起不来」的死锁。T17.3 按组件授权断言:reaper 的特征写面
+	// (outbox 判死重派、audit_log 分区回收的 ALTER+DROP、租约四面)。
 	if err := errors.Join(
 		preflight.CheckSchemaVersion(ctx, mysqlDB),
 		// AllowLoginAuditDelete:janitor purgeLoginAudit 保留期清理的表级
 		// DELETE 豁免(audit_log 面仍全拒;授权矩阵 deploy/README.md §5)。
 		preflight.CheckAuditAppendOnly(ctx, mysqlDB, preflight.AllowLoginAuditDelete),
+		preflight.CheckComponentGrants(ctx, mysqlDB, preflight.ComponentReaper),
 	); err != nil {
 		return fmt.Errorf("reaper: %w", err)
 	}

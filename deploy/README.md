@@ -101,13 +101,18 @@ login_audit 写入被登录限流钳制(默认 10/min/IP),量级天然有界。�
 压测(整请求 60s 对固定 JSON API 是宽余量,不是冗余)。优雅停机窗
 (10s)与 OTel 排空窗(2s)是停机常量,非旋钮。
 
-## 5. 账号授权矩阵(生产账号分离,T7.4 定稿)
+## 5. 账号授权矩阵(生产账号分离,T7.4 定稿;五账号化 + 启动断言 T17.3)
 
-四组件账号 × 全表最小授权。**同源声明**:矩阵 = 2026-09-27 对
-`internal/*` 非测试 SQL 语句集的逐包 survey(组件装配链 → 语句 → 权限,
-交叉审计核验);**可执行真源 = `deploy/grants.sh`**(交付栈 grants
-one-shot 于迁移后自动执行),手工路径(已有卷/扩权/改密)见
-`deploy/UPGRADE.md §3`。代码新增 SQL 写面时本表与 grants.sh 必须同步修。
+五账号 × 全表最小授权:四个 MySQL 业务账号(api/worker/relay/reaper)
++ 第五账号 **braid-sandbox-exec 零 DB 面**(cmd/braid-sandbox-exec 容器
+helper,无 MySQL 连接路径,不建账号;其攻击面在容器隔离与 egress 网,
+见 §9 与 RUNBOOK §1——按组件授权方案与 D-t73 装配矩阵呼应,组件级
+启动断言见下方 CheckComponentGrants 条)。**同源声明**:矩阵 = 2026-09-27
+对 `internal/*` 非测试 SQL 语句集的逐包 survey(组件装配链 → 语句 →
+权限,交叉审计核验;2026-10-04 五账号快照复核,0012/0013 面全覆盖);
+**可执行真源 = `deploy/grants.sh`**(交付栈 grants one-shot 于迁移后自动
+执行),手工路径(已有卷/扩权/改密)见 `deploy/UPGRADE.md §3`。代码
+新增 SQL 写面时本表与 grants.sh 必须同步修。
 **口径修正(6 视角审计)**:按**调用链可达**而非 import 可达核权——
 scheduler.Instantiate 只被 api 调用、outbox 状态迁移原语只在 relay、
 audit 暂存发射只在 worker 路径;初版矩阵按包归属多授 7 cell
@@ -145,6 +150,17 @@ UPDATE 语句;权限跟随锁的写意图。² 回滚缝重派节点的 node.sta
   UPDATE/DELETE 违约即拒启;唯一豁免 = reaper 对 login_audit 的表级
   DELETE(保留期清理)。schema 级授权(`GRANT ... ON braid.*`)覆盖
   audit_log,豁免形态照拒——组件写权限必须表级精确授予。
+- **组件级授权启动断言(T17.3,`preflight.CheckComponentGrants`)**:
+  四入口各按自身组件断言特征写面的表级权限在场,缺面即拒启(缺面的
+  失败模式 = 起得来、首个写路径 1142,前移到启动期并给可执行 GRANT
+  提示)。断言面 = relay 的 outbox(SELECT,UPDATE)、reaper 的
+  outbox(SELECT,INSERT,DELETE)与 audit_log(SELECT,INSERT,ALTER,
+  DROP)、api/worker/reaper 的 snowflake_node_lease(全四权)。断言面
+  与 grants.sh 逐表全量 equality,dev 期对拍锚 =
+  `TestComponentGrantsParity`(grants.sh 撤面/漂移即测试红,防「文档
+  一套、SQL 一套、断言第三套」);矩阵其余面(login_throttle、
+  chain_heads 列级面等)不在启动断言,由本矩阵 + 对拍承载。全局权限
+  账号(dev/test 栈 root)管理平面直接过。
 - **chain_heads 是簿记面不是审计面(T9.3,D-2026-09-29-t93)**:审计
   哈希链的 per-execution 锚(head 行锁 = 串行化点,verified 轮换戳 =
   全链复走触发锚,broken 闩 = fail-closed 执法位),UPDATE 是设计语义
@@ -153,9 +169,10 @@ UPDATE 语句;权限跟随锁的写意图。² 回滚缝重派节点的 node.sta
   决策 2)**:雪花节点号租约仲裁(acquire INSERT / 复占与过期接管
   UPDATE / auto 池扫描 SELECT / SIGTERM 优雅释放 DELETE——DELETE 是
   设计语义,行生命周期 = 进程生命周期)。三账号同面(api/worker/
-  reaper);relay 无雪花生成器零面。不在 CheckAuditAppendOnly 断言表集,
-  preflight「预登记未断言」台账(internal/preflight/mysql.go);过期判定
-  全 DB 端 NOW(3),kill -9 残窗 ≤ TTL(缺省 30s),runbook 清行应急见
+  reaper);relay 无雪花生成器零面。不在 CheckAuditAppendOnly 断言表集
+  (运行态簿记非业务事实);**四面经 CheckComponentGrants 启动断言**
+  (T15.2 的「预登记未断言」台账已随 T17.3 收口);过期判定全 DB 端
+  NOW(3),kill -9 残窗 ≤ TTL(缺省 30s),runbook 清行应急见
   UPGRADE.md §7。
 - **login_throttle 同为簿记面(T11.3,D-2026-09-29-t113 #2)**:登录
   防御状态(连败锁定 + IP 固定窗口,多副本共享真相源),UPDATE 是设计
@@ -175,8 +192,9 @@ UPDATE 语句;权限跟随锁的写意图。² 回滚缝重派节点的 node.sta
   Append 发射面,head 懒建可达);relay 零权限(零审计写)。
 - **audit_log 的 ALTER+DROP(reaper 专属)**:分区水位作业(ADD/DROP
   PARTITION)——MySQL 对 `DROP PARTITION` 要求 ALTER+DROP 双权限,缺
-  DROP 则 janitor 回收路径 1142(T7.4 交叉审计发现,原表漏 DROP)。DROP
-  权限不触发 preflight 断言(断言面是 UPDATE/DELETE,DROP 是独立权限)。
+  DROP 则 janitor 回收路径 1142(T7.4 交叉审计发现,原表漏 DROP)。两权
+  均在 CheckComponentGrants 的 reaper 断言面内(T17.3;append-only 断言
+  面是 UPDATE/DELETE,DROP 是独立权限本就不触发该断言)。
 - **UPDATE/DELETE 的谓词列需要 SELECT**(MySQL 权限规则,T7.4 升级演练
   实证):一切带 WHERE 的写语句,其条件列对账号须有 SELECT——矩阵中
   reaper 对 login_audit 的 SELECT 即服务保留期 DELETE 的 `event_at` 谓词

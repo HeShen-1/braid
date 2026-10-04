@@ -144,10 +144,12 @@ func run(ctx context.Context) error {
 
 	// T7.3 安装自检:worker 是审计写方(节点事件),MySQL 三项全硬拒;词表
 	// 自检 = 下方 PrebuildTokenizers(T7.2 接线,D-t72 #4 复用不重复)。
+	// T17.3 按组件授权断言:worker 的租约仲裁面(snowflake_node_lease 四面)。
 	if err := errors.Join(
 		preflight.CheckSchemaVersion(ctx, mysqlDB),
 		preflight.CheckAuditAppendOnly(ctx, mysqlDB, preflight.AppendOnlyStrict),
 		preflight.CheckAuditPartitions(ctx, mysqlDB),
+		preflight.CheckComponentGrants(ctx, mysqlDB, preflight.ComponentWorker),
 	); err != nil {
 		return fmt.Errorf("worker: %w", err)
 	}

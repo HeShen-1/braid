@@ -17,6 +17,14 @@
 //     worker 硬拒(队列数据承载方);reaper 仅 warn(D-t25 fail-open:锁实例
 //     破约的失败模式 = 锁丢失退化为 leaderless,安全,拒启反制造停摆面);
 //     api 不调(零 Redis)。
+//   - CheckComponentGrants(按组件授权断言,T17.3):四入口各按自身组件装配,
+//     断言当前连接账号持有该组件特征写面的表级权限(断言面 = relay 的
+//     outbox、reaper 的 outbox/audit_log、api/worker/reaper 的
+//     snowflake_node_lease)——缺失即硬拒:least-privilege 部署下缺面的
+//     失败模式 = 组件起得来、首个写路径 1142(投递状态迁移/分区回收/租约
+//     acquire 全是运行期才炸),前移到启动期并给出可执行 GRANT 提示。全局
+//     权限账号(dev/test 栈 root)管理平面直接过,与 CheckAuditAppendOnly
+//     同判;断言面与 deploy/grants.sh 的同口径对拍锚 = TestComponentGrantsParity。
 //
 // 词表自检不在本包:cmd/worker 的 llm.PrebuildTokenizers(T7.2 接线)即是,
 // 复用不重复(D-t72 #4)。水位不足 janitor 口径(today+7)恒为 warn——那是
@@ -147,13 +155,12 @@ const (
 //     展开落业务平面 = 违约配置照拒。
 //
 // 已知边界:MySQL 8 角色授予不经这四表展开;部署契约是直接授权(与 DDL
-// 注释同口径)。relay/reaper 自身的其他写权限(outbox UPDATE/DELETE、
-// audit_log ALTER、audit_pending SELECT/DELETE)不在本断言面——按组件
-// 授权方案见 deploy/README.md §5 与 deploy/UPGRADE.md(T7.4 定稿)。
-// 台账预登记(T15.2,D-t151 决策 2):snowflake_node_lease 三账号
-// INSERT/UPDATE/SELECT/DELETE(节点号租约仲裁 + SIGTERM 优雅释放,
-// DELETE 是设计语义;表是运行态簿记非业务事实,不在受保护表集
-// {audit_log, login_audit})——同属「预登记未断言」,断言面收口归 T17.3。
+// 注释同口径)。组件自身的写权限按 CheckComponentGrants 启动断言(relay 的
+// outbox UPDATE、reaper 的 outbox INSERT/DELETE 与 audit_log ALTER/DROP、
+// api/worker/reaper 的 snowflake_node_lease 四面——T15.2 的「预登记未断言」
+// 台账已随 T17.3 收口为断言面);其余矩阵面(login_throttle、chain_heads
+// 列级面等)不在启动断言,dev 期对拍锚 = TestComponentGrantsParity,授权
+// 方案见 deploy/README.md §5 与 deploy/UPGRADE.md。
 func CheckAuditAppendOnly(ctx context.Context, dbh *sql.DB, allowLoginAuditDelete bool) error {
 	var acct, schema string
 	if err := dbh.QueryRowContext(ctx, `SELECT CURRENT_USER(), DATABASE()`).Scan(&acct, &schema); err != nil {
@@ -472,4 +479,156 @@ func quoteSQL(s string) string {
 // tick 给标识符加反引号(内部反引号按 MySQL 惯例双写)。
 func tick(s string) string {
 	return "`" + strings.ReplaceAll(s, "`", "``") + "`"
+}
+
+// Component 是按组件授权断言的组件(T17.3):四入口各断自身;第五组件
+// sandbox-exec 零 DB 面(cmd/braid-sandbox-exec 无 MySQL 连接路径),无断言
+// 可言——按组件授权方案的五账号矩阵见 deploy/README.md §5。
+type Component string
+
+const (
+	ComponentAPI    Component = "api"
+	ComponentWorker Component = "worker"
+	ComponentRelay  Component = "relay"
+	ComponentReaper Component = "reaper"
+)
+
+// componentFace 是一个组件断言面:表 + 表级全量权限集 + 用途短注(错误
+// 提示的操作语境)。断言面选取 = 组件的特征写面(区分组件身份、缺面即
+// 核心路径 1142 的面):relay 的投递状态迁移、reaper 的判死重派/分区回收、
+// 三写入口的租约仲裁(D-t73 对抗审计登记项 + T15.2 preflight 台账,T17.3
+// 收口)。逐面与 grants.sh 全量 equality(对拍锚 = TestComponentGrantsParity,
+// 撤面即红)——半量断言会造出「断言绿但组件半残」的假阳性。列级面
+// (chain_heads / login_throttle 的 api UPDATE)不在断言集:列级授权不落
+// TABLE_PRIVILEGES,且业务语句混列级/表级,断言口径无法稳定;这两面由
+// append-only 断言(反向)+ grants.sh 对拍(dev 期)承载。
+type componentFace struct {
+	table string
+	privs []string // 声明序即错误消息序(表驱动锚)
+	why   string
+}
+
+// leaseFace:雪花节点号租约仲裁面(T15.2,D-t151 决策 2)——acquire INSERT /
+// 复占与过期接管 UPDATE / auto 池扫描 SELECT / SIGTERM 优雅停机释放 DELETE
+// (DELETE 是设计语义;表是运行态簿记,不在 append-only 受保护表集)。
+var leaseFace = componentFace{
+	table: "snowflake_node_lease",
+	privs: []string{"SELECT", "INSERT", "UPDATE", "DELETE"},
+	why:   "snowflake node lease arbitration + SIGTERM release (T15.2)",
+}
+
+// componentRequired:组件 → 断言面集(声明序即多 face 缺失时的消息序)。
+var componentRequired = map[Component][]componentFace{
+	ComponentAPI:    {leaseFace},
+	ComponentWorker: {leaseFace},
+	ComponentRelay: {
+		{table: "outbox", privs: []string{"SELECT", "UPDATE"},
+			why: "delivery state transitions"},
+	},
+	ComponentReaper: {
+		{table: "outbox", privs: []string{"SELECT", "INSERT", "DELETE"},
+			why: "dead-node redispatch + janitor dispatch cleanup"},
+		{table: "audit_log", privs: []string{"SELECT", "INSERT", "ALTER", "DROP"},
+			why: "sync audit emission + partition retention (DROP PARTITION needs ALTER+DROP)"},
+		leaseFace,
+	},
+}
+
+// CheckComponentGrants 断言当前连接账号(业务账号 = 各入口 BRAID_MYSQL_DSN
+// 的登录者)持有 comp 组件断言面的表级权限(T17.3)。授权平面三层取并集
+// (持有任一层即满足——与 CheckAuditAppendOnly 的拒面向判定互补,本断言
+// 是正向在场断言):管理平面 = USER_PRIVILEGES(全局,dev/test root 形态
+// 直接过)、schema 级 = SCHEMA_PRIVILEGES(库模式覆盖本库,通配经
+// likeMatch)、表级 = TABLE_PRIVILEGES(对象覆盖判定 coversObject,通配
+// aware)。列级授权只落 COLUMN_PRIVILEGES,不满足表级面(列级 UPDATE ≠
+// 表级 UPDATE,业务 SQL 会 1142——有意不接受)。
+func CheckComponentGrants(ctx context.Context, dbh *sql.DB, comp Component) error {
+	faces := componentRequired[comp]
+	if len(faces) == 0 {
+		return componentGrantsVerdict("", "", "", comp, nil)
+	}
+	var acct, schema string
+	if err := dbh.QueryRowContext(ctx, `SELECT CURRENT_USER(), DATABASE()`).Scan(&acct, &schema); err != nil {
+		return fmt.Errorf("preflight: read current user: %w", err)
+	}
+	grantee := granteeOf(acct)
+
+	held := map[string]map[string]bool{}
+	mark := func(table, priv string) {
+		if held[table] == nil {
+			held[table] = map[string]bool{}
+		}
+		held[table][priv] = true
+	}
+	// 管理平面:全局持有的 priv 覆盖全部断言表。
+	global, err := privSet(ctx, dbh, acct, `
+SELECT PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.USER_PRIVILEGES WHERE GRANTEE = ?`, grantee)
+	if err != nil {
+		return err
+	}
+	for _, f := range faces {
+		for _, p := range f.privs {
+			if global[p] {
+				mark(f.table, p)
+			}
+		}
+	}
+	// schema 级:库模式覆盖本库即覆盖全部断言表。
+	if err := collectPlanes(ctx, dbh, acct, grantee, `
+SELECT TABLE_SCHEMA, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.SCHEMA_PRIVILEGES`, func(row []string) error {
+		if row[0] != schema && !likeMatch(row[0], schema) {
+			return nil
+		}
+		for _, f := range faces {
+			mark(f.table, row[1])
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	// 表级:对象覆盖判定(通配模式经 coversObject)。
+	if err := collectPlanes(ctx, dbh, acct, grantee, `
+SELECT TABLE_SCHEMA, TABLE_NAME, PRIVILEGE_TYPE FROM INFORMATION_SCHEMA.TABLE_PRIVILEGES`, func(row []string) error {
+		for _, f := range faces {
+			if coversObject(row[0], schema, row[1], f.table) {
+				mark(f.table, row[2])
+			}
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	return componentGrantsVerdict(acct, granteeSQL(acct), schema, comp, held)
+}
+
+// componentGrantsVerdict 是组件断言的纯判定(表驱动单测锚):逐 face 点名
+// 缺失权限,GRANT 提示与 face 严格对齐(可执行 SQL,镜像 appendOnlyVerdict
+// 的 REVOKE 提示纪律)。未知组件 = 编程错误(装配面传错),响亮拒绝而非
+// 静默通过。
+func componentGrantsVerdict(acct, grantee, schema string, comp Component, held map[string]map[string]bool) error {
+	faces := componentRequired[comp]
+	if len(faces) == 0 {
+		return fmt.Errorf("preflight: unknown component %q (want api, worker, relay or reaper)", string(comp))
+	}
+	var msgs, stmts []string
+	for _, f := range faces {
+		var missing []string
+		for _, p := range f.privs {
+			if !held[f.table][p] {
+				missing = append(missing, p)
+			}
+		}
+		if len(missing) == 0 {
+			continue
+		}
+		privs := strings.Join(missing, ", ")
+		on := tick(schema) + "." + tick(f.table)
+		msgs = append(msgs, fmt.Sprintf("%s on %s (%s)", privs, on, f.why))
+		stmts = append(stmts, fmt.Sprintf("GRANT %s ON %s TO %s", privs, on, grantee))
+	}
+	if len(msgs) == 0 {
+		return nil
+	}
+	return fmt.Errorf("preflight: account %s lacks privileges required by %s: %s; fix: %s; per-component matrix: deploy/README.md §5 (executable source: deploy/grants.sh)",
+		acct, comp, strings.Join(msgs, "; "), strings.Join(stmts, "; "))
 }
