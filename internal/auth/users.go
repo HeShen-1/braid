@@ -37,6 +37,12 @@ func validUsername(s string) bool {
 	return !reservedUsernames[s] && usernameRe.MatchString(s)
 }
 
+// ValidUsername 是 username 平台词域的导出面(T17.6:凭证核验型插件
+// ——企业树 entldap 等——触线前的前置门;与 usernameRe/
+// chk_user_username 同一单源,不开第二判据。直通委托,词域漂移由
+// TestUsernameDomainPinned 变异锚覆盖)。
+func ValidUsername(s string) bool { return validUsername(s) }
+
 // errUserNotFound 包内信号:username 点查无行。不导出(T5.1 无按名查
 // 用户的导出消费者;T5.2 中间件只信 claims 不回库),Authenticate 把
 // 它翻译成防枚举的 CredentialsError。

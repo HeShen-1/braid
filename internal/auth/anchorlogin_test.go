@@ -76,3 +76,18 @@ func TestAnchorLoginUser(t *testing.T) {
 		}
 	})
 }
+
+// TestValidUsernameExportedDelegation:T17.6 导出面与 validUsername 同判
+// (词域单源;凭证核验型插件的前置门不开第二判据,两套判据必漂移——
+// login.go 域校验注释同则)。
+func TestValidUsernameExportedDelegation(t *testing.T) {
+	cases := map[string]bool{
+		"alice": true, "a-b_c9": true, "u12345678901234567890": true,
+		"Sir.Mixed": false, "A*B(c)": false, "": false, "system": false,
+	}
+	for s, want := range cases {
+		if got := ValidUsername(s); got != want {
+			t.Errorf("ValidUsername(%q) = %v, want %v", s, got, want)
+		}
+	}
+}
