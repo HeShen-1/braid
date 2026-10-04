@@ -84,7 +84,7 @@ docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d
 # ② 跑端到端示例(文档合规审查:file_read → LLM 解析 → 合规审查 → 分支 → 摘要 → 人工审批 → 报告)
 go test ./internal/nodes -run 'TestE2EDocExample' -v -count=1
 
-# ③ (可选)故障注入五臂 —— 见 §3
+# ③ (可选)故障注入五臂 —— 见 §4
 # ④ 收栈(数据全在 tmpfs,down 即清;栈不在时上面的测试自动 skip)
 docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 down
 ```
@@ -255,7 +255,9 @@ glm-5.3 实测):
   思考未结束响应 content 为空 → `bad_llm_output: ... not a JSON object: EOF`。
   容量控制用 prompt 篇幅约束(「N 字以内」),超时控制用 `BRAID_LLM_TIMEOUT`。
 
-本示例暂无守护测试(doc-compliance 有);DSL schema 变更时需人工复跑本节走链。
+本示例有发布同口径守护测试(`internal/engine/dsl/example_asset_test.go`:
+最严工具白名单态 Parse + 拓扑锚,DSL 校验或资产漂移即红);真模型端到端
+走链仍需按需人工复跑(桩测试发现不了思考型模型行为,见上方注意事项)。
 
 幂等提示:触发可带 `Idempotency-Key` 头(重放 200 回显原执行);审批重放同为 200 回显(UI 双击安全)。
 完整走链文档(含驳回/合规不过的事件序表)见 [docs/examples/doc-compliance-review.md](docs/examples/doc-compliance-review.md)。
@@ -276,7 +278,96 @@ deploy/release.sh k3s-import <tar>      # k3s 面导入 containerd
 `--provenance=false`、GOPROXY 解析链、脏树守卫)见
 [deploy/README.md §12](deploy/README.md)。
 
-## 3. 故障注入演示(T8.1 套件)
+## 3. 性能基线(T15.5 实测)
+
+数字真源 = [docs/CAPACITY.md](docs/CAPACITY.md)(本章逐字引用;测量环境
+与复跑口径见其 §1/§2)。引用口径先讲清,不夸大:
+
+- **保守下界**:测量窗机器 load average ≈ 52(1/5/15min 全程)、同形状
+  运行间方差实测 ±2×(300 行档 fixture 1.78s vs 真路径 0.42s)——本章
+  全部数字是负载竞争下的**保守下界**,独占窗口下 CPU 侧只会更好;DB
+  行锁/事务形状类指标的斜率结论对 CPU 竞争相对不敏感,但绝对墙时仍偏保守。
+- **存储乐观包络**:t13 测试栈(MySQL 8.0.46 默认 innodb,buffer_pool=128MB
+  默认),datadir 在 tmpfs——写路径无落盘成本,生产盘速下写侧打折;
+  Redis 7.4 noeviction(队列语义真源在 MySQL)。
+- **负载模型**:即回执行器(echo,零外部调用)× 线性 llm 链 / fan-out
+  网格,隔离 engine 与管道成本;真实 LLM/工具调用窗不占 engine 资源,
+  吞吐结论不降,只占执行时延与 worker 并发槽(§3.5 外推)。
+
+### 3.1 端到端吞吐 / 时延(真 relay + asynq + worker)
+
+| 并发 | relay 轮询 | nodes/s | execs/s | p50 ms/节点 | p99 ms/节点 |
+|---|---|---|---|---|---|
+| 1 | 1s(生产缺省) | 6.51 | 0.41 | 1155 | 1173 |
+| 4 | 1s | 6.30 | 0.39 | 1252 | 1377 |
+| 8 | 1s | 6.37 | 0.40 | 1162 | 1217 |
+| 1 | 20ms(压缩对照) | **29.5** | 1.85 | **208** | 225 |
+| 8 | 20ms(压缩对照) | 7.41 | 0.46 | 971 | 1148 |
+
+三条结构性结论(管道模型,不随机器变):
+
+1. **时延地板 = relay 轮询周期**:链式 DAG 每跳经 outbox,稀疏流量下
+   relay 空转间隔直接成为每节点时延地板——生产缺省 1s 档 p50 ≈
+   1155-1252ms/节点(逐跳等轮询),压缩 20ms 档 p50 = 208ms = 引擎
+   管道净成本(调度事务 ×2 + 队列往返 + asynq 派发)。
+2. **吞吐帽 = relay 单事件单事务**:worker 并发 1→4→8 在生产轮询档下
+   吞吐纹丝不动(6.51 / 6.30 / 6.37 nodes/s,差 < 3%)——帽在 relay
+   主循环(单行 FOR UPDATE SKIP LOCKED + 单 Redis 入队/事务),不在
+   worker。
+3. **高并发 × 快轮询在 DB 争用下反噬**:20ms+8 并发档吞吐塌至 7.4
+   nodes/s、p50 回升 971ms——8 路 Complete 收口事务(各自全行锁)+
+   relay 单事件事务在共享 innodb 上互相挤压(中转瞬态错误触发 relay
+   退避链 5s→20s→80s→320s)。「加并发先过 DB 写串行段」:并发度 =
+   f(DB 写延迟),不是免费旋钮。
+
+### 3.2 核心事务成本(scheduler 面)
+
+- Instantiate 物化(触发事务):16 / 64 / 256 节点 = 8.7 / 51.6 / 218.7
+  ms/op(≈0.54→0.85 ms/行,随节点数线性);
+- Complete 收口(生产 worker 收口事务:全行锁 + attempt 收口 + CAS +
+  advance 派发 + touch):16 / 64 节点链(行集 18 / 66)= 20.3 / 16.8
+  nodes/s(≈49 / 60 ms/节点)——单节点收口成本随执行总行数(含
+  parallel 实例行)单调增长。
+
+绝对值受负载窗影响,斜率形状是结构性结论。
+
+### 3.3 大 DAG 回滚锁窗与 MaxRollbackRows 定档
+
+两段线性分解:纯锁行/扫描 ≈ **1.1 ms/行**;回滚事务内 fan 重派
+(fanout 重解析 + 逐实例 claim + 快照重求值)≈ **5.8 ms/实例**——
+≤4k 行段的主导项是 fan 重派而非锁本身。定档 `DefaultMaxRollbackRows =
+4000`:负载态最差形状(单 fan × 997 实例)≈ 10s、典型形状 ≤10s 包络;
+env `BRAID_ROLLBACK_MAX_ROWS` 覆盖,`0` 关闭;超限 409 `rollback_too_large`,
+拒绝面成本 12.9 ms(COUNT 索引范围扫,= 每笔回滚的闸内开销)。DSL
+上限形状(512 fan × 1000 实例 ≈ 512k 行)外推锁行项 ≈ 分钟级 = 该
+守卫的结构性存在理由。
+
+### 3.4 审计查询延迟(v1 不建旁路表,D-t63#3 维持)
+
+| 体量 | trace hit / miss | actor hit / miss | 深页(50 页游标) |
+|---|---|---|---|
+| 200k 行 / 13 分区 | 2.4 / 0.5 ms | 6.8 / 4.5 ms | 4.9 ms/页(50 页 244ms) |
+| 1M 行 / 13 分区 | 3.5 / 3.5 ms | 17.7 / 3.1 ms | 16.9 ms/页(50 页 846ms) |
+
+判据 = 交互容忍线 1s:实测最重形态(actor 深页,1M 行)16.9ms/页、
+整走 846ms,距该线 ≈ **59×**;体量 5×(200k→1M)延迟增长 ≈ 2.5×
+(actor-hit 6.8→17.7ms),外推破线需数千万行级。
+
+### 3.5 容量外推
+
+- 单 worker 进程吞吐帽:生产形态(relay 1s)≈ **6.4 nodes/s**;轮询
+  压缩后净帽 ≈ **29.5 nodes/s**(单并发)——两帽都在 relay,worker
+  并发不解除;
+- 日吞吐外推(生产形态):6.4 nodes/s ≈ 55 万节点/天 ≈ 3.4 万次 16
+  节点执行/天(单副本、echo 负载;真实 LLM 调用窗不占 engine 资源,
+  吞吐不降,但受并发槽与外部配额另限);
+- 每节点端到端成本 ≈ 管道净成本 208ms + relay 轮询等待(稀疏 ≈
+  1s/跳,密集摊零)+ 执行器外部调用窗;DB 写压 = 每节点 2 事务
+  (收口 + 心跳摊销)+ Instantiate/执行级事件;
+- 大 DAG 预算:节点收口成本随行集线性增长(§3.2),回滚锁窗同斜率
+  (§3.3)——>4000 行的执行在触发侧即受 DSL 上限约束,设计上应拆分。
+
+## 4. 故障注入演示(T8.1 套件)
 
 耐久性承诺的可复现证明:**worker / relay / reaper 任意时刻 SIGKILL、队列断连(下表五臂注入面),
 执行在扫描间隔×3 内收敛到终态,不丢、不重、trace 不换段**。原理 = outbox at-least-once +
@@ -302,11 +393,12 @@ go test ./internal/reaper -run 'FlushKillMidDrain' -v -count=1
 预期输出:各臂 `-v` 下 `--- PASS: Test...`(SLA 口径 = 扫描间隔×3,验收臂实测 2.3–3.9s 级
 收敛;压缩了 grace/scan 间隔的测试参数,生产默认更宽)。测试栈不在时同样自动 skip。
 
-## 4. 文档地图
+## 5. 文档地图
 
 | 文档 | 内容 |
 |------|------|
 | [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | 架构定稿:18 项决策全表、技术栈选型依据、耐久性设计 |
+| [docs/CAPACITY.md](docs/CAPACITY.md) | 压测基线与容量模型(§3 性能章数字真源;复跑口径其 §2) |
 | [docs/examples/](docs/examples/) | 端到端示例:DSL、样例输入、走链文档、审计事件序表 |
 | [deploy/README.md](deploy/README.md) | 部署配额与容量:连接池公式、Redis 契约、保留期、账号授权矩阵 |
 | [deploy/.env.example](deploy/.env.example) | env 旋钮单源(逐键注释) |
