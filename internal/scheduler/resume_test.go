@@ -29,6 +29,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -490,7 +491,7 @@ func TestResumeStaleRoundDecisionRejected(t *testing.T) {
 		AttemptNo: b.attempts + 1, DecisionID: decID, WorkerID: "w1",
 	}); err == nil {
 		t.Fatal("旧轮决定行套用新轮挂起应响亮拒绝")
-	} else if !strings.Contains(err.Error(), "stale-round") {
+	} else if !errors.Is(err, ErrResumeStaleRound) {
 		t.Fatalf("err = %v, want stale-round decision 拒绝面", err)
 	}
 	// 零动作:节点仍在 WAITING_APPROVAL。
@@ -569,4 +570,94 @@ func TestResumeAllModeSingleRejectFinalizes(t *testing.T) {
 	if !code.Valid || code.String != "approval_rejected" {
 		t.Fatalf("error_code = %v, want approval_rejected", code)
 	}
+}
+
+// TestResumeRejectionSentinels:T17.4——5a 守卫族(4a 轮次/5 决定复核/5a
+// 定局复核)的拒绝错误携带可 errors.Is 的哨兵(worker 按面计数
+// braid_resume_events_rejected_total;文案保持不变,只加 %w 锚)。
+func TestResumeRejectionSentinels(t *testing.T) {
+	t.Run("stale round from attempt mismatch", func(t *testing.T) {
+		s, d := newSched(t)
+		execID, b := dispatchSuspended(t, s, d, approvalDSL)
+		decisionID := seedDecision(t, d, execID, b.id, "b", "carol", DecisionApproved, "")
+		err := s.Resume(context.Background(), ResumeRequest{
+			ExecID: execID, NodeExecID: b.id, DecisionID: decisionID,
+			AttemptNo: b.attempts + 2, WorkerID: "resume-test",
+		})
+		if !errors.Is(err, ErrResumeStaleRound) {
+			t.Fatalf("4a attempt 错位:err = %v, want ErrResumeStaleRound", err)
+		}
+	})
+	t.Run("stale round from old-round decision", func(t *testing.T) {
+		s, d := newSched(t)
+		execID, b := dispatchSuspended(t, s, d, approvalDSL)
+		decID, err := mustTestIDs(t).Next()
+		if err != nil {
+			t.Fatalf("gen decision id: %v", err)
+		}
+		if _, err := d.Exec(`INSERT INTO approval_decision
+		  (id, execution_id, node_execution_id, node_id, round, decided_by, decision, decided_at)
+		  VALUES (?,?,?,?,?,?,?,NOW(3))`,
+			decID, execID, b.id, "b", b.attempts-1, "carol", DecisionApproved); err != nil {
+			t.Fatalf("seed stale-round decision: %v", err)
+		}
+		err = s.Resume(context.Background(), ResumeRequest{
+			ExecID: execID, NodeExecID: b.id,
+			AttemptNo: b.attempts + 1, DecisionID: decID, WorkerID: "w1",
+		})
+		if !errors.Is(err, ErrResumeStaleRound) {
+			t.Fatalf("旧轮决定行:err = %v, want ErrResumeStaleRound", err)
+		}
+	})
+	t.Run("fabricated vanished decision", func(t *testing.T) {
+		s, d := newSched(t)
+		execID, b := dispatchSuspended(t, s, d, approvalDSL)
+		err := s.Resume(context.Background(), ResumeRequest{
+			ExecID: execID, NodeExecID: b.id, DecisionID: 9527,
+			AttemptNo: b.attempts + 1, WorkerID: "resume-test",
+		})
+		if !errors.Is(err, ErrResumeFabricatedEvent) {
+			t.Fatalf("消失的决定行:err = %v, want ErrResumeFabricatedEvent", err)
+		}
+	})
+	t.Run("fabricated misanchored decision", func(t *testing.T) {
+		s, d := newSched(t)
+		execID, attemptB, b := dispatchApproval(t, s, d, approvalDSL)
+		mustSuspend(t, s, execID, b.id, attemptB)
+		b = readNode(t, d, execID, "b")
+		a := readNode(t, d, execID, "a")
+		decisionID := seedDecision(t, d, execID, a.id, "b", "carol", DecisionApproved, "")
+		err := s.Resume(context.Background(), ResumeRequest{
+			ExecID: execID, NodeExecID: b.id, DecisionID: decisionID,
+			AttemptNo: b.attempts + 1, WorkerID: "resume-test",
+		})
+		if !errors.Is(err, ErrResumeFabricatedEvent) {
+			t.Fatalf("决定锚错节点:err = %v, want ErrResumeFabricatedEvent", err)
+		}
+	})
+	t.Run("premature undecided round", func(t *testing.T) {
+		s, d := newSched(t)
+		execID, b := dispatchSuspended(t, s, d, approvalAllTailDSL)
+		decisionID := seedDecision(t, d, execID, b.id, "b", "carol", DecisionApproved, "")
+		err := s.Resume(context.Background(), ResumeRequest{
+			ExecID: execID, NodeExecID: b.id, DecisionID: decisionID,
+			AttemptNo: b.attempts + 1, WorkerID: "resume-test",
+		})
+		if !errors.Is(err, ErrResumePrematureEvent) {
+			t.Fatalf("会签未定局:err = %v, want ErrResumePrematureEvent", err)
+		}
+	})
+	t.Run("anchor drift direction disagreement", func(t *testing.T) {
+		s, d := newSched(t)
+		execID, b := dispatchSuspended(t, s, d, approvalDSL)
+		decCarol := seedDecision(t, d, execID, b.id, "b", "carol", DecisionApproved, "")
+		seedDecision(t, d, execID, b.id, "b", "dave", DecisionRejected, "")
+		err := s.Resume(context.Background(), ResumeRequest{
+			ExecID: execID, NodeExecID: b.id, DecisionID: decCarol,
+			AttemptNo: b.attempts + 1, WorkerID: "resume-test",
+		})
+		if !errors.Is(err, ErrResumeAnchorDrift) {
+			t.Fatalf("锚行方向与定局不符:err = %v, want ErrResumeAnchorDrift", err)
+		}
+	})
 }

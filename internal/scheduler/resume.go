@@ -40,6 +40,24 @@ const (
 	DecisionRejected = "REJECTED"
 )
 
+// 5a 守卫族拒绝哨兵(T17.4):消费侧(worker)按面计数
+// braid_resume_events_rejected_total,词面锚 = metrics.ResumeReject*
+// (cmd/worker 装配锚测试钉死对应关系)。文案改为哨兵前缀 + 现场参数
+// (机器消费面 = errors.Is,仓内无字符串匹配依赖);上抛语义保持——
+// asynq 重试一次 → archived 是该面既定死信可见性。
+var (
+	// ErrResumeStaleRound:事件 attempt 号错位(4a)或决定行 round 与挂起轮
+	// 不符(5)——滞留旧轮事件或伪造轮次。
+	ErrResumeStaleRound = errors.New("scheduler: resume event round mismatch")
+	// ErrResumeFabricatedEvent:决定行不存在或锚定到别的执行/节点(5)。
+	ErrResumeFabricatedEvent = errors.New("scheduler: resume event references a foreign or missing decision")
+	// ErrResumePrematureEvent:本轮票数未定局(5a)——api 只在定局后落
+	// resume 事件,此类事件只能来自直插/伪造/早产投递。
+	ErrResumePrematureEvent = errors.New("scheduler: resume on undecided round")
+	// ErrResumeAnchorDrift:锚行方向与本轮定局方向不符(5a)。
+	ErrResumeAnchorDrift = errors.New("scheduler: resume anchor decision disagrees with round outcome")
+)
+
 // ResumeRequest 是审批续跑收口的请求(worker 适配 execution.resume 事件产出)。
 // DecisionID 锚定 approval_decision 行:续跑事务复核其存在与归属(防伪事件/
 // 漂移——payload 仅 id 引用,真相源回表,与 outbox「不回查业务表即可投递」
@@ -143,8 +161,8 @@ func (s *Scheduler) resumeOnce(ctx context.Context, req ResumeRequest,
 		// 不一致 = 滞留旧轮事件(P1 回滚重挂后,round-1 决定不得套用
 		// round-2 挂起)或伪造事件——响亮拒绝,零动作。
 		if req.AttemptNo != n.attempts+1 {
-			return fmt.Errorf("scheduler: resume event claims attempt %d, node %d is at attempts %d (stale or fabricated round)",
-				req.AttemptNo, n.id, n.attempts)
+			return fmt.Errorf("%w: event claims attempt %d, node %d is at attempts %d",
+				ErrResumeStaleRound, req.AttemptNo, n.id, n.attempts)
 		}
 
 		// 5. 决策复核:事件引用的决定行必须存在且锚定本节点与本轮(伪事件/
@@ -160,18 +178,18 @@ func (s *Scheduler) resumeOnce(ctx context.Context, req ResumeRequest,
 			   FROM approval_decision WHERE id=?`, req.DecisionID).
 			Scan(&decExecID, &decNodeExecID, &decRound, &dbDecision, &decidedBy, &comment)
 		if errors.Is(err, sql.ErrNoRows) {
-			return fmt.Errorf("scheduler: resume decision %d vanished (fabricated event?)", req.DecisionID)
+			return fmt.Errorf("%w: decision %d vanished", ErrResumeFabricatedEvent, req.DecisionID)
 		}
 		if err != nil {
 			return fmt.Errorf("scheduler: read decision %d: %w", req.DecisionID, err)
 		}
 		if decExecID != req.ExecID || decNodeExecID != req.NodeExecID {
-			return fmt.Errorf("scheduler: decision %d anchored to (exec %d, node %d), event claims (exec %d, node %d)",
-				req.DecisionID, decExecID, decNodeExecID, req.ExecID, req.NodeExecID)
+			return fmt.Errorf("%w: decision %d anchored to (exec %d, node %d), event claims (exec %d, node %d)",
+				ErrResumeFabricatedEvent, req.DecisionID, decExecID, decNodeExecID, req.ExecID, req.NodeExecID)
 		}
 		if decRound != int(n.attempts) {
-			return fmt.Errorf("scheduler: decision %d is round %d, node %d suspended in round %d (stale-round decision)",
-				req.DecisionID, decRound, n.id, n.attempts)
+			return fmt.Errorf("%w: decision %d is round %d, node %d suspended in round %d",
+				ErrResumeStaleRound, req.DecisionID, decRound, n.id, n.attempts)
 		}
 		decidedComment := ""
 		if comment.Valid {
@@ -193,12 +211,12 @@ func (s *Scheduler) resumeOnce(ctx context.Context, req ResumeRequest,
 		}
 		final, outcome := ApprovalOutcome(mode, len(spec.Approvers), approved, rejected)
 		if !final {
-			return fmt.Errorf("scheduler: resume on undecided round (node %d: mode %s, %d approved/%d rejected of %d approvers) — fabricated or premature event",
-				n.id, mode, approved, rejected, len(spec.Approvers))
+			return fmt.Errorf("%w (node %d: mode %s, %d approved/%d rejected of %d approvers)",
+				ErrResumePrematureEvent, n.id, mode, approved, rejected, len(spec.Approvers))
 		}
 		if outcome != dbDecision {
-			return fmt.Errorf("scheduler: decision %d direction %q disagrees with round outcome %q (anchor drift)",
-				req.DecisionID, dbDecision, outcome)
+			return fmt.Errorf("%w: decision %d direction %q vs round outcome %q",
+				ErrResumeAnchorDrift, req.DecisionID, dbDecision, outcome)
 		}
 
 		// 6. 快照守卫(镜像 suspendOnce):engine 不变量 WAITING_APPROVAL ⇒
