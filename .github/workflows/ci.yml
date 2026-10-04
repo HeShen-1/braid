@@ -147,3 +147,57 @@ jobs:
           || { git status --porcelain -- internal/api/web/canvas/;
           echo "::error::dist 漂移:前端源码改动未重建入库(npm --prefix web/canvas run build)";
           exit 1; }
+
+  # T16.6:回滚-重跑浏览器级 e2e(D-2026-10-04-t166-playwright-e2e)。
+  # 栈 = deploy/e2e-up.sh 单一真源(compose 数据面 MySQL 13307/Redis
+  # 16380——Redis 走 AOF 契约,services 传不了 CMD 尾参故不起 job
+  # services;migrate 镜像一发;CLI 种子;api/relay/worker/reaper 四
+  # 进程,api 18081)。测试经钉版 playwright 镜像 --network host 容器内
+  # npm ci && npx playwright test:浏览器二进制随镜像自带 = 零缓存管理;
+  # @playwright/test devDep 版本与镜像 tag 人工同步(同 node/.nvmrc
+  # 纪律);容器以 runner uid 运行(浏览器路径镜像内全可读,HOME=/tmp
+  # 承载 npm 缓存)。e2e 消费入库 dist(go:embed,go run 编译即得),
+  # 与 web 作业漂移门零交互。零 Secrets:LLM 三件/JWT 均低熵占位,
+  # e2e 工作流零 LLM 节点执行。
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-go@v7.0.0
+        with:
+          go-version-file: go.mod
+      # 失同步 fail-fast(对抗审计 LOW):镜像 tag 与 devDep 双侧人工同步,
+      # 漂移时 e2e 作业以难读形态红——此处单点比较,给一行人话。
+      - name: playwright pin drift guard
+        run: |
+          tag=$(grep -oE 'playwright:v[0-9.]+' .github/workflows/ci.yml | head -1 | cut -d: -f2 | tr -d v)
+          dep=$(grep -oE '"@playwright/test": "[0-9.]+"' web/canvas/package.json | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
+          [ "$tag" = "$dep" ] || { echo "::error::playwright 镜像 tag v$tag 与 @playwright/test $dep 失同步(两处必须同改)"; exit 1; }
+      - name: bring up e2e stack
+        run: deploy/e2e-up.sh
+      # 挂载用宿主同路径(-v "$PWD:$PWD"):spec 从 cwd 解析 fixture 绝对
+      # 路径,须与宿主 worker 的 BRAID_FILEREAD_DIRS 白名单逐字节一致
+      # (对抗审计 HIGH:/src 重映射会让 file_read 恒 PathBlocked)。
+      # test-results/playwright-report 落回挂载仓内 → 失败时可上传。
+      - name: playwright e2e (pinned image)
+        run: >
+          docker run --rm --network host
+          -v "$PWD:$PWD" -w "$PWD/web/canvas" -u "$(id -u):$(id -g)" -e HOME=/tmp
+          -e BRAID_E2E_BASE_URL=http://127.0.0.1:18081
+          mcr.microsoft.com/playwright:v1.63.0-noble
+          sh -c "npm ci && npx playwright test"
+      - name: upload e2e artifacts on failure
+        if: failure()
+        uses: actions/upload-artifact@v7.0.1
+        with:
+          name: playwright-e2e
+          path: |
+            web/canvas/test-results/
+            web/canvas/playwright-report/
+          if-no-files-found: ignore
+      - name: tear down e2e stack
+        if: always()
+        run: |
+          deploy/e2e-down.sh || true
+          tail -n 40 log/e2e/*.log 2>/dev/null || true

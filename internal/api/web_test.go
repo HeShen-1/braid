@@ -199,6 +199,14 @@ func TestWebAssetsServed(t *testing.T) {
 			"/definitions?status=DRAFT",
 			"/drafts/",
 			"/publish",
+			// T16.6 执行面:列表/详情/触发(幂等键头)/回滚/续跑/审批子
+			// 资源/审计查询 + 触发面板的已发布定义下拉。
+			"/api/v1/executions",
+			"/rollback",
+			"/resume",
+			"/approvals/",
+			"/audit?execution_id=",
+			"/definitions?status=PUBLISHED",
 		} {
 			if !strings.Contains(bundle, anchor) {
 				t.Fatalf("canvas bundle 缺端点锚 %q(前后端契约漂移)", anchor)

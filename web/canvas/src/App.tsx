@@ -1,10 +1,12 @@
 // App 根组件:登录 → 草稿列表 → 画布编辑 → 保存/发布(全走既有
-// API 面,零新端点,D-t141)。401 统一登出回登录。
+// API 面,零新端点,D-t141)+ 执行视图(T16.6:触发/详情/回滚-续跑)。
+// 401 统一登出回登录。
 import { useCallback, useEffect, useState } from 'react'
 import { ApiError, api, tokenStore, type DraftSummary, type Issue } from './api.ts'
 import { LoginView } from './LoginView.tsx'
 import { DraftList } from './DraftList.tsx'
 import { CanvasEditor } from './CanvasEditor.tsx'
+import { ExecutionsView } from './ExecutionsView.tsx'
 import { blankDoc } from './defaults.ts'
 import { serializeDoc } from './model/convert.ts'
 import type { WorkflowDoc } from './model/dsl.ts'
@@ -24,6 +26,7 @@ export function App() {
   const [issues, setIssues] = useState<Issue[]>([])
   const [flash, setFlash] = useState('')
   const [who, setWho] = useState('')
+  const [view, setView] = useState<'drafts' | 'executions'>('drafts')
 
   const logout = useCallback(() => {
     tokenStore.clear()
@@ -160,13 +163,25 @@ export function App() {
           {flash}
         </span>
         <div className="header-right">
+          <nav className="view-nav" aria-label="视图切换">
+            <button type="button" className={view === 'drafts' ? 'active' : ''} data-testid="nav-drafts" onClick={() => setView('drafts')}>
+              草稿
+            </button>
+            <button type="button" className={view === 'executions' ? 'active' : ''} data-testid="nav-executions" onClick={() => setView('executions')}>
+              执行
+            </button>
+          </nav>
           {who !== '' ? <span className="mono">{who}</span> : null}
           <button type="button" onClick={logout} data-testid="logout">
             退出
           </button>
         </div>
       </header>
-      <div className="canvas-workspace">
+      {/*
+        草稿工作区恒挂载、仅切显隐(对抗审计 MEDIUM:条件卸载会把未保存的
+        画布编辑态静默清空);执行视图轻状态,保持条件挂载。
+      */}
+      <div className={view === 'drafts' ? 'canvas-workspace' : 'canvas-workspace view-hidden'}>
         <DraftList drafts={drafts} activeId={ws?.draftId ?? null} onOpen={(id) => void openDraft(id)} onNew={newLocal} />
         {ws === null ? (
           <main className="canvas-main">
@@ -185,6 +200,7 @@ export function App() {
           </div>
         )}
       </div>
+      {view === 'executions' ? <ExecutionsView onAuthExpired={logout} /> : null}
     </div>
   )
 }
