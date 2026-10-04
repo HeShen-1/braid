@@ -4,6 +4,16 @@ import { useCallback, useEffect, useState } from 'react'
 import { ApiError, api, type DraftSummary, type ExecutionSummary } from './api.ts'
 import { ExecutionDetail } from './ExecutionDetail.tsx'
 
+/** 幂等键:优先 randomUUID;非安全上下文(纯 HTTP 非 localhost 部署)
+ * 无此 API——降级 getRandomValues 十六进制(该 API 不受 SecureContext
+ * 限制;AI review LOW:无降级时触发面板在 http://内网IP 形态整面失效)。 */
+function freshIdempotencyKey(): string {
+  if (typeof crypto.randomUUID === 'function') return crypto.randomUUID()
+  const b = new Uint8Array(16)
+  crypto.getRandomValues(b)
+  return Array.from(b, (x) => x.toString(16).padStart(2, '0')).join('')
+}
+
 export function ExecutionsView({ onAuthExpired }: { onAuthExpired: () => void }) {
   const [execs, setExecs] = useState<ExecutionSummary[]>([])
   const [defs, setDefs] = useState<DraftSummary[]>([])
@@ -43,7 +53,7 @@ export function ExecutionsView({ onAuthExpired }: { onAuthExpired: () => void })
     setBusy(true)
     setTriggerError('')
     try {
-      const ack = await api.triggerExecution(defName, input, crypto.randomUUID())
+      const ack = await api.triggerExecution(defName, input, freshIdempotencyKey())
       setSelected(ack.id)
       await refresh()
     } catch (err) {

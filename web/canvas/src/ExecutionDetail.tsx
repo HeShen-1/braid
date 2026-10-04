@@ -16,7 +16,6 @@ import { toCanvas } from './model/convert.ts'
 import type { WorkflowDoc } from './model/dsl.ts'
 import { nodeTypes } from './nodes/NodeViews.tsx'
 
-const TERMINAL = ['SUCCEEDED', 'FAILED', 'CANCELLED']
 const POLL_MS = 2500
 
 /** 节点级状态聚合(并行多实例行 → 单节点一色;失败优先)。 */
@@ -96,12 +95,16 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     void load()
   }, [load])
 
-  const terminal = detail !== null && TERMINAL.includes(detail.status)
+  // 轮询停表仅 SUCCEEDED/CANCELLED;FAILED 保持慢速轮询——失败态可被
+  // 外部翻活(本页回滚/续跑、他人操作、reaper 兜底),恒停会冻结在过期
+  // 帧上;慢速档也自愈「操作成功后单次 load 瞬态失败」的冻结窗(AI review LOW)。
+  const stopPolling = detail !== null && ['SUCCEEDED', 'CANCELLED'].includes(detail.status)
+  const pollMs = detail !== null && detail.status === 'FAILED' ? 10_000 : POLL_MS
   useEffect(() => {
-    if (terminal) return
-    const t = setInterval(() => void load(), POLL_MS)
+    if (stopPolling) return
+    const t = setInterval(() => void load(), pollMs)
     return () => clearInterval(t)
-  }, [load, terminal])
+  }, [load, stopPolling, pollMs])
 
   // 钉版 DSL 只读图:按 detail 的 name+version 取定义(一次性,失败隐藏)。
   const defName = detail?.definition_name
