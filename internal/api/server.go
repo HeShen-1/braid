@@ -35,6 +35,12 @@ type Server struct {
 	// SignToken 契约可复用),契约见 internal/auth/identity.go。nil 响亮
 	// 拒绝,理由同 toolReg。
 	idp auth.IdentityProvider
+	// credentialMethod 是凭证登录路由的审计归因词(login_audit.method,
+	// T17.6):默认 password(内置凭证源);企业树凭证核验插件换装 idp
+	// 时装配面同步换词(entldap → 'ldap',CredentialLoginMethod 旋钮),
+	// 审计行与实际身份源保持一致。闭集 = knownLoginMethods
+	// (loginaudit.go,0013/0014 ENUM 同源)。
+	credentialMethod string
 	// loginThrottle 登录防御层(T6.4 落地,T11.3 DB 锚定换装:0010
 	// login_throttle 表,多副本共享;构造于 NewServer,nil DB = 零栈
 	// 桩面防御跳过)。
@@ -88,7 +94,8 @@ func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry, trig
 	return &Server{
 		cfg: cfg, st: NewStore(ids), ids: ids, dbh: dbh,
 		toolReg: toolReg, trig: trig, idp: idp,
-		loginThrottle: newLoginThrottle(cfg, dbh),
+		credentialMethod: loginMethodPassword,
+		loginThrottle:    newLoginThrottle(cfg, dbh),
 	}
 }
 
@@ -118,6 +125,20 @@ func (s *Server) OIDCProvider(p OIDCProvider) {
 		panic("api: typed-nil OIDCProvider (oidc plugin seam)")
 	}
 	s.oidc = p
+}
+
+// CredentialLoginMethod 注入凭证登录路由的审计归因词(T17.6,镜像
+// OIDCProvider setter 先例):默认 loginMethodPassword(内置凭证源);
+// 企业树凭证核验插件换装 idp 时同步换词(entldap → 'ldap'),保持
+// login_audit.method 与实际身份源一致。闭集外词响亮拒绝——装配期
+// panic 是第一道闸(词域漂移在启动时现形),writeLoginAudit 的
+// fail-closed 拒行是第二道闸。词域 = knownLoginMethods(0013/0014
+// ENUM 同源)。
+func (s *Server) CredentialLoginMethod(method string) {
+	if !knownLoginMethods[method] {
+		panic(fmt.Sprintf("api: login method %q outside vocabulary (credential login audit label)", method))
+	}
+	s.credentialMethod = method
 }
 
 // traceSpan 给 authed 组每请求起 root span(T6.2):trace id 随 request

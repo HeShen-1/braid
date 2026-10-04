@@ -39,11 +39,11 @@ func TestKnownLoginEventsClosedVocabulary(t *testing.T) {
 	}
 }
 
-// TestKnownLoginMethodsClosedVocabulary:method 词域闭集锚(0013)——DDL
-// ENUM 与 Go 侧同 PR 旅行;末尾追加(ldap 预留 T17.6)须两处同步,
-// 漂移在此红。
+// TestKnownLoginMethodsClosedVocabulary:method 词域闭集锚(0013 立,
+// 0014 尾追加 'ldap' 兑现预留)——DDL ENUM 与 Go 侧同 PR 旅行;末尾
+// 追加须两处同步,漂移在此红。
 func TestKnownLoginMethodsClosedVocabulary(t *testing.T) {
-	want := map[string]bool{"oidc": true, "password": true}
+	want := map[string]bool{"oidc": true, "password": true, "ldap": true}
 	if len(knownLoginMethods) != len(want) {
 		t.Fatalf("knownLoginMethods = %v, want exactly %v", knownLoginMethods, want)
 	}
@@ -52,6 +52,37 @@ func TestKnownLoginMethodsClosedVocabulary(t *testing.T) {
 			t.Errorf("method %q missing from Go-side vocabulary", w)
 		}
 	}
+}
+
+// TestCredentialLoginMethodSetter:T17.6 凭证登录审计归因词旋钮——默认
+// password(内置凭证源);换装凭证核验插件(企业树 entldap)时装配面
+// 同步换词,login_audit.method 与实际身份源保持一致;闭集外词装配期
+// 响亮拒绝(第一道闸,writeLoginAudit fail-closed 拒行是第二道)。
+func TestCredentialLoginMethodSetter(t *testing.T) {
+	gin.SetMode(gin.TestMode)
+	ids, err := snowflake.New(1)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	reg, err := tools.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	srv := NewServer(Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1)},
+		nil, ids, reg, fakeTrigger{id: 1}, auth.BuiltinProvider{})
+	if srv.credentialMethod != loginMethodPassword {
+		t.Fatalf("default credentialMethod = %q, want %q", srv.credentialMethod, loginMethodPassword)
+	}
+	srv.CredentialLoginMethod(loginMethodLDAP)
+	if srv.credentialMethod != loginMethodLDAP {
+		t.Fatalf("credentialMethod = %q, want %q", srv.credentialMethod, loginMethodLDAP)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("闭集外词须装配期 panic")
+		}
+	}()
+	srv.CredentialLoginMethod("oauth")
 }
 
 // TestLoginDefenseAndAudit(T6.4 验收面):独立紧旋钮 server 上的完整登录

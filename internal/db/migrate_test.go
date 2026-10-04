@@ -385,7 +385,8 @@ SELECT CHECK_CLAUSE FROM information_schema.CHECK_CONSTRAINTS
 
 	// 0013 login_audit 签发审计锚(T17.2 防回退,每迁移惯例):method 列
 	// 词型/可空/缺省(backfill 口径的 DB 半边——DEFAULT 'password' 使
-	// 存量行与省列 INSERT 同判);event_type ENUM 尾追加 scoped_token_issued
+	// 存量行与省列 INSERT 同判);0014(T17.6)ENUM 尾追加 'ldap',词型
+	// 断言联动为全迁移后三值;event_type ENUM 尾追加 scoped_token_issued
 	//(词表封闭仅末尾追加契约);签发观测列组(scopes ascii / ttl 秒 /
 	// token_hash char(64) ascii 镜像 audit_log 链列判)。行为半边(CHECK
 	// 执法与 DEFAULT 实测)= TestLoginAuditScopedTokenContract。
@@ -396,13 +397,28 @@ SELECT COLUMN_TYPE, IS_NULLABLE, COLUMN_DEFAULT FROM information_schema.COLUMNS
    AND COLUMN_NAME = 'method'`).Scan(&methodType, &methodNullable, &methodDefault); err != nil {
 		t.Fatalf("login_audit.method: %v", err)
 	}
-	if methodType != "enum('oidc','password')" || methodNullable != "YES" || methodDefault != "password" {
-		t.Fatalf("0013 method 锚:type=%q nullable=%q default=%q, want enum('oidc','password')/YES/password",
+	if methodType != "enum('oidc','password','ldap')" || methodNullable != "YES" || methodDefault != "password" {
+		t.Fatalf("0013 method 锚:type=%q nullable=%q default=%q, want enum('oidc','password','ldap')/YES/password",
 			methodType, methodNullable, methodDefault)
 	}
+	// 0014 method 注释锚(T17.6,每迁移惯例):列注释兑现 0013 的「ldap
+	// 预留 T17.6」承诺(ldap = LDAP bind,企业树换装凭证核验缝的审计
+	// 归因词);ENUM 本体即词域,词域执法 = ENUM 拒收,DEFAULT/NULL/
+	// CHECK 零变动。行为半边('ldap' 行落库 + Go 闭集单源同步)=
+	// enterprise/ldap 容器 e2e + api TestKnownLoginMethodsClosedVocabulary。
+	var methodComment string
+	if err := d.QueryRow(`
+SELECT COLUMN_COMMENT FROM information_schema.COLUMNS
+ WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'login_audit'
+   AND COLUMN_NAME = 'method'`).Scan(&methodComment); err != nil {
+		t.Fatalf("login_audit.method comment: %v", err)
+	}
+	if !strings.Contains(methodComment, "ldap = LDAP bind") {
+		t.Fatalf("0014 method 注释锚:comment = %q, want 含 %q", methodComment, "ldap = LDAP bind")
+	}
 	for col, wantType := range map[string]string{
-		"event_type": "enum('login.succeeded','login.failed','login.locked','login.rate_limited','scoped_token_issued')",
-		"scopes":     "varchar(255)",
+		"event_type":  "enum('login.succeeded','login.failed','login.locked','login.rate_limited','scoped_token_issued')",
+		"scopes":      "varchar(255)",
 		"ttl_seconds": "int unsigned",
 		"token_hash":  "char(64)",
 	} {
@@ -433,7 +449,8 @@ SELECT CHARACTER_SET_NAME FROM information_schema.COLUMNS
 	// CHECK 约束齐备:13 个(definition 1 + node 3 + attempt 2 + audit 1 + users 3;
 	// node +1 = 0006 chk_node_instance;users +1 = 0009 chk_user_email;
 	// tenants +1 = 0011 chk_tenant_slug;lease +1 = 0012 chk_lease_node;
-	// login_audit +1 = 0013 chk_login_audit_method)
+	// login_audit +1 = 0013 chk_login_audit_method;0014 零新增——ENUM
+	// 尾追加不动约束面)
 	var checks int
 	if err := d.QueryRow(
 		`SELECT COUNT(*) FROM information_schema.CHECK_CONSTRAINTS

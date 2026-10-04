@@ -20,6 +20,7 @@ import (
 	"braid/internal/api"
 	"braid/internal/auth"
 	"braid/internal/db"
+	entldap "braid/internal/enterprise/ldap"
 	entoidc "braid/internal/enterprise/oidc"
 	"braid/internal/metrics"
 	"braid/internal/preflight"
@@ -127,8 +128,8 @@ func run(ctx context.Context) error {
 	}
 
 	// 认证身份源真源(T5.3):内置 BuiltinProvider = 用户名口令 + bcrypt
-	// (默认);P1 凭证核验型插件(如 LDAP bind)在此换装,契约见
-	// internal/auth/identity.go。
+	// (默认);凭证核验型插件在此换装(LDAP bind = T17.6,下方
+	// BRAID_LDAP_* 组),契约见 internal/auth/identity.go。
 	// T6.4:Prometheus 指标面——与 /healthz 同端口同回环绑定(BRAID_API_ADDR
 	// 部署约定);登录防御计数(login_audit 0005 的指标半边)在此注册。
 	mset, mreg := metrics.NewSet()
@@ -152,7 +153,30 @@ func run(ctx context.Context) error {
 		}
 	}()
 	slog.Info("api: tracing", "exporter", traceCfg.Exporter)
-	apiSrv := api.NewServer(cfg, dbh, ids, toolReg, sched, auth.BuiltinProvider{DB: dbh})
+	// LDAP bind 插件(T17.6,D-2026-10-04-t176;企业树 internal/enterprise/
+	// ldap):BRAID_LDAP_* 组半开启动即败;组完整才构造 + 换装凭证核验缝
+	// idp(构造期启动探测 = 目录不可达/服务凭据错即启动失败,镜像下方
+	// entoidc discovery 先例)并同步换审计归因词(login_audit.method =
+	// 'ldap',0014);未配置零行为(内置口令登录不受影响)。锚定 = 本地
+	// 账号(auth.AnchorLoginUser,D-t111 同则),角色/状态自本地库;服务
+	// 凭据仅经 env 注入,不进日志(铁律)。
+	idp := auth.IdentityProvider(auth.BuiltinProvider{DB: dbh})
+	ldapCfg, err := entldap.ParseLDAPConfig(os.Getenv)
+	if err != nil {
+		return fmt.Errorf("api: %w", err)
+	}
+	if ldapCfg.Configured() {
+		ldapProv, err := entldap.NewLDAPBindProvider(ctx, ldapCfg, dbh)
+		if err != nil {
+			return fmt.Errorf("api: %w", err)
+		}
+		idp = ldapProv
+		slog.Info("api: ldap login enabled", "addr", ldapCfg.Addr, "base_dn", ldapCfg.BaseDN, "starttls", ldapCfg.StartTLS)
+	}
+	apiSrv := api.NewServer(cfg, dbh, ids, toolReg, sched, idp)
+	if ldapCfg.Configured() {
+		apiSrv.CredentialLoginMethod(api.LoginMethodLDAP) // login_audit.method 归因(0014)
+	}
 	apiSrv.LoginMetrics(mset.Login)
 	apiSrv.RollbackMetrics(mset.Rollback)   // T9.2:回滚面三计数器(D-t92 决策 10)
 	apiSrv.FleetGateMetrics(mset.FleetGate) // T15.6:mode=all 硬闸拒绝计数

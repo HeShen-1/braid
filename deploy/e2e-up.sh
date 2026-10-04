@@ -64,6 +64,13 @@ docker run --rm --network host -v "$PWD/internal/db/migrations:/migrations:ro" \
 
 # ③ 种子用户:CLI 建号(DB 直连 + 雪花短租约,MySQL-only);口令 = e2e
 # 占位值(8..72 bcrypt 域内),playwright spec 同字面消费。
+# 模块预热先行(单次下载 + 预构建,四进程与 CLI 共享 build cache):
+# fresh runner 上 go run 各自冷拉全量模块图 = 4× 重复下载,90s 就绪预算
+# 被 T17.6 新增 go-ldap 顶破实证(api 90s 未就绪,api.log 全是
+# go: downloading,无业务错误);预热后 go run 命中缓存秒级起步,本地
+# 暖缓存时此步零成本。
+go mod download
+go build ./cmd/api ./cmd/relay ./cmd/worker ./cmd/reaper ./cmd/braid
 seed() {
   BRAID_MYSQL_DSN="$E2E_MYSQL" BRAID_CLI_PASSWORD="$2" \
     go run ./cmd/braid user create -username "$1" -roles "$3"
@@ -95,13 +102,13 @@ start worker \
   BRAID_LLM_PRICE_TABLE='{"gpt-x":{"input_per_mtok":"0","output_per_mtok":"0","currency":"USD"}}'
 start reaper BRAID_REDIS_QUEUE_ADDR="$E2E_REDIS"
 
-# ⑤ api 就绪探针(编译 + 启动,给 90s)。
-for _ in $(seq 1 45); do
+# ⑤ api 就绪探针(预热后启动,120s 冷机余量)。
+for _ in $(seq 1 60); do
   curl -sf "http://$E2E_API_ADDR/healthz" >/dev/null 2>&1 && break
   sleep 2
 done
 if ! curl -sf "http://$E2E_API_ADDR/healthz" >/dev/null 2>&1; then
-  echo "e2e api 90s 未就绪;查 $LOGDIR/api.log(常因端口占用/迁移未过)" >&2
+  echo "e2e api 120s 未就绪;查 $LOGDIR/api.log(常因端口占用/迁移未过)" >&2
   exit 1
 fi
 
