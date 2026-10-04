@@ -49,20 +49,29 @@ var knownLoginEvents = map[string]bool{
 	loginEventTokenIssued: true,
 }
 
-// loginMethod 是 login_audit.method 词域(0013,T17.2:OIDC 与口令登录
-// 可区分)。闭集仅末尾追加(ldap 预留 T17.6),与 DDL ENUM 同步锚 =
-// TestKnownLoginMethodsClosedVocabulary;login.* 事件必携非空值,
-// scoped_token_issued 行恒 NULL(chk_login_audit_method 双向钉死)。
-// 存量行(0013 前)两路混流不可辨、一律 backfill password——口径钉在
-// 0013 列注释:0013 前 password 计数含 OIDC,统计消费方须知。
+// loginMethod 是 login_audit.method 词域(0013 立,T17.2;0014 尾追加
+// 'ldap' 兑现预留,T17.6)。闭集仅末尾追加,与 DDL ENUM 同步锚 =
+// TestKnownLoginMethodsClosedVocabulary;ldap = 企业树 entldap 凭证
+// 核验缝换装时的审计归因词(装配面 CredentialLoginMethod 旋钮)。
+// login.* 事件必携非空值,scoped_token_issued 行恒 NULL
+// (chk_login_audit_method 双向钉死)。存量行(0013 前)两路混流不可
+// 辨、一律 backfill password——口径钉在 0013 列注释:0013 前 password
+// 计数含 OIDC,统计消费方须知。
 const (
 	loginMethodOIDC     = "oidc"
 	loginMethodPassword = "password"
+	loginMethodLDAP     = "ldap"
 )
+
+// LoginMethodLDAP 是企业树 entldap 换装凭证核验缝时的审计归因词导出面
+// (0014;组合根 cmd/api 装配面引用——CredentialLoginMethod 的调用方
+// 不落裸字面量,词域单源)。
+const LoginMethodLDAP = loginMethodLDAP
 
 var knownLoginMethods = map[string]bool{
 	loginMethodOIDC:     true,
 	loginMethodPassword: true,
+	loginMethodLDAP:     true,
 }
 
 // maxAuditUsername 对齐 login_audit.username VARCHAR(128):审计记原样,
