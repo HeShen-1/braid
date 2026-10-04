@@ -392,7 +392,7 @@ func NewSet() (*Set, *prometheus.Registry) {
 			}),
 			IMConfigured: f.NewGauge(prometheus.GaugeOpts{
 				Name: "braid_im_configured",
-				Help: "1 when the worker runs with the IM approval-card channel (DingTalk webhook) configured; intended to gate a future approval.im_notified-missing alert (T6.4 domain, not yet defined).",
+				Help: "1 when the worker runs with the IM approval-card channel (DingTalk webhook) configured; gates ApprovalIMNotifyMissing (T17.4, the T6.4-reserved reconciliation alert).",
 			}),
 			AsynqArchived: f.NewGauge(prometheus.GaugeOpts{
 				Name: "braid_asynq_archived_tasks",

@@ -574,7 +574,8 @@ func TestResumeAllModeSingleRejectFinalizes(t *testing.T) {
 
 // TestResumeRejectionSentinels:T17.4——5a 守卫族(4a 轮次/5 决定复核/5a
 // 定局复核)的拒绝错误携带可 errors.Is 的哨兵(worker 按面计数
-// braid_resume_events_rejected_total;文案保持不变,只加 %w 锚)。
+// braid_resume_events_rejected_total;文案改为哨兵前缀,机器消费面 =
+// errors.Is)。
 func TestResumeRejectionSentinels(t *testing.T) {
 	t.Run("stale round from attempt mismatch", func(t *testing.T) {
 		s, d := newSched(t)

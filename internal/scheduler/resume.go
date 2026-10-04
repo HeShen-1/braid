@@ -42,9 +42,9 @@ const (
 
 // 5a 守卫族拒绝哨兵(T17.4):消费侧(worker)按面计数
 // braid_resume_events_rejected_total,词面锚 = metrics.ResumeReject*
-// (cmd/worker 装配锚测试钉死对应关系)。文案改为哨兵前缀 + 现场参数
-// (机器消费面 = errors.Is,仓内无字符串匹配依赖);上抛语义保持——
-// asynq 重试一次 → archived 是该面既定死信可见性。
+// (对应关系由 internal/worker/resume_metrics_test.go 钉死)。文案改为
+// 哨兵前缀 + 现场参数(机器消费面 = errors.Is,仓内无字符串匹配依赖);
+// 上抛语义保持——asynq 重试一次 → archived 是该面既定死信可见性。
 var (
 	// ErrResumeStaleRound:事件 attempt 号错位(4a)或决定行 round 与挂起轮
 	// 不符(5)——滞留旧轮事件或伪造轮次。

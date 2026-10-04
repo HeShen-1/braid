@@ -22,12 +22,17 @@ var errSkip = errors.New("reaper: skip (recheck decided no action)")
 
 // asynqVerifyError 是分支 B 的活性和解哨兵(T17.4,D-2026-10-04-t174):
 // 事务内发现死证据只剩「当前 attempt 的陈旧 DISPATCHED 行」→ 空事务回滚
-// (零写),携带 task_id 交外层在事务外核验 asynq 活性(Redis 调用不持
-// 行锁);核验后携 verified 二次入事务,锁后复核全量重跑。
-type asynqVerifyError struct{ taskID string }
+// (零写),携带 task_id 与该行的 queue 列(任务真实落点,review HIGH 修:
+// 查 cfg.Queue 在 BRAID_REAPER_QUEUE 隔离部署下会打错队列)交外层在事务
+// 外核验 asynq 活性(Redis 调用不持行锁);核验后携 verified 二次入事务,
+// 锁后复核全量重跑。
+type asynqVerifyError struct {
+	taskID string
+	queue  string
+}
 
 func (e *asynqVerifyError) Error() string {
-	return fmt.Sprintf("reaper: asynq liveness verification required for %s", e.taskID)
+	return fmt.Sprintf("reaper: asynq liveness verification required for %s (queue %q)", e.taskID, e.queue)
 }
 
 // maxTransientRetries 与 scheduler 同款:1213/1205 抖动重试上限。
@@ -130,7 +135,15 @@ func (r *Reaper) reapAttempt(ctx context.Context, nodeExecID, execID uint64, ent
 		}
 		var ve *asynqVerifyError
 		if errors.As(err, &ve) {
-			alive, perr := r.deps.AsynqProbe.TaskAlive(ctx, r.cfg.Queue, ve.taskID)
+			// 对拍队列 = outbox 行的 queue 列(任务真实落点,review HIGH 修:
+			// attempt-1 由 api/worker 调度器发往常量 default,reaper 重派才落
+			// cfg.Queue——BRAID_REAPER_QUEUE 隔离部署下查错队列 = NotFound 被
+			// 映射成干净死判,闸静默失效)。空串防御性回落 cfg.Queue。
+			probeQueue := ve.queue
+			if probeQueue == "" {
+				probeQueue = r.cfg.Queue
+			}
+			alive, perr := r.deps.AsynqProbe.TaskAlive(ctx, probeQueue, ve.taskID)
 			switch {
 			case perr != nil:
 				// fail-open(D-t25#2 同族):探测不可达 ≠ 死证据;回落现行
@@ -287,15 +300,18 @@ SELECT COUNT(*) FROM outbox
 			if !verified && r.deps.AsynqProbe != nil {
 				curTask := fmt.Sprintf("att:%d:%d", nodeExecID, attempts)
 				var staleCur int
+				var staleQueue string
+				// queue 列随死证据行带出(task_id 唯一表达一个意图,行集内
+				// 恒同值,MAX 是聚合取值形态而非选择语义)。
 				if err := q.QueryRowContext(ctx, `
-SELECT COUNT(*) FROM outbox
+SELECT COUNT(*), COALESCE(MAX(queue), '') FROM outbox
  WHERE task_id=? AND status='DISPATCHED'
    AND dispatched_at < NOW(3) - INTERVAL ? MICROSECOND`,
-					curTask, r.cfg.DispatchStale.Microseconds()).Scan(&staleCur); err != nil {
+					curTask, r.cfg.DispatchStale.Microseconds()).Scan(&staleCur, &staleQueue); err != nil {
 					return fmt.Errorf("reaper: stale dispatch gate node %d: %w", nodeExecID, err)
 				}
 				if staleCur > 0 {
-					return &asynqVerifyError{taskID: curTask}
+					return &asynqVerifyError{taskID: curTask, queue: staleQueue}
 				}
 			}
 			// → [4](无 attempt 可收)。

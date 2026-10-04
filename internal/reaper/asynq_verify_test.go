@@ -165,3 +165,48 @@ func TestRedispatchNilProbeKeepsLegacyBehavior(t *testing.T) {
 		t.Fatalf("重派行 %s 缺席(nil probe = 现行为): %v", want, err)
 	}
 }
+
+// TestRedispatchDeferredProbesRowQueue(review HIGH 修):对拍队列必须取
+// outbox 死证据行的 queue 列,不是 reaper 自己的 cfg.Queue——attempt-1
+// 任务由 api/worker 调度器发往常量 default,BRAID_REAPER_QUEUE 隔离部署下
+// 查错队列 = NotFound 被映射成干净死判、闸静默失效(变异:probe 调用回
+// cfg.Queue → lastQ 断言红)。
+func TestRedispatchDeferredProbesRowQueue(t *testing.T) {
+	set, _ := metrics.NewSet()
+	probe := &fakeAsynqProbe{alive: true}
+	r, d := newReaperDeps(t, testCfg(), func(dp *Deps) {
+		dp.Metrics = set.Reaper
+		dp.AsynqProbe = probe
+	})
+	s := seedReap(t, d, 5*time.Minute, 0, 3)
+	if _, err := d.Exec(`UPDATE node_execution SET attempts=2 WHERE id=?`, s.nodeExecID); err != nil {
+		t.Fatalf("seed branch-b attempts: %v", err)
+	}
+	// 死证据行落在外来队列(api/worker 调度器形态,≠ reaper 的 reap-test)。
+	curTask := fmt.Sprintf("att:%d:2", s.nodeExecID)
+	payload, err := json.Marshal(scheduler.NodeTaskPayload{
+		ExecutionID: s.execID, NodeExecutionID: s.nodeExecID, AttemptNo: 2,
+	})
+	if err != nil {
+		t.Fatalf("marshal node task payload: %v", err)
+	}
+	if _, err := d.Exec(`INSERT INTO outbox
+	  (id, execution_id, event_type, task_id, queue, payload, status, dispatched_at, available_at)
+	  VALUES (?, ?, 'node.task_enqueue', ?, 'default', ?, 'DISPATCHED', NOW(3) - INTERVAL 5 MINUTE, NOW(3))`,
+		nextID(t), s.execID, curTask, payload); err != nil {
+		t.Fatalf("seed foreign-queue dispatch event: %v", err)
+	}
+
+	if err := r.RunOnce(context.Background()); err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if probe.lastQ != "default" {
+		t.Fatalf("probe queue = %q, want %q(死证据行的 queue 列)", probe.lastQ, "default")
+	}
+	if probe.lastTask != curTask {
+		t.Fatalf("probe task = %q, want %q", probe.lastTask, curTask)
+	}
+	if got := testutil.ToFloat64(set.Reaper.AsynqAliveDefers); got != 1 {
+		t.Fatalf("asynq_alive_defers = %v, want 1(外来队列活任务照常让位)", got)
+	}
+}

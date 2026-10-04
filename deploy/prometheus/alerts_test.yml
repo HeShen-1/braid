@@ -401,4 +401,27 @@ tests:
               severity: warning
             exp_annotations:
               summary: "DB 池获取等待 15 次(15m 窗)"
-              description: "DBStats.WaitCount 增长 = 池饱和已发生排队(事实信号,非水位预警;各入口事件流 sum 语义正确)。方差带(CAPACITY.md §1 ±2×)由 for 10m 吸收零星抖动;持续触发与 DbPoolSaturated 同路处置,扩池前先核 README §1 公式余量。"
+              description: "DBStats.WaitCount 增长 = 池饱和已发生排队(事实信号,非水位预警;各入口事件流 sum 语义正确)。单次等待会让条件在 15m 增量窗内保持为真(fire ~15m 后自愈,可接受的一次性噪声);反复自愈复燃 = 持续饱和,与 DbPoolSaturated 同路处置,扩池前先核 README §1 公式余量。"
+
+  # T17.4 ⑥(review 修):逐进程比值语义钉死——双实例仅其一饱和(api 24/25
+  # = 96%,worker 10/25 = 40%)→ firing;变异为 sum(in_use)/sum(max_open)
+  # = 34/50 = 68% 不 fire,本用例红。
+  - interval: 1m
+    input_series:
+      - series: 'braid_db_pool_in_use_connections{instance="api"}'
+        values: '24+0x20'
+      - series: 'braid_db_pool_max_open_connections{instance="api"}'
+        values: '25+0x20'
+      - series: 'braid_db_pool_in_use_connections{instance="worker"}'
+        values: '10+0x20'
+      - series: 'braid_db_pool_max_open_connections{instance="worker"}'
+        values: '25+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: DbPoolSaturated
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "DB 连接池水位 96%(存在饱和入口)"
+              description: "in_use/max_open 持续超 0.8 行动线(0.8 镜像 QueueRedisMemoryWatermark)。池满 = DB 写串行段顶格(CAPACITY.md §4 结论 3:吞吐帽在 relay/DB 写侧,加并发先过写串行段)。先查慢事务与锁窗(CAPACITY.md §5 回滚锁窗斜率),再按 deploy/README.md §1 公式(Σ MAX_OPEN ≤ max_connections − 30)调 BRAID_DB_MAX_OPEN。"

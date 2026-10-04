@@ -152,7 +152,7 @@ groups:
           severity: warning
         annotations:
           summary: "DB 池获取等待 {{ $value }} 次(15m 窗)"
-          description: "DBStats.WaitCount 增长 = 池饱和已发生排队(事实信号,非水位预警;各入口事件流 sum 语义正确)。方差带(CAPACITY.md §1 ±2×)由 for 10m 吸收零星抖动;持续触发与 DbPoolSaturated 同路处置,扩池前先核 README §1 公式余量。"
+          description: "DBStats.WaitCount 增长 = 池饱和已发生排队(事实信号,非水位预警;各入口事件流 sum 语义正确)。单次等待会让条件在 15m 增量窗内保持为真(fire ~15m 后自愈,可接受的一次性噪声);反复自愈复燃 = 持续饱和,与 DbPoolSaturated 同路处置,扩池前先核 README §1 公式余量。"
 
   # T17.4 完整性补面:5a 拒绝 / reaper 毒快照 / im_notified 对账。前两条是
   # 防御触发类(warning 家族,同 LoginBruteForce 判据),第三条是通知丢失
