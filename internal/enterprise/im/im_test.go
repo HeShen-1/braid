@@ -171,10 +171,11 @@ func TestIMCardRenderButtons(t *testing.T) {
 	// 仿冒链接/图片词法(`[t](u)` / `![a](u)` 的必要字符 `[`)与反引号
 	// 全角化,引用行内不可残留活性词法;合法内容原样保留(中和不吞文本)。
 	// 变异自查:去掉 `[` 全角化 → 链接词法存活红;整段删除 → 正常文本
-	// 保留断言红。
+	// 保留断言红;中和越界到全文(整体 Replace)→ 平台链接活性锚红
+	// (对抗审计 MEDIUM 修:作用域钉死在 instructions 行)。
 	t.Run("instructions markdown lexicon neutralized", func(t *testing.T) {
 		snap := baseSnap
-		snap.Instructions = "[点此领奖](https://evil.example)\n![图标](https://evil.example/i.png)\n正常文本 `tag` 说明"
+		snap.Instructions = "[点此领奖](https://evil.example)\n![图标](https://evil.example/i.png)\n正常文本 `tag` 说明\n<https://evil.example/angle>"
 		body, err := s.renderCard(9, 7, "ap_node", deadline, "wf", 3, snap, "escalated", 1,
 			nil, []string{"carol", "dave"})
 		if err != nil {
@@ -190,8 +191,8 @@ func TestIMCardRenderButtons(t *testing.T) {
 				quoted = append(quoted, line)
 			}
 		}
-		if len(quoted) != 3 {
-			t.Fatalf("want 3 quoted lines, got %d:\n%s", len(quoted), card.Card.Text)
+		if len(quoted) != 4 {
+			t.Fatalf("want 4 quoted lines, got %d:\n%s", len(quoted), card.Card.Text)
 		}
 		for _, line := range quoted {
 			for _, banned := range []string{"[", "]", "`"} {
@@ -204,6 +205,18 @@ func TestIMCardRenderButtons(t *testing.T) {
 			!strings.Contains(card.Card.Text, "【图标】(https://evil.example/i.png)") ||
 			!strings.Contains(card.Card.Text, "> 正常文本 'tag' 说明") {
 			t.Fatalf("neutralized text wrong:\n%s", card.Card.Text)
+		}
+		// 档 1 边界钉锚:<> 尖括号 autolink 形态不中和(原样字面保留,
+		// 与裸 URL linkify 同列,D-t175 决策 2 登记;方言证据出现走档 2
+		// 升级通道——本用例钉住当前形态,升级时此断言即红)。
+		if !strings.Contains(card.Card.Text, "> <https://evil.example/angle>") {
+			t.Fatalf("angle-autolink tier-1 boundary changed:\n%s", card.Card.Text)
+		}
+		// 中和作用域锚:平台自身的「查看审批页」链接是卡片正文的合法活性
+		// 词法(降级/信息卡外场景的登录页唯一入口),必须保持可点击——
+		// 整体化中和变异(全文 Replace)在此红。
+		if !strings.Contains(card.Card.Text, "[查看审批页](") {
+			t.Fatalf("platform page link lexicon was neutralized (scope leak):\n%s", card.Card.Text)
 		}
 	})
 

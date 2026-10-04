@@ -82,6 +82,11 @@ func (s *Server) imApprovalConfirm(c *gin.Context) {
 // imApprovalSubmit:POST /api/v1/im/approval——第二跳,表单提交落票
 // (凭据从 form body 读,query 面词面不消费)。
 func (s *Server) imApprovalSubmit(c *gin.Context) {
+	// 读体上限(对抗审计 MEDIUM/LOW 修):d/s 词面 ≤ 数百字节,4KiB 充裕;
+	// 未认证面在验签前解析无上限 body 是内存/临时盘放大面(multipart 被
+	// net/http 全量 spool),镜像 readBodyLimited 读体纪律截断。超限 →
+	// ParseForm 失败 → PostForm 空 → 验签 403 无效链接面收口,零新错误面。
+	c.Request.Body = http.MaxBytesReader(c.Writer, c.Request.Body, imLinkMaxBodyBytes)
 	d, sg := c.PostForm("d"), c.PostForm("s")
 	p, ok := s.imLinkVerify(c, d, sg)
 	if !ok {
@@ -114,14 +119,24 @@ func (s *Server) imApprovalSubmit(c *gin.Context) {
 	renderIMPage(c, http.StatusOK, "投票已记录", detail)
 }
 
+// imLinkMaxBodyBytes 是第二跳 POST 的读体上限(d/s base64url 词面 ≤ 数百
+// 字节,4KiB 含表单编码余量充裕;对抗审计 MEDIUM/LOW 修,镜像 readBodyLimited
+// 纪律)。
+const imLinkMaxBodyBytes = 4 << 10
+
 // renderIMConfirmPage 渲染只读确认页:展示签名 payload 的公开事实
 // (身份/动作/执行/节点/轮次)+ 原生 POST 表单(零 JS;hidden 凭据回传
 // ——d/s 是 base64url 词面,html.EscapeString 进 value 属性后无属性逃逸
-// 面,纵深纪律同 renderIMPage 全量转义)。
+// 面,纵深纪律同 renderIMPage 全量转义)。form action 从请求路径自取
+// (对抗审计 LOW 修:硬编码根绝对路径在路径前缀部署下第二跳 404;自取
+// 与「GET 可达」天然同路径域)。Referrer-Policy: no-referrer(对抗审计
+// LOW 修):表单提交的 Referer 默认携带本页完整 URL(含 ?d&s),该头使
+// 「凭据走 form body 不进访问日志」端到端成立。
 func renderIMConfirmPage(c *gin.Context, p auth.IMLinkPayload, d, sg string) {
 	c.Header("Content-Security-Policy", "default-src 'none'")
 	c.Header("X-Frame-Options", "DENY")
 	c.Header("Cache-Control", "no-store")
+	c.Header("Referrer-Policy", "no-referrer")
 	body := "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">" +
 		"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
 		"<title>审批确认</title></head><body>" +
@@ -129,7 +144,7 @@ func renderIMConfirmPage(c *gin.Context, p auth.IMLinkPayload, d, sg string) {
 		"<p>确认后将以 " + html.EscapeString(p.Approver) + " 的身份对执行 #" +
 		fmt.Sprintf("%d", p.ExecutionID) + " 节点 " + html.EscapeString(p.NodeID) +
 		fmt.Sprintf("(第 %d 轮)投出「%s」票。</p>", p.Round, imFaceZh(p.Action)) +
-		"<form method=\"POST\" action=\"/api/v1/im/approval\">" +
+		"<form method=\"POST\" action=\"" + html.EscapeString(c.Request.URL.Path) + "\">" +
 		"<input type=\"hidden\" name=\"d\" value=\"" + html.EscapeString(d) + "\">" +
 		"<input type=\"hidden\" name=\"s\" value=\"" + html.EscapeString(sg) + "\">" +
 		"<button type=\"submit\">确认" + imFaceZh(p.Action) + "</button>" +
@@ -184,8 +199,8 @@ func (s *Server) renderIMDecisionError(c *gin.Context, err error, p auth.IMLinkP
 }
 
 // imActionDB 是短链 action 词面 → DB ENUM(与 decisionFromRequest 同源
-// 映射;竞速读回需要 DB 词面)。词面已在 imApproval 前置闸裁过,此处
-// 不可达臂返零值由读回报错收口。
+// 映射;竞速读回需要 DB 词面)。词面已在 imLinkVerify 共享前置闸裁过,
+// 此处不可达臂返零值由读回报错收口。
 func imActionDB(action string) string {
 	db, _, _ := decisionFromRequest(action)
 	return db

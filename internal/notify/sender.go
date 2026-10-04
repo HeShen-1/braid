@@ -243,7 +243,9 @@ func (s *Sender) render(execID uint64, nodeID, nodeStatus string, deadline sql.N
 	// instructions 是 DSL 自由文本(schema 仅限长,无 pattern):逐行加引用
 	// 前缀,使其无法冒充平台顶格文案行(对抗审计 LOW②:仿「审批入口」行 +
 	// 外链的钓鱼面;发布 DSL 属半特权操作,此为低成本视觉收敛,非根治)。
-	for _, line := range strings.Split(strings.ReplaceAll(snap.Instructions, "\r\n", "\n"), "\n") {
+	// 行切分规范化 \r\n 与孤立 \r 双形态(T17.5 对抗审计 LOW 修:孤立 \r
+	// 的断行语义归渲染方言,代码侧统一收回,与 IM 卡片 renderCard 同款)。
+	for _, line := range strings.Split(strings.ReplaceAll(strings.ReplaceAll(snap.Instructions, "\r\n", "\n"), "\r", "\n"), "\n") {
 		fmt.Fprintf(&b, "> %s\n", line)
 	}
 	fmt.Fprintf(&b, "超时策略:%s(挂起 %.0f 小时后升级)\n", snap.OnTimeout, snap.TimeoutHours)

@@ -15,6 +15,7 @@ import (
 	"database/sql"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -111,18 +112,29 @@ func doIMSubmit(t *testing.T, r *gin.Engine, d, s string) *httptest.ResponseReco
 	return w
 }
 
-// doIMVote 走完整第二跳链:GET 确认页(不做断言,模拟点击者打开)
-// → POST 提交,返回 POST 响应。
+// imHiddenRe 从确认页 HTML 提取 hidden 凭据回传值(d/s 是 base64url 词面,
+// html.EscapeString 对其恒等,提取值 = 提交值)。
+var imHiddenRe = regexp.MustCompile(`<input type="hidden" name="d" value="([^"]*)">\s*<input type="hidden" name="s" value="([^"]*)">`)
+
+// doIMVote 走真实第二跳链:GET 确认页 → 从页面 HTML 提取 hidden d/s
+// (表单提交的凭据必须来自页面回传,不是带外签发值——对抗审计 HIGH 修:
+// 带外凭据会绕开回传面,页面值变异时测试假绿)→ POST 提交页面值。
 func doIMVote(t *testing.T, r *gin.Engine, execID, nodeExecID uint64, approver, action string) *httptest.ResponseRecorder {
 	t.Helper()
 	d, s := imLinkCreds(t, execID, nodeExecID, approver, action)
-	doIMGet(t, r, "/api/v1/im/approval?d="+d+"&s="+s)
-	return doIMSubmit(t, r, d, s)
+	w := doIMGet(t, r, "/api/v1/im/approval?d="+d+"&s="+s)
+	m := imHiddenRe.FindStringSubmatch(w.Body.String())
+	if m == nil {
+		t.Fatalf("confirm page missing hidden d/s inputs: %s", w.Body.String())
+	}
+	return doIMSubmit(t, r, m[1], m[2])
 }
 
 // imConfirmWant 断言 GET 响应是只读确认页:状态 + 身份/动作事实展示 +
-// POST 表单(hidden 凭据回传)。
-func imConfirmWant(t *testing.T, w *httptest.ResponseRecorder, approver, actionZh string) {
+// POST 表单 + hidden 凭据值与签发值逐字相等(回传面契约)+ 三安全头
+// (决策 1:页面内嵌 capability,CSP/XFO/no-store 缺一即缓存/注入面重开)
+// + Referrer-Policy(决策 1 实现期加固:Referer 不得回带 d/s)。
+func imConfirmWant(t *testing.T, w *httptest.ResponseRecorder, approver, actionZh, d, s string) {
 	t.Helper()
 	if w.Code != http.StatusOK {
 		t.Fatalf("confirm code = %d want 200; body: %s", w.Code, w.Body.String())
@@ -130,10 +142,23 @@ func imConfirmWant(t *testing.T, w *httptest.ResponseRecorder, approver, actionZ
 	if ct := w.Header().Get("Content-Type"); !strings.HasPrefix(ct, "text/html") {
 		t.Fatalf("content-type = %q", ct)
 	}
+	if got := w.Header().Get("Content-Security-Policy"); got != "default-src 'none'" {
+		t.Fatalf("csp = %q", got)
+	}
+	if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("xfo = %q", got)
+	}
+	if got := w.Header().Get("Cache-Control"); got != "no-store" {
+		t.Fatalf("cache-control = %q", got)
+	}
+	if got := w.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("referrer-policy = %q", got)
+	}
 	body := w.Body.String()
-	for _, s := range []string{"审批确认", approver, actionZh, `method="POST"`, `action="/api/v1/im/approval"`, `name="d"`, `name="s"`} {
-		if !strings.Contains(body, s) {
-			t.Fatalf("confirm body missing %q: %s", s, body)
+	for _, want := range []string{"审批确认", approver, actionZh, `method="POST"`, `name="d"`, `name="s"`,
+		`value="` + d + `"`, `value="` + s + `"`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("confirm body missing %q: %s", want, body)
 		}
 	}
 }
@@ -198,9 +223,10 @@ func TestIMLinkApprovalAppliesDecision(t *testing.T) {
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
 	execID, nodeExecID := seedSuspendedApproval(t, dbh, "WAITING_APPROVAL", "WAITING_APPROVAL", "carol")
 
-	// 第一跳:确认页(只读展示身份/动作,不落票)。
-	w := doIMGet(t, r, imLinkPath(t, execID, nodeExecID, "carol", "approve"))
-	imConfirmWant(t, w, "carol", "批准")
+	// 第一跳:确认页(只读展示身份/动作,不落票;hidden 值 = 签发值)。
+	d, s := imLinkCreds(t, execID, nodeExecID, "carol", "approve")
+	w := doIMGet(t, r, "/api/v1/im/approval?d="+d+"&s="+s)
+	imConfirmWant(t, w, "carol", "批准", d, s)
 	if n := imDecisionCount(t, dbh, execID); n != 0 {
 		t.Fatalf("GET must not vote: %d", n)
 	}
@@ -246,9 +272,10 @@ func TestIMLinkGetIsPrefetchSafe(t *testing.T) {
 	dbh := sqltest.MustOpenAt(t, "braid_api_test")
 	execID, nodeExecID := seedSuspendedApproval(t, dbh, "WAITING_APPROVAL", "WAITING_APPROVAL", "carol")
 
-	path := imLinkPath(t, execID, nodeExecID, "carol", "approve")
+	d, s := imLinkCreds(t, execID, nodeExecID, "carol", "approve")
+	path := "/api/v1/im/approval?d=" + d + "&s=" + s
 	for i := 0; i < 3; i++ {
-		imConfirmWant(t, doIMGet(t, r, path), "carol", "批准")
+		imConfirmWant(t, doIMGet(t, r, path), "carol", "批准", d, s)
 	}
 	if n := imDecisionCount(t, dbh, execID); n != 0 {
 		t.Fatalf("prefetch GETs must not vote: %d", n)
@@ -400,6 +427,17 @@ SELECT JSON_UNQUOTE(JSON_EXTRACT(payload, '$.reason')) FROM audit_log
 		if n := imDecisionCount(t, dbh, execID); n != 0 {
 			t.Fatalf("mismatch must not vote: %d", n)
 		}
+	})
+	t.Run("oversized body collapses to invalid-link face", func(t *testing.T) {
+		// 未认证 POST 臂读体上限(对抗审计 MEDIUM/LOW 修):4KiB 上限之外
+		// 的大包/multipart 洪泛在验签前被截断,收口到 403 无效链接面——
+		// 无凭据读取、无内存/临时盘放大(镜像 readBodyLimited 读体纪律)。
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/im/approval",
+			strings.NewReader("d="+strings.Repeat("a", 64<<10)))
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		imBodyWant(t, w, http.StatusForbidden, "链接无效")
 	})
 }
 

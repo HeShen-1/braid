@@ -265,7 +265,10 @@ func (s *IMSender) renderCard(execID, nodeExecID uint64, nodeID string, deadline
 	if len(pending) == 0 {
 		b.WriteString("\n该轮投票已齐(定局),工作流将自动收口,无需操作。\n")
 	}
-	for _, line := range strings.Split(strings.ReplaceAll(snap.Instructions, "\r\n", "\n"), "\n") {
+	// 行切分规范化 \r\n 与孤立 \r 双形态(对抗审计 LOW 修:孤立 \r 若被
+	// 渲染方言视为断行,续行逃出 "> " 引用前缀的容纳边;代码侧统一收回,
+	// 与 SMTP sender.go 同款双改)。
+	for _, line := range strings.Split(strings.ReplaceAll(strings.ReplaceAll(snap.Instructions, "\r\n", "\n"), "\r", "\n"), "\n") {
 		fmt.Fprintf(&b, "> %s\n", neutralizeIMMarkdown.Replace(line))
 	}
 	fmt.Fprintf(&b, "\n[查看审批页](%s)\n", s.pageURL(execID, nodeID))
