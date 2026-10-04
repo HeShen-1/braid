@@ -66,10 +66,9 @@ func parseRoles(raw string) ([]auth.Role, error) {
 	return roles, nil
 }
 
-// userCreate 建号体(D-2026-10-03-t162-cli-connection):DB 直连复用
-// auth 原语同则(HashPassword/WithTx/CreateUser),雪花号走短命租约
-// (KindAPI + auto 池 + 零能力宣告,Release 删行)。哈希在事务外且在
-// 租约前算(~100ms CPU 不进锁窗,同时收窄租约持有窗)。
+// userCreate 建号体(D-2026-10-03-t162-cli-connection):env/argv 校验后
+// 全部委托 createUserCore;命令层只做错误归因(冲突 = 退出 1 + 既有措辞)
+// 与成功叙事。
 func userCreate(ctx context.Context, env func(string) string, p userCreateParams, stdout, stderr io.Writer) int {
 	dsn := env("BRAID_MYSQL_DSN")
 	if dsn == "" {
@@ -86,25 +85,40 @@ func userCreate(ctx context.Context, env func(string) string, p userCreateParams
 		say(stderr, "braid user create: %v\n", err)
 		return ExitError
 	}
-	hash, err := auth.HashPassword(password, auth.DefaultBcryptCost)
-	if err != nil {
-		say(stderr, "braid user create: %v\n", err)
-		return ExitError
-	}
 	var email *string
 	if p.email != "" {
 		email = &p.email
 	}
+	if err := createUserCore(ctx, dsn, p.username, password, roles, email, p.tenant, stderr); err != nil {
+		if errors.Is(err, auth.ErrConflict) {
+			say(stderr, "braid user create: username already exists (or role re-granted): %v\n", err)
+		} else {
+			say(stderr, "braid user create: %v\n", err)
+		}
+		return ExitError
+	}
+	say(stdout, "created user %q roles=%v tenant=%d\n", p.username, roles, p.tenant)
+	return ExitOK
+}
 
+// createUserCore 建号核心(T16.3 抽出供 seed 复用):DB 直连复用 auth
+// 原语同则(HashPassword/WithTx/CreateUser),雪花号走短命租约(KindAPI
+// + auto 池 + 零能力宣告,Release 删行)。返回裸错误——ErrConflict 由
+// 调用方归因:CLI 命令层 = 退出 1,seed 层 = 已存在跳过(幂等)。哈希在
+// 事务外且在租约前算(~100ms CPU 不进锁窗,同时收窄租约持有窗);stderr
+// 只承接租约释放告警(失败路径原样上抛)。
+func createUserCore(ctx context.Context, dsn, username, password string, roles []auth.Role, email *string, tenant uint64, stderr io.Writer) error {
+	hash, err := auth.HashPassword(password, auth.DefaultBcryptCost)
+	if err != nil {
+		return err
+	}
 	dbh, err := sql.Open("mysql", db.CanonicalDSN(dsn))
 	if err != nil {
-		say(stderr, "braid user create: open mysql: %v\n", err)
-		return ExitError
+		return fmt.Errorf("open mysql: %w", err)
 	}
 	defer dbh.Close() //nolint:errcheck // 一次性进程退出路径
 	if err := dbh.PingContext(ctx); err != nil {
-		say(stderr, "braid user create: mysql ping: %v\n", err)
-		return ExitError
+		return fmt.Errorf("mysql ping: %w", err)
 	}
 	// 短命租约(D-t162 决策 4):auto 池仲裁防生成器撞号;零能力宣告
 	// = 本进程不参与 mode=all 混跑(建号窗内 fleet 闸瞬时 503 属既定
@@ -115,36 +129,25 @@ func userCreate(ctx context.Context, env func(string) string, p userCreateParams
 		Holder: snowflake.DefaultHolder(),
 	})
 	if err != nil {
-		say(stderr, "braid user create: snowflake lease: %v\n", err)
-		return ExitError
+		return fmt.Errorf("snowflake lease: %w", err)
 	}
 	ids, err := snowflake.New(lease.Node())
 	if err != nil {
 		releaseLease(lease, stderr)
-		say(stderr, "braid user create: snowflake: %v\n", err)
-		return ExitError
+		return fmt.Errorf("snowflake: %w", err)
 	}
 	lease.Guard(ids)
 	err = auth.WithTx(ctx, dbh, func(tx auth.DBTX) error {
 		return auth.CreateUser(ctx, tx, ids, auth.CreateUserParams{
-			Username:     p.username,
+			Username:     username,
 			PasswordHash: hash,
 			Email:        email,
-			TenantID:     p.tenant,
+			TenantID:     tenant,
 			Roles:        roles,
 		})
 	})
 	releaseLease(lease, stderr)
-	if err != nil {
-		if errors.Is(err, auth.ErrConflict) {
-			say(stderr, "braid user create: username already exists (or role re-granted): %v\n", err)
-		} else {
-			say(stderr, "braid user create: %v\n", err)
-		}
-		return ExitError
-	}
-	say(stdout, "created user %q roles=%v tenant=%d\n", p.username, roles, p.tenant)
-	return ExitOK
+	return err
 }
 
 // releaseLease 建号收尾删租约行(独立 Background ctx:根 ctx 在失败路径

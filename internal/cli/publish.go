@@ -37,9 +37,8 @@ type publishParams struct {
 	dslFile string
 }
 
-// publishRun 发布体:两跳 REST(POST /definitions 建草案 → POST
-// /drafts/:id/publish),stdout = 发布 detail 原文(机器消费面,T16.3
-// seed 依赖)。失败路径每跳独立归因(submit/publish 前缀)。
+// publishRun 发布体:读文件 + 凭据解析后委托 publishTwoHop;stdout =
+// 发布 detail 原文(机器消费面,T16.3 seed 依赖)。
 func publishRun(ctx context.Context, env func(string) string, p publishParams, stdout, stderr io.Writer) int {
 	base := resolveAPIBase(p.addr, env("BRAID_API_ADDR"))
 	doc, err := os.ReadFile(p.dslFile)
@@ -53,23 +52,9 @@ func publishRun(ctx context.Context, env func(string) string, p publishParams, s
 		say(stderr, "braid definition publish: %v\n", err)
 		return ExitError
 	}
-	_, body, err := postJSON(ctx, hc, base+"/api/v1/definitions", token, doc, "", http.StatusCreated)
+	detail, err := publishTwoHop(ctx, hc, base, token, doc)
 	if err != nil {
-		say(stderr, "braid definition publish: submit draft: %v\n", err)
-		return ExitError
-	}
-	var created struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal(body, &created); err != nil || created.ID == "" {
-		say(stderr, "braid definition publish: submit response missing draft id: %s\n", strings.TrimSpace(string(body)))
-		return ExitError
-	}
-	_, detail, err := postJSON(ctx, hc, base+"/api/v1/drafts/"+created.ID+"/publish", token, nil, "", http.StatusOK)
-	if err != nil {
-		// 草案行已落库:归因带 id(发布面无幂等键,盲目重跑 hop1 会再留
-		// 孤儿草案——对抗审计 MEDIUM:失败态可见性)。
-		say(stderr, "braid definition publish: publish draft %s: %v\n", created.ID, err)
+		say(stderr, "braid definition publish: %v\n", err)
 		return ExitError
 	}
 	if _, err := fmt.Fprintln(stdout, strings.TrimSpace(string(detail))); err != nil {
@@ -77,4 +62,26 @@ func publishRun(ctx context.Context, env func(string) string, p publishParams, s
 		return ExitError
 	}
 	return ExitOK
+}
+
+// publishTwoHop 两跳发布体(T16.3 抽出供 seed 复用):POST /definitions
+// 建草案 → POST /drafts/:id/publish,返回发布 detail。失败路径每跳独立
+// 归因(submit/publish 前缀);hop2 失败带草稿 id(发布面无幂等键,
+// 盲目重跑 hop1 会再留孤儿草案——对抗审计 MEDIUM:失败态可见性)。
+func publishTwoHop(ctx context.Context, hc *http.Client, base, token string, doc []byte) ([]byte, error) {
+	_, body, err := postJSON(ctx, hc, base+"/api/v1/definitions", token, doc, "", http.StatusCreated)
+	if err != nil {
+		return nil, fmt.Errorf("submit draft: %w", err)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(body, &created); err != nil || created.ID == "" {
+		return nil, fmt.Errorf("submit response missing draft id: %s", strings.TrimSpace(string(body)))
+	}
+	_, detail, err := postJSON(ctx, hc, base+"/api/v1/drafts/"+created.ID+"/publish", token, nil, "", http.StatusOK)
+	if err != nil {
+		return nil, fmt.Errorf("publish draft %s: %w", created.ID, err)
+	}
+	return detail, nil
 }

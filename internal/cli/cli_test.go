@@ -68,6 +68,7 @@ func TestRunUsageErrors(t *testing.T) {
 				"braid user create",
 				"braid definition publish",
 				"braid execution trigger",
+				"braid seed",
 			} {
 				if !strings.Contains(errb.String(), want) {
 					t.Errorf("usage missing %q; got: %q", want, errb.String())

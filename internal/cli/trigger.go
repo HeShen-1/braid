@@ -68,14 +68,7 @@ func triggerRun(ctx context.Context, env func(string) string, stdin io.Reader, p
 		sayln(stderr, "%s", "braid execution trigger: input is not valid JSON")
 		return ExitError
 	}
-	payload := map[string]any{
-		"definition_name": p.definition,
-		"input":           json.RawMessage(raw),
-	}
-	if p.version > 0 {
-		payload["version"] = uint32(p.version)
-	}
-	encoded, err := json.Marshal(payload)
+	encoded, err := executionBody(p.definition, p.version, raw)
 	if err != nil {
 		say(stderr, "braid execution trigger: encode body: %v\n", err)
 		return ExitError
@@ -102,6 +95,19 @@ func triggerRun(ctx context.Context, env func(string) string, stdin io.Reader, p
 		return ExitError
 	}
 	return ExitOK
+}
+
+// executionBody 组触发请求体(T16.3 抽出供 seed 复用):definition_name
+// + input 原文嵌入 + 可选钉版(0 = 最新已发布版)。
+func executionBody(definition string, version uint64, input []byte) ([]byte, error) {
+	payload := map[string]any{
+		"definition_name": definition,
+		"input":           json.RawMessage(input),
+	}
+	if version > 0 {
+		payload["version"] = uint32(version)
+	}
+	return json.Marshal(payload)
 }
 
 // maxInputBody 是输入 JSON 客户端读入上界,对齐服务端请求体闸

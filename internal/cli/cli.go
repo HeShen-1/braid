@@ -35,6 +35,9 @@ func Run(ctx context.Context, args []string, env func(string) string, stdin io.R
 			return runExecutionTrigger(ctx, args[2:], env, stdin, stdout, stderr)
 		}
 	}
+	if len(args) >= 1 && args[0] == "seed" { // T16.3 一键 demo(单词命令)
+		return runSeed(ctx, args[1:], env, stdout, stderr)
+	}
 	say(stderr, "braid: unknown command %q\n\n", strings.Join(args, " "))
 	usage(stderr)
 	return ExitUsage
@@ -52,7 +55,7 @@ func sayln(w io.Writer, format string, a ...any) {
 	say(w, format+"\n", a...)
 }
 
-// usage 是唯一用法面:三命令 + 凭证纪律一句(凭据只走 env,不进 argv)。
+// usage 是唯一用法面:四命令 + 凭证纪律一句(凭据只走 env,不进 argv)。
 const usageText = `usage:
   braid user create -username <name> -roles <r1,r2> [-email <addr>] [-tenant <id>]
       Create a user (DB direct; BRAID_MYSQL_DSN + BRAID_CLI_PASSWORD env required).
@@ -61,6 +64,12 @@ const usageText = `usage:
       BRAID_USERNAME/BRAID_PASSWORD, API base via BRAID_API_ADDR).
   braid execution trigger -definition <name> [-version <n>] -input <file|->
       Trigger an execution (REST; same auth env as publish).
+  braid seed [-stage db|rest|all] [-wait 2m] [-definition <file>]
+      One-command demo (T16.3): migrate + seed demo users + publish + trigger,
+      idempotent on rerun. db stage needs BRAID_MYSQL_DSN; rest stage logs in
+      as the seeded alice account (BRAID_SEED_AUTHOR_PASSWORD /
+      BRAID_SEED_APPROVER_PASSWORD, dev defaults dev-author-1/dev-approver-1)
+      and ignores ambient BRAID_TOKEN.
 
 credentials never go on the command line (shell history); see README.
 `

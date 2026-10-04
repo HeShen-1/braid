@@ -19,7 +19,7 @@
 
 - [x] T16.1 engine/enterprise 分层划线 — L — 验收:归属裁定清单(tenant/OIDC/MCP/IM 卡片/canvas 划线)+ module 拆分评估 + import 边界 lint 门(Q7 落地;现状 0% 物理分层)(D-2026-10-01-t161)
 - [x] T16.2 braid CLI 最小命令面 — M — 验收:建号/定义发布/触发三命令(README:143 明言 P0 无 CLI 建号入口)(D-2026-10-03-t162-cli-connection)
-- [ ] T16.3 一键 demo — M — 依赖 T16.2 — 验收:seed 脚本(迁移+建号+示例定义发布+触发)接入 dev-up.sh
+- [x] T16.3 一键 demo — M — 依赖 T16.2 — 验收:seed 脚本(迁移+建号+示例定义发布+触发)接入 dev-up.sh
 - [x] T16.4 性能数字进 README — S — 依赖 T15.5 — 验收:benchmark 数字成章 + agent-council 示例守护测试(README:241 自认无守护)
 - [x] T16.5 镜像构建/发布流水线 — M — 验收:零 Secrets 姿态下 registry push 方案评估与落地(GHCR GITHUB_TOKEN vs 本地导出)
 - [ ] T16.6 回滚-重跑 UI + Playwright e2e — M — 验收:画布/执行详情回滚操作面(§5 留白 + rollback.go 零回滚入口);浏览器级 e2e(D-t141#2 登记回收)
