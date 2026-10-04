@@ -1,17 +1,24 @@
 package api
 
-// IM 鉴权短链入口(T14.3,D-2026-09-30-t143 决策 4):GET /api/v1/im/
-// approval?d=…&s=…——钉钉审批卡片按钮的直达动作面,挂 authed 组外
-//(凭据 = HMAC capability 本身,无 Bearer/无登录)。决定语义与 Bearer
-// POST 同源:验证后进 applyApprovalDecision 单点(锁行/名单门/重放裁决/
-// 定局守卫/落票/resume 全一致),入口只做凭据换装与 HTML 结果渲染。
+// IM 鉴权短链入口(T14.3,D-2026-09-30-t143 决策 4;T17.5 确认页第二跳,
+// D-2026-10-04-t175 决策 1):/api/v1/im/approval?d=…&s=…——钉钉审批卡片
+// 按钮的落点,挂 authed 组外(凭据 = HMAC capability 本身,无 Bearer/无
+// 登录)。GET = 只读确认页(验签 + 展示签名事实,零 DB 读零写入——链路
+// 扫描器 SafeLinks/unfurl 只发 GET,结构性拿不到落票面,预取闭合);
+// POST = 表单提交进 applyApprovalDecision 单点(锁行/名单门/重放裁决/
+// 定局守卫/落票/resume 全一致,与 Bearer 投票同源),凭据走 form body
+// 不进访问日志 query 面。在野旧卡片的 GET 链接平滑兼容(多一跳不失效)。
 //
 // 响应面 = 内联极小 HTML(零 JS/零第三方资产,CSP default-src 'none' +
-// X-Frame-Options DENY + no-store——页面反映落票事实且 IM webview 有
-// 缓存面)。信任边界(D-t143 决策 6 登记):短链证明「持有者可代所指
-// approver 投票」,不证明点击者身份——群成员可点任意按钮,票落
-// decided_by = 所指 approver,审计 payload via=im_link 归因可见。
-// 已知边界:按钮直达无确认页,误触 = 重放 200/改判 409 结果页兜底;
+// X-Frame-Options DENY + no-store——页面内嵌 capability 表单值且 IM
+// webview 有缓存面)。信任边界(D-t143 决策 6 登记):短链证明「持有者
+// 可代所指 approver 投票」,不证明点击者身份——群成员可点任意按钮,票落
+// decided_by = 所指 approver,审计 payload via=im_link 归因可见;确认页
+// 显式展示「将以谁的身分投什么票」,比直达形态多一道身份可视面。
+// GET 不做决定事务预检(签名有效 = 平台签发过该票意图,已投/已定局在
+// POST 结果页呈现,与直达时代行为一致)。CSRF 不适用:凭据 = capability
+// 本身,authed 组外无 cookie 会话面。误触边界(直达时代登记)随确认页
+// 结构性收窄:GET 打开不落票,提交前有展示面。
 // trace span 不在本面(authed 组外)——决策行自身 trace_id(请求段)为
 // 空,但 linked_trace_id 仍显式链回执行主链 root,审计串联不受影响
 //(对抗审计 LOW 修:原表述写反了空列);定局票的 execution.resume 事件
@@ -31,37 +38,56 @@ import (
 	"braid/internal/auth"
 )
 
-// imApproval:GET /api/v1/im/approval。
-func (s *Server) imApproval(c *gin.Context) {
-	// 通道关闭面:api 未配 BRAID_IM_LINK_SECRET ⇒ 无在野链接可验,404
-	//(路由恒挂载——配置开关不进路由表,部署面零漂移)。
+// imLinkVerify 是两跳共享的凭据闸:通道关闭 404(路由恒挂载——配置开关
+// 不进路由表,部署面零漂移)→ 验签(过期 410 / 坏签名 403)→ payload
+// 词面闸(action/node_id 是签发面词表,词面外 = 伪造或签发面漂移,按
+// 无效链接面收口,不给伪造面语义信号)。错误页已渲染时返回 false。
+func (s *Server) imLinkVerify(c *gin.Context, d, sg string) (auth.IMLinkPayload, bool) {
 	if s.cfg.IMLinkSecret == "" {
 		renderIMPage(c, http.StatusNotFound, "链接不可用", "本部署未启用 IM 审批入口。")
-		return
+		return auth.IMLinkPayload{}, false
 	}
-	d, sg := c.Query("d"), c.Query("s")
 	p, err := auth.VerifyIMLink(s.cfg.IMLinkSecret, d, sg, time.Now())
 	switch {
 	case errors.Is(err, auth.ErrIMLinkExpired):
 		renderIMPage(c, http.StatusGone, "链接已过期",
 			"该链接有效期已过(24 小时),请通过审批页或最新通知卡片操作。")
-		return
+		return p, false
 	case err != nil:
 		renderIMPage(c, http.StatusForbidden, "链接无效",
 			"签名校验未通过,链接可能被篡改或已吊销。")
-		return
+		return p, false
 	}
-	// payload 词面闸:action/node_id 是签发面词表,词面外 = 伪造或签发面
-	// 漂移,不进决定事务(同样按无效链接面收口,不给伪造面语义信号)。
-	dbDecision, face, ok := decisionFromRequest(p.Action)
-	if !ok {
+	if _, _, ok := decisionFromRequest(p.Action); !ok {
 		renderIMPage(c, http.StatusForbidden, "链接无效", "签名校验未通过,链接可能被篡改或已吊销。")
-		return
+		return p, false
 	}
 	if !nodeIDRe.MatchString(p.NodeID) {
 		renderIMPage(c, http.StatusForbidden, "链接无效", "签名校验未通过,链接可能被篡改或已吊销。")
+		return p, false
+	}
+	return p, true
+}
+
+// imApprovalConfirm:GET /api/v1/im/approval——第一跳,只读确认页。
+func (s *Server) imApprovalConfirm(c *gin.Context) {
+	d, sg := c.Query("d"), c.Query("s")
+	p, ok := s.imLinkVerify(c, d, sg)
+	if !ok {
 		return
 	}
+	renderIMConfirmPage(c, p, d, sg)
+}
+
+// imApprovalSubmit:POST /api/v1/im/approval——第二跳,表单提交落票
+// (凭据从 form body 读,query 面词面不消费)。
+func (s *Server) imApprovalSubmit(c *gin.Context) {
+	d, sg := c.PostForm("d"), c.PostForm("s")
+	p, ok := s.imLinkVerify(c, d, sg)
+	if !ok {
+		return
+	}
+	dbDecision, face, _ := decisionFromRequest(p.Action)
 
 	out, replay, err := s.applyApprovalDecision(c.Request.Context(), decisionCall{
 		ExecID: p.ExecutionID, NodeID: p.NodeID, Actor: p.Approver,
@@ -86,6 +112,30 @@ func (s *Server) imApproval(c *gin.Context) {
 		detail += "等待其余审批人投票。"
 	}
 	renderIMPage(c, http.StatusOK, "投票已记录", detail)
+}
+
+// renderIMConfirmPage 渲染只读确认页:展示签名 payload 的公开事实
+// (身份/动作/执行/节点/轮次)+ 原生 POST 表单(零 JS;hidden 凭据回传
+// ——d/s 是 base64url 词面,html.EscapeString 进 value 属性后无属性逃逸
+// 面,纵深纪律同 renderIMPage 全量转义)。
+func renderIMConfirmPage(c *gin.Context, p auth.IMLinkPayload, d, sg string) {
+	c.Header("Content-Security-Policy", "default-src 'none'")
+	c.Header("X-Frame-Options", "DENY")
+	c.Header("Cache-Control", "no-store")
+	body := "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">" +
+		"<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">" +
+		"<title>审批确认</title></head><body>" +
+		"<h1>审批确认</h1>" +
+		"<p>确认后将以 " + html.EscapeString(p.Approver) + " 的身份对执行 #" +
+		fmt.Sprintf("%d", p.ExecutionID) + " 节点 " + html.EscapeString(p.NodeID) +
+		fmt.Sprintf("(第 %d 轮)投出「%s」票。</p>", p.Round, imFaceZh(p.Action)) +
+		"<form method=\"POST\" action=\"/api/v1/im/approval\">" +
+		"<input type=\"hidden\" name=\"d\" value=\"" + html.EscapeString(d) + "\">" +
+		"<input type=\"hidden\" name=\"s\" value=\"" + html.EscapeString(sg) + "\">" +
+		"<button type=\"submit\">确认" + imFaceZh(p.Action) + "</button>" +
+		"</form>" +
+		"<p>braid 工作流平台</p></body></html>"
+	c.Data(http.StatusOK, "text/html; charset=utf-8", []byte(body))
 }
 
 // renderIMDecisionError 把决定事务哨兵映射到结果页(与 mapApprovalError

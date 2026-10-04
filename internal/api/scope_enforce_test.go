@@ -54,6 +54,7 @@ var scpPolicies = []scpPolicy{
 var scpUnauthedAPIRoutes = map[string]bool{
 	"POST /api/v1/auth/login":        true,
 	"GET /api/v1/im/approval":        true,
+	"POST /api/v1/im/approval":       true, // T17.5 确认页第二跳提交面,同 GET 凭据域(HMAC capability)
 	"GET /api/v1/auth/oidc/login":    true,
 	"GET /api/v1/auth/oidc/callback": true,
 }
