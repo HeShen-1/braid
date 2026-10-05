@@ -33,7 +33,7 @@
 - [x] T20.4 租约活性复核转正 — S-M — sweep 前复核(T15.3 followup 位;活体同 owner 互杀面可选缓解)
 - [ ] T20.5 LDAP 时序残差垫平 — S-M — unknown_user/wrong_password 时域差(P1 加固通道;先解服务账号自锁风险)
 - [ ] T20.6 docker 网络泄漏回收 runbook — S — 文档活:并入孤儿清理节 + default-address-pools 上界注记(≈31 用户网/daemon)
-- [ ] T20.7 静态分区水位时弹收口 — S-M — 遗留自 t2.5 时弹族;独立 D- 两口径先行(① 0015 扩静态水位,治本但会再过期;② 安装口径钉死 reaper 先起,零迁移)— 验收:dev/t13/e2e/生产口径统一,水位过期不再触发 preflight 硬拒 × janitor 首刷竞态(e2e-up 已先行钉死,33c95d1)
+- [x] T20.7 静态分区水位时弹收口 — S-M — 遗留自 t2.5 时弹族;独立 D- 两口径先行(① 0015 扩静态水位,治本但会再过期;② 安装口径钉死 reaper 先起,零迁移)— 验收:dev/t13/e2e/生产口径统一,水位过期不再触发 preflight 硬拒 × janitor 首刷竞态(e2e-up 已先行钉死,33c95d1)(T20.7 交付:D-2026-10-05-t207-install-order,裁②侧;braid audit-ready 判定动词 + 四栈分层执法 + 水位/p_min 双哨兵)
 
 ## P3 停车场(触发器休眠,防遗忘)
 
