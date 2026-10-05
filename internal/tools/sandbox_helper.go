@@ -371,9 +371,10 @@ func runSandboxSelftest(ctx context.Context, argv []string, stdin io.Reader, std
 		return sandboxSelftestAlloc(mib, stdout)
 	case "serve":
 		// hermetic http e2e(T10)的宿主侧 TLS server(T7 契约:bridge 网
-		// 容器 IP 全落禁段,可达的 198.19.x 必为宿主持有;叶证书与私钥
-		// 永不入容器,容器内 serve 被运行期零通道封死——本模式只在宿主
-		// 侧被 e2e 当子进程拉起,材料经 T7 生成器出)。
+		// 容器 IP 全落禁段,可达的 hermetic 段地址必为宿主持有(T18.1 起
+		// 198.51.100.0/24,单源 = 测试侧 sandboxHermeticCIDR);叶证书与
+		// 私钥永不入容器,容器内 serve 被运行期零通道封死——本模式只在
+		// 宿主侧被 e2e 当子进程拉起,材料经 T7 生成器出)。
 		if len(argv) != 4 {
 			return fmt.Errorf("selftest serve requires <ip:port> <leaf-cert.pem> <leaf-key.pem> (host-side hermetic e2e server)")
 		}

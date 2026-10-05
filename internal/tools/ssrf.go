@@ -15,6 +15,36 @@ import (
 // 分类助手(IsPrivate 不含它),显式登记。
 var cgnat = net.IPNet{IP: net.IP{100, 64, 0, 0}.To4(), Mask: net.CIDRMask(10, 32)}
 
+// 扩禁五段(D-2026-10-05-ssrf-five-ranges,2026-10-05 用户拍板;关闭
+// D-2026-09-23-ssrf-extra-ranges 待议项):环境依赖的可拨保留段,stdlib
+// 无对应分类助手,逐一显式登记。
+var (
+	// benchmarkRange RFC 2544 基准段 198.18.0.0/15,部分云 LB 内部使用;
+	// 亦被 fake-ip 型 TUN 代理选作池段(本机 198.18.0.0/30 在档实证)。
+	benchmarkRange = net.IPNet{IP: net.IP{198, 18, 0, 0}.To4(), Mask: net.CIDRMask(15, 32)}
+	// ietfProtoRange IETF 协议分配段 192.0.0.0/24(192.0.0.8 dummy、
+	// 192.0.0.9 PCP 等;TEST-NET 各段 192.0.2/24 等不在其内,仍放行)。
+	ietfProtoRange = net.IPNet{IP: net.IP{192, 0, 0, 0}.To4(), Mask: net.CIDRMask(24, 32)}
+	// thisNetworkRange 0.0.0.0/8「本网络」段;全零(0.0.0.0)已由
+	// IsUnspecified 拒,此处收其余部分(拍板口径「非全零」)。
+	thisNetworkRange = net.IPNet{IP: net.IP{0, 0, 0, 0}.To4(), Mask: net.CIDRMask(8, 32)}
+	// classERange 240.0.0.0/4 保留段(class E);255.255.255.255 广播原
+	// 显式拒,整段并入后该检查被结构性包含(广播锚点仍钉住防回归)。
+	classERange = net.IPNet{IP: net.IP{240, 0, 0, 0}.To4(), Mask: net.CIDRMask(4, 32)}
+	// nat64Range NAT64 well-known 前缀 64:ff9b::/96(RFC 6052):低 32
+	// 位内嵌 IPv4 且 To4()==nil 逃 v4 分支;有 NAT64 出口的环境可借它
+	// 触达内网 IPv4——纯 v6 段,在 ipForbidden 单点收口。同形的内嵌
+	// v4 残余家族(6to4 2002::/16、Teredo 2001::/32、废弃 IPv4-
+	// compatible ::/96)不在五段拍板面:公共 relay 已退役/停服,可利用
+	// 率极低,当前放行;再议走 D-entry(非目标边界登记,
+	// D-2026-10-05-ssrf-five-ranges)。
+	nat64Range = net.IPNet{IP: net.ParseIP("64:ff9b::"), Mask: net.CIDRMask(96, 128)}
+)
+
+// v4ForbiddenNets v4 显式禁段表(CGNAT + 扩禁四段;NAT64 是纯 v6 段,
+// 单列于 ipForbidden)。To4()!=nil 的地址逐段 Contains。
+var v4ForbiddenNets = []*net.IPNet{&cgnat, &benchmarkRange, &ietfProtoRange, &thisNetworkRange, &classERange}
+
 // ErrSSRFBlocked 是 SSRF 防护拒连的哨兵错误:拨号复核(禁段 IP)、仅
 // https(scheme 门)、重定向每跳重校验、越限重定向共用。映射契约:内置
 // http 工具(T3.5)返回携带本哨兵的**裸错误**(不自行包 CallError),
@@ -29,10 +59,12 @@ const maxRedirects = 10
 
 // ipForbidden 判定拨号目标 IP 是否落在禁段(ARCHITECTURE §3.4 SSRF 三层修
 // 锁定口径):私网/环回/链路本地(169.254/16 内含 metadata 169.254.169.254)/
-// CGNAT;另收未指定/组播/广播——永不合法的拨号目标,fail-closed。nil(上游
-// 解析失败)同样拒。IPv4-mapped IPv6 由各分类助手归一处理。口径外的保留段
-// (NAT64 64:ff9b::/96、198.18.0.0/15 等)登记在 docs/DECISIONS.md 待议,
-// 扩禁段须走 D-entry 流程,不在此顺手改。
+// CGNAT;另收未指定/组播/广播,及扩禁五段(D-2026-10-05-ssrf-five-ranges,
+// 2026-10-05 拍板,关闭 D-2026-09-23-ssrf-extra-ranges 待议项):NAT64
+// well-known 64:ff9b::/96、198.18.0.0/15、192.0.0.0/24、0.0.0.0/8 非全零、
+// 240/4 剩余——永不合法的拨号目标,fail-closed。nil(上游解析失败)同样
+// 拒。IPv4-mapped IPv6 由各分类助手归一处理。后续再扩段仍走 D-entry 流程,
+// 不在此顺手改。
 func ipForbidden(ip net.IP) bool {
 	if ip == nil {
 		return true
@@ -46,9 +78,16 @@ func ipForbidden(ip net.IP) bool {
 		return true
 	}
 	if ip4 := ip.To4(); ip4 != nil {
-		if ip4.Equal(net.IPv4bcast) || cgnat.Contains(ip4) {
-			return true
+		for _, n := range v4ForbiddenNets {
+			if n.Contains(ip4) {
+				return true
+			}
 		}
+	}
+	// NAT64 well-known 前缀是纯 v6 段:To4()==nil 逃过上面的 v4 表,
+	// 在此收口;对 4 字节地址 Contains 恒 false,无串段风险。
+	if nat64Range.Contains(ip) {
+		return true
 	}
 	return false
 }

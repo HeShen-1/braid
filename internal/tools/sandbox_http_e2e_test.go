@@ -19,19 +19,21 @@ package tools
 //     stdin 信封不走 env——BRAID_* 家族结构性缺席含新键)。
 //
 // 拓扑(T10 裁决 + T10.2 换装):TLS server = 宿主侧 selftest serve 子进程,
-// 绑槽位独占的 198.19.0.x/32 lo alias(alias 装配经 net=host + NET_ADMIN
+// 绑槽位独占的 198.51.100.x/32 lo alias(alias 装配经 net=host + NET_ADMIN
 // 容器执行 busybox ip——唯一前提 docker,本地/CI 同路径免 root;槽位分
-// IP 消并行 lane 竞态,198.18.0.0/15 是守卫禁段外放行段,D-2026-09-23-
-// ssrf-extra-ranges 维持放行)。T10.2:egress 内网 = 槽位独占 --internal
+// IP 消并行 lane 竞态,198.51.100.0/24 RFC 5737 TEST-NET-2 是守卫禁段外
+// 放行段——旧段 198.18.0.0/15(198.19.x)已随 D-2026-10-05-ssrf-five-ranges
+// 五段扩禁入禁,T18.1 重选本段)。T10.2:egress 内网 = 槽位独占 --internal
 // 网络 braid-sbx-egress-t<slot>,代理 = 测试进程内真 EgressProxy 绑网关
 // (allow 集经 EgressAllowFromEndpoints 从下方 endpoints 单源派生),
 // http 容器唯一可达面 = 网关代理(本机 docker 29.1.3 实证:internal 网
 // 容器→网关可达、→他宿主 IP/外网结构性不可达)。镜像 sandboxBuildE2EImage
 // 恒重建(CA ephemeral),tag = e2e-t<slot>(不覆写 prod 缺省引用;收尾
 // rmi + 删自加 alias + rm 自建网络 + serve stdin 关闭)。watch:fake-ip 型
-// TUN 代理若自配 198.18.0.0/15 档(本机现为 198.18.0.0/30,与 198.19.0.x
-// 不相交)会覆盖本段选段——present 探测只查 lo 检不出双接口同址,届时
-// 需要重选段(与「守卫扩禁同步重选段」同一联动条款)。
+// TUN 池多选 198.18.0.0/15 档(本机 198.18.0.0/30 在档),与 TEST-NET-2
+// 零交集——原「TUN 覆盖选段」顾虑随重选结构性消除;present 探测仍保留
+// (双接口同址它检不出,极端撞段时 add 响亮败)。将来守卫再扩禁触本段,
+// TestSandboxHermeticCIDRAllowed 先红,重选段同条款跟进。
 
 import (
 	"bufio"
@@ -541,15 +543,28 @@ func sandboxEgressE2ENetwork(t *testing.T, name string) string {
 	return gw
 }
 
-// sandboxHermeticAliasIP 槽位独占的 hermetic 地址 198.19.0.<slot+1>(段内、
-// 守卫放行侧):每 lane 各拥各地址,alias 增删生命周期互不干扰。
+// sandboxHermeticAliasIP 槽位独占的 hermetic 地址(段内主机位 <slot+1>,
+// 守卫放行侧):从 sandboxHermeticCIDR 单源派生——常量改段时取址随之走,
+// 不留第二真源(联动锚 TestSandboxHermeticCIDRAllowed 同源钉住放行侧)。
+// 每 lane 各拥各地址,alias 增删生命周期互不干扰。
 func sandboxHermeticAliasIP(t *testing.T) net.IP {
 	t.Helper()
+	_, hermeticNet, err := net.ParseCIDR(sandboxHermeticCIDR)
+	if err != nil {
+		t.Fatalf("parse %s: %v", sandboxHermeticCIDR, err)
+	}
+	base := hermeticNet.IP.To4()
+	if base == nil {
+		t.Fatalf("hermetic CIDR %s must be IPv4", sandboxHermeticCIDR)
+	}
 	n := sandboxSlotNumber(t)
 	if n+1 > 254 {
-		t.Fatalf("slot %d cannot map into 198.19.0.x last octet", n)
+		t.Fatalf("slot %d cannot map into %s host octet", n, sandboxHermeticCIDR)
 	}
-	return net.IPv4(198, 19, 0, byte(n+1)).To4()
+	host := make(net.IP, 4)
+	copy(host, base)
+	host[3] = byte(n + 1) // /24 段内主机位取址(空间 .1..254,与全段锚同源)
+	return host
 }
 
 // sandboxLoAlias 在宿主 netns 对 lo 执行别名增删:net=host + NET_ADMIN +

@@ -407,7 +407,8 @@ func TestSandboxHelperSelftest(t *testing.T) {
 
 	t.Run("serve hosts TLS with marker+path echo and exits on stdin EOF", func(t *testing.T) {
 		// 单测绑 127.0.0.1(免 alias 免特权);叶对不走 generateSandboxCA
-		// ——该 CA 已被 NameConstraints 钉死 198.18/15 段(T10 裁决),
+		// ——该 CA 已被 NameConstraints 钉死 hermetic 段(T10 裁决,T18.1
+		// 重选为 sandboxHermeticCIDR),
 		// 段外 IP 的叶会拒。serve 机制与 CA 无绑定:任何合法叶对可服务,
 		// 分离点即在此。hermetic 段上的真 CA 链路由 e2e 证明。
 		certPEM, keyPEM := sandboxServeUnitTestLeaf(t)
@@ -708,8 +709,9 @@ func mustJSON(t *testing.T, v any) string {
 
 // sandboxServeUnitTestLeaf 自签叶对(127.0.0.1 SAN,ServerAuth):serve 单测
 // 的服务身份。刻意不走去 generateSandboxCA——该 CA 的 NameConstraints 已
-// 把可签 IP 钉死在 198.18/15 段(T10 裁决),单测绑 127.0.0.1 免 alias 免
-// 特权,段外叶必被拒;serve 机制消费任意合法叶对,与 CA 策略正交。
+// 把可签 IP 钉死在 hermetic 段(T10 裁决,T18.1 重选为 sandboxHermeticCIDR),
+// 单测绑 127.0.0.1 免 alias 免特权,段外叶必被拒;serve 机制消费任意合法
+// 叶对,与 CA 策略正交。
 func sandboxServeUnitTestLeaf(t *testing.T) (certPEM, keyPEM []byte) {
 	t.Helper()
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
