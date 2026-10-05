@@ -1,5 +1,8 @@
 {{/* reaper(prod compose reaper 服务的 K8s 形态;4 键对齐)。
-     雪花节点 auto(租约池分配,T15.2 摘钉;compose 侧显式 3 单副本语义)。 */}}
+     雪花节点 auto(租约池分配,T15.2 摘钉;compose 侧显式 3 单副本语义)。
+     T20.7 安装口径:reaper(janitor)是 audit_log 水位唯一维护者
+     (首 tick 即补当日分区);api/worker 的 initContainer audit-ready
+     等的就是它维护的 DB 水位(读状态,不探本进程)。 */}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

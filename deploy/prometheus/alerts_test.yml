@@ -425,3 +425,70 @@ tests:
             exp_annotations:
               summary: "DB 连接池水位 96%(存在饱和入口)"
               description: "in_use/max_open 持续超 0.8 行动线(0.8 镜像 QueueRedisMemoryWatermark)。池满 = DB 写串行段顶格(CAPACITY.md §4 结论 3:吞吐帽在 relay/DB 写侧,加并发先过写串行段)。先查慢事务与锁窗(CAPACITY.md §5 回滚锁窗斜率),再按 deploy/README.md §1 公式(Σ MAX_OPEN ≤ max_connections − 30)调 BRAID_DB_MAX_OPEN。"
+
+  # T20.7 水位双哨兵:①janitor 停摆(余量 2 天持续 10m → firing;满格 8
+  # 不 fire;序列失采[reaper 停摆 staleness 形态]→ absent 分支 firing);
+  # ②p_min 落行(非零持续 5m → firing)。
+  - interval: 1m
+    input_series:
+      - series: 'braid_audit_partition_watermark_days'
+        values: '2+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AuditPartitionWatermarkLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "audit_log 分区水位余量不足或失采(janitor 停摆预警)"
+              description: "janitor 每 tick 顶到 +8,余量 <3 或 gauge 失采(reaper 停摆/未部署)= 水位无人维护。水位衰减到 0 后 api/worker 重启将被 preflight 硬拒(水位不覆盖当日,安装口径 T20.7)。处置:恢复 reaper(janitor 自愈顶回 +8);reaper 停摆 ≥8 天后的重启须先手工 audit-ready(UPGRADE.md §2)。"
+  - interval: 1m
+    input_series:
+      - series: 'braid_audit_partition_watermark_days'
+        values: '8+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AuditPartitionWatermarkLow
+        exp_alerts: []
+  # for 窗下沿负例(双边钉法):低余量持续 8m < for 10m → 不 fire
+  # (for:10m→1m 变异在此红)。
+  - interval: 1m
+    input_series:
+      - series: 'braid_audit_partition_watermark_days'
+        values: '2+0x7'
+    alert_rule_test:
+      - eval_time: 8m
+        alertname: AuditPartitionWatermarkLow
+        exp_alerts: []
+  # absent 形态:水位 gauge 序列不存在(reaper 停摆 staleness / 未部署)
+  # → absent 分支 10m 后 firing(有无关序列在场,证明不是空数据假 firing)。
+  - interval: 1m
+    input_series:
+      - series: 'braid_audit_pmin_rows'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AuditPartitionWatermarkLow
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "audit_log 分区水位余量不足或失采(janitor 停摆预警)"
+              description: "janitor 每 tick 顶到 +8,余量 <3 或 gauge 失采(reaper 停摆/未部署)= 水位无人维护。水位衰减到 0 后 api/worker 重启将被 preflight 硬拒(水位不覆盖当日,安装口径 T20.7)。处置:恢复 reaper(janitor 自愈顶回 +8);reaper 停摆 ≥8 天后的重启须先手工 audit-ready(UPGRADE.md §2)。"
+  - interval: 1m
+    input_series:
+      - series: 'braid_audit_pmin_rows'
+        values: '0+0x4 3+0x20'
+    alert_rule_test:
+      - eval_time: 12m
+        alertname: AuditPminRows
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: "audit_log p_min 兜底分区落行 3 行(时钟漂移哨兵)"
+              description: "exec_date < 2026-01-01 的审计行只能落 p_min(0001 落笔时的监控承诺)。非零 = 写方时钟漂移或异常回填,核各写方(api/worker/reaper)宿主时钟与 DB 时钟偏差;audit append-only,该计数不自愈,人工核因后按 RUNBOOK 处置。"
+      # for 窗下沿负例:非零持续 3m < for 5m → 不 fire(for:5m→0m 变异在此红)。
+      - eval_time: 3m
+        alertname: AuditPminRows
+        exp_alerts: []

@@ -1,5 +1,6 @@
 // braid 是运维 CLI 入口(T16.2,issue #134):user create / definition
-// publish / execution trigger 三命令面(连接形态 D-2026-10-03-t162)。
+// publish / execution trigger / seed / audit-ready 命令面(连接形态
+// D-2026-10-03-t162;audit-ready = T20.7 安装口径判定动词)。
 // 会话逻辑全在 internal/cli.Run(可测,参照 cmd/braid-sandbox-exec 先例);
 // 本文件只做 signal ctx + 退出码直通。退出码契约:0 成功 / 1 运行失败 /
 // 2 用法错误。

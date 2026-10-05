@@ -307,3 +307,39 @@ func TestCollectIMNotifyResumedNodeLegacyMode(t *testing.T) {
 		t.Errorf("approval_im_notified_missing(非 waiting 零行) = %v, want 1(候选未窄化)", got)
 	}
 }
+
+// TestCollectAuditPartitionGauges(T20.7):sqltest 前滚态下水位余量 ≥ +7
+// (janitor 满格形态,终界 today+8,≥7 留给 DB 端午夜翻转一天的容差);
+// p_min 兜底分区零行(无时钟漂移写入)。水位 gauge 是 janitor 停摆的唯一
+// 运行期显影面,跌破告警线(alerts.yml <3)早于 api/worker preflight
+// 拒启(水位 ≤0)——这里是采集正确性锚。
+func TestCollectAuditPartitionGauges(t *testing.T) {
+	r, m, d := newCollectReaper(t)
+	if err := r.collectMetrics(context.Background()); err != nil {
+		t.Fatalf("collectMetrics: %v", err)
+	}
+	if got := testutil.ToFloat64(m.AuditPartitionWatermarkDays); got < 7 {
+		t.Errorf("audit_partition_watermark_days = %v, want >= 7 (sqltest roll-forward tops through today+7)", got)
+	}
+	if got := testutil.ToFloat64(m.AuditPminRows); got != 0 {
+		t.Errorf("audit_pmin_rows = %v, want 0 (no pre-2026 rows yet)", got)
+	}
+	// p_min 正例(对抗审计:0 期望与未 Set 的零值重合,无杀伤力):直插
+	// 一条 exec_date=2025-06-01 的审计行(0001:268 p_min 边界 <2026-01-01
+	// 必落 p_min),断言计数为 1。root 测试账号 + TestMain 已有 audit_log
+	// 清扫先例,不违 append-only 纪律。
+	id := nextID(t)
+	if _, err := d.Exec(`INSERT INTO audit_log
+	  (id, exec_date, event_at, event_type, execution_id, actor_type, actor_id, payload)
+	  VALUES (?, '2025-06-01', NOW(3), 'node.state_changed', ?, 'worker', 'w1', '{}')`,
+		id, nextID(t)); err != nil {
+		t.Fatalf("seed p_min row: %v", err)
+	}
+	t.Cleanup(func() { _, _ = d.Exec(`DELETE FROM audit_log WHERE id=?`, id) })
+	if err := r.collectMetrics(context.Background()); err != nil {
+		t.Fatalf("collectMetrics(2): %v", err)
+	}
+	if got := testutil.ToFloat64(m.AuditPminRows); got != 1 {
+		t.Errorf("audit_pmin_rows = %v, want 1 (p_min row visible)", got)
+	}
+}

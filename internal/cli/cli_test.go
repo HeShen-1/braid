@@ -40,7 +40,7 @@ func TestRunFlagLayerUsage(t *testing.T) {
 }
 
 // TestRunUsageErrors 钉分发契约:无参/未知命令/残缺名词组 → 退出码 2,
-// stderr 带 usage(三命令面全列)。
+// stderr 带 usage(五命令面全列)。
 func TestRunUsageErrors(t *testing.T) {
 	tests := []struct {
 		name string
@@ -69,6 +69,7 @@ func TestRunUsageErrors(t *testing.T) {
 				"braid definition publish",
 				"braid execution trigger",
 				"braid seed",
+				"braid audit-ready",
 			} {
 				if !strings.Contains(errb.String(), want) {
 					t.Errorf("usage missing %q; got: %q", want, errb.String())

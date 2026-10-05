@@ -135,6 +135,9 @@ services:
         condition: service_completed_successfully
       grants:
         condition: service_completed_successfully
+      # T20.7 安装口径:janitor 分区先行(审计写方 preflight 硬拒面)
+      reaper:
+        condition: service_healthy
     restart: unless-stopped
 
   worker:
@@ -176,6 +179,9 @@ services:
         condition: service_completed_successfully
       redis-queue:
         condition: service_healthy
+      # T20.7 安装口径:janitor 分区先行(审计写方 preflight 硬拒面)
+      reaper:
+        condition: service_healthy
     restart: unless-stopped
 
   relay:
@@ -206,6 +212,18 @@ services:
       BRAID_REDIS_QUEUE_ADDR: redis-queue:6379 # 可选(leaderless);缺省同形态
       BRAID_REAPER_SNOWFLAKE_NODE: "3" # 显式(单副本/compose 语义,D-t151 决策 2):经租约表 claim;缺省已改 auto(PID 派生退役——容器 PID 恒 1 撞 api 默认 1)
       BRAID_METRICS_ADDR: 0.0.0.0:9090
+    # T20.7 安装口径:reaper 健康 = DB 水位覆盖当日(braid audit-ready 判定
+    # 水位状态而非进程活——进程活≠分区已补;镜像自带 CLI 二进制)。api/
+    # worker 的 preflight 对水位不覆盖当日硬拒,靠此闸保证 janitor 首刷
+    # 先行。稳态重起水位已满 = 首探即过;reaper 停摆致水位衰减 <3 天有
+    # Prometheus 预警(见 alerts.yml),停摆 ≥8 天后单服务 restart 不重放
+    # depends_on,须先手工 audit-ready(UPGRADE.md §2)。
+    healthcheck:
+      test: ["CMD", "/usr/local/bin/braid", "audit-ready"]
+      interval: 5s
+      timeout: 4s
+      retries: 12
+      start_period: 30s
     depends_on:
       migrate:
         condition: service_completed_successfully

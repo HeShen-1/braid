@@ -132,7 +132,9 @@ BRAID_FILEREAD_DIRS=["<仓库绝对路径>/docs/examples"]
 docker compose -f deploy/dev.docker-compose.yml up -d   # 起基础设施
 deploy/dev-up.sh
 # dev-up.sh = MySQL 就绪等待 → seed db 段(迁移 + 建 alice/bob 演示号)→
-# 四进程 → seed rest 段(发布 agent-council + 触发一次评审 + 等待落点)。
+# reaper 先起 + audit-ready 水位闸(T20.7 安装口径:等 janitor 首刷补当日
+# 分区过闸,再起 api/relay/worker)→ seed rest 段(发布 agent-council +
+# 触发一次评审 + 等待落点)。
 # 全程幂等,重跑安全(迁移 no-op / 已建号跳过 / 定义按名判存 / 触发幂等
 # 键命中回显);BRAID_DEV_SEED=0 跳过 seed 只起进程。
 # seed ⑤ 行即落点:WAITING_APPROVAL → 开 /ui/ 用 alice 或 bob 登录批准

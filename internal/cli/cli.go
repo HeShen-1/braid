@@ -1,6 +1,7 @@
-// Package cli 实现 braid 运维 CLI(T16.2,issue #134):最小命令面三命令——
-// user create(建号,DB 直连)/ definition publish(定义发布)/
-// execution trigger(触发),后两者走 REST 客户端。连接形态钉死于
+// Package cli 实现 braid 运维 CLI(T16.2,issue #134):user create(建号,
+// DB 直连)/ definition publish(定义发布)/ execution trigger(触发)三
+// 命令面 + seed 一键 demo(T16.3)+ audit-ready 水位判定(T20.7 安装
+// 口径闸,复用 preflight 语义)。连接形态钉死于
 // D-2026-10-03-t162-cli-connection:建号复用 auth 原语同则,发布/触发走
 // 真路径(RBAC/审计/幂等原生生效),不复制 handler 语义。
 //
@@ -38,6 +39,9 @@ func Run(ctx context.Context, args []string, env func(string) string, stdin io.R
 	if len(args) >= 1 && args[0] == "seed" { // T16.3 一键 demo(单词命令)
 		return runSeed(ctx, args[1:], env, stdout, stderr)
 	}
+	if len(args) >= 1 && args[0] == "audit-ready" { // T20.7 安装口径判定动词(单词命令)
+		return runAuditReady(ctx, args[1:], env, stdout, stderr)
+	}
 	say(stderr, "braid: unknown command %q\n\n", strings.Join(args, " "))
 	usage(stderr)
 	return ExitUsage
@@ -55,7 +59,7 @@ func sayln(w io.Writer, format string, a ...any) {
 	say(w, format+"\n", a...)
 }
 
-// usage 是唯一用法面:四命令 + 凭证纪律一句(凭据只走 env,不进 argv)。
+// usage 是唯一用法面:五命令 + 凭证纪律一句(凭据只走 env,不进 argv)。
 const usageText = `usage:
   braid user create -username <name> -roles <r1,r2> [-email <addr>] [-tenant <id>]
       Create a user (DB direct; BRAID_MYSQL_DSN + BRAID_CLI_PASSWORD env required).
@@ -70,6 +74,11 @@ const usageText = `usage:
       as the seeded alice account (BRAID_SEED_AUTHOR_PASSWORD /
       BRAID_SEED_APPROVER_PASSWORD, dev defaults dev-author-1/dev-approver-1)
       and ignores ambient BRAID_TOKEN.
+  braid audit-ready [-wait DURATION]
+      Exit 0 when the audit_log partition watermark covers today (DB state
+      probe, not a reaper liveness check; BRAID_MYSQL_DSN env required; fix
+      guidance on failure). -wait polls until the deadline — install-order
+      gate for dev/prod/drill/helm stacks (T20.7): start reaper first.
 
 credentials never go on the command line (shell history); see README.
 `

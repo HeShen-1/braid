@@ -135,28 +135,33 @@ func (l *LLMSet) ObserveCall(outcome string, d time.Duration) {
 // ReaperSet covers reaper verdicts, scans, flush observability, and the
 // periodic DB-sourced gauges (backlog/aging/dead-letter surfaces).
 type ReaperSet struct {
-	Reaped                *prometheus.CounterVec
-	Redispatches          *prometheus.CounterVec
-	NodeFailures          prometheus.Counter
-	NodeCancellations     prometheus.Counter
-	ApprovalsEscalated    prometheus.Counter
-	ScanBacklog           *prometheus.CounterVec
-	FlushBatches          *prometheus.CounterVec
-	FlushRows             *prometheus.CounterVec
-	FlushPoison           prometheus.Counter
-	FlushDuration         prometheus.Histogram
-	ChainVerifyRows       prometheus.Counter
-	ChainBrokenTotal      prometheus.Counter
-	ChainBrokenHeads      prometheus.Gauge
-	AuditPendingRows      prometheus.Gauge
-	AuditPendingOldest    prometheus.Gauge
-	OutboxRows            *prometheus.GaugeVec
-	OutboxOldest          *prometheus.GaugeVec
-	ApprovalBacklog       prometheus.Gauge
-	ApprovalOldest        prometheus.Gauge
-	StuckCandidates       *prometheus.GaugeVec
-	ResumeStuck           prometheus.Gauge
-	ApprovalNotifyMissing prometheus.Gauge
+	Reaped             *prometheus.CounterVec
+	Redispatches       *prometheus.CounterVec
+	NodeFailures       prometheus.Counter
+	NodeCancellations  prometheus.Counter
+	ApprovalsEscalated prometheus.Counter
+	ScanBacklog        *prometheus.CounterVec
+	FlushBatches       *prometheus.CounterVec
+	FlushRows          *prometheus.CounterVec
+	FlushPoison        prometheus.Counter
+	FlushDuration      prometheus.Histogram
+	ChainVerifyRows    prometheus.Counter
+	ChainBrokenTotal   prometheus.Counter
+	ChainBrokenHeads   prometheus.Gauge
+	AuditPendingRows   prometheus.Gauge
+	AuditPendingOldest prometheus.Gauge
+	// AuditPartitionWatermarkDays / AuditPminRows:T20.7——水位衰减的唯一
+	// 运行期显影面(janitor 停摆预警)与 p_min 兜底分区落行哨兵(兑现
+	// 0001_init.up.sql 监控承诺)。
+	AuditPartitionWatermarkDays prometheus.Gauge
+	AuditPminRows               prometheus.Gauge
+	OutboxRows                  *prometheus.GaugeVec
+	OutboxOldest                *prometheus.GaugeVec
+	ApprovalBacklog             prometheus.Gauge
+	ApprovalOldest              prometheus.Gauge
+	StuckCandidates             *prometheus.GaugeVec
+	ResumeStuck                 prometheus.Gauge
+	ApprovalNotifyMissing       prometheus.Gauge
 	// PoisonSnapshots counts approval snapshot validation failures in the ⑤a
 	// disposition tree (T17.4): decode failure, mode/on_timeout outside the
 	// DSL vocabulary (snapshot drift). Rows are permanently re-tried each
@@ -345,6 +350,14 @@ func NewSet() (*Set, *prometheus.Registry) {
 			AuditPendingOldest: f.NewGauge(prometheus.GaugeOpts{
 				Name: "braid_audit_pending_oldest_age_seconds",
 				Help: "Age of the oldest audit_pending row; visibility lag upper bound is AuditFlushInterval — growth here means the knob or the drain rate is off (D-t61).",
+			}),
+			AuditPartitionWatermarkDays: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_audit_partition_watermark_days",
+				Help: "Audit_log partition watermark headroom in days (max bound minus today, DB clock). Janitor tops to +8; sustained values below 3 mean the janitor has stalled (restart api/worker before the watermark lapses, T20.7).",
+			}),
+			AuditPminRows: f.NewGauge(prometheus.GaugeOpts{
+				Name: "braid_audit_pmin_rows",
+				Help: "Rows landed in the audit_log p_min catch-all partition (exec_date before 2026-01-01). Any nonzero value is writer clock drift or backfill — the 0001_init monitoring promise.",
 			}),
 			OutboxRows: f.NewGaugeVec(prometheus.GaugeOpts{
 				Name: "braid_outbox_rows",

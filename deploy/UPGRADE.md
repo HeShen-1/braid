@@ -27,9 +27,14 @@
 ```
 
 **取舍记录(容器级 healthcheck)**:交付栈只给 mysql/redis 配容器级
-healthcheck(compose 依赖条件需要);braid 组件不配——存活面 = /healthz +
+healthcheck(compose 依赖条件需要);braid 组件存活面 = /healthz +
 metrics exposition 由外部监控探(镜像内 busybox wget 亦可人工探,
 `docker exec <容器> wget -qO- http://127.0.0.1:9090/metrics`)。
+**例外(T20.7)**:reaper 配 healthcheck,但探的不是存活——
+`braid audit-ready` 判 DB 分区水位覆盖当日(安装序闸:api/worker 的
+preflight 对水位不覆盖当日硬拒,reaper 健康即水位就绪,`up -d` 经
+`depends_on: service_healthy` 保证 janitor 首刷先行)。存活语义不变:
+healthcheck 失败不杀 reaper 容器,只挡依赖它的 api/worker 启动。
 
 **recreate 孤儿(T15.3)**:第 4 步 `up -d` 对变更配置的服务做 stop →
 recreate。交付 prod compose 的 worker 已钉 `hostname`(owner 身份跨
@@ -68,10 +73,18 @@ compose 的 `migrate` one-shot 服务已参数化(entrypoint 透传 command):
 
 ```
 1. golang-migrate up(旧组件仍在跑,窗口内混跑是设计内状态,不是异常)
-2. 逐组件换二进制并重启(建议 reaper 先起:分区水位/审计搬运尽恢复;
-   api 最后:入口面恢复即对外宣告完成)
+2. 逐组件换二进制并重启(reaper 先起——T20.7 起为执法级:分区水位/
+   审计搬运尽恢复;api 最后:入口面恢复即对外宣告完成)
 3. 全部组件换新后窗口关闭
 ```
+
+**reaper 先起的口径依据(T20.7)**:水位是 **DB 状态**而非 reaper 进程
+状态——janitor 每 tick 顶到 today+8,栈活着时滚动重启安全(水位远未
+衰减);唯一例外 = reaper 停摆 ≥8 天后水位跌破当日,此时任何重启前先
+手工判定:`docker compose -f deploy/prod.docker-compose.yml run --rm
+--entrypoint /usr/local/bin/braid reaper audit-ready`(或起 reaper 等其
+自愈),过闸再动 api/worker。水位衰减有预警:`AuditPartitionWatermarkLow`
+告警(余量 <3 天,deploy/prometheus/alerts.yml)。
 
 **维护纪律**:未来迁移若破坏该不变量(改既有列语义、重命名、删对象),必须
 两阶段(先增后删、间隔一个发布窗),并在 `docs/DECISIONS.md` 登记决策——
