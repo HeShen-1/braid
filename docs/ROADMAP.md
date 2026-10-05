@@ -20,7 +20,7 @@
 
 - [x] T19.1 min_success 部分容忍 — M — D- 三件语义拍板先行(①新字段 vs on_failure 第三值;②部分成功执行终态语义——波及 api 读面/告警/gather 物化口径;③部分失败 results 物化形态)— D-2026-10-05-t191(①独立整数字段正交 on_failure;②终态保持 SUCCEEDED 零枚举,波及面六面盘点实证零词表连锁;③null 保位 + failed_count 配置驱动)
 - [x] T19.2 foreach {{nodes.*.output.*}} 动态扇出 — L — 依赖 T19.1 — D- 破不变式三面重论证(finishIfDone 正确性 / lockAllRows 全行锁 / uk_node_exec 语义)+ dispatch-time 展开 + DBTX 批量读(T19.2 交付:D-2026-10-05-t192,Instantiate 分流/派发位 reconcile[缺行补插+盈余 SKIPPED 保留]/gather 活跃集滤除;零 DDL 不占 0015)
-- [ ] T19.3 SUCCEEDED/CANCELLED 执行回滚 — M-L — 独立 D- — 捆绑楔源预扫 + 执行级取消原语(现白名单仅 FAILED);是 T19.5/T19.6 的前置
+- [x] T19.3 SUCCEEDED/CANCELLED 执行回滚 — M-L — 独立 D- — 捆绑楔源预扫 + 执行级取消原语(现白名单仅 FAILED);是 T19.5/T19.6 的前置(T19.3 交付:D-2026-10-05-t193,楔源=取消楔停行集双捆绑[取消事务预扫+resume 自动定位退化链 FAILED→CANCELLED→PENDING 冻结]、CancelExecution 原语[在飞照样楔停,T19.6 前置]、RestartExecution 白名单三终态、worker 活态闸[认领时非 EXECUTING 幂等 ack,与轮次校验正交]、POST /executions/:id/cancel + CancelSet + canvas;零 DDL 不占 0015)
 - [ ] T19.4 reaper 自动续跑策略 — M — 拍板类(D-t92#5 现明文不自动复活终态执行;拍板是否开)
 - [ ] T19.5 parallel 增量恢复 — M — 依赖 T19.3 — 独立 D-(单实例粒度恢复,现整行集重跑;与实例收口/ReapInstanceExhausted 语义交叉)
 - [ ] T19.6 在飞回滚 quiesce 协议 — L — 依赖 T19.3 — 独立 D-(现 409 blocked_inflight 等 reaper settle)
