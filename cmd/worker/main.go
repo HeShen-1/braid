@@ -223,17 +223,19 @@ func run(ctx context.Context) error {
 		return fmt.Errorf("worker: prebuild tokenizers: %w", err)
 	}
 
+	// T20.4 沙箱清扫前租约活性复核(D-t151 决策 8-③ 转正):决策段独立
+	// 成 sandboxSweepHoldoff(单测锚面),语义与边界详见 D-t204——判活
+	// DB 端 NOW(3) 口径同 t15.2;时点刻意在 StartLease 之前(复占子面:
+	// acquire 后同行即自身持有,后查会漏活体 peer)。
+	sweepHoldoff := sandboxSweepHoldoff(ctx, mysqlDB, cfg.WorkerID)
+
 	// T15.2 节点号租约仲裁(D-t151 决策 2):三层解析在 ConfigFromEnv,
 	// 仲裁在此——显式号(含内建默认 2)被持即拒启,auto 池线性抢注;
 	// SIGTERM 优雅释放;续期失败 = 停发 + 优雅下线 asynq 消费 + 响亮
-	// 退出(只停签发会把副本变成烧 MaxRetry=1 预算的任务黑洞)。
-	lease, err := snowflake.StartLease(ctx, mysqlDB, snowflake.LeaseConfig{
-		Kind:   snowflake.KindWorker,
-		Spec:   cfg.SnowflakeNode,
-		Holder: snowflake.DefaultHolder(),
-		// T15.6 能力宣告(D-t151 决策 6):worker 的 mode=all 续跑复核腿。
-		Capabilities: snowflake.DeclaredCapabilities(),
-	})
+	// 退出(只停签发会把副本变成烧 MaxRetry=1 预算的任务黑洞)。Holder
+	// 对齐(T20.4,D-t204 决策 3)与能力宣告(T15.6,D-t151 决策 6)
+	// 钉在 workerLeaseConfig(单测锚面)。
+	lease, err := snowflake.StartLease(ctx, mysqlDB, workerLeaseConfig(cfg))
 	if err != nil {
 		return fmt.Errorf("worker: snowflake lease: %w", err)
 	}
@@ -325,7 +327,9 @@ func run(ctx context.Context) error {
 	// T10.1 沙箱启动接线:mode=docker 时 Probe 部署性前移(缺 bin/daemon
 	// 不可达/镜像缺失 = 拒启,绝不静默回落 local)+ label 清扫(cancel 窗
 	// 僵尸与 kill -9 孤儿兜底);off = 无操作零 docker 接触(dev 栈照跑)。
-	swept, err := tools.SandboxStartupCheck(ctx, os.Getenv)
+	// t20.4:sweepHoldoff 非空 ⇒ 清扫跳过(上方 StartLease 前复核结论,
+	// probe 照跑不因跳过失效)。
+	swept, err := tools.SandboxStartupCheck(ctx, os.Getenv, sweepHoldoff)
 	if err != nil {
 		return fmt.Errorf("worker: sandbox startup check: %w", err)
 	}
@@ -379,6 +383,46 @@ func run(ctx context.Context) error {
 // releaseLease 是 SIGTERM 语义半边(决策 2:优雅停机必须 DELETE 释放):
 // asynq 排空完成后删本行;lost 路径调用安全(行非本持,幂等)。独立
 // Background ctx——根 ctx 在停机路径已取消。
+// sandboxSweepHoldoff 是 t20.4 沙箱清扫前租约活性复核的决策段(D-t151
+// 决策 8-③ 转正,D-2026-10-05-t204):同 owner 的 worker 租约在场
+// (expires_at >= DB 端 NOW(3),口径与 t15.2 一致)⇒ 非空跳过原因——
+// 活体同 owner 冲突(部署契约违例)下,后来者不清活体 peer 的在飞沙箱;
+// 死 owner 残容器照清("" = 清扫执行)。复核不可达 ⇒ 非空(fail-safe
+// 跳过,误跳过 < 误杀,同 D-t151 决策 6 取舍);误跳过窗(kill -9 或
+// release 失败残窗 <TTL 内重启)由下次启动/runbook 收敛(D-t204 边界①)。
+// 时点契约 = StartLease 之前调用:显式号同 holder 复占后同行即自身持有,
+// acquire 后按持有行查会把活体 peer 漏成自身;acquire 前任何同 holder
+// 在场行都可见(含即将被复占的行,D-t204 决策 2)。
+func sandboxSweepHoldoff(ctx context.Context, dbh *sql.DB, workerID string) string {
+	peer, err := snowflake.HolderLive(ctx, dbh, snowflake.KindWorker, workerID)
+	if err != nil {
+		slog.Warn("worker: sandbox sweep holdoff: holder liveness probe failed", "err", err)
+		return fmt.Sprintf("liveness probe failed: %v", err)
+	}
+	if peer != nil {
+		slog.Warn("worker: sandbox sweep holdoff: live peer holds this owner",
+			"owner", workerID, "peer_node", peer.Node, "peer_holder", peer.HolderID, "peer_expires_at", peer.ExpiresAt)
+		return fmt.Sprintf("live peer node %d (%s) expires %s", peer.Node, peer.HolderID, peer.ExpiresAt)
+	}
+	return ""
+}
+
+// workerLeaseConfig 钉 worker 租约装配(D-t204 决策 3):Holder = cfg.
+// WorkerID——身份唯一性契约与 owner 同源(D-t151 决策 5),缺省路径
+// WorkerID = hostname 与 DefaultHolder 字节等价;显式 BRAID_WORKER_ID
+// 时 holder 与 owner 同串,sandboxSweepHoldoff 的复核才命中(一行回退
+// DefaultHolder = 显式形态下复核恒空转,误杀面复活)。能力宣告(T15.6,
+// D-t151 决策 6:worker 的 mode=all 续跑复核腿)同锚于此。独立构造
+// 单点 = 单测锚面。
+func workerLeaseConfig(cfg worker.Config) snowflake.LeaseConfig {
+	return snowflake.LeaseConfig{
+		Kind:         snowflake.KindWorker,
+		Spec:         cfg.SnowflakeNode,
+		Holder:       cfg.WorkerID,
+		Capabilities: snowflake.DeclaredCapabilities(),
+	}
+}
+
 func releaseLease(component string, lease *snowflake.Lease) {
 	rctx, cancel := context.WithTimeout(context.Background(), traceShutdownGrace)
 	defer cancel()

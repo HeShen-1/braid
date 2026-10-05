@@ -7,14 +7,18 @@ package main
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"testing"
+	"time"
 
 	_ "github.com/go-sql-driver/mysql"
 
+	"braid/internal/db/sqltest"
 	"braid/internal/llm"
 	"braid/internal/metrics"
 	"braid/internal/notify"
 	"braid/internal/snowflake"
+	"braid/internal/worker"
 )
 
 func TestBuildNotifier(t *testing.T) {
@@ -125,6 +129,93 @@ func TestRunRequiresDSN(t *testing.T) {
 	if err := run(context.Background()); err == nil {
 		t.Fatalf("missing DSN accepted")
 	}
+}
+
+// TestWorkerLeaseConfigHolderAlignment(T20.4 锚,D-t204 决策 3):租约
+// Holder 与 cfg.WorkerID 同串——一行回退 DefaultHolder 会让显式
+// BRAID_WORKER_ID 形态下 sandboxSweepHoldoff 复核恒空转(误杀面复活)
+// 且三件套不红,本锚钉死;能力宣告面(T15.6)同锚。
+func TestWorkerLeaseConfigHolderAlignment(t *testing.T) {
+	cases := []struct{ name, workerID string }{
+		{"explicit id", "braid-worker-a"},
+		{"hostname default shape", "host-12345"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := worker.Config{WorkerID: tc.workerID, SnowflakeNode: snowflake.Auto()}
+			got := workerLeaseConfig(cfg)
+			if got.Kind != snowflake.KindWorker || got.Holder != tc.workerID {
+				t.Fatalf("lease config = (%s, %q), want (worker, %q)(Holder 对齐 cfg.WorkerID,D-t204 决策 3)", got.Kind, got.Holder, tc.workerID)
+			}
+			if got.Spec != cfg.SnowflakeNode {
+				t.Fatalf("spec = %+v, want %+v(三层解析产物直传)", got.Spec, cfg.SnowflakeNode)
+			}
+			want := snowflake.DeclaredCapabilities()
+			if len(got.Capabilities) != len(want) {
+				t.Fatalf("capabilities = %v, want %v", got.Capabilities, want)
+			}
+			for i := range want {
+				if got.Capabilities[i] != want[i] {
+					t.Fatalf("capabilities[%d] = %q, want %q(T15.6 宣告面)", i, got.Capabilities[i], want[i])
+				}
+			}
+		})
+	}
+}
+
+// TestSandboxSweepHoldoffDecision(T20.4 锚,t13 栈 MySQL;栈不可达自动
+// skip):复核决策三态——活体 peer ⇒ 非空(带 peer 详情,供日志/断言);
+// 无行/过期 ⇒ ""(清扫照走);复核不可达 ⇒ 非空(fail-safe)。
+// run() 内「StartLease 之前」的调用时点契约由 D-t204 决策 2 + 演练
+// arm ③ 承载(全 run() 集成测试需整套 env,不在单测面)。
+func TestSandboxSweepHoldoffDecision(t *testing.T) {
+	dbh := sqltest.MustOpenAt(t, "braid_worker_holdoff_test")
+	t.Cleanup(func() { _ = dbh.Close() })
+	ctx := context.Background()
+	clear := func() {
+		t.Helper()
+		if _, err := dbh.Exec(`DELETE FROM snowflake_node_lease`); err != nil {
+			t.Fatalf("clear leases: %v", err)
+		}
+	}
+	seed := func(holderID string, expiresIn time.Duration) {
+		t.Helper()
+		if _, err := dbh.Exec(
+			`INSERT INTO snowflake_node_lease (node_id, kind, holder_id, expires_at)
+			 VALUES (7, 'worker', ?, DATE_ADD(NOW(3), INTERVAL ? MICROSECOND))`,
+			holderID, expiresIn.Microseconds()); err != nil {
+			t.Fatalf("seed lease: %v", err)
+		}
+	}
+	t.Run("live peer yields holdoff", func(t *testing.T) {
+		clear()
+		seed("worker:w1", 20*time.Second)
+		if h := sandboxSweepHoldoff(ctx, dbh, "w1"); !strings.Contains(h, "worker:w1") {
+			t.Fatalf("holdoff = %q, want peer detail(活体 ⇒ 跳过清扫)", h)
+		}
+	})
+	t.Run("expired peer clears", func(t *testing.T) {
+		clear()
+		seed("worker:w1", -time.Second)
+		if h := sandboxSweepHoldoff(ctx, dbh, "w1"); h != "" {
+			t.Fatalf("holdoff = %q, want empty(死 owner:清扫照走)", h)
+		}
+	})
+	t.Run("no rows clears", func(t *testing.T) {
+		clear()
+		if h := sandboxSweepHoldoff(ctx, dbh, "w1"); h != "" {
+			t.Fatalf("holdoff = %q, want empty", h)
+		}
+	})
+	t.Run("probe failure fail-safes to holdoff", func(t *testing.T) {
+		closed := sqltest.MustOpenAt(t, "braid_worker_holdoff_test")
+		if err := closed.Close(); err != nil {
+			t.Fatalf("close fixture: %v", err)
+		}
+		if h := sandboxSweepHoldoff(ctx, closed, "w1"); h == "" {
+			t.Fatalf("holdoff = empty, want non-empty(复核不可达 ⇒ 不清)")
+		}
+	})
 }
 
 // TestMetricsVocabularyPinnedToLLM 锚定 llm 失败类/结局词面与 metrics

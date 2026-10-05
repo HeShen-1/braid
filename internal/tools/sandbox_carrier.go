@@ -27,6 +27,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -466,14 +467,19 @@ var sandboxSweepTimeout = 30 * time.Second
 // 镜像缺失/版本低于下限 = 拒启,绝不静默回落 local)+ owner 必填闸
 // (T15.3:缺身份 = 拒启,清扫互杀面零回退)+ SandboxSweep 按 (全局,
 // owner) 二元组清扫(只清自家 cancel 窗僵尸;probe 已保证 daemon 可达,
-// sweep 失败同样响亮败)。返回成功移除的容器 id 供调用方记录。api 进程
+// sweep 失败同样响亮败)。sweepHoldoff 非空(t20.4 租约活性复核命中:同
+// owner 的 worker 租约在场,或复核不可达的 fail-safe)⇒ probe 照跑、
+// 清扫跳过(WARN 带原因)——活体同 owner 冲突(部署契约违例)下不清
+// 活体 peer 的在飞沙箱,死 owner 残容器照清(误跳过 < 误杀,同 D-t151
+// 决策 6 取舍);判定时点在调用方 StartLease 之前(snowflake.HolderLive),
+// 本函数只消费结论。返回成功移除的容器 id 供调用方记录。api 进程
 // 不调用本函数(不执行工具,BuiltinToolsFromEnv 构造已 docker-free)。
 //
 // 失败归因:探测/清扫窗内收到停机信号时,exec 错误呈 "signal: killed"
 // (exec.Wait 优先 ExitError,错误链不含 Canceled)——先归因回 ctx.Err(),
 // worker main 的正常停机出口(errors.Is(context.Canceled) → exit 0)才
 // 不被误判为 fatal 部署失败(carrier Run 的 ctx 优先归因同款)。
-func SandboxStartupCheck(ctx context.Context, getenv func(string) string) ([]string, error) {
+func SandboxStartupCheck(ctx context.Context, getenv func(string) string, sweepHoldoff string) ([]string, error) {
 	cfg, err := sandboxConfigFromEnv(getenv)
 	if err != nil {
 		return nil, err
@@ -493,6 +499,10 @@ func SandboxStartupCheck(ctx context.Context, getenv func(string) string) ([]str
 			return nil, ctxErr
 		}
 		return nil, err
+	}
+	if sweepHoldoff != "" {
+		slog.Warn("tools: sandbox sweep skipped: owner lease liveness recheck (t20.4)", "reason", sweepHoldoff)
+		return nil, nil
 	}
 	sctx, cancel := context.WithTimeout(ctx, sandboxSweepTimeout)
 	defer cancel()
