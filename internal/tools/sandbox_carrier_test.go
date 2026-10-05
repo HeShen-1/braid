@@ -755,7 +755,7 @@ func TestSandboxStartupCheck(t *testing.T) {
 	t.Run("off mode touches nothing", func(t *testing.T) {
 		bin, dir := fakeNamedDockerShim(t, "docker", "rec \"$@\"\nexit 9")
 		t.Setenv("PATH", filepath.Dir(bin))
-		removed, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "off"}))
+		removed, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "off"}), "")
 		if err != nil {
 			t.Fatalf("err = %v, want nil", err)
 		}
@@ -782,7 +782,7 @@ esac
 		removed, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{
 			"BRAID_TOOL_SANDBOX":       "docker",
 			"BRAID_TOOL_SANDBOX_OWNER": "w1",
-		}))
+		}), "")
 		if err != nil {
 			t.Fatalf("err = %v", err)
 		}
@@ -811,7 +811,7 @@ esac
 	t.Run("docker mode without owner refuses startup before probe", func(t *testing.T) {
 		bin, dir := fakeNamedDockerShim(t, "docker", "rec \"$@\"\nexit 9")
 		t.Setenv("PATH", filepath.Dir(bin))
-		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "docker"}))
+		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "docker"}), "")
 		if err == nil || !strings.Contains(err.Error(), "BRAID_TOOL_SANDBOX_OWNER") {
 			t.Fatalf("err = %v, want named-key owner requirement", err)
 		}
@@ -833,7 +833,7 @@ esac
 		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{
 			"BRAID_TOOL_SANDBOX":       "docker",
 			"BRAID_TOOL_SANDBOX_OWNER": "w1",
-		}))
+		}), "")
 		if err == nil || !strings.Contains(err.Error(), "unreachable") {
 			t.Fatalf("err = %v, want probe rejection", err)
 		}
@@ -858,7 +858,7 @@ esac
 			"BRAID_TOOL_SANDBOX":       "docker",
 			"BRAID_TOOL_SANDBOX_IMAGE": "reg.local/braid/sandbox:2",
 			"BRAID_TOOL_SANDBOX_OWNER": "w1",
-		})); err != nil {
+		}), ""); err != nil {
 			t.Fatalf("err = %v", err)
 		}
 		lines := shimArgv(t, dir)
@@ -870,7 +870,7 @@ esac
 	t.Run("invalid mode env is loud", func(t *testing.T) {
 		bin, dir := fakeNamedDockerShim(t, "docker", "rec \"$@\"\nexit 9")
 		t.Setenv("PATH", filepath.Dir(bin))
-		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "auto"}))
+		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{"BRAID_TOOL_SANDBOX": "auto"}), "")
 		if err == nil || !strings.Contains(err.Error(), "BRAID_TOOL_SANDBOX") {
 			t.Fatalf("err = %v, want named-key rejection", err)
 		}
@@ -892,7 +892,7 @@ esac
 		_, err := SandboxStartupCheck(ctx, envOf(map[string]string{
 			"BRAID_TOOL_SANDBOX":       "docker",
 			"BRAID_TOOL_SANDBOX_OWNER": "w1",
-		}))
+		}), "")
 		if !errors.Is(err, context.DeadlineExceeded) {
 			t.Fatalf("err = %v, want ctx deadline attribution", err)
 		}
@@ -909,9 +909,72 @@ esac
 		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{
 			"BRAID_TOOL_SANDBOX":       "docker",
 			"BRAID_TOOL_SANDBOX_OWNER": "w1",
-		}))
+		}), "")
 		if err == nil || !strings.Contains(err.Error(), "budget") {
 			t.Fatalf("err = %v, want sweep budget rejection", err)
+		}
+	})
+
+	// t20.4 活性复核命中(非空 holdoff)⇒ 清扫跳过、probe 照跑——部署性
+	// 拒启闸不因跳过清扫而失效;零 ps/rm 接触,跳过不是错误(残容器留待
+	// 下次启动/runbook,误跳过 < 误杀)。
+	t.Run("holdoff skips sweep but probes", func(t *testing.T) {
+		bin, dir := fakeNamedDockerShim(t, "docker", `
+rec "$@"
+case "$1" in
+info) echo 24.0.7 ;;
+image) exit 0 ;;
+ps) printf 'abc123\n' ;;
+rm) exit 0 ;;
+*) exit 9 ;;
+esac
+`)
+		t.Setenv("PATH", filepath.Dir(bin))
+		removed, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{
+			"BRAID_TOOL_SANDBOX":       "docker",
+			"BRAID_TOOL_SANDBOX_OWNER": "w1",
+		}), "live peer node 8 (worker:w1)")
+		if err != nil {
+			t.Fatalf("err = %v, want nil(跳过清扫不是错误)", err)
+		}
+		if removed != nil {
+			t.Fatalf("removed = %v, want nil", removed)
+		}
+		want := []string{
+			"info --format {{.ServerVersion}}",
+			"image inspect braid-tool-sandbox:1",
+		}
+		lines := shimArgv(t, dir)
+		if len(lines) != len(want) {
+			t.Fatalf("invocations = %q, want %q(probe 照跑,零清扫接触)", lines, want)
+		}
+		for i := range want {
+			if lines[i] != want[i] {
+				t.Fatalf("invocation[%d] = %q, want %q", i, lines[i], want[i])
+			}
+		}
+	})
+
+	// t20.4 补锚(双方向):holdoff 不吞 probe 失败——跳过只发生在 probe
+	// 通过之后,部署性拒启闸不因 holdoff 失效(成功方向见上臂)。
+	t.Run("holdoff does not swallow probe failure", func(t *testing.T) {
+		bin, dir := fakeNamedDockerShim(t, "docker", `
+rec "$@"
+case "$1" in
+info) exit 1 ;;
+*) exit 9 ;;
+esac
+`)
+		t.Setenv("PATH", filepath.Dir(bin))
+		_, err := SandboxStartupCheck(context.Background(), envOf(map[string]string{
+			"BRAID_TOOL_SANDBOX":       "docker",
+			"BRAID_TOOL_SANDBOX_OWNER": "w1",
+		}), "live peer node 8 (worker:w1)")
+		if err == nil || !strings.Contains(err.Error(), "unreachable") {
+			t.Fatalf("err = %v, want probe rejection despite holdoff", err)
+		}
+		if lines := shimArgv(t, dir); len(lines) != 1 || lines[0] != "info --format {{.ServerVersion}}" {
+			t.Fatalf("invocations = %q, want probe info only", lines)
 		}
 	})
 }

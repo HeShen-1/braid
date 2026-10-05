@@ -323,6 +323,112 @@ func TestInFleet(t *testing.T) {
 	}
 }
 
+// TestHolderLive(t20.4 清扫前活性复核读面):同 kind+identity 的在场行命中
+// (判活全 DB 端 NOW(3),与 acquire/InFleet 同口径);无行/过期/异 kind/
+// 异 identity ⇒ 无活体。holder_id = kind:identity 拼装单源在本包,同宿主
+// 跨类(api/worker 同机)不互认。多行同持(部署契约违例形态)取最晚到期
+// 一行供诊断。DB 错误原样上抛(调用侧 fail-safe:复核不可达 ⇒ 不清)。
+func TestHolderLive(t *testing.T) {
+	dbh := openLeaseDB(t)
+	ctx := context.Background()
+	insertKind := func(node uint16, kind LeaseKind, identity string, expiresIn time.Duration) {
+		t.Helper()
+		if _, err := dbh.Exec(
+			`INSERT INTO snowflake_node_lease (node_id, kind, holder_id, expires_at)
+			 VALUES (?, ?, ?, DATE_ADD(NOW(3), INTERVAL ? MICROSECOND))`,
+			node, kind, string(kind)+":"+identity, expiresIn.Microseconds()); err != nil {
+			t.Fatalf("insert fixture: %v", err)
+		}
+	}
+	// insertKindCaps 同上但带能力宣告(真 worker 行恒非 NULL——复核读面的
+	// capabilities 解析分支锚)。
+	insertKindCaps := func(node uint16, kind LeaseKind, identity string, expiresIn time.Duration, caps string) {
+		t.Helper()
+		if _, err := dbh.Exec(
+			`INSERT INTO snowflake_node_lease (node_id, kind, holder_id, expires_at, capabilities)
+			 VALUES (?, ?, ?, DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), ?)`,
+			node, kind, string(kind)+":"+identity, expiresIn.Microseconds(), caps); err != nil {
+			t.Fatalf("insert fixture: %v", err)
+		}
+	}
+
+	t.Run("live peer matched", func(t *testing.T) {
+		clearLeases(t, dbh)
+		insertKindCaps(7, KindWorker, "w1", 20*time.Second, `["`+CapApprovalModeAll+`"]`)
+		got, err := HolderLive(ctx, dbh, KindWorker, "w1")
+		if err != nil {
+			t.Fatalf("HolderLive: %v", err)
+		}
+		if got == nil || got.Node != 7 || got.HolderID != "worker:w1" || got.Kind != KindWorker {
+			t.Fatalf("got = %+v, want node 7 worker:w1", got)
+		}
+		if len(got.Capabilities) != 1 || got.Capabilities[0] != CapApprovalModeAll {
+			t.Fatalf("Capabilities = %v, want [%s](宣告行解析,InFleet 同款)", got.Capabilities, CapApprovalModeAll)
+		}
+		if got.ExpiresAt.IsZero() {
+			t.Fatalf("ExpiresAt zero, want row expiry(诊断详情面)")
+		}
+	})
+	deadCases := []struct {
+		name string
+		seed func()
+	}{
+		{"expired row is dead", func() { insertKind(7, KindWorker, "w1", -time.Second) }},
+		{"absent row is dead", func() {}},
+		{"same host different kind is not matched", func() { insertKind(7, KindReaper, "w1", 20*time.Second) }},
+		{"different identity is not matched", func() { insertKind(7, KindWorker, "w2", 20*time.Second) }},
+		// 表缺省 ai_ci 大小写不敏感;判等显式 bin 字节精确——docker label
+		// 过滤同语义,W1 与 w1 是互不相及的两个 owner,不互判活体。
+		{"case-variant identity is a different owner", func() { insertKind(7, KindWorker, "W1", 20*time.Second) }},
+	}
+	for _, tc := range deadCases {
+		t.Run(tc.name, func(t *testing.T) {
+			clearLeases(t, dbh)
+			tc.seed()
+			got, err := HolderLive(ctx, dbh, KindWorker, "w1")
+			if err != nil || got != nil {
+				t.Fatalf("got = (%+v, %v), want (nil, nil)(死 owner:清扫照走)", got, err)
+			}
+		})
+	}
+	t.Run("two live rows return latest expiry", func(t *testing.T) {
+		clearLeases(t, dbh)
+		insertKind(7, KindWorker, "w1", 10*time.Second)
+		insertKind(8, KindWorker, "w1", 30*time.Second) // 违例形态:双 worker 同 owner
+		got, err := HolderLive(ctx, dbh, KindWorker, "w1")
+		if err != nil {
+			t.Fatalf("HolderLive: %v", err)
+		}
+		if got == nil || got.Node != 8 {
+			t.Fatalf("got = %+v, want node 8(最晚到期,诊断详情)", got)
+		}
+	})
+	t.Run("db error propagates", func(t *testing.T) {
+		closed := sqltest.MustOpenAt(t, "braid_lease_test")
+		if err := closed.Close(); err != nil {
+			t.Fatalf("close fixture: %v", err)
+		}
+		if _, err := HolderLive(ctx, closed, KindWorker, "w1"); err == nil {
+			t.Fatalf("err = nil, want query error propagation(调用侧 fail-safe)")
+		}
+	})
+	// 写读配对锚(cmd/worker 装配契约):StartLease 的 Holder 实参与
+	// HolderLive 的 identity 实参同串 ⇒ 必命中自身行(Holder 对齐
+	// cfg.WorkerID 的 API 面契约,回退 hostname 即失配——锚见 cmd/worker)。
+	t.Run("acquire holder identity pairing round-trip", func(t *testing.T) {
+		clearLeases(t, dbh)
+		l, err := StartLease(ctx, dbh, leaseCfg(KindWorker, "w1", Auto()))
+		if err != nil {
+			t.Fatalf("StartLease: %v", err)
+		}
+		defer func() { _ = l.Release(context.Background()) }()
+		got, err := HolderLive(ctx, dbh, KindWorker, "w1")
+		if err != nil || got == nil || got.Node != l.Node() || got.HolderID != "worker:w1" {
+			t.Fatalf("got = (%+v, %v), want own row node %d worker:w1(Holder 实参 == identity 实参契约)", got, err, l.Node())
+		}
+	})
+}
+
 // --- 续期 / lost / 停发闸 ----------------------------------------------------
 
 // TestLeaseRenewalAndLost:续期把 expires_at 向前推;行被他持/续期落空 →

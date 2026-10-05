@@ -266,7 +266,9 @@ SELECT node_id, kind, holder_id, expires_at,
        expires_at < NOW(3) AS expired
 FROM braid.snowflake_node_lease ORDER BY node_id;
 
--- 清行:只清确认已死实例的行(holder = kind:hostname;勿清活体——
+-- 清行:只清确认已死实例的行(holder = kind:<实例身份>——worker 侧
+-- = BRAID_WORKER_ID(T20.4 起与 sandbox owner 同源),api/reaper =
+-- hostname;以诊断 SELECT 回显的 holder_id 为准,勿手拼;勿清活体——
 -- 清活体 = 制造双持窗)
 DELETE FROM braid.snowflake_node_lease
 WHERE node_id = <N> AND holder_id = '<kind>:<hostname>';

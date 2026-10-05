@@ -57,7 +57,11 @@ docker network rm <net>
 沙箱容器打 `braid.sandbox.owner=<WorkerID>` label,worker 启动清扫只清
 自家(全局清扫**无代码路径**——kill -9 孤儿、recreate 前身容器等跨
 owner 回收是本节显式原语)。死实例身份可知:owner label 与
-`node_attempt.worker_id` 对账面同源同词形。
+`node_attempt.worker_id` 对账面同源同词形。T20.4(D-t204)起启动清扫带
+租约活性复核:同 owner 的 worker 租约在场(DB 判活,以复核时点
+StartLease 之前在场为准;含 ≤TTL 残窗)⇒ 本次启动自动跳过清扫——活体
+同 owner 冲突下不清活体 peer 的在飞沙箱;被跳过的孤儿(含 kill -9 或
+SIGTERM release 失败残窗内重启的死者残容器)由本节 ② 按 owner 精确清。
 
 ```sh
 # ① 枚举 + 归属判读:每只容器的 owner label 即归属身份(与 DB 的
@@ -84,10 +88,12 @@ T15.3 升级窗特例**:旧二进制所起的前身容器没有 owner label,② 
 清扫都结构性够不到,只能用 ③(先确认无其他活体 worker),此后再无此
 形态(详见 deploy/UPGRADE.md 注记)。
 
-边界(登记不修,D-t151 #8-③):手工同 hostname ×2 等活体同 owner 冲突
-会复活互杀面;「sweep 前租约活性复核」选型 = 部署契约承载(followup
-位,依赖 t15.2 租约表)。与 §1.1 泄漏网的耦合:附着容器非零的网一律
-不回收(§1.1 第 4 步),先按本节清容器再回收网。
+边界(D-t151 #8-③;T20.4/D-t204 起活性复核已转正为代码缓解,见本节
+开头注记):手工同 hostname ×2 等活体同 owner 冲突的互杀主面已由复核
+收口;残余面 = 复核时点之后才 acquire 的同 owner 新生成(以复核时点
+在场为准)、残窗内重启的误跳过一次、复占双签发(归 T20.1 fencing)。
+与 §1.1 泄漏网的耦合:附着容器非零的网一律不回收(§1.1 第 4 步),
+先按本节清容器再回收网。
 
 ## 2. 调度手工原语(T17.3,T7.4 收口)
 

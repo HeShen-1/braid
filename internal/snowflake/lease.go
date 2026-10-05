@@ -442,6 +442,42 @@ func InFleet(ctx context.Context, dbh *sql.DB) ([]FleetInstance, error) {
 	return out, nil
 }
 
+// HolderLive 返回同 kind+identity 的在场租约行(t20.4 沙箱清扫前活性复核
+// 读面,D-t151 决策 8-③ 转正):无行或已过期 ⇒ (nil, nil)——「死 owner」
+// 判定,清扫照走;在场 ⇒ 该行(多行同持的违例形态取最晚到期,供日志)。
+// holder_id 拼装(kind:identity)单源在本包,同宿主跨类不互认;判等显式
+// utf8mb4_bin 字节精确(与沙箱 owner label 的 docker 过滤同语义——表缺省
+// ai_ci 大小写不敏感,异 case 的两个合法 owner 会被互判活体,恒误跳过
+// 自家残容器清扫;acquire 的 CAS 判等维持表缺省不动,那是 T15.2 既有
+// 复占面,归 T20.1 fencing 口径)。判活与 acquire/InFleet 同口径:全 DB 端
+// NOW(3),应用时钟漂移不入库。查询错误原样上抛——调用侧 fail-safe:
+// 复核不可达 ⇒ 跳过清扫(误跳过 < 误杀,同 D-t151 决策 6 取舍)。预期
+// 调用时点 = 调用方 StartLease 之前(自身行尚不存在,任何同 holder 在场
+// 行都是 peer;复占后同行即自身持有,后查会把活体 peer 漏成自身)。
+func HolderLive(ctx context.Context, dbh *sql.DB, kind LeaseKind, identity string) (*FleetInstance, error) {
+	var inst FleetInstance
+	var caps []byte
+	err := dbh.QueryRowContext(ctx,
+		`SELECT node_id, kind, holder_id, expires_at, capabilities
+		 FROM snowflake_node_lease
+		 WHERE kind = ? AND holder_id COLLATE utf8mb4_bin = ? AND expires_at >= NOW(3)
+		 ORDER BY expires_at DESC LIMIT 1`,
+		kind, string(kind)+":"+identity).
+		Scan(&inst.Node, &inst.Kind, &inst.HolderID, &inst.ExpiresAt, &caps)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("snowflake: holder liveness scan (%s:%s): %w", kind, identity, err)
+	}
+	if caps != nil {
+		if err := json.Unmarshal(caps, &inst.Capabilities); err != nil {
+			return nil, fmt.Errorf("snowflake: fleet capabilities parse (holder %s): %w", inst.HolderID, err)
+		}
+	}
+	return &inst, nil
+}
+
 // --- 续期 -------------------------------------------------------------------
 
 // renewLoop 每 TTL/3 续期一次:UPDATE 只匹配本持行。任何失败(错误或
