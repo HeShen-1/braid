@@ -17,9 +17,12 @@ import (
 	"time"
 )
 
-// TestIPForbidden 锁定默认禁段口径(ARCHITECTURE §3.4 L76):私网/环回/
-// 链路本地(169.254/16 内含 metadata 169.254.169.254)/CGNAT,另收
-// 未指定/组播/广播——永不合法的拨号目标,fail-closed。边界值钉死相邻段。
+// TestIPForbidden 锁定默认禁段口径(ARCHITECTURE §3.4):私网/环回/链路
+// 本地(169.254/16 内含 metadata 169.254.169.254)/CGNAT,另收未指定/
+// 组播/广播;扩禁五段(D-2026-10-05-ssrf-five-ranges,关闭 D-2026-09-23-
+// ssrf-extra-ranges 待议项):NAT64 well-known 64:ff9b::/96、198.18.0.0/15、
+// 192.0.0.0/24、0.0.0.0/8、240.0.0.0/4——永不合法的拨号目标,fail-closed。
+// 边界值钉死相邻段。
 func TestIPForbidden(t *testing.T) {
 	cases := []struct {
 		name string
@@ -53,12 +56,47 @@ func TestIPForbidden(t *testing.T) {
 		{"multicast v4 high", "239.255.255.254", true},
 		{"multicast v6", "ff02::1", true},
 		{"broadcast", "255.255.255.255", true},
-		// IPv4-mapped IPv6 归一后同口径
+		// 扩禁五段(D-2026-10-05-ssrf-five-ranges,2026-10-05 用户拍板):
+		// 环境依赖的可拨保留段一律拒。0/8 全零(unspecified)与 240/4
+		// 广播原已拒,此处钉「其余部分」与段内全谱。
+		// 0.0.0.0/8 非全零(this-network 段)
+		{"this-network 0/8 non-zero", "0.1.2.3", true},
+		{"this-network 0/8 high", "0.255.255.254", true},
+		// 240.0.0.0/4 剩余(class E 保留)
+		{"reserved class E low", "240.0.0.1", true},
+		{"reserved class E mid", "250.100.1.1", true},
+		{"reserved class E high non-bcast", "255.255.255.254", true},
+		// 198.18.0.0/15(RFC 2544 基准段,部分云 LB 内部使用;198.19.x
+		// 为 t10.1 旧 hermetic 段,已随扩禁重选为 198.51.100.0/24)
+		{"benchmark 198.18/15 low", "198.18.0.1", true},
+		{"benchmark 198.18/15 mid-high", "198.18.255.254", true},
+		{"benchmark 198.18/15 old-hermetic", "198.19.0.1", true},
+		{"benchmark 198.18/15 high", "198.19.255.254", true},
+		// 192.0.0.0/24(IETF 协议分配段)
+		{"ietf protocol in", "192.0.0.1", true},
+		{"ietf protocol in-high", "192.0.0.254", true},
+		// NAT64 well-known 64:ff9b::/96:内嵌 v4 可经 NAT64 出口触达内网,
+		// To4()==nil 逃 v4 分支,由 v6 分支收口
+		{"nat64 prefix addr", "64:ff9b::", true},
+		{"nat64 embedded v4", "64:ff9b::1.2.3.4", true},
+		{"nat64 high", "64:ff9b::ffff:ffff", true},
+		// IPv4-mapped IPv6 归一后同口径(四个新 v4 段各一锚)
 		{"mapped private", "::ffff:10.0.0.1", true},
 		{"mapped loopback", "::ffff:127.0.0.1", true},
+		{"mapped benchmark", "::ffff:198.18.0.1", true},
+		{"mapped this-network", "::ffff:0.1.2.3", true},
+		{"mapped ietf protocol", "::ffff:192.0.0.1", true},
+		{"mapped class E", "::ffff:240.0.0.1", true},
 		// 公网放行(含各禁段紧邻边界,防 off-by-one)
 		{"public", "1.1.1.1", false},
 		{"public doc", "203.0.113.10", false},
+		{"public doc testnet2 (new hermetic)", "198.51.100.10", false},
+		{"this-network above", "1.0.0.1", false},
+		{"benchmark below", "198.17.255.254", false},
+		{"benchmark above", "198.20.0.1", false},
+		{"ietf protocol below", "191.255.255.254", false},
+		{"ietf protocol above", "192.0.1.1", false},
+		{"nat64 above /96", "64:ff9b:0:0:0:1::", false},
 		{"cgnat below", "100.63.255.254", false},
 		{"cgnat above", "100.128.0.1", false},
 		{"private 172 below", "172.15.255.254", false},
@@ -66,11 +104,6 @@ func TestIPForbidden(t *testing.T) {
 		{"private 192 above", "192.169.0.1", false},
 		{"public v6", "2606:4700:4700::1111", false},
 		{"public v6 2001", "2001:4860:4860::8888", false},
-		// 口径外保留段放行锚点:钉住当前口径,防类别助手语义漂移方向的
-		// 变异(过度阻断)无测试可见;扩禁段须先走 DECISIONS 流程。
-		{"this-network 0/8 non-zero", "0.1.2.3", false},
-		{"reserved class E", "240.0.0.1", false},
-		{"benchmark 198.18/15", "198.18.0.1", false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

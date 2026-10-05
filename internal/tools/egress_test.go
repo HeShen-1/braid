@@ -10,8 +10,7 @@ package tools
 //     egressDenialError 映射回真哨兵(ErrHostBlocked/ErrSSRFBlocked),
 //     runner 既有 errors.Is 分类零改动(D-t101 #6 同哲学);
 //   - IP 字面量端点不做 DNS(与 http.go allowlistKey「IP 字面量原样」
-//     同判),198.18.0.0/15 段放行口径继承 ipForbidden
-//     (D-2026-09-23-ssrf-extra-ranges)。
+//     同判),扩禁五段口径继承 ipForbidden(D-2026-10-05-ssrf-five-ranges)。
 
 import (
 	"bufio"
@@ -195,6 +194,19 @@ func TestEgressProxyPolicy(t *testing.T) {
 			},
 			resolver:     fakeResolver(t, map[string][]string{"rebind.test": {"10.0.0.5"}}),
 			authority:    "rebind.test:443",
+			wantCode:     403,
+			wantReason:   egressReasonSSRFBlocked,
+			wantSentinel: ErrSSRFBlocked,
+		},
+		{
+			name: "name resolving to expanded-range ip denied",
+			allow: map[string]map[int]struct{}{
+				"rebind2.test": {443: {}},
+			},
+			// 扩禁五段(D-2026-10-05-ssrf-five-ranges):代理侧解析后的
+			// IP 判定与直连路径同则——基准段同哨兵拒。
+			resolver:     fakeResolver(t, map[string][]string{"rebind2.test": {"198.18.0.5"}}),
+			authority:    "rebind2.test:443",
 			wantCode:     403,
 			wantReason:   egressReasonSSRFBlocked,
 			wantSentinel: ErrSSRFBlocked,
@@ -468,14 +480,14 @@ func TestEgressAllowFromEndpoints(t *testing.T) {
 		"a":        "https://Example.COM",
 		"b":        "https://example.com:8443",
 		"c":        "https://example.com:443",
-		"hermetic": "https://198.19.0.1:32768",
+		"hermetic": "https://198.51.100.1:32768",
 	})
 	if err != nil {
 		t.Fatalf("EgressAllowFromEndpoints: %v", err)
 	}
 	want := map[string]map[int]struct{}{
-		"example.com": {443: {}, 8443: {}},
-		"198.19.0.1":  {32768: {}},
+		"example.com":  {443: {}, 8443: {}},
+		"198.51.100.1": {32768: {}},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("allow = %v, want %v", got, want)

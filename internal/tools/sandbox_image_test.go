@@ -551,7 +551,7 @@ func sandboxCatBundle(t *testing.T, image string) []byte {
 // 不减双半边,一次断言)。两 tag 均一次性且各自收尾 rmi 不滞留 daemon;
 // prod 槽位 tag 由本测试自行清场(不假设同包其它测试的消费序)。
 func TestSandboxImageE2EAppend(t *testing.T) {
-	m := generateSandboxCA(t, []net.IP{net.ParseIP("198.19.0.1")})
+	m := generateSandboxCA(t, []net.IP{net.ParseIP("198.51.100.1")})
 	prodTag := sandboxTestImageTag()
 	sandboxEnsureImage(t, prodTag)
 	t.Cleanup(func() {

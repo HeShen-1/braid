@@ -34,6 +34,14 @@ func TestIPForbiddenPinned(t *testing.T) {
 		{"link local still forbidden", "169.254.1.1", true},
 		{"multicast still forbidden", "224.0.0.1", true},
 		{"unspecified still forbidden", "0.0.0.0", true},
+		// 扩禁五段不在豁免面(私网/环回/CGNAT 之外),钉死条目同拒
+		// ——代理口径继承同则(D-2026-10-05-ssrf-five-ranges)。五段
+		// 逐段锚死:豁免面将来若单独扩段(豁免蠕变),此处先红。
+		{"benchmark forbidden", "198.18.0.1", true},
+		{"class E forbidden", "240.0.0.1", true},
+		{"nat64 forbidden", "64:ff9b::1.2.3.4", true},
+		{"ietf protocol forbidden", "192.0.0.1", true},
+		{"this-network non-zero forbidden", "0.1.2.3", true},
 		{"nil forbidden", "", true},
 	}
 	for _, tc := range cases {

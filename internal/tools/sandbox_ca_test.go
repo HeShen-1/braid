@@ -1,13 +1,13 @@
 package tools
 
 // 私 CA 材料生成器与构建期注入契约测试(T10.1 T7):hermetic http e2e
-// (T10,私 CA + 198.19.x 网段)的信任材料单源。
+// (T10,私 CA + hermetic 段;T18.1 重选为 198.51.100.x)的信任材料单源。
 //
 // 契约(docs/designs/t101-sandbox-baseline.md §3「私 CA 注入契约」):
 //   - 信任集扩张只经镜像构建:context 文件 sandbox-e2e-ca.crt(仅 CA 证书
 //     PEM)在构建期 append 进 /etc/ssl/certs/ca-certificates.crt;
 //   - hermetic e2e 的 TLS server 落宿主侧(§3 钉死:bridge 网容器 IP 全
-//     落禁段,可达的 198.19.x 地址必为宿主持有;叶对 = 宿主侧 serve 的
+//     落禁段,可达的 hermetic 段地址必为宿主持有;叶对 = 宿主侧 serve 的
 //     服务身份);叶证书与全部私钥不进 build context、不入镜像、不经任何
 //     运行期通道进容器,材料每次测试运行临时生成,零落仓零落库;
 //   - 运行期零通道:容器 env(§5 白名单恰 PATH/LANG)/ stdin 信封(装的是
@@ -46,12 +46,41 @@ import (
 // 两侧零漂移)。
 const sandboxCACertFile = "sandbox-e2e-ca.crt"
 
-// sandboxHermeticCIDR hermetic 段(T10 裁决:NameConstraints 钉段):SSRF
-// 守卫禁段外的放行段(D-2026-09-23-ssrf-extra-ranges 维持 198.18.0.0/15
-// 放行),e2e CA 的可签 IP 被结构性限制在该段内——ephemeral 材料即便泄漏
-// 也无法为段外身份(公网域名/IP、内网其它段)背书。守卫扩禁同步重选段
-// 时,本常量与 DECISIONS 待议项联动。
-const sandboxHermeticCIDR = "198.18.0.0/15"
+// sandboxHermeticCIDR hermetic 段(T10 裁决:NameConstraints 钉段;T18.1
+// 重选):SSRF 守卫禁段(含 D-2026-10-05-ssrf-five-ranges 扩禁五段)外的
+// 放行段,e2e CA 的可签 IP 被结构性限制在该段内——ephemeral 材料即便泄漏
+// 也无法为段外身份(公网域名/IP、内网其它段)背书。段选择受守卫扩禁联动
+// 约束:旧段 198.18.0.0/15(含 198.19.x)已随五段拍板入禁,重选 RFC 5737
+// TEST-NET-2 文档段——永不分配/路由,且与 fake-ip TUN 常用池
+// (198.18.0.0/15 档)零交集。将来扩禁再触本段时,联动锚
+// TestSandboxHermeticCIDRAllowed 先红,重选段随后。
+const sandboxHermeticCIDR = "198.51.100.0/24"
+
+// TestSandboxHermeticCIDRAllowed e2e 段与守卫禁段的联动锚:hermetic 段
+// 必须落在 ipForbidden 放行侧——段被拨号复核/代理侧拒 ⇒ 全部 hermetic
+// e2e 塌(T18.1 随五段扩禁补的机械锚,替代原「注释约定」级联动)。全段
+// 断言(alias 取址空间 .1..254 逐址):单点探测检不出「部分重叠」形态的
+// 扩禁(如只吞半段——基址仍放行、高位槽位 alias 在 e2e 期才塌),段级
+// 主张须段级证据;纯内存判定,零成本。
+func TestSandboxHermeticCIDRAllowed(t *testing.T) {
+	_, hermeticNet, err := net.ParseCIDR(sandboxHermeticCIDR)
+	if err != nil {
+		t.Fatalf("parse %s: %v", sandboxHermeticCIDR, err)
+	}
+	base := hermeticNet.IP.To4()
+	if base == nil {
+		t.Fatalf("hermetic CIDR %s must be IPv4", sandboxHermeticCIDR)
+	}
+	for last := 1; last <= 254; last++ {
+		host := make(net.IP, 4)
+		copy(host, base)
+		host[3] = byte(last)
+		if ipForbidden(host) {
+			t.Fatalf("ipForbidden(%s) = true: hermetic CIDR %s overlaps the guard's forbidden ranges (re-select per D-linkage)",
+				host, sandboxHermeticCIDR)
+		}
+	}
+}
 
 // sandboxCASentinelDNS DNS 名的哨兵域(T10 审计补全:RFC 5280 语义下
 // permitted 集只含 IP 条目 = DNS 名 unconstrained fail-open,「钉段」只
@@ -90,7 +119,8 @@ func generateSandboxCA(t *testing.T, ips []net.IP) sandboxCAMaterials {
 	}
 	now := time.Now()
 
-	// NameConstraints 钉段(T10 裁决):只允许签 198.18.0.0/15 段内 IP 的叶。
+	// NameConstraints 钉段(T10 裁决,T18.1 重选):只允许签 hermetic 段
+	// (sandboxHermeticCIDR)内 IP 的叶。
 	_, hermeticNet, err := net.ParseCIDR(sandboxHermeticCIDR)
 	if err != nil {
 		t.Fatalf("parse %s: %v", sandboxHermeticCIDR, err)
@@ -219,7 +249,7 @@ func sandboxCAParseKey(t *testing.T, pemBytes []byte) *ecdsa.PrivateKey {
 // 密钥与证书配对、叶经 CA 池可验、CA 自签自洽。
 func TestSandboxCAMaterialsShape(t *testing.T) {
 	now := time.Now()
-	ips := []net.IP{net.ParseIP("198.19.0.1"), net.ParseIP("198.19.0.2")}
+	ips := []net.IP{net.ParseIP("198.51.100.1"), net.ParseIP("198.51.100.2")}
 	m := generateSandboxCA(t, ips)
 
 	if !m.CA.IsCA || m.CA.KeyUsage&x509.KeyUsageCertSign == 0 || !m.CA.MaxPathLenZero {
@@ -343,9 +373,9 @@ func TestSandboxCAMaterialsShape(t *testing.T) {
 func TestSandboxCABundleAppendTrust(t *testing.T) {
 	// 材料全落在 hermetic 段内(CA 已被 NameConstraints 钉段,段外叶在此
 	// 会因约束拒绝——那不是本测试的主张面,别让钉段污染 append 语义)。
-	m := generateSandboxCA(t, []net.IP{net.ParseIP("198.19.0.1")})
+	m := generateSandboxCA(t, []net.IP{net.ParseIP("198.51.100.1")})
 	// 既有束占位:另一套材料的 CA(多 PEM 成员的真束形态,append 落尾部)。
-	base := generateSandboxCA(t, []net.IP{net.ParseIP("198.19.0.2")})
+	base := generateSandboxCA(t, []net.IP{net.ParseIP("198.51.100.2")})
 	bundle := append(append([]byte{}, base.CACertPEM...), m.CACertPEM...)
 
 	appended := x509.NewCertPool()
@@ -366,7 +396,7 @@ func TestSandboxCABundleAppendTrust(t *testing.T) {
 	// 真 TLS 握手:服务端持叶对(宿主侧 serve 形态);客户端 RootCAs
 	// = 束池。刻意不用 httptest.Server.Client()——它注入 srv 自签证书
 	// 信任,恰好绕过被测主张。httptest 绑 127.0.0.1 而 CA 已钉段(SAN
-	// 只能是 198.18/15 段内 IP):URL 主机写叶 SAN 的段内地址、拨号重定向
+	// 只能是 hermetic 段 sandboxHermeticCIDR 内 IP):URL 主机写叶 SAN 的段内地址、拨号重定向
 	// 到 srv 实际监听地址(hosts 钉扎同效)——证书验证只消费 URL 主机,
 	// 验证链完整性不受拨号目标影响。
 	pair, err := tls.X509KeyPair(m.LeafCertPEM, m.LeafKeyPEM)
@@ -383,7 +413,7 @@ func TestSandboxCABundleAppendTrust(t *testing.T) {
 	srv.StartTLS()
 	t.Cleanup(srv.Close)
 
-	sanHost := "198.19.0.1"
+	sanHost := "198.51.100.1"
 	sanURL := func() string {
 		_, port, err := net.SplitHostPort(srv.Listener.Addr().String())
 		if err != nil {
@@ -438,7 +468,7 @@ func TestSandboxCABundleAppendTrust(t *testing.T) {
 // 违反(不是过期/未知 CA 等旁因);段内叶(生成器产物)放行作对照。
 // NameConstraints 被删的变异下,段外叶验证通过即红。
 func TestSandboxCANameConstraints(t *testing.T) {
-	m := generateSandboxCA(t, []net.IP{net.ParseIP("198.19.0.3")})
+	m := generateSandboxCA(t, []net.IP{net.ParseIP("198.51.100.3")})
 	roots := x509.NewCertPool()
 	if !roots.AppendCertsFromPEM(m.CACertPEM) {
 		t.Fatal("CA PEM not loadable into a cert pool")
@@ -497,7 +527,7 @@ func TestSandboxCANameConstraints(t *testing.T) {
 	// 段内 IP + 恶意 DNS SAN:DNS 面执法(T10 审计确认的 fail-open 半边
 	// ——IP 过验 + DNS 旁路曾是 ACCEPT;DNS 哨兵域后必拒)。
 	mustReject("in-segment IP with hostile DNS SAN", signLeaf("braid-leaf-dns-hijack",
-		[]net.IP{net.ParseIP("198.19.0.5")}, []string{"evil.example"}))
+		[]net.IP{net.ParseIP("198.51.100.5")}, []string{"evil.example"}))
 	// 纯 DNS SAN(无 IP):同面纯形态,必拒。
 	mustReject("pure DNS SAN leaf", signLeaf("braid-leaf-dns-only",
 		nil, []string{"metadata.google.internal"}))
@@ -507,7 +537,7 @@ func TestSandboxCANameConstraints(t *testing.T) {
 // 名字与词形零漂移、无私钥材料、可被系统池加载路径消费。
 func TestSandboxCACertBuildContext(t *testing.T) {
 	dir := t.TempDir()
-	m := generateSandboxCA(t, []net.IP{net.ParseIP("198.19.0.1")})
+	m := generateSandboxCA(t, []net.IP{net.ParseIP("198.51.100.1")})
 	p := m.writeCACertToContext(t, dir)
 
 	if filepath.Base(p) != sandboxCACertFile {
