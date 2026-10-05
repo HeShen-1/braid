@@ -171,6 +171,12 @@ type ReaperSet struct {
 	// D-2026-10-04-t174). Each defer is one double-execution residual window
 	// closed (D-t25#10).
 	AsynqAliveDefers prometheus.Counter
+	// AsynqProbeUnreachable counts branch-B fail-opens caused by probe errors
+	// (T18.7, D-t174 known-boundary closure): an unreachable Inspector is not
+	// death evidence, so the dispatch-stale bounded window keeps governing —
+	// the counter makes that silent-fallback path observable (mirror of the
+	// warn key node.redispatch_asynq_probe_unreachable).
+	AsynqProbeUnreachable prometheus.Counter
 }
 
 // WorkerSet covers notify outcomes, SMTP availability, and asynq archived
@@ -379,6 +385,10 @@ func NewSet() (*Set, *prometheus.Registry) {
 			AsynqAliveDefers: f.NewCounter(prometheus.CounterOpts{
 				Name: "braid_reaper_asynq_alive_defers_total",
 				Help: "Branch-B redispatch decisions deferred because the stale-DISPATCHED task is still alive in asynq (Inspector cross-check, D-2026-10-04-t174); per-decision, not per-node — a node re-examined by a second scan in the same tick can defer twice.",
+			}),
+			AsynqProbeUnreachable: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_reaper_asynq_probe_unreachable_total",
+				Help: "Branch-B liveness probes that errored and fail-opened to the dispatch-stale bounded window (T18.7); persistent growth = the reaper cannot reach queue Redis (probe degraded, hardening silently off).",
 			}),
 		},
 		Worker: &WorkerSet{
