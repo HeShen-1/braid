@@ -223,21 +223,23 @@ func reservedApproverList() string {
 	return strings.Join(rs, ",")
 }
 
-// checkParallel 校验 parallel 节点(T9.1,D-2026-09-28-t91):foreach 必须是指向
-// 声明 type=array 输入的纯引用(schema 钉 inputRef 形态,此处钉语义);body 限
-// llm|tool(schema 已拦,防御兜底),其引用按 parallel 节点位置参与祖先约束,
-// item 引用在 body 语境放开(inBody 闸)。签名取 nodeID + 具体指针:body 复用
-// checkLLM/checkTool 时以父节点 id 归因。
+// checkParallel 校验 parallel 节点(T9.1,D-2026-09-28-t91):foreach 必须是纯
+// 引用且解析为 array——{{inputs.<name>}} 声明 type=array(T9.1)或祖先节点的
+// array 输出字段 {{nodes.<id>.output.<field>}}(T19.2 动态扇出,D-2026-10-05-t192;
+// 祖先/非 branch/字段存在全复用 checkRef 既有面);body 限 llm|tool(schema 已拦,
+// 防御兜底),其引用按 parallel 节点位置参与祖先约束,item 引用在 body 语境放开
+// (inBody 闸)。签名取 nodeID + 具体指针:body 复用 checkLLM/checkTool 时以父
+// 节点 id 归因。
 func (v *validator) checkParallel(n *Node) {
 	p := n.Parallel
-	if r, ok := parsePureRef(p.Foreach); ok && r.Kind == "input" {
+	if r, ok := parsePureRef(p.Foreach); ok && (r.Kind == "input" || r.Kind == "node") {
 		if t, cont := v.checkRef(n.ID, r, "parallel.foreach"); cont && t != "array" {
 			v.add(IssueBadForeach, n.ID, r.Text,
-				fmt.Sprintf("parallel.foreach input %q is declared %s, want array", r.Name, t))
+				fmt.Sprintf("parallel.foreach %s %q is declared %s, want array", r.Kind, r.Name, t))
 		}
 	} else {
 		v.add(IssueBadForeach, n.ID, p.Foreach,
-			"parallel.foreach must be a pure {{inputs.<name>}} reference")
+			"parallel.foreach must be a pure {{inputs.<name>}} or {{nodes.<id>.output.<field>}} reference")
 	}
 	if p.Body.LLM == nil && p.Body.Tool == nil {
 		v.add(IssueBadForeach, n.ID, "", "parallel.body must be an llm or tool node template")

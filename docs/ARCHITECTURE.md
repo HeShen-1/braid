@@ -59,7 +59,7 @@
 ### 3.2 DSL(显式数据流)
 
 - JSON + JSON Schema 校验;引用语法 `{{nodes.<id>.output.<field>}}`;无共享可变黑板——每次执行的输入可精确快照、并行天然安全。
-- 节点类型:llm / tool / branch / approval(T9.1 起)+ parallel(Scatter-Gather:foreach 数组展开 fan-out + gather 输入序汇聚,单节点多实例行模型,见 D-2026-09-28-t91)。
+- 节点类型:llm / tool / branch / approval(T9.1 起)+ parallel(Scatter-Gather:foreach 数组展开 fan-out + gather 输入序汇聚,单节点多实例行模型,见 D-2026-09-28-t91;foreach 来源 T19.2 起二形态——`{{inputs.<name>}}` Instantiate 预落 / `{{nodes.<id>.output.<field>}}` 动态扇出派发位展开,见 D-2026-10-05-t192)。
 - 预留画布元数据(节点位置等);prompt 模板与用户数据在 DSL 里强制分离标注(间接注入缓解,完整 taint 追踪 P1)。
 
 ### 3.3 人在回路

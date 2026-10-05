@@ -154,6 +154,122 @@ func TestParallelMinSuccess(t *testing.T) {
 	})
 }
 
+// TestParallelDynamicForeach(T19.2,D-2026-10-05-t192):foreach 来源放开到
+// 祖先节点的 array 输出字段({{nodes.<id>.output.<field>}})——实例数在
+// Instantiate 不可知,展开移到派发位(scheduler 面)。语义约束全复用 checkRef
+// 既有面:目标存在、非 branch、字段声明 type=array、祖先约束;input 引用
+// 路径逐字节不变(极限退化)。嵌套合法:foreach 可引另一 parallel 的 results。
+func TestParallelDynamicForeach(t *testing.T) {
+	t.Run("valid_node_ref", func(t *testing.T) {
+		doc := `{
+		  "dsl": "1.0", "name": "parallel-dynamic",
+		  "inputs": [{"name": "topic", "type": "string", "required": true}],
+		  "nodes": [
+		    {"id": "gen", "type": "llm", "prompt": {"template": "t"}, "outputs": {"subs": "array"}},
+		    {"id": "fan", "type": "parallel", "parallel": {
+		      "foreach": "{{nodes.gen.output.subs}}",
+		      "body": {"type": "llm", "prompt": {"template": "t",
+		        "user_data": [{"name": "sub", "ref": "{{item}}"}]}}
+		    }}
+		  ],
+		  "edges": [{"from": "gen", "to": "fan"}]
+		}`
+		wf, err := Parse([]byte(doc))
+		if err != nil {
+			t.Fatalf("expected valid, got error: %v", err)
+		}
+		if p := wf.Nodes[1].Parallel; p.Foreach != "{{nodes.gen.output.subs}}" {
+			t.Errorf("foreach = %q, want node ref preserved verbatim", p.Foreach)
+		}
+	})
+	t.Run("valid_nested_parallel_results", func(t *testing.T) {
+		doc := `{
+		  "dsl": "1.0", "name": "parallel-nested",
+		  "inputs": [{"name": "rows", "type": "array", "required": true}],
+		  "nodes": [
+		    {"id": "fan1", "type": "parallel", "parallel": {
+		      "foreach": "{{inputs.rows}}",
+		      "body": {"type": "llm", "prompt": {"template": "t"}}
+		    }},
+		    {"id": "fan2", "type": "parallel", "parallel": {
+		      "foreach": "{{nodes.fan1.output.results}}",
+		      "body": {"type": "llm", "prompt": {"template": "t"}}
+		    }}
+		  ],
+		  "edges": [{"from": "fan1", "to": "fan2"}]
+		}`
+		if _, err := Parse([]byte(doc)); err != nil {
+			t.Fatalf("expected valid (results 声明 array), got error: %v", err)
+		}
+	})
+	// 非法族:非 array 字段 / 未知节点 / 非祖先 / branch 输出。
+	tests := []struct {
+		name string
+		dsl  string
+		want []string
+	}{
+		{"node_ref_non_array_field", `{
+		  "dsl": "1.0", "name": "parallel-dynamic",
+		  "nodes": [
+		    {"id": "gen", "type": "llm", "prompt": {"template": "t"}, "outputs": {"subs": "string"}},
+		    {"id": "fan", "type": "parallel", "parallel": {
+		      "foreach": "{{nodes.gen.output.subs}}",
+		      "body": {"type": "llm", "prompt": {"template": "t"}}
+		    }}
+		  ],
+		  "edges": [{"from": "gen", "to": "fan"}]
+		}`, []string{IssueBadForeach}},
+		{"node_ref_unknown_node", `{
+		  "dsl": "1.0", "name": "parallel-dynamic",
+		  "nodes": [
+		    {"id": "fan", "type": "parallel", "parallel": {
+		      "foreach": "{{nodes.ghost.output.subs}}",
+		      "body": {"type": "llm", "prompt": {"template": "t"}}
+		    }}
+		  ],
+		  "edges": []
+		}`, []string{IssueDanglingRef}},
+		{"node_ref_not_ancestor", `{
+		  "dsl": "1.0", "name": "parallel-dynamic",
+		  "nodes": [
+		    {"id": "fan", "type": "parallel", "parallel": {
+		      "foreach": "{{nodes.gen.output.subs}}",
+		      "body": {"type": "llm", "prompt": {"template": "t"}}
+		    }},
+		    {"id": "gen", "type": "llm", "prompt": {"template": "t"}, "outputs": {"subs": "array"}}
+		  ],
+		  "edges": [{"from": "fan", "to": "gen"}]
+		}`, []string{IssueNotAncestor}},
+		{"node_ref_branch_output", `{
+		  "dsl": "1.0", "name": "parallel-dynamic",
+		  "inputs": [{"name": "rows", "type": "array", "required": true}],
+		  "nodes": [
+		    {"id": "gen", "type": "llm", "prompt": {"template": "t"}, "outputs": {"subs": "array"}},
+		    {"id": "gate", "type": "branch",
+		     "cases": [{"when": {"left": "{{inputs.rows}}", "op": "exists"}, "next": "fan"}],
+		     "default": "fan"},
+		    {"id": "fan", "type": "parallel", "parallel": {
+		      "foreach": "{{nodes.gate.output.subs}}",
+		      "body": {"type": "llm", "prompt": {"template": "t"}}
+		    }}
+		  ],
+		  "edges": [{"from": "gen", "to": "gate"}, {"from": "gate", "to": "fan"}]
+		}`, []string{IssueDanglingRef}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := Parse([]byte(tt.dsl))
+			if err == nil {
+				t.Fatalf("expected issues %v, got nil", tt.want)
+			}
+			got := issueCodesOf(t, err)
+			if !equalStrings(got, tt.want) {
+				t.Fatalf("issue codes = %v, want %v\nfull error:\n%s", got, tt.want, err)
+			}
+		})
+	}
+}
+
 func TestParallelSemanticIssues(t *testing.T) {
 	tests := []struct {
 		name string
@@ -246,8 +362,9 @@ func TestParallelSemanticIssues(t *testing.T) {
 }
 
 // TestParallelDefensive:绕过 schema 直调语义校验(hand-built Workflow),
-// 钉防御分支——body 非 llm|tool、foreach 非 inputRef 形态。Parse 路径上
-// schema 先拦,此处锁「跳过 schema 的调用方」不落静默。
+// 钉防御分支——body 非 llm|tool、foreach 引非 array 输出字段(T19.2 起 node
+// 引用合法,防御面收窄为类型裁决)。Parse 路径上 schema 先拦,此处锁「跳过
+// schema 的调用方」不落静默。
 func TestParallelDefensive(t *testing.T) {
 	rev := []Input{{Name: "reviews", Type: "array"}}
 	fan := func(p *ParallelNode) Node {
@@ -272,6 +389,9 @@ func TestParallelDefensive(t *testing.T) {
 				{ID: "pre", Type: "llm", LLM: &LLMNode{Prompt: Prompt{Template: "t"}, Outputs: map[string]string{"text": "string"}}},
 				fan(&ParallelNode{Foreach: "{{nodes.pre.output.text}}", Body: Node{Type: "llm", LLM: &LLMNode{Prompt: Prompt{Template: "t"}}}}),
 			},
+			// pre 是 fan 的祖先(否则 not_ancestor 混入):本例钉「node 引用
+			// 合法化后防御面收窄」的剩余裁决——非 array 输出字段。
+			Edges: []Edge{{From: "pre", To: "fan"}},
 		}, []string{IssueBadForeach}},
 	}
 	for _, tt := range tests {
