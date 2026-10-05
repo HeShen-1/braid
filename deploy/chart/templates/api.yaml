@@ -3,8 +3,10 @@
      (ADDR/雪花/续跑队列)与 compose 同源,不为它们开 values 面(范围
      纪律:新旋钮 = 新决策)。OIDC 是 compose 未接线的选通超集面
      (T11.1 键组,开启才渲染)。无容器级探针 = compose 同口径(存活面
-     = /healthz + metrics 由外部监控探,deploy/README.md §6);启动期
-     preflight 失败 → 容器退出 → CrashLoopBackOff,升级门 = hook Jobs。 */}}
+     = /healthz + metrics 由外部监控探,deploy/README.md §6);T20.7
+     initContainer audit-ready 是安装序闸(有界等待,非探针——init 容器
+     过完即退,不参与存活面);启动期 preflight 失败 → 容器退出 →
+     CrashLoopBackOff,升级门 = hook Jobs。 */}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -21,6 +23,26 @@ spec:
       labels:
         {{- include "braid.selectorLabels" (dict "ctx" . "component" "api") | nindent 8 }}
     spec:
+      # T20.7 安装口径:janitor 分区先行——initContainer 有界等 DB 水位
+      # (audit-ready 判水位状态而非 reaper 进程活),替代首装窗「组件先于
+      # migrate/grants 创建即 crash-loop 自愈」的水位半边(缺表/缺授权面
+      # 仍由进程 preflight 承载)。首装 = post-install hook 追平前组件已
+      # 创建(已知边界 #2),initContainer 在 Pod 内把水位等待变成静默
+      # 收敛而非红日志重启。「有界」指单次尝试(-wait 120s);窗尽由 K8s
+      # Pod 级 backoff 重试(封顶 ~5min,无次数上限),非恢复时延 SLO。
+      initContainers:
+        - name: audit-ready
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/braid", "audit-ready", "-wait", "120s"]
+          securityContext:
+            runAsNonRoot: true # 镜像 USER 65532
+          env:
+            - name: BRAID_MYSQL_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: api-dsn
       containers:
         - name: api
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

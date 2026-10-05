@@ -4,6 +4,8 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
+	"strings"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -41,7 +43,46 @@ func (r *Reaper) collectMetrics(ctx context.Context) error {
 	r.collectResumeStuck(ctx)
 	r.collectNotifyMissing(ctx)
 	r.collectIMNotifyMissing(ctx)
+	r.collectAuditPartitions(ctx)
 	return nil
+}
+
+// collectAuditPartitions 采分区水位双 gauge(T20.7):水位余量天数(janitor
+// 停摆唯一运行期显影面——跌破告警线时 api/worker 尚未拒启,预警先于故障)
+// 与 p_min 兜底分区行数(时钟漂移哨兵,兑现 0001_init.up.sql 监控承诺)。
+// 读取同 preflight/janitor 先例:I_S.PARTITIONS + DB 时钟;每副本各采各曝
+// (共享态,告警侧 max 聚合,文件头口径)。
+func (r *Reaper) collectAuditPartitions(ctx context.Context) {
+	var maxBound sql.NullString
+	if err := r.deps.DB.QueryRowContext(ctx, `
+SELECT MAX(PARTITION_DESCRIPTION) FROM INFORMATION_SCHEMA.PARTITIONS
+ WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='audit_log'`).Scan(&maxBound); err != nil {
+		r.log.Warn("metrics.audit_partition_watermark", "err", err)
+		return
+	}
+	if !maxBound.Valid {
+		r.log.Warn("metrics.audit_partition_watermark", "err", "audit_log has no partitions")
+		return
+	}
+	bound, err := time.ParseInLocation("2006-01-02", strings.Trim(maxBound.String, "' \t"), time.UTC)
+	if err != nil {
+		r.log.Warn("metrics.audit_partition_watermark", "err", fmt.Sprintf("parse bound %q: %v", maxBound.String, err))
+		return
+	}
+	var today time.Time
+	if err := r.deps.DB.QueryRowContext(ctx, `SELECT CAST(NOW(3) AS DATE)`).Scan(&today); err != nil {
+		r.log.Warn("metrics.audit_partition_watermark", "err", err)
+		return
+	}
+	r.m.AuditPartitionWatermarkDays.Set(bound.Sub(today).Hours() / 24)
+
+	var pmin int
+	if err := r.deps.DB.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM audit_log PARTITION (p_min)`).Scan(&pmin); err != nil {
+		r.log.Warn("metrics.audit_pmin_rows", "err", err)
+		return
+	}
+	r.m.AuditPminRows.Set(float64(pmin))
 }
 
 func (r *Reaper) collectAuditPending(ctx context.Context) {

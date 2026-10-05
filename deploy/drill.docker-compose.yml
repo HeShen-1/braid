@@ -67,6 +67,12 @@ x-drill-worker: &drill-worker
       condition: service_completed_successfully
     redis-queue:
       condition: service_healthy
+    # T20.7 安装口径:janitor 分区先行(worker preflight 硬拒面;双 reaper
+    # 各自过闸——audit-ready 判共享 DB 水位,与 leader 闸无涉)
+    reaper1:
+      condition: service_healthy
+    reaper2:
+      condition: service_healthy
 
 x-drill-reaper: &drill-reaper
   # reaper×2:leaderless 扫描(CAS 收敛)+ T15.6 定档 A 后的 flush/janitor
@@ -85,6 +91,17 @@ x-drill-reaper: &drill-reaper
     BRAID_REAPER_DEAD_GRACE: 20s
     BRAID_REAPER_EXEC_STALE: 5s
     BRAID_REAPER_AUDIT_FLUSH_INTERVAL: 500ms
+  # T20.7 安装口径(与 prod compose 同款):reaper 健康 = DB 水位覆盖当日
+  # (audit-ready 判定水位状态而非进程活);api/worker 首装 preflight 硬拒
+  # 面靠此闸保证 janitor 首刷先行。双副本 reaper 各自过闸:audit-ready 读
+  # 的是共享 DB 水位,与 leader 闸无涉(fail-open 定档 A 下的 janitor 单跑
+  # 不影响健康判定)。
+  healthcheck:
+    test: ["CMD", "/usr/local/bin/braid", "audit-ready"]
+    interval: 5s
+    timeout: 4s
+    retries: 12
+    start_period: 30s
   depends_on:
     migrate:
       condition: service_completed_successfully
@@ -189,6 +206,11 @@ services:
         condition: service_completed_successfully
       grants:
         condition: service_completed_successfully
+      # T20.7 安装口径:janitor 分区先行(api preflight 硬拒面)
+      reaper1:
+        condition: service_healthy
+      reaper2:
+        condition: service_healthy
 
   worker1:
     <<: *drill-worker

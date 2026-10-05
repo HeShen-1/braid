@@ -154,6 +154,29 @@ groups:
           summary: "DB 池获取等待 {{ $value }} 次(15m 窗)"
           description: "DBStats.WaitCount 增长 = 池饱和已发生排队(事实信号,非水位预警;各入口事件流 sum 语义正确)。单次等待会让条件在 15m 增量窗内保持为真(fire ~15m 后自愈,可接受的一次性噪声);反复自愈复燃 = 持续饱和,与 DbPoolSaturated 同路处置,扩池前先核 README §1 公式余量。"
 
+      # T20.7 水位双哨兵:janitor 停摆预警 + p_min 兜底落行(兑现
+      # 0001_init.up.sql 分区注释的监控承诺)。共享态 gauge,reaper 每副本
+      # 各曝全量,max 聚合(文件头口径)。
+      - alert: AuditPartitionWatermarkLow
+        # absent 分支不可省:reaper 停摆 = gauge 停更 → staleness 后序列
+        # 消失,max() 空 = 条件假——恰在要报警的时刻静默。absent() 兜住
+        # 「序列不在」形态(与低余量同语义:janitor 没在维护水位)。
+        expr: max(braid_audit_partition_watermark_days) < 3 or absent(braid_audit_partition_watermark_days)
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "audit_log 分区水位余量不足或失采(janitor 停摆预警)"
+          description: "janitor 每 tick 顶到 +8,余量 <3 或 gauge 失采(reaper 停摆/未部署)= 水位无人维护。水位衰减到 0 后 api/worker 重启将被 preflight 硬拒(水位不覆盖当日,安装口径 T20.7)。处置:恢复 reaper(janitor 自愈顶回 +8);reaper 停摆 ≥8 天后的重启须先手工 audit-ready(UPGRADE.md §2)。"
+      - alert: AuditPminRows
+        expr: max(braid_audit_pmin_rows) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "audit_log p_min 兜底分区落行 {{ $value }} 行(时钟漂移哨兵)"
+          description: "exec_date < 2026-01-01 的审计行只能落 p_min(0001 落笔时的监控承诺)。非零 = 写方时钟漂移或异常回填,核各写方(api/worker/reaper)宿主时钟与 DB 时钟偏差;audit append-only,该计数不自愈,人工核因后按 RUNBOOK 处置。"
+
   # T17.4 完整性补面:5a 拒绝 / reaper 毒快照 / im_notified 对账。前两条是
   # 防御触发类(warning 家族,同 LoginBruteForce 判据),第三条是通知丢失
   # 面(critical 家族,同 ApprovalNotifyMissing 判据与门闸形态)。

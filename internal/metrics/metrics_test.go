@@ -33,6 +33,8 @@ var metricNames = map[string]dto.MetricType{
 	"braid_audit_chain_broken_heads":             dto.MetricType_GAUGE,   // T9.3
 	"braid_audit_pending_rows":                   dto.MetricType_GAUGE,
 	"braid_audit_pending_oldest_age_seconds":     dto.MetricType_GAUGE,
+	"braid_audit_partition_watermark_days":       dto.MetricType_GAUGE, // T20.7
+	"braid_audit_pmin_rows":                      dto.MetricType_GAUGE, // T20.7
 	"braid_outbox_rows":                          dto.MetricType_GAUGE,
 	"braid_outbox_oldest_age_seconds":            dto.MetricType_GAUGE,
 	"braid_approval_backlog_rows":                dto.MetricType_GAUGE,

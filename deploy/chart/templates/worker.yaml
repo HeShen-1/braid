@@ -36,6 +36,25 @@ spec:
         supplementalGroups:
           - {{ .Values.tools.dockerSocketGid }}
       {{- end }}
+      # T20.7 安装口径:janitor 分区先行——initContainer 有界等 DB 水位
+      # (audit-ready 判水位状态而非 reaper 进程活),把首装窗的水位半边
+      # 从「crash-loop 自愈」变静默收敛(已知边界 #2 同步改写);「有界」
+      # 指单次尝试(-wait 120s),窗尽由 K8s Pod 级 backoff 重跑 init
+      # (封顶 ~5min,无次数上限),天然幂等。缺表/缺授权面仍由进程
+      # preflight 承载。
+      initContainers:
+        - name: audit-ready
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/usr/local/bin/braid", "audit-ready", "-wait", "120s"]
+          securityContext:
+            runAsNonRoot: true # 镜像 USER 65532
+          env:
+            - name: BRAID_MYSQL_DSN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "braid.secretName" . }}
+                  key: worker-dsn
       containers:
         - name: worker
           image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"

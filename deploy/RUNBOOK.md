@@ -167,3 +167,41 @@ UPDATE node_execution
 状态迁移经审计链的自动化路径才有审计行)。操作证据归运维通道:变更单、
 操作日志、§2.1 步骤号引用。WAITING_APPROVAL 行不适用本节(归审批流
 T4.3:超时 fail 策略或审批决定,手工改写会绕过审批事实)。
+
+## 3. audit 分区水位:preflight 拒启 / 水位告警(T20.7)
+
+**症状**:组件启动即退,日志带
+`preflight: audit_log partition watermark <日期> does not cover today <日期>:
+audit INSERTs would all fail (MySQL 1526)`;或 Prometheus
+`AuditPartitionWatermarkLow`(余量 <3 天)/ `AuditPminRows`(p_min 落行)告警。
+
+**机理**:audit_log 按日 RANGE 分区且**不设 MAXVALUE**(锁定决策:越界
+1526 响亮失败 = 受监控条件)。静态分区(迁移 0001)只盖到 2026-10-04;
+当日及未来分区由 reaper 内 janitor 每 tick 预建到 today+8——水位是
+**DB 状态**,不是任何进程的状态。api/worker(审计写方)preflight 对
+「水位不覆盖当日」硬拒;relay/reaper 仅 warn(水位自愈者,硬拒会死锁)。
+
+**修复**(按错误消息自身指引,两选一):
+
+```sh
+# ① 正路:起 reaper(janitor 首 tick 即补当日分区并顶到 +8)
+docker compose -f deploy/prod.docker-compose.yml up -d reaper
+#    reaper 容器在跑但 unhealthy(进程残死/janitor 不收敛)时,up -d 是
+#    no-op——改用 restart(重启即重跑 janitor 首轮):
+#    docker compose -f deploy/prod.docker-compose.yml restart reaper
+# ② 应急(无 reaper 可起时):手工补一条当日分区(与 janitor 输出同构)
+#    错误消息里已带可直接执行的 ALTER 语句,照抄执行即可。
+```
+
+**安装口径(T20.7,D-t207)**:全部受管栈已钉序「reaper/janitor 先行」——
+dev(dev-up.sh audit-ready 闸)/ prod·drill(compose reaper healthcheck
++ depends_on)/ helm(api/worker initContainer audit-ready -wait 120s)/
+e2e(脚本等 janitor 日志)/ t13 测试栈(sqltest 前滚补分区,无进程竞态,
+internal/db/sqltest/sqltest.go)。绕过口径(手起进程、单服务
+`compose restart`——restart 不重放 depends_on)在水位健康时无害;水位
+过期时确定性撞 preflight 硬拒,即本节症状,按上修。reaper 停摆 ≥8 天后
+的任何重启,先手工判定(UPGRADE.md §2 的 audit-ready 命令)。
+
+**p_min 告警**(独立判据):exec_date < 2026-01-01 的行落 p_min 兜底
+分区——非零即写方时钟漂移或异常回填,核各写方宿主时钟与 DB 时钟偏差;
+计数不自愈(append-only),核因后归档处置。

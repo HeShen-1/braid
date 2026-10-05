@@ -38,7 +38,9 @@ helm install braid deploy/chart -n braid --create-namespace \
 **首装序**(hook 相位 = post-install,审计收口 ①,详见 D- 条目):组件
 Deployment 与 migrate/grants Job 并行创建——hook 追平(迁移 + 授权完成)
 前组件 crash-loop 自愈(缺表/缺授权即拒启,属一次性窗,起回即正常);
-migrate/grants Job 的 wait-mysql initContainer 等 mysql 就绪。
+migrate/grants Job 的 wait-mysql initContainer 等 mysql 就绪。api/worker
+的水位半边经 T20.7 initContainer `braid audit-ready -wait 120s` 有界等待
+(见已知边界 #2);crash-loop 自愈面仅剩 relay/reaper 的 schema/授权半边。
 
 **升级序**(`helm upgrade braid deploy/chart ...` 同 values):pre-upgrade
 hook 先跑迁移与授权(幂等),**再**应用新资源——迁移执行时旧 Deployment
@@ -126,7 +128,11 @@ worker 以 uid 65532 跑,标准节点的 socket 属 root:docker——必须把
 2. **首装混跑窗**:hook 相位 post-install 下,组件先于 migrate/grants
    创建并 crash-loop 自愈(缺表/缺授权即拒启;一次性,非每升级);升级序
    不受影响(迁移先行)。这是 Helm 生命周期下的结构性代价(D- 审计收口①,
-   pre-install 位会因依赖未建而首装死锁)。
+   pre-install 位会因依赖未建而首装死锁)。**水位半边已收口(T20.7)**:
+   api/worker 的 initContainer `braid audit-ready -wait 120s` 有界等
+   DB 水位(janitor 分区先行口径,dev/prod/drill/e2e 同序),混跑窗
+   剩缺表/缺授权半边——仍由进程 preflight 承载,属 hook 追平前的一次
+   性自愈窗。
 3. **liveness 语义超出 compose 面**:compose healthcheck 失败不杀容器,
    K8s liveness 杀——mysql liveness 已加 initialDelay + 放宽预算消化首启
    初始化与 InnoDB crash recovery(readiness 保持 3s/3s/30 同参)。

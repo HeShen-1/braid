@@ -24,8 +24,9 @@ RUN CGO_ENABLED=0 go build -trimpath -ldflags='-s -w' -o /out/ ./cmd/...
 # 处理)。非 root:进程以 uid 65532 跑(distroless nonroot 惯例同值),容器
 # 内落盘面(日志/临时)不需要 root。曾评估 distroless static(零 shell 零
 # 包管理器),gcr.io 在受限网络不可达且无稳定镜像代理,取舍 alpine——
-# 附带 busybox wget 可做存活探针(交付 compose 仍不配容器级 healthcheck,
-# 存活面 = /healthz + metrics exposition 由外部监控探,UPGRADE.md 登记)。
+# 附带 busybox wget 可做存活探针(交付 compose 组件不配容器级 healthcheck,
+# 存活面 = /healthz + metrics exposition 由外部监控探,UPGRADE.md 登记;
+# 唯一例外 = reaper 的 audit-ready 安装序闸,T20.7,见 UPGRADE.md §1)。
 FROM alpine:3.22
 RUN adduser -D -u 65532 braid
 COPY --from=build /out/ /usr/local/bin/
