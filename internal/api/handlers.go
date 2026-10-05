@@ -197,22 +197,26 @@ func (s *Server) publishDraft(c *gin.Context) {
 	if !ok {
 		return
 	}
-	// mode=all 混跑窗硬闸(T15.6):发布面在 Publish 事务前判定——草稿 DSL
-	// 含会签节点才查在场宣告,未全宣告 503 拒(body 已写)。TOCTOU 边界
-	// (闸读与事务间草案改写)由触发面闸兜底,见 approvalgate.go 文件头。
-	if !s.gatePublishFleetApprovalAll(c, tenantFrom(c), id) {
-		return
-	}
+	// mode=all 混跑窗硬闸(T15.6;T20.3 起闸经 Publish 的 gate 参数在事务
+	// 内对锁定读内容判定——闸对象即翻转对象,「闸读旧稿、事务发新稿」的
+	// 改写走私被行锁串行化):草稿 DSL 含会签节点才查在场宣告,未全宣告
+	// fleetGateAbort → 503 拒。残余边界(舰队组成漂移窗)见 approvalgate.go
+	// 文件头。
 	// 发布点收紧白名单(dsl.WithToolAllowlist 语义:名单来自 tools.Registry
 	// 注册名——T3.2 换源完成,BRAID_TOOL_ALLOWLIST 静态 env 已退役;空
 	// registry = 禁用一切工具)。
 	var def Definition
 	err := WithTx(c.Request.Context(), s.dbh, func(tx DBTX) error {
 		var err error
-		def, err = s.st.Publish(c.Request.Context(), tx, tenantFrom(c), id, actorFrom(c), s.toolReg.Names()...)
+		def, err = s.st.Publish(c.Request.Context(), tx, tenantFrom(c), id, actorFrom(c), s.publishFleetGate, s.toolReg.Names()...)
 		return err
 	})
 	if err != nil {
+		var abort *fleetGateAbort
+		if errors.As(err, &abort) {
+			c.JSON(http.StatusServiceUnavailable, fleetGateRejectionBody(abort.rej))
+			return
+		}
 		mapStoreError(c, err)
 		return
 	}

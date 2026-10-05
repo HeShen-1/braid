@@ -189,7 +189,7 @@ func TestStoreUpdateDraft(t *testing.T) {
 	if _, err := updateDraft(t, st, dbh, 999999, d2, "bob"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown id err = %v, want ErrNotFound", err)
 	}
-	published, err := st.Publish(ctx, dbh, 0, d1.ID, "bob")
+	published, err := st.PublishUngated(ctx, dbh, 0, d1.ID, "bob")
 	if err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
@@ -226,7 +226,7 @@ func TestStorePublishVersioning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft#1: %v", err)
 	}
-	p1, err := st.Publish(ctx, dbh, 0, d1.ID, "alice")
+	p1, err := st.PublishUngated(ctx, dbh, 0, d1.ID, "alice")
 	if err != nil {
 		t.Fatalf("Publish#1: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestStorePublishVersioning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft#2: %v", err)
 	}
-	p2, err := st.Publish(ctx, dbh, 0, d2.ID, "bob")
+	p2, err := st.PublishUngated(ctx, dbh, 0, d2.ID, "bob")
 	if err != nil {
 		t.Fatalf("Publish#2: %v", err)
 	}
@@ -254,10 +254,10 @@ func TestStorePublishVersioning(t *testing.T) {
 	if latest.ID != p2.ID {
 		t.Fatalf("latest = %d, want %d", latest.ID, p2.ID)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, p1.ID, "alice"); !errors.Is(err, ErrConflict) {
+	if _, err := st.PublishUngated(ctx, dbh, 0, p1.ID, "alice"); !errors.Is(err, ErrConflict) {
 		t.Fatalf("republish err = %v, want ErrConflict", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, 999999, "alice"); !errors.Is(err, ErrNotFound) {
+	if _, err := st.PublishUngated(ctx, dbh, 0, 999999, "alice"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("unknown id err = %v, want ErrNotFound", err)
 	}
 	versions, err := st.ListVersions(ctx, dbh, 0, name)
@@ -282,24 +282,24 @@ func TestStorePublishToolAllowlist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, allowed.ID, "alice", "http"); err != nil {
+	if _, err := st.PublishUngated(ctx, dbh, 0, allowed.ID, "alice", "http"); err != nil {
 		t.Fatalf("publish with allowlist [http]: %v", err)
 	}
 	blocked, err := createDraft(t, st, dbh, toolDSL(uniqName("tool-no")), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, blocked.ID, "alice", "file_read"); err == nil || !HasIssueCode(err, dsl.IssueToolNotAllowed) {
+	if _, err := st.PublishUngated(ctx, dbh, 0, blocked.ID, "alice", "file_read"); err == nil || !HasIssueCode(err, dsl.IssueToolNotAllowed) {
 		t.Fatalf("publish with allowlist [file_read] err = %v, want tool_not_allowed", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, blocked.ID, "alice"); err == nil {
+	if _, err := st.PublishUngated(ctx, dbh, 0, blocked.ID, "alice"); err == nil {
 		t.Fatal("publish with empty allowlist accepted tool")
 	}
 	plain, err := createDraft(t, st, dbh, dslDoc(uniqName("tool-na")), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, plain.ID, "alice", "http"); err != nil {
+	if _, err := st.PublishUngated(ctx, dbh, 0, plain.ID, "alice", "http"); err != nil {
 		t.Fatalf("publish tool-free DSL with [http] allowlist: %v", err)
 	}
 }
@@ -330,7 +330,7 @@ func TestStorePublishConcurrent(t *testing.T) {
 		go func(i int) {
 			defer wg.Done()
 			errs[i] = WithTx(ctx, dbh, func(tx DBTX) error {
-				_, err := st.Publish(ctx, tx, 0, ids[i], "alice")
+				_, err := st.PublishUngated(ctx, tx, 0, ids[i], "alice")
 				return err
 			})
 		}(i)
@@ -374,6 +374,121 @@ func TestStorePublishConcurrent(t *testing.T) {
 	}
 }
 
+// TestStorePublishGateEvaluatesLockedContent 钉 T20.3 发布面 TOCTOU 收口的
+// 存储层契约:闸回调评估的是与翻转同一份锁定读内容(字节同源),闸拒绝
+// 原子中止整个发布(行保持 DRAFT、版本号未被中止尝试消耗)。
+func TestStorePublishGateEvaluatesLockedContent(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	d, err := createDraft(t, st, dbh, dslDoc(uniqName("gate-lock")), "alice")
+	if err != nil {
+		t.Fatalf("createDraft: %v", err)
+	}
+
+	// 拒绝分支:闸错误透传(调用方按类型分类映射),事务整体回滚。
+	sentinel := errors.New("gate rejection")
+	err = WithTx(ctx, dbh, func(tx DBTX) error {
+		_, err := st.Publish(ctx, tx, 0, d.ID, "alice", func(_ context.Context, _ DBTX, cur Definition) error {
+			if cur.Status != statusDraft {
+				t.Errorf("gate cur.Status = %q, want DRAFT", cur.Status)
+			}
+			if !bytes.Equal(cur.DSL, d.DSL) {
+				t.Errorf("gate cur.DSL ≠ 草稿内容——锁定读必须与闸对象同源")
+			}
+			return sentinel
+		})
+		return err
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Publish gate abort = %v, want sentinel", err)
+	}
+	after, err := st.GetByID(ctx, dbh, 0, d.ID)
+	if err != nil || after.Status != statusDraft || after.Version != nil {
+		t.Fatalf("after gate abort = %s %+v (err %v), want DRAFT with nil version", after.Status, after, err)
+	}
+
+	// 放行分支:闸所见字节 == 发布产物字节;中止尝试不耗版本号(v1)。
+	var gateSaw []byte
+	var pub Definition
+	err = WithTx(ctx, dbh, func(tx DBTX) error {
+		var err error
+		pub, err = st.Publish(ctx, tx, 0, d.ID, "alice", func(_ context.Context, _ DBTX, cur Definition) error {
+			gateSaw = append([]byte(nil), cur.DSL...)
+			return nil
+		})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("publish with gate: %v", err)
+	}
+	if !bytes.Equal(gateSaw, pub.DSL) {
+		t.Fatalf("gate saw %d bytes, published %d — 闸与翻转必须同一份锁定读", len(gateSaw), len(pub.DSL))
+	}
+	if pub.Version == nil || *pub.Version != 1 {
+		t.Fatalf("version = %v, want 1(中止尝试不耗号)", pub.Version)
+	}
+}
+
+// TestStorePublishRowLockBlocksSmuggle 竞态钉(T20.3):闸在 Publish 事务
+// 内持行锁期间,第二连接改写草案走私 mode=all 必然被 FOR UPDATE 行锁
+// 串行化——要么赶在锁定读前提交(闸对那份内容判定),要么等事务提交后
+// 才拿到锁(行已非 DRAFT → ErrConflict)。走私失败是确定性结局,不依赖
+// 交错时序。
+func TestStorePublishRowLockBlocksSmuggle(t *testing.T) {
+	st, dbh := newTestStore(t)
+	ctx := context.Background()
+	name := uniqName("lockrace")
+	d, err := createDraft(t, st, dbh, dslDoc(name), "alice")
+	if err != nil {
+		t.Fatalf("createDraft: %v", err)
+	}
+	smuggled := make(chan error, 1)
+	var gateSaw []byte
+	var pub Definition
+	err = WithTx(ctx, dbh, func(tx DBTX) error {
+		var err error
+		pub, err = st.Publish(ctx, tx, 0, d.ID, "alice", func(ctx context.Context, _ DBTX, cur Definition) error {
+			gateSaw = append([]byte(nil), cur.DSL...)
+			// 闸挂起期间发起走私:第二连接 UpdateDraft 引入 mode=all,
+			// 被本事务锁定读的行锁挡在提交外。
+			go func() {
+				smuggled <- WithTx(ctx, dbh, func(tx2 DBTX) error {
+					_, err := st.UpdateDraft(ctx, tx2, 0, d.ID, gateAllDoc(name), "mallory")
+					return err
+				})
+			}()
+			time.Sleep(200 * time.Millisecond) // 走私方在此窗内必须阻塞在行锁
+			select {
+			case err := <-smuggled:
+				t.Fatalf("走私在闸持锁期间完成(err=%v)— 锁定读未先于闸持有行锁", err)
+			default:
+			}
+			return nil
+		})
+		return err
+	})
+	if err != nil {
+		t.Fatalf("publish under smuggling attempt: %v", err)
+	}
+	if usesAll, perr := dslUsesApprovalAll(pub.DSL); perr != nil || usesAll {
+		t.Fatalf("published DSL uses mode=all = %v (err %v) — 走私内容进入了发布面", usesAll, perr)
+	}
+	if !bytes.Equal(gateSaw, pub.DSL) {
+		t.Fatalf("gate saw %d bytes, published %d — 闸与翻转必须同一份锁定读", len(gateSaw), len(pub.DSL))
+	}
+	select {
+	case err := <-smuggled:
+		if err == nil {
+			t.Fatalf("smuggled UpdateDraft succeeded — mode=all 绕过闸落库(结构性破绽)")
+		}
+		if !errors.Is(err, ErrConflict) {
+			t.Logf("smuggle blocked with non-conflict error(锁等待超时类): %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatalf("smuggling UpdateDraft 未在提交后返回(行锁未释放?)")
+	}
+}
+
 func TestStoreArchive(t *testing.T) {
 	st, dbh := newTestStore(t)
 	ctx := context.Background()
@@ -386,11 +501,11 @@ func TestStoreArchive(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft#2: %v", err)
 	}
-	p1, err := st.Publish(ctx, dbh, 0, d1.ID, "alice")
+	p1, err := st.PublishUngated(ctx, dbh, 0, d1.ID, "alice")
 	if err != nil {
 		t.Fatalf("Publish#1: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, d2.ID, "alice"); err != nil {
+	if _, err := st.PublishUngated(ctx, dbh, 0, d2.ID, "alice"); err != nil {
 		t.Fatalf("Publish#2: %v", err)
 	}
 	arch, err := st.Archive(ctx, dbh, 0, name, 2, "admin")
@@ -441,7 +556,7 @@ func TestStoreList(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft pub: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, publishable.ID, "alice"); err != nil {
+	if _, err := st.PublishUngated(ctx, dbh, 0, publishable.ID, "alice"); err != nil {
 		t.Fatalf("Publish: %v", err)
 	}
 	items, total, err := st.List(ctx, dbh, 0, "DRAFT", 2, 0)
@@ -496,11 +611,11 @@ func TestDefinitionTenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("tenant draft: %v", err)
 	}
-	p0, err := st.Publish(ctx, dbh, 0, d0.ID, "alice")
+	p0, err := st.PublishUngated(ctx, dbh, 0, d0.ID, "alice")
 	if err != nil {
 		t.Fatalf("platform publish: %v", err)
 	}
-	p7, err := st.Publish(ctx, dbh, 7, d7.ID, "bob")
+	p7, err := st.PublishUngated(ctx, dbh, 7, d7.ID, "bob")
 	if err != nil {
 		t.Fatalf("tenant publish: %v", err)
 	}
@@ -538,7 +653,7 @@ func TestDefinitionTenantIsolation(t *testing.T) {
 	if _, err := st.UpdateDraft(ctx, dbh, 7, d0b.ID, dslDoc(name), "bob"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross UpdateDraft = %v, want ErrNotFound", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 7, d0b.ID, "bob"); !errors.Is(err, ErrNotFound) {
+	if _, err := st.PublishUngated(ctx, dbh, 7, d0b.ID, "bob"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("cross Publish = %v, want ErrNotFound", err)
 	}
 	// 跨租户 Archive:name 只在平台存在时,租户 7 按名归档 = 404
@@ -548,7 +663,7 @@ func TestDefinitionTenantIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("platform solo draft: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, ds0.ID, "alice"); err != nil {
+	if _, err := st.PublishUngated(ctx, dbh, 0, ds0.ID, "alice"); err != nil {
 		t.Fatalf("platform solo publish: %v", err)
 	}
 	if _, err := st.Archive(ctx, dbh, 7, soloName, 1, "bob"); !errors.Is(err, ErrNotFound) {
@@ -600,14 +715,14 @@ func TestStorePublishToolAllowlistMCPNames(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, allowed.ID, "alice", "mcp_weather_lookup"); err != nil {
+	if _, err := st.PublishUngated(ctx, dbh, 0, allowed.ID, "alice", "mcp_weather_lookup"); err != nil {
 		t.Fatalf("publish mcp-declared tool with matching allowlist: %v", err)
 	}
 	blocked, err := createDraft(t, st, dbh, mcpDSL(uniqName("mcp-no"), "mcp_undeclared"), "alice")
 	if err != nil {
 		t.Fatalf("CreateDraft: %v", err)
 	}
-	if _, err := st.Publish(ctx, dbh, 0, blocked.ID, "alice", "mcp_weather_lookup"); err == nil || !HasIssueCode(err, dsl.IssueToolNotAllowed) {
+	if _, err := st.PublishUngated(ctx, dbh, 0, blocked.ID, "alice", "mcp_weather_lookup"); err == nil || !HasIssueCode(err, dsl.IssueToolNotAllowed) {
 		t.Fatalf("publish undeclared mcp tool err = %v, want tool_not_allowed", err)
 	}
 }

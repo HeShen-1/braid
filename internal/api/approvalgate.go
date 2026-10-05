@@ -16,8 +16,13 @@
 //   - 拒绝痕迹 = 响亮 slog + braid_api_fleet_gate_rejections_total 计数器
 //     (audit_log 结构性执行锚定——writer validate 钉死 ExecutionID 非零,
 //     物化前拒绝落不进执行事实域;零迁移禁新表);
-//   - 发布面 TOCTOU:闸读草稿 DSL 与 Publish 事务间草案可被改写引入
-//     mode=all——触发面闸(def.DSL 快照)是最后一道线,发布序纪律兜底;
+//   - 发布面闸在 Publish 事务内对锁定读内容判定(T20.3 收前置窗:闸对象
+//     与翻转内容是同一份 cur,「闸读旧稿、事务发新稿」的改写走私被行锁
+//     串行化——赶在锁定读前提交的改写由闸对新内容判定,迟到者见非
+//     DRAFT 冲突);在场扫描钉事务连接(持事务经池另取连接 = 并发发布
+//     自饿死面,已消);残余边界 = 闸在场扫描与 commit 间舰队组成漂移
+//     (租约表不随本事务钉住),触发面闸(def.DSL 快照)仍是最后一道
+//     线,发布序纪律兜底;
 //   - 回滚到旧(T15.2 代)二进制:旧 acquire 三写路径硬编码 NULL,旧副本
 //     重启即抹回宣告 → 闸误拒(fail-closed 方向安全);「行未过期且旧副本
 //     未重启」窗内宣告残留 = 误放方向,由 D-t142② 回滚前置 SELECT 承载。
@@ -27,7 +32,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/http"
 	"slices"
 	"time"
 
@@ -71,8 +75,10 @@ type fleetGateRejection struct {
 
 // gateFleetApprovalAll 查在场实例(snowflake.InFleet 单点:三类全扫、
 // 过期判定 DB 端 NOW(3))并判定 CapApprovalModeAll 全宣告。nil = 放行。
-func (s *Server) gateFleetApprovalAll(ctx context.Context) *fleetGateRejection {
-	fleet, err := snowflake.InFleet(ctx, s.dbh)
+// q 可传池(触发面)或 Publish 事务句柄(发布面——扫描钉事务连接,
+// 持事务期间经池另取连接是并发发布自饿死面,T20.3 审计收口)。
+func (s *Server) gateFleetApprovalAll(ctx context.Context, q snowflake.FleetScanner) *fleetGateRejection {
+	fleet, err := snowflake.InFleet(ctx, q)
 	if err != nil {
 		return &fleetGateRejection{ScanErr: fmt.Errorf("fleet scan: %w", err)}
 	}
@@ -136,31 +142,39 @@ func (s *Server) noteFleetGateRejection(action string, rej *fleetGateRejection) 
 	}
 }
 
-// gatePublishFleetApprovalAll 是发布面闸(handlers.publishDraft 调用):
-// 读草稿 DSL 判定含 mode=all 才查在场宣告,未全宣告 → 503 拒(已写
-// body,返回 false)。TOCTOU 边界见文件头。
-func (s *Server) gatePublishFleetApprovalAll(c *gin.Context, tenant uint64, id uint64) bool {
-	def, err := s.st.GetByID(c.Request.Context(), s.dbh, tenant, id)
-	if err != nil {
-		mapStoreError(c, err)
-		return false
+// fleetGateAbort 是发布面闸在 Publish 事务内的中止信号:携带拒绝判决
+// (handler errors.As 后映射 503 诊断 body);WithTx 回滚整个发布。
+type fleetGateAbort struct {
+	rej *fleetGateRejection
+}
+
+func (a *fleetGateAbort) Error() string {
+	if a.rej.ScanErr != nil {
+		return fmt.Sprintf("fleet gate: fleet scan: %v", a.rej.ScanErr)
 	}
-	usesAll, err := dslUsesApprovalAll(def.DSL)
+	return fmt.Sprintf("fleet gate: %d in-fleet instance(s) missing %s",
+		len(a.rej.Undeclared), snowflake.CapApprovalModeAll)
+}
+
+// publishFleetGate 是发布面闸(T20.3 起在 Publish 事务内执行,经 Publish
+// 的 gate 参数注入;handlers.publishDraft 调用):对锁定读内容判定,含
+// mode=all 才查在场宣告(扫描经 q 钉事务连接),未全宣告 →
+// fleetGateAbort(事务回滚,拒绝痕迹在拒绝点落)。TOCTOU 边界见文件头。
+func (s *Server) publishFleetGate(ctx context.Context, q DBTX, cur Definition) error {
+	usesAll, err := dslUsesApprovalAll(cur.DSL)
 	if err != nil {
-		slog.Error("api: fleet gate parse draft dsl", "err", err, "definition_id", id)
-		c.JSON(http.StatusInternalServerError, gin.H{"error": "internal"})
-		return false
+		slog.Error("api: fleet gate parse draft dsl", "err", err, "definition_id", cur.ID)
+		return fmt.Errorf("fleet gate: parse dsl: %w", err)
 	}
 	if !usesAll {
-		return true
+		return nil
 	}
-	rej := s.gateFleetApprovalAll(c.Request.Context())
+	rej := s.gateFleetApprovalAll(ctx, q)
 	if rej == nil {
-		return true
+		return nil
 	}
 	s.noteFleetGateRejection("publish", rej)
-	c.JSON(http.StatusServiceUnavailable, fleetGateRejectionBody(rej))
-	return false
+	return &fleetGateAbort{rej: rej}
 }
 
 // gateTriggerFleetApprovalAll 是触发面闸(execution.triggerCore 调用,
@@ -176,7 +190,7 @@ func (s *Server) gateTriggerFleetApprovalAll(ctx context.Context, def Definition
 	if !usesAll {
 		return nil
 	}
-	rej := s.gateFleetApprovalAll(ctx)
+	rej := s.gateFleetApprovalAll(ctx, s.dbh)
 	if rej == nil {
 		return nil
 	}
