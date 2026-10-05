@@ -103,7 +103,15 @@ const (
 	// usage 被 Complete 让位丢弃——已计费调用原先零台账痕迹,此词是唯一持久
 	// 凭证。低频(判死竞态窗),同步 Append 直写;usage 冗余列组唯一第二
 	// 允许携带者(与 completed 同源 engine.AttemptUsage)。
-	EventLLMCallDiscarded           = "llm.call.discarded"
+	EventLLMCallDiscarded = "llm.call.discarded"
+	// llm.call.budget_denied(T18.2,D-2026-10-05-t182-token-budget-gate 决策 4):
+	// 每执行 token 预算 pre-call 拒绝(调用未发出,零触达)。与 llm.call
+	// 失败族关系钉死:completed/discarded 是「调用已发出」的结果词,本词是
+	// 「调用未发出」的拒绝词(tool.call.denied 同族);发射 = nodes 执行器
+	// 拒绝现场独立小事务 best-effort 直写,actor=llm/模型名(completed 同形
+	// 归因);attempt 收口证据由 attempt.error_code + node.state_changed 既有
+	// 行承载,本行是预算治理专属分面;不携带 usage 列组(无调用即无用量)。
+	EventLLMBudgetDenied            = "llm.call.budget_denied"
 	EventToolCallCompleted          = "tool.call.completed"
 	EventApprovalRequested          = "approval.requested"
 	EventApprovalDecided            = "approval.decided"
@@ -155,6 +163,7 @@ var knownEvents = map[string]bool{
 	EventBranchEvaluated:            true,
 	EventLLMCallCompleted:           true,
 	EventLLMCallDiscarded:           true,
+	EventLLMBudgetDenied:            true,
 	EventToolCallCompleted:          true,
 	EventApprovalRequested:          true,
 	EventApprovalDecided:            true,

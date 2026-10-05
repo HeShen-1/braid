@@ -34,6 +34,54 @@ func TestConfigFromEnv(t *testing.T) {
 		if c.PriceTable.Len() != 1 {
 			t.Errorf("price table len = %d, want 1", c.PriceTable.Len())
 		}
+		if c.TokenBudget != 0 || c.TokenBudget.Enabled() {
+			t.Errorf("token budget default = %d, want 0 (gate off, D-t182 决策 1)", c.TokenBudget)
+		}
+	})
+	t.Run("token budget knob", func(t *testing.T) {
+		base := map[string]string{
+			"BRAID_LLM_BASE_URL":    "https://api.example.com/v1",
+			"BRAID_LLM_API_KEY":     "sk-test",
+			"BRAID_LLM_PRICE_TABLE": minPriceTable,
+		}
+		with := func(v string) map[string]string {
+			m := map[string]string{}
+			for k, val := range base {
+				m[k] = val
+			}
+			m["BRAID_LLM_TOKEN_BUDGET"] = v
+			return m
+		}
+		c, err := ConfigFromEnv(envMap(with("5000")))
+		if err != nil {
+			t.Fatalf("ConfigFromEnv() = %v, want nil", err)
+		}
+		if c.TokenBudget != 5000 || !c.TokenBudget.Enabled() {
+			t.Fatalf("token budget = %d, want 5000 enabled", c.TokenBudget)
+		}
+		// 上界恰含(≤ 1e9 误配防御,D-t182 决策 5);超界错误归 Validate
+		// (字段名口径,与 timeout/max_attempts 分工一致——env 键只在词法错)。
+		if _, err := ConfigFromEnv(envMap(with("1000000001"))); err == nil ||
+			!strings.Contains(err.Error(), "token budget") {
+			t.Errorf("over 1e9: err = %v, want validate rejection naming token budget", err)
+		}
+		if _, err := ConfigFromEnv(envMap(with("1000000000"))); err != nil {
+			t.Fatalf("boundary 1e9: ConfigFromEnv() = %v, want nil", err)
+		}
+		for name, raw := range map[string]string{
+			"not integer": "1.5",
+			"negative":    "-1",
+			"garbage":     "fast",
+		} {
+			_, err := ConfigFromEnv(envMap(with(raw)))
+			if err == nil {
+				t.Errorf("%s (%q): ConfigFromEnv() = nil, want error", name, raw)
+				continue
+			}
+			if !strings.Contains(err.Error(), "BRAID_LLM_TOKEN_BUDGET") {
+				t.Errorf("%s (%q): err = %v, want env key in error", name, raw, err)
+			}
+		}
 	})
 	t.Run("overrides", func(t *testing.T) {
 		c, err := ConfigFromEnv(envMap(map[string]string{

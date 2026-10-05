@@ -350,6 +350,10 @@ func run(ctx context.Context) error {
 		Client: client,
 		Prices: llmCfg.PriceTable,
 		DB:     mysqlDB,
+		// T18.2 每执行 token 预算闸(D-t182):旋钮经 llm.ConfigFromEnv→Validate
+		// 启动即败接线已闭环;IDs 供拒绝审计行 snowflake id(拒绝现场独立小事务)。
+		Budget: llmCfg.TokenBudget,
+		IDs:    ids,
 	}, toolExec, nodes.ApprovalExecutor{})
 	runErr := worker.Run(ctx, worker.Deps{
 		DB:       mysqlDB,

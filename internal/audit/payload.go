@@ -184,6 +184,23 @@ type ToolCallDeniedPayload struct {
 	Reason     string   `json:"reason"`      // unknown_subject | disabled | role_mismatch
 }
 
+// LLMCallBudgetDeniedPayload 是 llm.call.budget_denied(T18.2,每执行 token
+// 预算 pre-call 拒绝)的事件体。只含 id/码/数值(D-t26 §4 纪律,无 prompt
+// 自由文本):budget = BRAID_LLM_TOKEN_BUDGET 限额;spent = Σ 该执行已计费
+// usage(node_attempt.total_tokens);estimated_prompt_tokens = tiktoken 请求前
+// 估算(恒近似,§2 口径纪律——计费真相源 = API usage,两者永不互换);
+// completion_reserve = DSL max_tokens 声明值(未声明 0);拒绝判据 =
+// spent + estimated + reserve > budget(边界含)。行级 actor_id = 模型名
+// (与 llm.call.completed 同形归因)。
+type LLMCallBudgetDeniedPayload struct {
+	NodeID                string `json:"node_id"`
+	Model                 string `json:"model"`
+	Budget                uint64 `json:"budget"`
+	Spent                 uint64 `json:"spent"`
+	EstimatedPromptTokens uint64 `json:"estimated_prompt_tokens"`
+	CompletionReserve     uint64 `json:"completion_reserve"`
+}
+
 // LLMCallDiscardedPayload 是 llm.call.discarded(T6.4,D-t36 §7)的事件体:
 // 迟到 SUCCEEDED 携 usage 在 Complete 让位路径被丢弃(供应商已计费、平台
 // 台账双缺)。字段镜像 LLMCallCompletedPayload——这是该调用唯一留下的
