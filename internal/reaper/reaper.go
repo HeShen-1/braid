@@ -266,6 +266,14 @@ func (r *Reaper) mAsynqAliveDefer() {
 	}
 }
 
+// mAsynqProbeUnreachable 记一次分支 B 探测不可达 fail-open(T18.7,
+// D-t174 已知边界收口:该路径原仅 warn 无计数,静默回落不可观测)。
+func (r *Reaper) mAsynqProbeUnreachable() {
+	if r.m != nil {
+		r.m.AsynqProbeUnreachable.Inc()
+	}
+}
+
 // jittered 返回 ±20% 抖动后的间隔(去同步多实例扫描相位)。
 func jittered(d time.Duration) time.Duration {
 	j := int64(float64(d) * 0.2)

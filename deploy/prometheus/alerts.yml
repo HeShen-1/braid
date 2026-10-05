@@ -51,8 +51,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "{{ $value }} 个升级通知丢失(escalated 有行、notified 缺行)"
-          description: "escalated-vs-notified 对账缺口(D-t45 #1):升级意图已落、超宽限窗无送达行——relay 耗尽转 DEAD 或 worker archived 的统一信号。braid_smtp_configured==1 门闸:SMTP 未配置时缺失是设计行为,不告警。"
+          summary: "{{ $value }} 个升级通知丢失(escalated 有行、本轮 notified 缺行)"
+          description: "escalated-vs-notified 对账缺口(D-t45 #1;分轮对账 T18.7):升级意图已落、超宽限窗无本轮送达行(waiting 候选按 payload $.round=attempts 匹配;续跑残留 escalated_at 的非 waiting 候选按任意轮)——relay 耗尽转 DEAD 或 worker archived 的统一信号。早轮送达行在场不算已送达,按 round 列核对。braid_smtp_configured==1 门闸:SMTP 未配置时缺失是设计行为,不告警。"
 
   - name: braid-llm
     rules:
@@ -182,8 +182,8 @@ groups:
         labels:
           severity: critical
         annotations:
-          summary: "{{ $value }} 个 IM 卡片送达丢失(escalated 有行、im_notified 缺行)"
-          description: "IM 通道对账缺口(T17.4,镜像 SMTP 面 D-t45 #1):升级意图已落、超 15m 宽限窗无 approval.im_notified 行——钉钉 webhook 投递链故障的统一信号(relay 耗尽 / worker archived / webhook 持久失败)。braid_im_configured==1 门闸:IM 未配置时缺失是设计行为,不告警。"
+          summary: "{{ $value }} 个 IM 卡片送达丢失(escalated 有行、本轮 im_notified 缺行)"
+          description: "IM 通道对账缺口(T17.4,镜像 SMTP 面 D-t45 #1;分轮对账 T18.7):升级意图已落、超 15m 宽限窗无本轮 approval.im_notified 行(waiting 候选按 payload $.round=attempts 匹配;续跑残留 escalated_at 的非 waiting 候选按任意轮)——钉钉 webhook 投递链故障的统一信号(relay 耗尽 / worker archived / webhook 持久失败)。早轮送达行在场不算已送达,按 round 列核对。braid_im_configured==1 门闸:IM 未配置时缺失是设计行为,不告警。"
 
   - name: braid-auth
     rules:

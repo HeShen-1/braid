@@ -176,9 +176,18 @@ func (r *Reaper) collectIMNotifyMissing(ctx context.Context) {
 // collectNotifyReconcile 是双通道对账实体:notified/im_notified 的候选集
 // (escalated_at 驱动)与逐候选分区点查(镜像 sender.go 去重查形态,
 // idx_audit_exec 最左前缀入口)完全同构,仅 event_type 与落点 gauge 分立。
+// T18.7 分轮收口(D-t174 已知边界:按 (exec,node) 不分轮会被早轮行遮蔽):
+// sender 去重锚按轮(payload.$.round),对账点查必须同粒度——两模式:
+//   - WAITING_APPROVAL 候选:不变量「escalated_at ∧ WAITING ⇒ 升级属当前
+//     轮 = attempts」(MarkNodeEscalated 的 IS NULL 锚 + 轮推进必然离开
+//     WAITING),点查按轮匹配——本轮卡片丢失不被早轮行遮蔽;
+//   - 非 waiting 候选:ResumeNode 不清 escalated_at(engine 现实),决策
+//     续跑后 attempts 已进、升级轮次不可恢复——保持任意轮语义(任意轮
+//     行满足即不计;零行仍计,候选不窄化)。
 func (r *Reaper) collectNotifyReconcile(ctx context.Context, eventType string, gauge prometheus.Gauge) {
 	rs, err := r.deps.DB.QueryContext(ctx, `
-SELECT ne.id, we.id, DATE_FORMAT(we.created_at, '%Y-%m-%d')
+SELECT ne.id, we.id, DATE_FORMAT(we.created_at, '%Y-%m-%d'), ne.attempts,
+       ne.status='WAITING_APPROVAL'
   FROM node_execution ne
   JOIN workflow_execution we ON we.id = ne.execution_id
  WHERE ne.escalated_at IS NOT NULL
@@ -190,15 +199,17 @@ SELECT ne.id, we.id, DATE_FORMAT(we.created_at, '%Y-%m-%d')
 		return
 	}
 	type cand struct {
-		id       uint64
-		execID   uint64
-		execDate string
+		id        uint64
+		execID    uint64
+		execDate  string
+		attemptNo int
+		waiting   bool
 	}
 	var cands []cand
 	for rs.Next() {
 		var c cand
 		var d sql.NullString // DATE 直出字符串,不经 driver loc 解析(D-t26-F1 同判)
-		if err := rs.Scan(&c.id, &c.execID, &d); err != nil {
+		if err := rs.Scan(&c.id, &c.execID, &d, &c.attemptNo, &c.waiting); err != nil {
 			_ = rs.Close() //nolint:errcheck // 探测失败路径,关闭错误无处置义
 			r.log.Warn("metrics.notify_missing scan", "err", err)
 			return
@@ -218,10 +229,16 @@ SELECT ne.id, we.id, DATE_FORMAT(we.created_at, '%Y-%m-%d')
 		// execution_id 谓词逐字镜像 sender 去重查:idx_audit_exec 最左前缀
 		// 的入口(rev3 HIGH:漏掉它 = exec_date 只裁分区,node_execution_id
 		// 无索引,每候选每 tick 全分区扫描——观测面在病理态自我放大)。
-		err := r.deps.DB.QueryRowContext(ctx, `
-SELECT 1 FROM audit_log
- WHERE exec_date=? AND execution_id=? AND node_execution_id=? AND event_type=?
- LIMIT 1`, c.execDate, c.execID, c.id, eventType).Scan(&one)
+		query := `SELECT 1 FROM audit_log
+ WHERE exec_date=? AND execution_id=? AND node_execution_id=? AND event_type=?`
+		args := []any{c.execDate, c.execID, c.id, eventType}
+		if c.waiting {
+			// 轮谓词逐字镜像 im/sender 去重锚(JSON_EXTRACT '$.round' = ?)。
+			query += ` AND JSON_EXTRACT(payload, '$.round') = ?`
+			args = append(args, c.attemptNo)
+		}
+		query += ` LIMIT 1`
+		err := r.deps.DB.QueryRowContext(ctx, query, args...).Scan(&one)
 		if errors.Is(err, sql.ErrNoRows) {
 			missing++
 			continue

@@ -3,6 +3,7 @@ package reaper
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"testing"
 	"time"
 
@@ -116,15 +117,8 @@ func TestCollectResumeStuckAndNotifyMissingGauges(t *testing.T) {
 		t.Errorf("approval_notify_missing = %v, want 1(升级无送达 = 丢失信号,D-t45)", got)
 	}
 
-	// 补送达行 → missing 归零(audit_log 直插 notified,exec_date = 执行创建日)。
-	if _, err := d.Exec(`INSERT INTO audit_log
-	  (id, exec_date, event_at, event_type, execution_id, node_execution_id, node_id,
-	   actor_type, actor_id, payload)
-	  VALUES (?, DATE((SELECT created_at FROM workflow_execution WHERE id=?)), NOW(3),
-	          'approval.notified', ?, ?, 'boss', 'worker', 'w1', '{}')`,
-		nextID(t), s.execID, s.execID, s.nodeExecID); err != nil {
-		t.Fatalf("seed notified row: %v", err)
-	}
+	// 补送达行 → missing 归零(T18.7:种子带轮,对账按轮点查)。
+	seedNotifyAuditRow(t, d, s.execID, s.nodeExecID, "approval.notified", 1)
 	if err := r.collectMetrics(ctx); err != nil {
 		t.Fatalf("collectMetrics(2): %v", err)
 	}
@@ -185,15 +179,8 @@ func TestCollectIMNotifyMissingGauges(t *testing.T) {
 		t.Errorf("approval_im_notified_missing = %v, want 1(升级无卡片送达)", got)
 	}
 
-	// 补 im_notified 送达行 → 归零。
-	if _, err := d.Exec(`INSERT INTO audit_log
-	  (id, exec_date, event_at, event_type, execution_id, node_execution_id, node_id,
-	   actor_type, actor_id, payload)
-	  VALUES (?, DATE((SELECT created_at FROM workflow_execution WHERE id=?)), NOW(3),
-	          'approval.im_notified', ?, ?, 'boss', 'worker', 'w1', '{}')`,
-		nextID(t), s.execID, s.execID, s.nodeExecID); err != nil {
-		t.Fatalf("seed im_notified row: %v", err)
-	}
+	// 补 im_notified 送达行 → 归零(T18.7:种子带轮,镜像 sender 落行形状)。
+	seedNotifyAuditRow(t, d, s.execID, s.nodeExecID, "approval.im_notified", 1)
 	if err := r.collectMetrics(ctx); err != nil {
 		t.Fatalf("collectMetrics(2): %v", err)
 	}
@@ -212,5 +199,111 @@ func TestCollectIMNotifyGraceWindow(t *testing.T) {
 	}
 	if got := testutil.ToFloat64(m.IMNotifyMissing); got != 0 {
 		t.Errorf("approval_im_notified_missing(窗内) = %v, want 0", got)
+	}
+}
+
+// seedNotifyAuditRow 直插一条带轮次的送达审计行(T18.7 分轮对账:去重锚
+// payload.$.round 的写半边,镜像 im/sender 落行形状)。
+func seedNotifyAuditRow(t *testing.T, d *sql.DB, execID, nodeExecID uint64, eventType string, round int) {
+	t.Helper()
+	if _, err := d.Exec(`INSERT INTO audit_log
+	  (id, exec_date, event_at, event_type, execution_id, node_execution_id, node_id,
+	   actor_type, actor_id, payload)
+	  VALUES (?, DATE((SELECT created_at FROM workflow_execution WHERE id=?)), NOW(3),
+	          ?, ?, ?, 'boss', 'worker', 'w1', ?)`,
+		nextID(t), execID, eventType, execID, nodeExecID,
+		fmt.Sprintf(`{"node_id":"boss","reason":"escalated","round":%d}`, round)); err != nil {
+		t.Fatalf("seed %s row: %v", eventType, err)
+	}
+}
+
+// TestCollectIMNotifyMissingPerRound(T18.7 分轮对账主锚,D-t174 已知边界
+// 收口):IM sender 去重按轮(payload.$.round),对账必须同粒度——第二轮
+// 升级的卡片丢失不能被第一轮的送达行遮蔽。变异:点查丢 round 谓词 →
+// missing 恒 0,本测试红。
+func TestCollectIMNotifyMissingPerRound(t *testing.T) {
+	r, m, d := newCollectReaper(t)
+	s := seedApproval(t, d, "RUNNING", time.Hour, "escalate", true)
+	// 推进到第二轮(回滚重挂形态:attempts=2),本轮升级已超宽限。
+	if _, err := d.Exec(`UPDATE node_execution SET attempts=2, escalated_at = NOW(3) - INTERVAL 20 MINUTE
+	  WHERE id=?`, s.nodeExecID); err != nil {
+		t.Fatalf("seed round-2 escalation: %v", err)
+	}
+	// 第一轮送达行在场(round=1):不分轮的旧对账会被它遮蔽。
+	seedNotifyAuditRow(t, d, s.execID, s.nodeExecID, "approval.im_notified", 1)
+	if err := r.collectMetrics(context.Background()); err != nil {
+		t.Fatalf("collectMetrics: %v", err)
+	}
+	if got := testutil.ToFloat64(m.IMNotifyMissing); got != 1 {
+		t.Errorf("approval_im_notified_missing(round1 行遮蔽 round2) = %v, want 1(分轮对账)", got)
+	}
+	// 补本轮(round=2)送达行 → 归零。
+	seedNotifyAuditRow(t, d, s.execID, s.nodeExecID, "approval.im_notified", 2)
+	if err := r.collectMetrics(context.Background()); err != nil {
+		t.Fatalf("collectMetrics(2): %v", err)
+	}
+	if got := testutil.ToFloat64(m.IMNotifyMissing); got != 0 {
+		t.Errorf("approval_im_notified_missing(round2 行在场) = %v, want 0", got)
+	}
+}
+
+// TestCollectNotifyMissingPerRound(T18.7):SMTP 通道同修——sender 去重
+// 同为按轮(sender.go $.round),遮蔽病同根同源;恢复「对账逐字镜像
+// sender 去重」不变量。
+func TestCollectNotifyMissingPerRound(t *testing.T) {
+	r, m, d := newCollectReaper(t)
+	s := seedApproval(t, d, "RUNNING", time.Hour, "escalate", true)
+	if _, err := d.Exec(`UPDATE node_execution SET attempts=2, escalated_at = NOW(3) - INTERVAL 20 MINUTE
+	  WHERE id=?`, s.nodeExecID); err != nil {
+		t.Fatalf("seed round-2 escalation: %v", err)
+	}
+	seedNotifyAuditRow(t, d, s.execID, s.nodeExecID, "approval.notified", 1)
+	if err := r.collectMetrics(context.Background()); err != nil {
+		t.Fatalf("collectMetrics: %v", err)
+	}
+	if got := testutil.ToFloat64(m.ApprovalNotifyMissing); got != 1 {
+		t.Errorf("approval_notify_missing(round1 行遮蔽 round2) = %v, want 1(分轮对账)", got)
+	}
+	seedNotifyAuditRow(t, d, s.execID, s.nodeExecID, "approval.notified", 2)
+	if err := r.collectMetrics(context.Background()); err != nil {
+		t.Fatalf("collectMetrics(2): %v", err)
+	}
+	if got := testutil.ToFloat64(m.ApprovalNotifyMissing); got != 0 {
+		t.Errorf("approval_notify_missing(round2 行在场) = %v, want 0", got)
+	}
+}
+
+// TestCollectIMNotifyResumedNodeLegacyMode(T18.7 假阳性守卫):ResumeNode
+// 不清 escalated_at(engine 现实,nodecas.go)——决策续跑后节点已非
+// WAITING_APPROVAL,本轮次已不可恢复(attempts 已 +1),对账必须回落
+// 任意轮语义:旧轮行满足即不计缺失;且非 waiting 候选不被裁掉(零行
+// 仍计丢失 = 未窄化)。
+func TestCollectIMNotifyResumedNodeLegacyMode(t *testing.T) {
+	r, m, d := newCollectReaper(t)
+	s := seedApproval(t, d, "RUNNING", time.Hour, "escalate", true)
+	if _, err := d.Exec(`UPDATE node_execution SET escalated_at = NOW(3) - INTERVAL 20 MINUTE
+	  WHERE id=?`, s.nodeExecID); err != nil {
+		t.Fatalf("backdate escalated_at: %v", err)
+	}
+	seedNotifyAuditRow(t, d, s.execID, s.nodeExecID, "approval.im_notified", 1)
+	// 模拟 ResumeNode 后残留:EXECUTING + attempts 已进,escalated_at 仍在。
+	if _, err := d.Exec(`UPDATE node_execution SET status='EXECUTING', attempts=2 WHERE id=?`, s.nodeExecID); err != nil {
+		t.Fatalf("simulate resume residue: %v", err)
+	}
+	if err := r.collectMetrics(context.Background()); err != nil {
+		t.Fatalf("collectMetrics: %v", err)
+	}
+	if got := testutil.ToFloat64(m.IMNotifyMissing); got != 0 {
+		t.Errorf("approval_im_notified_missing(续跑残留任意轮语义) = %v, want 0(防假阳性)", got)
+	}
+	// 零行 ≠ 不对账:非 waiting 候选的绝对丢失仍要计入(未窄化锚)。
+	if _, err := d.Exec(`DELETE FROM audit_log WHERE execution_id=? AND event_type='approval.im_notified'`, s.execID); err != nil {
+		t.Fatalf("drop notified rows: %v", err)
+	}
+	if err := r.collectMetrics(context.Background()); err != nil {
+		t.Fatalf("collectMetrics(2): %v", err)
+	}
+	if got := testutil.ToFloat64(m.IMNotifyMissing); got != 1 {
+		t.Errorf("approval_im_notified_missing(非 waiting 零行) = %v, want 1(候选未窄化)", got)
 	}
 }

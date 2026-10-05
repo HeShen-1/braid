@@ -147,7 +147,9 @@ func (r *Reaper) reapAttempt(ctx context.Context, nodeExecID, execID uint64, ent
 			switch {
 			case perr != nil:
 				// fail-open(D-t25#2 同族):探测不可达 ≠ 死证据;回落现行
-				// DispatchStale 有界残余窗语义(重派照旧)。
+				// DispatchStale 有界残余窗语义(重派照旧)。T18.7:计数补面
+				// ——持续增长 = probe 降级(硬化静默关闭)的可观测信号。
+				r.mAsynqProbeUnreachable()
 				r.log.Warn("node.redispatch_asynq_probe_unreachable",
 					"node_execution_id", nodeExecID, "task_id", ve.taskID, "err", perr,
 					"hint", "fail-open: dispatch-stale window governs (D-t25#10)")

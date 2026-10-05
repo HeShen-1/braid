@@ -14,53 +14,54 @@ import (
 // the metric-name closed set, mirroring the audit knownEvents precedent
 // (internal/audit/writer.go) — typo drift fails this test, not production.
 var metricNames = map[string]dto.MetricType{
-	"braid_llm_http_failures_total":             dto.MetricType_COUNTER,
-	"braid_llm_calls_total":                     dto.MetricType_COUNTER,
-	"braid_llm_call_duration_seconds":           dto.MetricType_HISTOGRAM,
-	"braid_llm_calls_discarded_total":           dto.MetricType_COUNTER,
-	"braid_reaper_reaped_total":                 dto.MetricType_COUNTER,
-	"braid_reaper_redispatches_total":           dto.MetricType_COUNTER,
-	"braid_reaper_node_failures_total":          dto.MetricType_COUNTER,
-	"braid_reaper_node_cancellations_total":     dto.MetricType_COUNTER,
-	"braid_reaper_approvals_escalated_total":    dto.MetricType_COUNTER,
-	"braid_reaper_scan_backlog_total":           dto.MetricType_COUNTER,
-	"braid_audit_flush_batches_total":           dto.MetricType_COUNTER,
-	"braid_audit_flush_rows_total":              dto.MetricType_COUNTER,
-	"braid_audit_flush_poison_rows_total":       dto.MetricType_COUNTER,
-	"braid_audit_flush_duration_seconds":        dto.MetricType_HISTOGRAM,
-	"braid_audit_chain_verify_rows_total":       dto.MetricType_COUNTER, // T9.3
-	"braid_audit_chain_broken_total":            dto.MetricType_COUNTER, // T9.3
-	"braid_audit_chain_broken_heads":            dto.MetricType_GAUGE,   // T9.3
-	"braid_audit_pending_rows":                  dto.MetricType_GAUGE,
-	"braid_audit_pending_oldest_age_seconds":    dto.MetricType_GAUGE,
-	"braid_outbox_rows":                         dto.MetricType_GAUGE,
-	"braid_outbox_oldest_age_seconds":           dto.MetricType_GAUGE,
-	"braid_approval_backlog_rows":               dto.MetricType_GAUGE,
-	"braid_approval_backlog_oldest_age_seconds": dto.MetricType_GAUGE,
-	"braid_stuck_node_candidates":               dto.MetricType_GAUGE,
-	"braid_resume_stuck_rows":                   dto.MetricType_GAUGE,
-	"braid_approval_notify_missing_rows":        dto.MetricType_GAUGE,
-	"braid_notify_results_total":                dto.MetricType_COUNTER,
-	"braid_smtp_configured":                     dto.MetricType_GAUGE,
-	"braid_im_configured":                       dto.MetricType_GAUGE,
-	"braid_asynq_archived_tasks":                dto.MetricType_GAUGE,
-	"braid_relay_deliveries_total":              dto.MetricType_COUNTER,
-	"braid_redis_memory_used_bytes":             dto.MetricType_GAUGE,
-	"braid_redis_memory_max_bytes":              dto.MetricType_GAUGE,
-	"braid_asynq_queue_tasks":                   dto.MetricType_GAUGE,
-	"braid_login_attempts_total":                dto.MetricType_COUNTER,
-	"braid_rollback_requested_total":            dto.MetricType_COUNTER, // T9.2:回滚面三计数器(D-t92 决策 10)
-	"braid_rollback_applied_total":              dto.MetricType_COUNTER,
-	"braid_rollback_denied_total":               dto.MetricType_COUNTER,
-	"braid_db_pool_open_connections":            dto.MetricType_GAUGE,
-	"braid_db_pool_in_use_connections":          dto.MetricType_GAUGE,
-	"braid_db_pool_idle_connections":            dto.MetricType_GAUGE,
-	"braid_db_pool_max_open_connections":        dto.MetricType_GAUGE,
-	"braid_db_pool_wait_total":                  dto.MetricType_COUNTER,
-	"braid_reaper_poison_snapshots_total":       dto.MetricType_COUNTER, // T17.4:快照漂移毒行
-	"braid_approval_im_notified_missing_rows":   dto.MetricType_GAUGE,   // T17.4:im_notified 对账
-	"braid_resume_events_rejected_total":        dto.MetricType_COUNTER, // T17.4:5a premature/fabricated
-	"braid_reaper_asynq_alive_defers_total":     dto.MetricType_COUNTER, // T17.4:Inspector 活性让位
+	"braid_llm_http_failures_total":              dto.MetricType_COUNTER,
+	"braid_llm_calls_total":                      dto.MetricType_COUNTER,
+	"braid_llm_call_duration_seconds":            dto.MetricType_HISTOGRAM,
+	"braid_llm_calls_discarded_total":            dto.MetricType_COUNTER,
+	"braid_reaper_reaped_total":                  dto.MetricType_COUNTER,
+	"braid_reaper_redispatches_total":            dto.MetricType_COUNTER,
+	"braid_reaper_node_failures_total":           dto.MetricType_COUNTER,
+	"braid_reaper_node_cancellations_total":      dto.MetricType_COUNTER,
+	"braid_reaper_approvals_escalated_total":     dto.MetricType_COUNTER,
+	"braid_reaper_scan_backlog_total":            dto.MetricType_COUNTER,
+	"braid_audit_flush_batches_total":            dto.MetricType_COUNTER,
+	"braid_audit_flush_rows_total":               dto.MetricType_COUNTER,
+	"braid_audit_flush_poison_rows_total":        dto.MetricType_COUNTER,
+	"braid_audit_flush_duration_seconds":         dto.MetricType_HISTOGRAM,
+	"braid_audit_chain_verify_rows_total":        dto.MetricType_COUNTER, // T9.3
+	"braid_audit_chain_broken_total":             dto.MetricType_COUNTER, // T9.3
+	"braid_audit_chain_broken_heads":             dto.MetricType_GAUGE,   // T9.3
+	"braid_audit_pending_rows":                   dto.MetricType_GAUGE,
+	"braid_audit_pending_oldest_age_seconds":     dto.MetricType_GAUGE,
+	"braid_outbox_rows":                          dto.MetricType_GAUGE,
+	"braid_outbox_oldest_age_seconds":            dto.MetricType_GAUGE,
+	"braid_approval_backlog_rows":                dto.MetricType_GAUGE,
+	"braid_approval_backlog_oldest_age_seconds":  dto.MetricType_GAUGE,
+	"braid_stuck_node_candidates":                dto.MetricType_GAUGE,
+	"braid_resume_stuck_rows":                    dto.MetricType_GAUGE,
+	"braid_approval_notify_missing_rows":         dto.MetricType_GAUGE,
+	"braid_notify_results_total":                 dto.MetricType_COUNTER,
+	"braid_smtp_configured":                      dto.MetricType_GAUGE,
+	"braid_im_configured":                        dto.MetricType_GAUGE,
+	"braid_asynq_archived_tasks":                 dto.MetricType_GAUGE,
+	"braid_relay_deliveries_total":               dto.MetricType_COUNTER,
+	"braid_redis_memory_used_bytes":              dto.MetricType_GAUGE,
+	"braid_redis_memory_max_bytes":               dto.MetricType_GAUGE,
+	"braid_asynq_queue_tasks":                    dto.MetricType_GAUGE,
+	"braid_login_attempts_total":                 dto.MetricType_COUNTER,
+	"braid_rollback_requested_total":             dto.MetricType_COUNTER, // T9.2:回滚面三计数器(D-t92 决策 10)
+	"braid_rollback_applied_total":               dto.MetricType_COUNTER,
+	"braid_rollback_denied_total":                dto.MetricType_COUNTER,
+	"braid_db_pool_open_connections":             dto.MetricType_GAUGE,
+	"braid_db_pool_in_use_connections":           dto.MetricType_GAUGE,
+	"braid_db_pool_idle_connections":             dto.MetricType_GAUGE,
+	"braid_db_pool_max_open_connections":         dto.MetricType_GAUGE,
+	"braid_db_pool_wait_total":                   dto.MetricType_COUNTER,
+	"braid_reaper_poison_snapshots_total":        dto.MetricType_COUNTER, // T17.4:快照漂移毒行
+	"braid_approval_im_notified_missing_rows":    dto.MetricType_GAUGE,   // T17.4:im_notified 对账
+	"braid_resume_events_rejected_total":         dto.MetricType_COUNTER, // T17.4:5a premature/fabricated
+	"braid_reaper_asynq_alive_defers_total":      dto.MetricType_COUNTER, // T17.4:Inspector 活性让位
+	"braid_reaper_asynq_probe_unreachable_total": dto.MetricType_COUNTER, // T18.7:探测不可达 fail-open
 }
 
 func gatherMetricTypes(t *testing.T, reg *prometheus.Registry) map[string]dto.MetricType {
