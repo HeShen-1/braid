@@ -805,6 +805,12 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 			}
 		}
 
+		// 3c. 污点传播审计行(T18.3,D-t183):attempt 收口即留证——成功/失败
+		// 路径同样成立(数据已进入外发通道,送达与否不属本行语义)。
+		if err := st.auditTaintFlow(n, req.AttemptID, taintSink(n.nodeType)); err != nil {
+			return err
+		}
+
 		// 4. 节点收口三分支。worker_id 回传行内值(派发方 ≠ 执行方,version 是
 		// 真正裁决——见 nodecas.go SucceedNode 注释;行已 FOR UPDATE 持有,回传
 		// 值不会陈旧)。
@@ -1117,17 +1123,60 @@ SELECT id, node_id, instance_no, version, status, type, attempts, attempts_base,
 
 // execState 是单事务内的推进状态。
 type execState struct {
-	s        *Scheduler
-	ctx      context.Context
-	q        engine.DBTX
-	execID   uint64
-	wf       *dsl.Workflow
-	dag      *dag
-	rows     *lockedRows
-	env      *refEnv
-	workerID string          // 派发方归因(完成方 worker)
-	failed   bool            // fail-fast 已触发,停止一切派发
-	wfInput  json.RawMessage // 触发输入原文(T9.1:convergeParallel 重建 env 的根)
+	s         *Scheduler
+	ctx       context.Context
+	q         engine.DBTX
+	execID    uint64
+	wf        *dsl.Workflow
+	dag       *dag
+	rows      *lockedRows
+	env       *refEnv
+	workerID  string          // 派发方归因(完成方 worker)
+	failed    bool            // fail-fast 已触发,停止一切派发
+	wfInput   json.RawMessage // 触发输入原文(T9.1:convergeParallel 重建 env 的根)
+	taint     dsl.TaintSets   // T18.3:静态污点图惰性缓存(单事务生命周期;钉版定义纯函数,幂等)
+	taintOnce bool
+}
+
+// taintSets 惰性计算钉版定义的静态污点图(T18.3,D-t183):发射点进程内现算,
+// 每事务至多一次,量级 = 定义体(≤ maxDSLBody 1MiB)一次正则扫描 + O(V+E)
+// 不动点——零 DB 触达,与同事务既有的 buildEnv 全图求值同类;不触发射面的
+// 事务(纯推进/剪枝)零计算。
+func (st *execState) taintSets() dsl.TaintSets {
+	if !st.taintOnce {
+		st.taint = dsl.ComputeTaintSets(st.wf)
+		st.taintOnce = true
+	}
+	return st.taint
+}
+
+// auditTaintFlow 发 node.taint_propagated(T18.3):带污点数据的 attempt 收口/
+// branch 内联收口时留证。仅路径集非空才发射(无污点节点审计面零变化);
+// attemptID:Complete = 收口 attempt(重试各 attempt 各一行,每次真实进通道),
+// branch 内联收口无 attempt 行 = 0。sink 语义 = 进入外发通道(非送达,
+// D-t183 决策 3):失败路径同样成立——数据已进通道,拦截另有失败码承载。
+func (st *execState) auditTaintFlow(row *nodeRow, attemptID uint64, sink string) error {
+	paths := st.taintSets().Sources(row.nodeID)
+	if len(paths) == 0 {
+		return nil
+	}
+	return st.stageRow(audit.EventNodeTaintPropagated, row, attemptID,
+		audit.NodeTaintPropagatedPayload{NodeID: row.nodeID, Sink: sink, Paths: paths})
+}
+
+// taintSink 按节点类型定污点通道分类(T18.3):llm/tool = 外发通道;
+// 其余(branch 本地路由;防御面)= 本地消费。词表演进纪律:新增节点类型
+// 接入时必须显式分类(免外发型新类型被 default 静默归 none 低报),分类面
+// 与本函数同 PR 旅行。
+func taintSink(nodeType string) string {
+	switch nodeType {
+	case "llm":
+		return audit.SinkLLM
+	case "tool":
+		return audit.SinkTool
+	default:
+		return audit.SinkNone
+	}
 }
 
 func newExecState(s *Scheduler, ctx context.Context, q engine.DBTX, execID uint64,
@@ -1331,6 +1380,10 @@ func (st *execState) dispatchBranch(row *nodeRow, b *dsl.BranchNode) error {
 	if err := st.stageRow(audit.EventBranchEvaluated, row, 0, audit.BranchEvaluatedPayload{
 		NodeID: row.nodeID, Next: next,
 	}); err != nil {
+		return err
+	}
+	// T18.3:branch 对污点操作数路由留证(本地消费,无 attempt 行)。
+	if err := st.auditTaintFlow(row, 0, audit.SinkNone); err != nil {
 		return err
 	}
 	row.status = engine.NodeSucceeded

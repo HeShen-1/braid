@@ -239,3 +239,26 @@ type LLMCallDiscardedPayload struct {
 	CostEstimated    bool   `json:"cost_estimated"`
 	ObservedAttempt  string `json:"observed_attempt"`
 }
+
+// NodeTaintPropagatedPayload 是 node.taint_propagated(T18.3,
+// D-2026-10-05-t183-taint-tracking)的事件体:污点传播证据行。Paths 是传递源
+// 路径集(`inputs.<声明名>` 升序),宇宙被 refs.go 正则字符集钉死(T1.2 校验
+// 通过时 ⊆ DSL 声明 inputs 词表;校验旁路的防御口径下未声明名照录,形态仍
+// 钉死)——作者标识符,与行级 node_id 同信任类,非自由文本(D-t26 §4 维持
+// + validate 形状闸 fail-closed);
+// 值永不入 payload(真相源列明文不脱敏,审计不复制)。Sink 语义 = 「进入外发
+// 通道」非「送达」:运行时拦截(tool_ssrf_blocked 等)不改写静态事实,拦截
+// 另有失败码/tool.call.denied 承载。词表演进位:`outputs`(工作流顶层 outputs
+// lineage)预留未启用;approval IM 面(enterprise)若成外发通道再末尾追加。
+type NodeTaintPropagatedPayload struct {
+	NodeID string   `json:"node_id"`
+	Sink   string   `json:"sink"`  // SinkLLM | SinkTool | SinkNone
+	Paths  []string `json:"paths"` // 传递源路径集(升序;静态推导,钉版定义恒同集)
+}
+
+// Sink 词表(T18.3):污点在本节点流入的通道分类。
+const (
+	SinkLLM  = "llm"  // user_data 拼入 prompt 发往模型供应商
+	SinkTool = "tool" // 已求值入参进入子进程/http 等工具执行面
+	SinkNone = "none" // 本地消费:branch 路由臂求值(approval 结构性零引用,恒不发射)
+)
