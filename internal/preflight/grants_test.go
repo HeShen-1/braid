@@ -215,6 +215,12 @@ func TestGrantsShParses(t *testing.T) {
 	if !ra["SELECT"] || !ra["DELETE"] || len(ra) != 2 {
 		t.Fatalf("reaper login_audit = %v, want {SELECT,DELETE}", keys(ra))
 	}
+	// T18.6:reaper 对 node_attempt 的 UPDATE(判死收口)+ DELETE(留档
+	// 清理)面——与 componentRequired 断言面同源。
+	rna := tableLevel["braid_reaper"]["node_attempt"]
+	if !rna["SELECT"] || !rna["UPDATE"] || !rna["DELETE"] || len(rna) != 3 {
+		t.Fatalf("reaper node_attempt = %v, want {SELECT,UPDATE,DELETE}", keys(rna))
+	}
 	// 列级语句归边在位(chain_heads / login_throttle 的 api 面)。
 	colLines := 0
 	for _, gl := range lines {
@@ -340,6 +346,7 @@ var snapshotFaceAnchors = map[string][]struct{ table, privs string }{
 	"braid_reaper": {
 		{"outbox", "SELECT,INSERT,DELETE"},
 		{"audit_log", "SELECT,INSERT,ALTER,DROP"},
+		{"node_attempt", "SELECT,UPDATE,DELETE"},
 		{"snowflake_node_lease", "SELECT,INSERT,UPDATE,DELETE"},
 	},
 }
@@ -480,6 +487,7 @@ func TestComponentGrantsVerdict(t *testing.T) {
 			held: map[string]map[string]bool{
 				"outbox":               {"SELECT": true, "INSERT": true, "DELETE": true},
 				"audit_log":            {"SELECT": true, "INSERT": true, "ALTER": true, "DROP": true},
+				"node_attempt":         {"SELECT": true, "UPDATE": true, "DELETE": true},
 				"snowflake_node_lease": lease,
 			},
 		},
@@ -491,6 +499,7 @@ func TestComponentGrantsVerdict(t *testing.T) {
 			held: map[string]map[string]bool{
 				"outbox":               {"SELECT": true, "INSERT": true, "DELETE": true},
 				"audit_log":            {"SELECT": true, "INSERT": true},
+				"node_attempt":         {"SELECT": true, "UPDATE": true, "DELETE": true},
 				"snowflake_node_lease": lease,
 			},
 			wantSub: []string{"ALTER, DROP on `sch`.`audit_log`", "GRANT ALTER, DROP ON `sch`.`audit_log` TO 'app'@'%'"},
@@ -502,9 +511,23 @@ func TestComponentGrantsVerdict(t *testing.T) {
 			held: map[string]map[string]bool{
 				"outbox":               {"SELECT": true},
 				"audit_log":            {"SELECT": true, "INSERT": true, "ALTER": true, "DROP": true},
+				"node_attempt":         {"SELECT": true, "UPDATE": true, "DELETE": true},
 				"snowflake_node_lease": {"SELECT": true},
 			},
 			wantSub: []string{"INSERT, DELETE on `sch`.`outbox`", "INSERT, UPDATE, DELETE on `sch`.`snowflake_node_lease`", "; "},
+		},
+		{
+			// T18.6 断言面单缺:node_attempt DELETE(留档清理)撤面即拒启,
+			// why 链路可见。
+			name: "reaper missing node_attempt delete",
+			comp: ComponentReaper,
+			held: map[string]map[string]bool{
+				"outbox":               {"SELECT": true, "INSERT": true, "DELETE": true},
+				"audit_log":            {"SELECT": true, "INSERT": true, "ALTER": true, "DROP": true},
+				"node_attempt":         {"SELECT": true, "UPDATE": true},
+				"snowflake_node_lease": lease,
+			},
+			wantSub: []string{"DELETE on `sch`.`node_attempt`", "GRANT DELETE ON `sch`.`node_attempt`"},
 		},
 		{
 			// 列级 UPDATE 不满足表级面:held 集只有表级形态,列级面天然不在
@@ -596,6 +619,11 @@ func TestComponentGrantsEnforcement(t *testing.T) {
 			name: "reaper missing audit_log alter", comp: ComponentReaper, base: "braid_reaper",
 			revoke:  "ALTER ON " + schema + ".audit_log",
 			wantSub: []string{"ALTER on `" + schema + "`.`audit_log`", "retention"},
+		},
+		{
+			name: "reaper missing node_attempt delete", comp: ComponentReaper, base: "braid_reaper",
+			revoke:  "DELETE ON " + schema + ".node_attempt",
+			wantSub: []string{"DELETE on `" + schema + "`.`node_attempt`"},
 		},
 		{
 			name: "api missing lease delete", comp: ComponentAPI, base: "braid_api",

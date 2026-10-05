@@ -215,17 +215,18 @@ func seedExecRow(t *testing.T, d *sql.DB, status string, stale time.Duration) (u
 // testCfg 返回测试压缩配置(毫秒级;Validate 故意不跑——启动路径专用)。
 func testCfg() Config {
 	return Config{
-		ScanInterval:        50 * time.Millisecond,
-		DeadGrace:           200 * time.Millisecond,
-		ExecStale:           200 * time.Millisecond,
-		PendingTTL:          time.Minute,
-		DispatchStale:       time.Minute,
-		AuditRetention:      24 * time.Hour,
-		LoginAuditRetention: 24 * time.Hour,
-		JanitorInterval:     time.Hour,
-		OutboxBatch:         100,
-		Queue:               "reap-test",
-		ID:                  "test-reaper",
+		ScanInterval:         50 * time.Millisecond,
+		DeadGrace:            200 * time.Millisecond,
+		ExecStale:            200 * time.Millisecond,
+		PendingTTL:           time.Minute,
+		DispatchStale:        time.Minute,
+		AuditRetention:       24 * time.Hour,
+		LoginAuditRetention:  24 * time.Hour,
+		NodeAttemptRetention: 24 * time.Hour,
+		JanitorInterval:      time.Hour,
+		OutboxBatch:          100,
+		Queue:                "reap-test",
+		ID:                   "test-reaper",
 	}
 }
 

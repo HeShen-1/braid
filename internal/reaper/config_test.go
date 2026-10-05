@@ -24,6 +24,9 @@ func TestDefaultConfig(t *testing.T) {
 	if c.LoginAuditRetention != 2160*time.Hour {
 		t.Fatalf("login audit retention = %s, want 90d(镜像 AuditRetention)", c.LoginAuditRetention)
 	}
+	if c.NodeAttemptRetention != 720*time.Hour {
+		t.Fatalf("node attempt retention = %s, want 30d(T18.6 容量定档:55 万行/天 × 30d ≈ 1650 万行稳态)", c.NodeAttemptRetention)
+	}
 	if c.AuditFlushInterval != time.Second || c.AuditFlushBatch != 500 {
 		t.Fatalf("audit flush defaults = %s/%d, want 1s/500", c.AuditFlushInterval, c.AuditFlushBatch)
 	}
@@ -57,6 +60,8 @@ func TestConfigValidateBounds(t *testing.T) {
 		{"janitor_floor", func(c *Config) { c.JanitorInterval = 4 * time.Minute }, false},
 		{"login_retention_floor", func(c *Config) { c.LoginAuditRetention = 23 * time.Hour }, false},
 		{"login_retention_ok", func(c *Config) { c.LoginAuditRetention = 24 * time.Hour }, true},
+		{"node_attempt_retention_floor", func(c *Config) { c.NodeAttemptRetention = 23 * time.Hour }, false},
+		{"node_attempt_retention_ok", func(c *Config) { c.NodeAttemptRetention = 24 * time.Hour }, true},
 		{"outbox_batch_zero", func(c *Config) { c.OutboxBatch = 0 }, false},
 		{"outbox_batch_over", func(c *Config) { c.OutboxBatch = 10001 }, false},
 		{"queue_bad_charset", func(c *Config) { c.Queue = "Q1" }, false},
@@ -147,6 +152,21 @@ func TestConfigFromEnvParses(t *testing.T) {
 	}
 	if c3.LoginAuditRetention != 48*time.Hour {
 		t.Fatalf("login retention env = %s, want 48h", c3.LoginAuditRetention)
+	}
+	// T18.6 留档保留期旋钮:node_attempt janitor 清理边界可经 env 覆盖
+	// (取非默认值 96h——与默认相等的取值对「删接线/接错键」变异零杀伤,
+	// 镜像 c3 的 48h ≠ 90d 先例)。
+	c4, err := ConfigFromEnv(func(k string) string {
+		if k == "BRAID_REAPER_NODE_ATTEMPT_RETENTION" {
+			return "96h"
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("node attempt retention env: %v", err)
+	}
+	if c4.NodeAttemptRetention != 96*time.Hour {
+		t.Fatalf("node attempt retention env = %s, want 96h", c4.NodeAttemptRetention)
 	}
 }
 

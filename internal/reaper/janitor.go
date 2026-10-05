@@ -20,7 +20,7 @@ const outboxRetention = 7 * 24 * time.Hour
 
 // janitor 单 tick 的行/分区上限(量控;批间 100ms 让出复制/缓冲池水位)。
 const (
-	janitorRoundCap  = 10000 // 单清理作业的单轮行上限(outbox/login_audit/login_throttle 各自独立计;软上限——判定在整批 DELETE 后,至多超出一批)
+	janitorRoundCap  = 10000 // 单清理作业的单轮行上限(outbox/login_audit/login_throttle 各自独立计,node_attempt 走专属 nodeAttemptRoundCap;软上限——判定在整批 DELETE 后,至多超出一批)
 	loginAuditBatch  = 500   // login_audit 单批 DELETE 上限(量级被限流钳制,不设旋钮)
 	janitorBatchGap  = 100 * time.Millisecond
 	ddlLockWaitSecs  = 5
@@ -34,10 +34,25 @@ const (
 	loginThrottleHorizon = 30 * 24 * time.Hour
 	// loginThrottleBatch 单批 DELETE 上限(镜像 loginAuditBatch)。
 	loginThrottleBatch = 500
+
+	// nodeAttemptBatch 是 node_attempt 留档清理的单批 DELETE 上限(T18.6,
+	// 镜像 loginAuditBatch:旋钮只有保留期,批量与轮上限由量控常量兜)。
+	nodeAttemptBatch = 500
+
+	// nodeAttemptRoundCap 是 node_attempt 留档清理的专属单轮上限(T18.6,
+	// 不共用 janitorRoundCap:该面摄入 = 无界业务吞吐——CAPACITY §7 生产
+	// 轮询形态帽 6.4 nodes/s ≈ 55.3 万行/天,共用 1 万 × 24 轮 = 24 万/天
+	// 清理帽 < 摄入帽,满帽持续负载下保留期无界漂移(对抗审计 2×HIGH);
+	// 2.5 万 × 24 轮 = 60 万/天 > 该形态摄入帽 9% 余量,盈亏平衡 6.94 行/s。
+	// §7 压缩轮询形态净帽 29.5 nodes/s(≈ 255 万行/天)单副本即超本帽
+	// 4.3×——扩容口径见 CAPACITY §9 唤醒触发。轮活跃代价 ≈ 50 批 ×
+	// (DELETE ~10ms + 批隙 100ms) ≈ 5.5s。
+	nodeAttemptRoundCap = 25000
 )
 
 // janitorLoop 独立 goroutine:audit_log 分区水位 + outbox DISPATCHED 清理 +
-// login_audit 保留期清理(T7.1 接线,migration 0005 登记)。
+// login_audit 保留期清理(T7.1 接线,migration 0005 登记)+ login_throttle
+// 死重回收(T11.3)+ node_attempt 留档保留期清理(T18.6)。
 // 与扫描循环隔离(攻击 8/12 吸收):分区 DDL 的 MDL 等待被 lock_wait_timeout
 // 封顶,超时弃轮,永不冻结扫描 tick。
 func (r *Reaper) janitorLoop(ctx context.Context, token string) {
@@ -57,7 +72,8 @@ func (r *Reaper) janitorLoop(ctx context.Context, token string) {
 }
 
 // janitorOnce 一轮维护:专用连接 + 会话级 MDL 等待封顶;分区作业与 outbox/
-// login_audit 清理错误隔离(前者失败只记日志,不阻断清理)。DDL 全程
+// login_audit/login_throttle/node_attempt 清理错误隔离(前者失败只记日志,
+// 不阻断清理)。DDL 全程
 // autocommit(SET SESSION 后每条 ALTER 独立提交),不持行锁、不走 Transient
 // 重试。span 形态同 RunOnce(D-t121 #4:计时 span 不进发射 ctx)。
 func (r *Reaper) janitorOnce(ctx context.Context) error {
@@ -84,10 +100,19 @@ func (r *Reaper) doJanitor(ctx context.Context) error {
 		fmt.Sprintf("SET SESSION lock_wait_timeout=%d", ddlLockWaitSecs)); err != nil {
 		return fmt.Errorf("reaper: janitor lock_wait_timeout: %w", err)
 	}
+	// 行锁等待同点位封顶(algo 补齐审查:上一变量只封 MDL;janitor 首个
+	// 持锁触碰活热路径的面是 node_attempt 留档清理,其 next-key/S 锁若被
+	// 长事务 X 锁阻塞,默认 innodb_lock_wait_timeout=50s 会把等待传导给
+	// 同期 claim/心跳/收口——5s 封顶 + Transient 让位,下轮再清)。
+	if _, err := conn.ExecContext(ctx,
+		fmt.Sprintf("SET SESSION innodb_lock_wait_timeout=%d", ddlLockWaitSecs)); err != nil {
+		return fmt.Errorf("reaper: janitor innodb_lock_wait_timeout: %w", err)
+	}
 	if err := r.ensurePartitions(ctx, conn); err != nil {
 		r.log.Error("janitor.partitions_failed", "err", err)
 	}
-	return errors.Join(r.purgeOutbox(ctx, conn), r.purgeLoginAudit(ctx, conn), r.purgeLoginThrottle(ctx, conn))
+	return errors.Join(r.purgeOutbox(ctx, conn), r.purgeLoginAudit(ctx, conn), r.purgeLoginThrottle(ctx, conn),
+		r.purgeNodeAttempt(ctx, conn))
 }
 
 // partitionRow 是 INFORMATION_SCHEMA 水位行。
@@ -344,6 +369,67 @@ DELETE FROM login_throttle
 	}
 	if total > 0 {
 		r.log.Info("login_throttle.purged", "rows", total)
+	}
+	return nil
+}
+
+// purgeNodeAttempt 批删超保留期的终态 node_attempt 留档行(T18.6,
+// D-t186:janitor 第五面)。三重守卫:
+//  1. status IN 终态集:RUNNING 永不删——活 attempt 的判死是扫描②的
+//     CAS 处置面,清理作业不越权代笔回收;
+//  2. heartbeat_at 时钟:全行 NOT NULL、终态即冻结(收口是一次终写,
+//     终态后禁改),偏斜 ≤ 心跳间隔+DeadGrace ≈ 分钟级(相对收口钟最多
+//     早删一个偏斜窗,30d 量级下无害);谓词骑 idx_attempt_status_heartbeat,
+//     零 DDL;
+//  3. 活执行守卫(镜像 audit 分区守卫先例):所属 execution 非终态则
+//     本轮跳过——长审批执行钉住留档是合法语义,保留期为活执行弯曲。
+//
+// 锁面(T18.6 是 janitor 首个持锁触碰活热路径表的面):DELETE 段扫描的
+// next-key 锁与 NOT EXISTS 对 workflow_execution 的 S 锁均为批内毫秒级
+// 持有(单批 autocommit + 批隙 100ms),与 claim/心跳/收口的竞争是瞬态
+// 等待非死锁环——锁序单向(本面:attempt 段锁 → we S 锁;worker:
+// attempt X 锁 → we X 锁);被长事务 X 锁阻塞时行锁等待由会话级
+// innodb_lock_wait_timeout=5 封顶(doJanitor,MDL 闸 lock_wait_timeout
+// 分立),1205 走 Transient 让位,下轮再清。
+//
+// 删除纪律红线(D-t186):本清理是保留期治理非审计删除——audit_log 分区
+// 照旧独立(90d,usage/cost 双录兜底合规链);t9.2 双路径追溯的状态路径
+// 在保留期外变薄,审计路径不受影响。回滚机制不读终态 attempt 行
+// (rollback 只锁 RUNNING 收口),保留期即留档证据支持窗。授权契约:
+// reaper 账号对 node_attempt 补 DELETE(grants.sh;谓词列走既有 SELECT)。
+// Transient 容忍同 purgeOutbox;轮上限走专属 nodeAttemptRoundCap(摄入 =
+// 无界业务吞吐,与限流钳制/事件量有界的既有三面异质,见常量注)。
+func (r *Reaper) purgeNodeAttempt(ctx context.Context, conn *sql.Conn) error {
+	total := 0
+	for {
+		res, err := conn.ExecContext(ctx, `
+DELETE FROM node_attempt
+ WHERE status IN ('SUCCEEDED','FAILED','DEAD')
+   AND heartbeat_at < NOW(3) - INTERVAL ? MICROSECOND
+   AND NOT EXISTS (SELECT 1 FROM workflow_execution we
+                    WHERE we.id = node_attempt.execution_id
+                      AND we.status IN ('PENDING','RUNNING','WAITING_APPROVAL'))
+ LIMIT ?`,
+			r.cfg.NodeAttemptRetention.Microseconds(), nodeAttemptBatch)
+		if err != nil {
+			if engine.Transient(err) {
+				return nil // 下轮再清:清理是收敛性作业,不重试单轮
+			}
+			return fmt.Errorf("reaper: purge node_attempt: %w", err)
+		}
+		n, _ := res.RowsAffected()
+		total += int(n)
+		if n < int64(nodeAttemptBatch) || total >= nodeAttemptRoundCap {
+			break
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(janitorBatchGap):
+		}
+	}
+	if total > 0 {
+		r.log.Info("node_attempt.purged", "rows", total)
 	}
 	return nil
 }

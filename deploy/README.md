@@ -83,10 +83,16 @@ relay/worker 侧破约):`maxmemory` 256mb + **noeviction** + AOF everysec。
 |----|------|------|------|
 | audit_log | `BRAID_REAPER_AUDIT_RETENTION` | 2160h(90d) | janitor 分区 DROP(被活执行钉住的分区顺延) |
 | login_audit | `BRAID_REAPER_LOGIN_AUDIT_RETENTION` | 2160h(90d) | janitor 按 event_at 批量 DELETE(单批 500 / 单轮 10000 / 批间 100ms;≥24h 校验) |
+| node_attempt | `BRAID_REAPER_NODE_ATTEMPT_RETENTION` | 720h(30d) | janitor 按 heartbeat_at 批量 DELETE 终态留档行(RUNNING 永不删;活执行守卫顺延;单批 500 / 专属单轮 25000 / 批间 100ms;≥24h 校验;T18.6) |
 
 容量估算口径:audit_log = 峰值事件率 × retention(分区物理文件粒度);
-login_audit 写入被登录限流钳制(默认 10/min/IP),量级天然有界。两旋钮
-均 ≥24h 启动即败(防误配一天清光审计)。
+login_audit 写入被登录限流钳制(默认 10/min/IP),量级天然有界;
+node_attempt = attempt 吞吐 × retention(§7 外推 55 万行/天 × 30d ≈
+1650 万行稳态,前提 = 摄入 ≤ 清理帽 60 万行/天——janitor 专属轮上限
+25000 × 24 轮;生产轮询形态帽 6.4 nodes/s 在帽内,压缩轮询形态(255
+万行/天)与多副本形态见 docs/CAPACITY.md §9 对账与唤醒触发)。三旋钮
+均 ≥24h
+启动即败(防误配一天清光审计/留档)。
 
 ## 4. api HTTP 超时配额
 
@@ -124,7 +130,7 @@ outbox UPDATE / audit_pending INSERT)已全部收回。
 | workflow_definition | SELECT,INSERT,UPDATE | SELECT | — | SELECT |
 | workflow_execution | SELECT,INSERT,UPDATE¹ | SELECT,UPDATE | — | SELECT,UPDATE |
 | node_execution | SELECT,INSERT,UPDATE¹ | SELECT,UPDATE | — | SELECT,UPDATE |
-| node_attempt | SELECT,UPDATE¹ | SELECT,INSERT,UPDATE | — | SELECT,UPDATE |
+| node_attempt | SELECT,UPDATE¹ | SELECT,INSERT,UPDATE | — | SELECT,UPDATE,DELETE |
 | approval_decision | SELECT,INSERT | SELECT | — | SELECT |
 | outbox | INSERT | INSERT | SELECT,UPDATE | SELECT,INSERT,DELETE |
 | audit_log | SELECT,INSERT | SELECT,INSERT | — | SELECT,INSERT,ALTER,DROP |
