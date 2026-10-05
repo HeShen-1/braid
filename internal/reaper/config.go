@@ -45,6 +45,14 @@ type Config struct {
 	// DELETE 边界;migration 0005 登记的接线,T7.1 落地)。量级被登录限流
 	// 钳制,镜像 AuditRetention 的 90d 默认与 ≥24h 下限。
 	LoginAuditRetention time.Duration
+	// NodeAttemptRetention 是 node_attempt 留档保留期(T18.6,janitor 批量
+	// DELETE 边界;时钟口径 = heartbeat_at,见 purgeNodeAttempt)。默认 30d
+	// 是容量定档(CAPACITY §7 摄入帽 55 万/天 × 30d ≈ 1650 万行稳态,
+	// 前提 = 摄入 ≤ 专属轮上限 60 万/天,CAPACITY §9);usage/cost 合规链
+	// 由 audit_log 90d 双录独立兜底,attempt 留档超窗后是运维冗余;回滚
+	// 机制不读终态 attempt 行(rollback 只锁 RUNNING),保留期即留档证据
+	// 支持窗(D-t186)。下界镜像 ≥24h。
+	NodeAttemptRetention time.Duration
 	// AuditFlushInterval 是暂存审计行(audit_pending → audit_log,T6.1 异步
 	// 批量)的搬运 tick。上限语义 = 审计行可见性滞后上界(T6.3 查询面按
 	// 此口径读 audit_log);leaderless 重叠下并发搬运收敛(1062 回滚 +
@@ -85,20 +93,21 @@ type Config struct {
 // DefaultConfig 返回生产默认值。
 func DefaultConfig() Config {
 	return Config{
-		ScanInterval:        30 * time.Second,
-		DeadGrace:           45 * time.Second,
-		ExecStale:           2 * time.Minute,
-		PendingTTL:          30 * time.Minute,
-		DispatchStale:       30 * time.Minute,
-		AuditRetention:      2160 * time.Hour, // 90d
-		LoginAuditRetention: 2160 * time.Hour, // 90d(镜像 AuditRetention)
-		AuditFlushInterval:  time.Second,
-		AuditFlushBatch:     500,
-		JanitorInterval:     time.Hour,
-		OutboxBatch:         500,
-		Queue:               "default",
-		SnowflakeNode:       snowflake.Auto(), // T15.2:PID 派生退役,内建缺省 = 池分配
-		Pool:                db.DefaultPoolConfig(),
+		ScanInterval:         30 * time.Second,
+		DeadGrace:            45 * time.Second,
+		ExecStale:            2 * time.Minute,
+		PendingTTL:           30 * time.Minute,
+		DispatchStale:        30 * time.Minute,
+		AuditRetention:       2160 * time.Hour, // 90d
+		LoginAuditRetention:  2160 * time.Hour, // 90d(镜像 AuditRetention)
+		NodeAttemptRetention: 720 * time.Hour,  // 30d(T18.6 容量定档,非镜像 audit:JSON 留档列 ×3 体量不取)
+		AuditFlushInterval:   time.Second,
+		AuditFlushBatch:      500,
+		JanitorInterval:      time.Hour,
+		OutboxBatch:          500,
+		Queue:                "default",
+		SnowflakeNode:        snowflake.Auto(), // T15.2:PID 派生退役,内建缺省 = 池分配
+		Pool:                 db.DefaultPoolConfig(),
 	}
 }
 
@@ -124,6 +133,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("reaper: audit retention %s < 24h", c.AuditRetention)
 	case c.LoginAuditRetention < 24*time.Hour:
 		return fmt.Errorf("reaper: login audit retention %s < 24h", c.LoginAuditRetention)
+	case c.NodeAttemptRetention < 24*time.Hour:
+		return fmt.Errorf("reaper: node attempt retention %s < 24h", c.NodeAttemptRetention)
 	// 100ms 硬下限:搬运是周期收敛作业,亚百毫秒 tick 只剩 DB 空转开销。
 	case c.AuditFlushInterval < 100*time.Millisecond:
 		return fmt.Errorf("reaper: audit flush interval %s < 100ms", c.AuditFlushInterval)
@@ -170,6 +181,9 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 		return c, err
 	}
 	if c.LoginAuditRetention, err = envDuration(getenv, "BRAID_REAPER_LOGIN_AUDIT_RETENTION", c.LoginAuditRetention); err != nil {
+		return c, err
+	}
+	if c.NodeAttemptRetention, err = envDuration(getenv, "BRAID_REAPER_NODE_ATTEMPT_RETENTION", c.NodeAttemptRetention); err != nil {
 		return c, err
 	}
 	if c.AuditFlushInterval, err = envDuration(getenv, "BRAID_REAPER_AUDIT_FLUSH_INTERVAL", c.AuditFlushInterval); err != nil {

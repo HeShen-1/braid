@@ -530,6 +530,8 @@ var componentRequired = map[Component][]componentFace{
 			why: "dead-node redispatch + janitor dispatch cleanup"},
 		{table: "audit_log", privs: []string{"SELECT", "INSERT", "ALTER", "DROP"},
 			why: "sync audit emission + partition retention (DROP PARTITION needs ALTER+DROP)"},
+		{table: "node_attempt", privs: []string{"SELECT", "UPDATE", "DELETE"},
+			why: "death-scan CAS close (UPDATE) + janitor archival retention purge (T18.6; missing grant surfaces as hourly 1142 otherwise)"},
 		leaseFace,
 	},
 }

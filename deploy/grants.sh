@@ -104,7 +104,7 @@ GRANT SELECT                  ON braid.schema_migrations TO 'braid_relay'@'%';
 GRANT SELECT                  ON braid.workflow_definition TO 'braid_reaper'@'%';
 GRANT SELECT, UPDATE          ON braid.workflow_execution  TO 'braid_reaper'@'%';
 GRANT SELECT, UPDATE          ON braid.node_execution      TO 'braid_reaper'@'%';
-GRANT SELECT, UPDATE          ON braid.node_attempt        TO 'braid_reaper'@'%';
+GRANT SELECT, UPDATE, DELETE  ON braid.node_attempt        TO 'braid_reaper'@'%'; -- T18.6 留档保留期清理:终态行批量 DELETE(谓词列 status/heartbeat_at/execution_id 走既有 SELECT,同 login_audit 先例);活执行守卫在本域只读 workflow_execution
 GRANT SELECT                  ON braid.approval_decision   TO 'braid_reaper'@'%';
 GRANT SELECT, INSERT, ALTER, DROP ON braid.audit_log       TO 'braid_reaper'@'%';
 GRANT SELECT, DELETE          ON braid.audit_pending       TO 'braid_reaper'@'%';

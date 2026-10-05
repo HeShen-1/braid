@@ -369,7 +369,10 @@ func (h *attHandler) readAttempt(ctx context.Context, p nodeTaskPayload) (uint64
 		`SELECT id, status FROM node_attempt WHERE node_execution_id=? AND attempt_no=?`,
 		p.NodeExecutionID, p.AttemptNo).Scan(&id, &status)
 	if errors.Is(err, sql.ErrNoRows) {
-		// 撞唯一键却读不到行:行不可能被删(FK 链无 DELETE 路径),数据缺陷。
+		// 撞唯一键却读不到行,数据缺陷。旧行删除路径 T18.6 起存在(janitor
+		// 留档保留期清理),但仅触 ≥保留期老终态行;attempt_no 单调来自
+		// node_execution 计数器,新 claim 不可能与已删老行同键——毫秒级
+		// 复读窗内撞上需叠加病态前提,仍按响亮失败处置。
 		return 0, "", fmt.Errorf("worker: attempt row vanished for node_exec=%d no=%d", p.NodeExecutionID, p.AttemptNo)
 	}
 	if err != nil {

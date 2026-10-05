@@ -13,7 +13,7 @@
 - [x] T18.3 完整 taint 追踪 — M — 验收:输入→节点→审计的污点传播追踪(方案 D- 先行:追踪粒度/存储面/审计呈现;数据安全纵深叙事)— D-2026-10-05-t183-taint-tracking(字段级声明名+保守闭包 / 仅审计呈现零迁移 / node.taint_propagated 词表)
 - [ ] T18.4 回滚族⑥ 投影只读端点 — M — 验收:api 按轮/按路径投影只读端点(纯读面追加)
 - [ ] T18.5 回滚族①⑦ — S — 验收:重放 200 幂等语义(重复回滚 409→重放)+ trace_id 世系归属复核
-- [ ] T18.6 回滚族⑧ 留档保留期 — S-M — 验收:node_attempt 留档接 janitor(现四面未覆盖)+ docs/CAPACITY.md 补面
+- [x] T18.6 回滚族⑧ 留档保留期 — S-M — 验收:node_attempt 留档接 janitor(现四面未覆盖)+ docs/CAPACITY.md 补面(T18.6 交付:D-2026-10-05-t186-node-attempt-retention,30d 容量定档/heartbeat_at 时钟骑既有索引/活执行守卫/RUNNING 永不删/专属轮上限 25000 对账摄入帽,零 DDL)
 - [ ] T18.7 T17.4 观测缝隙收口 — S-M — 验收:reaper probe 面测试锚逐项补齐 + 探测不可达 fail-open 计数 + im_notified 对账分轮
 
 ## M19 引擎纵深主轴(P3-2,engine 单 worktree 串行)
