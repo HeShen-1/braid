@@ -88,9 +88,70 @@ func TestParallelDefaultsAbsent(t *testing.T) {
 	if p.OnFailure != "" {
 		t.Errorf("default should stay empty (scheduler materializes), got on_failure=%q", p.OnFailure)
 	}
+	if p.MinSuccess != 0 {
+		t.Errorf("min_success absent should decode 0 (= 未启用, D-t191), got %d", p.MinSuccess)
+	}
 	if p.Body.Tool == nil || p.Body.LLM != nil {
 		t.Errorf("tool body not decoded: %+v", p.Body)
 	}
+}
+
+// TestParallelMinSuccess(T19.1,D-2026-10-05-t191):min_success 独立整数字段与
+// on_failure 正交;failed_count 输出契约仅随 min_success 启用登记(契约与运行时
+// 形状同构:启用 ⇒ gather 物化恒含 failed_count,未启用 ⇒ 恒无)。
+func TestParallelMinSuccess(t *testing.T) {
+	t.Run("valid_min_success_enables_failed_count_ref", func(t *testing.T) {
+		doc := `{
+		  "dsl": "1.0", "name": "parallel-wf",
+		  "inputs": [{"name": "reviews", "type": "array", "required": true}],
+		  "nodes": [
+		    {"id": "fan", "type": "parallel", "parallel": {
+		      "foreach": "{{inputs.reviews}}",
+		      "on_failure": "wait_all",
+		      "min_success": 2,
+		      "body": {"type": "llm", "prompt": {"template": "t"}}
+		    }}
+		  ],
+		  "edges": [],
+		  "outputs": {
+		    "all": "{{nodes.fan.output.results}}",
+		    "partial": "{{nodes.fan.output.failed_count}}"
+		  }
+		}`
+		wf, err := Parse([]byte(doc))
+		if err != nil {
+			t.Fatalf("expected valid, got error: %v", err)
+		}
+		p := wf.Nodes[0].Parallel
+		if p.MinSuccess != 2 {
+			t.Errorf("min_success = %d, want 2", p.MinSuccess)
+		}
+		if p.OnFailure != "wait_all" {
+			t.Errorf("on_failure = %q, want wait_all (正交共存)", p.OnFailure)
+		}
+	})
+	t.Run("failed_count_ref_requires_min_success", func(t *testing.T) {
+		doc := `{
+		  "dsl": "1.0", "name": "parallel-wf",
+		  "inputs": [{"name": "reviews", "type": "array", "required": true}],
+		  "nodes": [
+		    {"id": "fan", "type": "parallel", "parallel": {
+		      "foreach": "{{inputs.reviews}}",
+		      "body": {"type": "llm", "prompt": {"template": "t"}}
+		    }}
+		  ],
+		  "edges": [],
+		  "outputs": {"partial": "{{nodes.fan.output.failed_count}}"}
+		}`
+		_, err := Parse([]byte(doc))
+		if err == nil {
+			t.Fatalf("expected dangling-ref issue (failed_count 未随 min_success 登记), got nil")
+		}
+		got := issueCodesOf(t, err)
+		if !equalStrings(got, []string{IssueDanglingRef}) {
+			t.Fatalf("issue codes = %v, want [%s]\nfull error:\n%s", got, IssueDanglingRef, err)
+		}
+	})
 }
 
 func TestParallelSemanticIssues(t *testing.T) {

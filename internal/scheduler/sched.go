@@ -512,6 +512,12 @@ func planFanouts(g *dag, shape map[string]json.RawMessage) (map[string][]json.Ra
 		if err != nil {
 			return nil, fmt.Errorf("scheduler: parallel node %s: %w", nodeID, err)
 		}
+		// T19.1(D-2026-10-05-t191):min_success 先验——[1,N] 越界(含空数组
+		// + k≥1)拒绝,与 foreach 解析同位(事务外,零残留)。
+		if k := n.Parallel.MinSuccess; k > len(elems) {
+			return nil, fmt.Errorf("scheduler: parallel node %s: parallel_min_success_limit: min_success %d exceeds %d instances",
+				nodeID, k, len(elems))
+		}
 		if fanouts == nil {
 			fanouts = make(map[string][]json.RawMessage, 1)
 		}
@@ -852,6 +858,28 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 			switch {
 			case termGuard:
 				// 终态执行内的迟到失败:不再重试/失败收口。
+			case n.instanceNo > 0 && parallelControllerTerminal(st, n.nodeID):
+				// T19.1 审计 LOW①(D-2026-10-05-t191 收口):控制器已收敛(部分
+				// 容忍)后的实例迟到失败——results 已单次物化,重派 = 空烧供应商
+				// 预算;legacy fail-fast 的 termGuard「迟到失败不再重试」在
+				// RUNNING 执行内的对应物。直接终败收口(行留 FAILED 证据,
+				// error_code 细分 discarded_after_gather)。
+				failVer, err := engine.FailNode(ctx, q, n.id, n.version, n.workerID.String,
+					"discarded_after_gather",
+					fmt.Sprintf("controller converged; late failure discarded (attempt %d)", n.attempts))
+				if err != nil {
+					return err
+				}
+				if err := st.stageRow(audit.EventNodeStateChanged, n, req.AttemptID, audit.NodeStateChangedPayload{
+					From: string(engine.NodeExecuting), To: string(engine.NodeFailed),
+					NodeID: n.nodeID, Version: failVer, Code: "discarded_after_gather",
+					AttemptNo: n.attempts, WorkerID: n.workerID.String, InstanceNo: n.instanceNo,
+				}); err != nil {
+					return err
+				}
+				n.status = engine.NodeFailed
+				n.version = failVer
+				// gatherCheck 恒 no-op(控制器终态守卫),不调。
 			case int(n.attempts)-int(n.attemptsBase) < int(n.maxAttempts):
 				// T9.2 预算 = 本轮口径(attempts-attempts_base,回滚后满额;
 				// 存量行 base=0 逐字保持旧语义)。
@@ -905,8 +933,10 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 				if n.instanceNo > 0 {
 					// T9.1 实例终败:fail_fast → 控制器即败(在飞兄弟自然跑完,
 					// 既有全局语义);wait_all → 收齐再判(未收齐 = no-op,执行
-					// 继续等剩余实例)。
-					if effectiveOnFailure(st.dag.nodes[n.nodeID].Parallel) == "wait_all" {
+					// 继续等剩余实例)。T19.1:min_success 启用时统一走 gatherCheck
+					// 阈值判定(不可能达标早败 / 否则等),两 on_failure 值同路。
+					pn := st.dag.nodes[n.nodeID].Parallel
+					if effectiveMinSuccess(pn) > 0 || effectiveOnFailure(pn) == "wait_all" {
 						if err := st.gatherCheck(n.nodeID); err != nil {
 							return err
 						}
@@ -960,7 +990,11 @@ func (s *Scheduler) FinishIfDone(ctx context.Context, execID uint64) error {
 }
 
 // finishIfDone 在提交后新事务判定 SUCCEEDED 收口:无 PENDING/EXECUTING/
-// WAITING_APPROVAL 行且无 FAILED 行 → 物化 outputs → FinishExecution。
+// WAITING_APPROVAL 行且无控制面(instance_no=0)FAILED 行 → 物化 outputs →
+// FinishExecution。T19.1(D-2026-10-05-t191):实例行 FAILED 不阻塞——部分容忍
+// 收敛下「控制器 SUCCEEDED + 实例行 FAILED」是合法形态,实例终败的收敛语义
+// 归控制器(FAILED 控制行自阻塞;未收敛控制器恒非终态,nonTerminal 已拦),
+// 与「引用面只取控制行」同哲学。
 // 不提前:行集在 Instantiate 已全量落库,在飞兄弟已提交为非终态,新鲜快照必见。
 // 不漏判:最后一个提交者的重查必见全部终态。双收口由 status-only CAS 仲裁
 // (Conflict 良性)。fail-fast 路径已在 Complete 事务内收口 FAILED,此处跳过。
@@ -987,8 +1021,8 @@ func (s *Scheduler) finishIfDone(ctx context.Context, execID uint64, wf *dsl.Wor
 		switch {
 		case status == engine.NodeSucceeded:
 			succeeded = append(succeeded, r)
-		case status == engine.NodeFailed:
-			failed++
+		case status == engine.NodeFailed && r.instanceNo == 0:
+			failed++ // 控制面 FAILED;实例行 FAILED 归控制器收敛语义(T19.1)
 		case !status.Terminal():
 			nonTerminal++ // PENDING/EXECUTING/WAITING_APPROVAL(含实例行)
 		} // SKIPPED/CANCELLED:终态,不阻塞 SUCCEEDED 判定
@@ -1441,6 +1475,25 @@ func effectiveOnFailure(p *dsl.ParallelNode) string {
 	return "fail_fast"
 }
 
+// parallelControllerTerminal 报告实例行所属 parallel 控制器是否已终态
+// (T19.1 部分容忍收敛后的迟到收口语境;非实例行调用面已按 instanceNo 分流,
+// nil 防御兜底)。
+func parallelControllerTerminal(st *execState, nodeID string) bool {
+	ctrl := st.rows.byNodeID[nodeID]
+	return ctrl != nil && ctrl.status.Terminal()
+}
+
+// effectiveMinSuccess 返回 parallel 节点生效的部分容忍阈值(T19.1,
+// D-2026-10-05-t191):0 = 未启用(缺省,T9.1 现语义);[1,N] 已由
+// planFanouts 先验(Instantiate 前拒越界)。与 on_failure 正交:失败时机
+// × 成功阈值两旋钮。
+func effectiveMinSuccess(p *dsl.ParallelNode) int {
+	if p == nil {
+		return 0
+	}
+	return p.MinSuccess
+}
+
 // parallelElements 在派发位解析 foreach 元素集(输入不可变,与 Instantiate
 // 先验同源;元素 = env.input 的 UseNumber 解码值,数值保真)。
 func (st *execState) parallelElements(n *dsl.Node) ([]any, error) {
@@ -1543,28 +1596,43 @@ func (st *execState) dispatchParallel(row *nodeRow, n *dsl.Node) error {
 
 // convergeParallel 汇聚成功收口:控制行 output = {"results":[实例输出…]}
 // (instance_no 序 = foreach 输入序,与完成顺序无关——ROADMAP「确定性排序」);
-// 控制器 output 落定后重建 env(后继引用 results)再推进。仅全部实例
-// SUCCEEDED(或零实例)时调用。
+// 控制器 output 落定后重建 env(后继引用 results)再推进。T9.1:仅全部实例
+// SUCCEEDED(或零实例)时调用;T19.1(D-2026-10-05-t191):min_success 部分容忍
+// 收敛亦经此——失败/在飞实例位 = null 占位(输入序保位),启用时恒伴生
+// failed_count(全成功 = 0;fail_fast 早收敛 = 收敛时刻终败计数,迟到终败
+// 不回填,下界)。
 func (st *execState) convergeParallel(row *nodeRow, n *dsl.Node) error {
 	insts := st.rows.instances[row.nodeID]
 	results := make([]any, 0, len(insts))
+	failedCount := 0
 	for _, inst := range insts {
 		var v any
-		if inst.output.Valid && inst.output.String != "" {
+		switch {
+		case inst.output.Valid && inst.output.String != "":
 			if err := unmarshalUseNumber([]byte(inst.output.String), &v); err != nil {
 				return fmt.Errorf("scheduler: node %s instance %d output decode: %w",
 					row.nodeID, inst.instanceNo, err)
 			}
-		} else {
-			v = nil // 无输出实例汇聚为 null(键保留,materializeOutputs 同哲学)
+		case inst.status == engine.NodeSucceeded:
+			// 成功无输出实例汇聚为 null(键保留,materializeOutputs 同哲学)。
+		default:
+			// T19.1:失败/在飞实例位 = null 占位(输入序保位);终态非
+			// SUCCEEDED 计入 failed_count。
+			if inst.status.Terminal() {
+				failedCount++
+			}
 		}
 		results = append(results, v)
 	}
-	out, err := json.Marshal(map[string]any{"results": results})
+	out := map[string]any{"results": results}
+	if effectiveMinSuccess(n.Parallel) > 0 {
+		out["failed_count"] = failedCount
+	}
+	b, err := json.Marshal(out)
 	if err != nil {
 		return fmt.Errorf("scheduler: marshal gather output node %s: %w", row.nodeID, err)
 	}
-	ver, err := engine.SucceedNode(st.ctx, st.q, row.id, row.version, row.workerID.String, out)
+	ver, err := engine.SucceedNode(st.ctx, st.q, row.id, row.version, row.workerID.String, b)
 	if err != nil {
 		return err
 	}
@@ -1576,7 +1644,7 @@ func (st *execState) convergeParallel(row *nodeRow, n *dsl.Node) error {
 	}
 	row.version = ver
 	row.status = engine.NodeSucceeded
-	row.output = sql.NullString{String: string(out), Valid: true}
+	row.output = sql.NullString{String: string(b), Valid: true}
 	st.s.log.Info("parallel.gathered",
 		"execution_id", st.execID, "node_id", row.nodeID, "instances", len(results))
 	// env 必须在控制器 output 落定之后重建:后继引用 {{nodes.<id>.output.results}}。
@@ -1586,27 +1654,66 @@ func (st *execState) convergeParallel(row *nodeRow, n *dsl.Node) error {
 	return st.advanceFrom(row.nodeID)
 }
 
-// gatherCheck 实例行终态后的汇聚判定:全部实例终态时——全 SUCCEEDED →
-// convergeParallel;含非 SUCCEEDED 终态(wait_all 收齐含败;fail_fast 的
-// 单败路径不经此)→ 控制器 FAILED + 执行终败。未收齐 = no-op(wait_all 的
-// 中间态;fail_fast 下不可能到达——单败即收敛)。
+// gatherCheck 实例行终态后的汇聚判定。控制器已终态 → no-op(T19.1:达标
+// 早收敛后迟到收口不重入——output 单写者契约,重收敛会撞 CAS)。
+// T19.1 min_success(D-2026-10-05-t191)启用时按阈值判,与 on_failure 正交:
+//   - fail_fast+k:成功数 ≥ k → 立即收敛(在飞兄弟自然跑完、输出不回填);
+//     成功数+在飞 < k(不可能达标)→ 控制器终败(fail-fast 推广,省在飞成本);
+//     否则等。k=N 精确退化 = T9.1 fail_fast(单败即不可能达标)。
+//   - wait_all+k:收齐再判——≥k 收敛、<k 终败(收齐前的单败不早判,D-t91 语义)。
+//
+// 未启用维持 T9.1 两模式:全部实例终态时——全 SUCCEEDED → convergeParallel;
+// 含非 SUCCEEDED 终态 → 控制器 FAILED + 执行终败(fail_fast 单败路径不经此)。
+// 未收齐 = no-op(wait_all 的中间态)。
 func (st *execState) gatherCheck(nodeID string) error {
 	ctrl := st.rows.byNodeID[nodeID]
 	if ctrl == nil || ctrl.nodeType != "parallel" {
 		return nil // 非 parallel(防御;调用面已按 instanceNo 分流)
 	}
+	if ctrl.status.Terminal() {
+		return nil // T19.1:已收敛(或已终败)不再重判
+	}
 	insts := st.rows.instances[nodeID]
+	succeeded, failed, inFlight := 0, 0, 0
 	for _, inst := range insts {
-		if !inst.status.Terminal() {
-			return nil
+		switch {
+		case inst.status == engine.NodeSucceeded:
+			succeeded++
+		case !inst.status.Terminal():
+			inFlight++
+		default:
+			failed++
 		}
 	}
 	n := st.dag.nodes[nodeID]
-	for _, inst := range insts {
-		if inst.status != engine.NodeSucceeded {
-			return st.failParallelController(ctrl, nodeID,
-				fmt.Sprintf("instance %d terminal state %s", inst.instanceNo, inst.status))
+	if k := effectiveMinSuccess(n.Parallel); k > 0 {
+		if effectiveOnFailure(n.Parallel) == "fail_fast" {
+			if succeeded >= k {
+				return st.convergeParallel(ctrl, n)
+			}
+			if succeeded+inFlight < k {
+				return st.failParallelController(ctrl, nodeID,
+					fmt.Sprintf("min_success %d unreachable: %d succeeded, %d in flight, %d failed",
+						k, succeeded, inFlight, failed))
+			}
+			return nil // 仍可能达标,继续等
 		}
+		// wait_all+k:收齐再判。
+		if inFlight > 0 {
+			return nil
+		}
+		if succeeded >= k {
+			return st.convergeParallel(ctrl, n)
+		}
+		return st.failParallelController(ctrl, nodeID,
+			fmt.Sprintf("min_success %d not met: %d succeeded, %d failed", k, succeeded, failed))
+	}
+	if inFlight > 0 {
+		return nil // 未收齐 no-op(wait_all 中间态;fail_fast 单败不经此)
+	}
+	if failed > 0 {
+		return st.failParallelController(ctrl, nodeID,
+			fmt.Sprintf("%d of %d instances terminal-failed", failed, len(insts)))
 	}
 	return st.convergeParallel(ctrl, n)
 }
@@ -1636,9 +1743,14 @@ func (st *execState) failParallelController(ctrl *nodeRow, nodeID, detail string
 // ReapInstanceExhausted 是 reaper 侧实例耗尽的节点级收口(T9.1,对抗审计
 // HIGH② 修):reaper 事务已收口 attempt(DEAD)后,实例行的终败决策与控制器
 // 收敛走本入口——与 completeOnce 实例终败分支完全同款语义(fail_fast →
-// 控制器 FAILED + fail-fast;wait_all → 收齐再判),锁序 = lockAllRows 全行
+// 控制器 FAILED + fail-fast;wait_all → 收齐再判;T19.1:min_success 启用
+// 统一走 gatherCheck 阈值判定),锁序 = lockAllRows 全行
 // ((node_id, instance_no)),与 Complete 全序一致。幂等:全锁下实例行已非
 // EXECUTING 或预算未耗尽(他方 Complete 先到)→ no-op,归其原路径。
+// T19.1 审计 MEDIUM①(D-2026-10-05-t191 收口):提交后补判终态(completeOnce
+// 同款)——部分收敛后末位在飞实例经本入口收口时,全行终态的执行不再滞留
+// RUNNING 等扫描④b 的 ExecStale 窗;失败只记日志(与 Complete 的提交后
+// 判定同级兜底)。
 func (s *Scheduler) ReapInstanceExhausted(ctx context.Context, execID, nodeExecID uint64, workerID string) error {
 	exec, err := s.loadExecution(ctx, execID)
 	if err != nil {
@@ -1648,7 +1760,7 @@ func (s *Scheduler) ReapInstanceExhausted(ctx context.Context, execID, nodeExecI
 	if err != nil {
 		return err
 	}
-	return engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+	err = engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
 		rows, err := lockAllRows(ctx, q, execID, g)
 		if err != nil {
 			return err
@@ -1688,17 +1800,34 @@ func (s *Scheduler) ReapInstanceExhausted(ctx context.Context, execID, nodeExecI
 		}
 		n.status = engine.NodeFailed
 		n.version = failVer
+		// 活跃时刻刷新(DDL 契约:任一节点/attempt 推进同事务刷新;completeOnce
+		// 步骤 5 同款)——T19.1 审计 MEDIUM① 顺带补齐:本入口此前推进节点行
+		// 而漏刷(实例级 FailNode 已发生,先于控制器分支)。
+		if err := engine.TouchExecution(ctx, q, execID); err != nil {
+			return err
+		}
 		pn := g.nodes[n.nodeID]
 		if pn == nil || pn.Parallel == nil {
 			return fmt.Errorf("scheduler: node %q has instance rows but is not a parallel node (definition/rows drift)", n.nodeID)
 		}
-		if effectiveOnFailure(pn.Parallel) == "wait_all" {
+		// T19.1:min_success 启用统一走 gatherCheck 阈值判定(与 completeOnce
+		// 实例终败分支同款语义,D-t91 本入口契约)。
+		if effectiveMinSuccess(pn.Parallel) > 0 || effectiveOnFailure(pn.Parallel) == "wait_all" {
 			return st.gatherCheck(n.nodeID)
 		}
 		ctrl := rows.byNodeID[n.nodeID]
 		return st.failParallelController(ctrl, n.nodeID,
 			fmt.Sprintf("instance %d failed: %s (reaped)", n.instanceNo, code))
 	})
+	if err != nil {
+		return err
+	}
+	// 提交后新事务判终态(completeOnce 同款;见函数头 T191 注记)。no-op 守卫
+	// 早退路径下同样无害(行未全终态 → finishIfDone 自然 no-op)。
+	if ferr := s.finishIfDone(ctx, execID, wf, exec.input); ferr != nil {
+		s.log.Error("execution.finish_check_failed", "execution_id", execID, "err", ferr)
+	}
+	return nil
 }
 
 func (st *execState) appendNodeTask(row *nodeRow) error {

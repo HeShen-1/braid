@@ -1,0 +1,13 @@
+{
+  "dsl": "1.0",
+  "name": "parallel-wf",
+  "inputs": [{"name": "reviews", "type": "array", "required": true}],
+  "nodes": [
+    {"id": "fan", "type": "parallel", "parallel": {
+      "foreach": "{{inputs.reviews}}",
+      "min_success": "2",
+      "body": {"type": "llm", "prompt": {"template": "t"}}
+    }}
+  ],
+  "edges": []
+}
