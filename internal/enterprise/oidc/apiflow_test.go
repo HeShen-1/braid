@@ -54,6 +54,14 @@ func (f fakeTrigger) RollbackTo(_ context.Context, p scheduler.RollbackParams) (
 	return &scheduler.RollbackResult{TargetNodeID: p.TargetNodeID}, nil
 }
 
+// CancelExecution(T19.3):fake 面与 RollbackTo 同构。
+func (f fakeTrigger) CancelExecution(context.Context, scheduler.CancelParams) (*scheduler.CancelResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &scheduler.CancelResult{CancelledCount: 1}, nil
+}
+
 func doGet(t *testing.T, r http.Handler, path string, cookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodGet, path, nil)

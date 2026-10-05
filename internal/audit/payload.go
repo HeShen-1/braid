@@ -208,12 +208,13 @@ type LLMCallBudgetDeniedPayload struct {
 // attempt 终态(恒 DEAD,防未来语义漂移时静默)。
 // ExecutionRolledBackPayload 是 execution.rolled_back(T9.2 回滚决定事务,
 // D-2026-09-28-t92 决策 9)的事件体。只含 id/码/枚举(D-t26 §4 纪律);
-// 自由文本理由不入 payload。from_status 是回滚前执行终态(白名单仅 FAILED,
+// 自由文本理由不入 payload。from_status 是回滚前执行终态(白名单三终态
+// {FAILED,SUCCEEDED,CANCELLED},T19.3/D-2026-10-05-t193 决策 3 扩列,
 // 冗余列作对账锚);reset_count = 本轮重置行数(含实例行);rerun_target
 // 区分目标重跑(RerunNode)与重评估(Reset 后由 advance 重派)两种形态。
 type ExecutionRolledBackPayload struct {
 	TargetNodeID string `json:"target_node_id"`
-	FromStatus   string `json:"from_status"`  // 回滚前执行状态(白名单仅 FAILED)
+	FromStatus   string `json:"from_status"`  // 回滚前执行状态(白名单三终态)
 	ResetCount   int    `json:"reset_count"`  // ResetNodeToPending 命中行数(含实例行)
 	RerunTarget  bool   `json:"rerun_target"` // true = RerunNode 快照读回重跑;false = advance 重评估派发
 }
@@ -221,11 +222,30 @@ type ExecutionRolledBackPayload struct {
 // RollbackDeniedPayload 是 rollback.denied(回滚请求被拒,T9.2)的事件体。
 // 拒绝面归审计(镜像 approval.decision_denied 的独立小事务先例)。reason
 // 是错误分面枚举:not_rollbackable | blocked_inflight | bad_node_id |
-// no_resume_target | role_denied;blocked 携阻塞节点清单上限(截断如实计数)。
+// no_resume_target | too_large | role_denied(too_large 自 T15.5 容量闸;
+// api 侧全业务分面落行);blocked 携阻塞节点清单上限(截断如实计数)。
 type RollbackDeniedPayload struct {
 	Reason       string `json:"reason"`
 	TargetNodeID string `json:"target_node_id,omitempty"`
 	BlockedCount int    `json:"blocked_count,omitempty"`
+}
+
+// ExecutionCancelledPayload 是 execution.cancelled(T19.3 取消决定事务,
+// D-2026-10-05-t193 决策 2/5)的事件体。只含 id/码/枚举(D-t26 §4 纪律);
+// 取消理由归 audit(T2.6 既有)——自由文本不入 payload。from_status 是取消前
+// 执行状态,受理面恒 RUNNING|WAITING_APPROVAL(PENDING 不受理:Start 锁序
+// 例外面前提,对抗审计 C2;终态不受理:归回滚面);cancelled_count = 楔停
+// 行数(含实例行;0 = 全终态滞留执行的直接收口形态)。
+type ExecutionCancelledPayload struct {
+	FromStatus     string `json:"from_status"`
+	CancelledCount int    `json:"cancelled_count"`
+}
+
+// CancelDeniedPayload 是 cancel.denied(取消请求被拒,T19.3)的事件体。
+// reason 是错误分面枚举:not_cancellable(PENDING 与终态同面)| too_large
+// | role_denied(镜像 RollbackDeniedPayload 全分面纪律)。
+type CancelDeniedPayload struct {
+	Reason string `json:"reason"`
 }
 
 type LLMCallDiscardedPayload struct {

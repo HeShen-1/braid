@@ -239,6 +239,15 @@ type FleetGateSet struct {
 	Rejected *prometheus.CounterVec // by reason (undeclared | fleet_unavailable)
 }
 
+// CancelSet covers the T19.3 execution-cancel endpoint (api process;
+// D-2026-10-05-t193 decision 5). Same three-counter shape as RollbackSet;
+// durable trail is the execution.cancelled/cancel.denied audit pair.
+type CancelSet struct {
+	Requested prometheus.Counter
+	Applied   prometheus.Counter
+	Denied    *prometheus.CounterVec // by reason (role_denied/not_cancellable/too_large)
+}
+
 // Set aggregates every component subset; exactly one per process.
 type Set struct {
 	LLM       *LLMSet
@@ -247,6 +256,7 @@ type Set struct {
 	Relay     *RelaySet
 	Login     *LoginSet
 	Rollback  *RollbackSet
+	Cancel    *CancelSet
 	FleetGate *FleetGateSet
 	DBPool    *DBPoolSet
 }
@@ -462,6 +472,20 @@ func NewSet() (*Set, *prometheus.Registry) {
 			Denied: f.NewCounterVec(prometheus.CounterOpts{
 				Name: "braid_rollback_denied_total",
 				Help: "Rejected rollback/resume requests by reason (role_denied/not_rollbackable/blocked_inflight/bad_node_id/no_resume_target).",
+			}, []string{"reason"}),
+		},
+		Cancel: &CancelSet{
+			Requested: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_cancel_requested_total",
+				Help: "Execution-cancel requests reaching the scheduler seam (authenticated).",
+			}),
+			Applied: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_cancel_applied_total",
+				Help: "Committed cancellations (scheduler.CancelExecution success).",
+			}),
+			Denied: f.NewCounterVec(prometheus.CounterOpts{
+				Name: "braid_cancel_denied_total",
+				Help: "Rejected execution-cancel requests by reason (role_denied/not_cancellable/too_large).",
 			}, []string{"reason"}),
 		},
 		FleetGate: &FleetGateSet{

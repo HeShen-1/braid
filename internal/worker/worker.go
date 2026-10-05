@@ -289,12 +289,27 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 	// 其 attempt 行从未物化 ⇒ uk 不冲突 ⇒ 原样会物化新行并以新轮快照执行
 	// ——双烧 + 台账串轮)。按已终轮处理:幂等 ack、零物化零执行;行缺失
 	// = 数据缺陷,响亮拒绝(与 readAttempt 同判)。
+	// T19.3 活态闸(D-2026-10-05-t193 决策 4,与轮次正交):认领时节点非
+	// EXECUTING(CANCELLED/SUCCEEDED/FAILED/SKIPPED/PENDING/WAITING_APPROVAL)
+	// ⇒ 同款幂等 ack——取消不动 attempts_base,轮次校验拦不住取消后的
+	// 滞留副本(白烧 LLM/工具调用);已收口/挂起后的滞留副本原靠执行后
+	// Conflict 收敛,此处提前放弃。正常流认领时恒 EXECUTING(dispatch 事务
+	// = ClaimNode+事件同生共死),误伤面零;重派/回滚重跑认领时亦恒
+	// EXECUTING,闸与轮次合围不重叠。
 	var snap []byte
 	var attempts, attemptsBase uint16
+	var nodeStatus engine.NodeState
 	if err := h.deps.DB.QueryRowContext(ctx,
-		`SELECT input_snapshot, attempts, attempts_base FROM node_execution WHERE id=?`, p.NodeExecutionID).
-		Scan(&snap, &attempts, &attemptsBase); err != nil {
+		`SELECT input_snapshot, attempts, attempts_base, status FROM node_execution WHERE id=?`, p.NodeExecutionID).
+		Scan(&snap, &attempts, &attemptsBase, &nodeStatus); err != nil {
 		return 0, fmt.Errorf("worker: read node snapshot for attempt ledger (node %d): %w", p.NodeExecutionID, err)
+	}
+	if nodeStatus != engine.NodeExecuting {
+		h.log.Info("attempt.inactive_node_task",
+			"task_id", taskID, "node_execution_id", p.NodeExecutionID,
+			"node_status", nodeStatus, "attempt_no", p.AttemptNo,
+			"hint", "task for non-executing node drained; ack without materializing")
+		return 0, nil
 	}
 	if p.AttemptNo <= attemptsBase {
 		h.log.Info("attempt.stale_round_task",

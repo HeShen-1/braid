@@ -179,6 +179,7 @@ func run(ctx context.Context) error {
 	}
 	apiSrv.LoginMetrics(mset.Login)
 	apiSrv.RollbackMetrics(mset.Rollback)   // T9.2:回滚面三计数器(D-t92 决策 10)
+	apiSrv.CancelMetrics(mset.Cancel)       // T19.3:取消面三计数器(D-t193 决策 5)
 	apiSrv.FleetGateMetrics(mset.FleetGate) // T15.6:mode=all 硬闸拒绝计数
 	apiSrv.Tracing(traceProv.Tracer("braid/api"))
 	// OIDC 插件(T11.1,D-2026-09-28-t111-oidc-subject-anchor;T16.1 起协议

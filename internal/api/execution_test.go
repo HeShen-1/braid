@@ -61,6 +61,14 @@ func (f fakeTrigger) RollbackTo(_ context.Context, p scheduler.RollbackParams) (
 	return &scheduler.RollbackResult{TargetNodeID: p.TargetNodeID}, nil
 }
 
+// CancelExecution(T19.3):fake 面与 RollbackTo 同构——回放固定结果或注入错误。
+func (f fakeTrigger) CancelExecution(context.Context, scheduler.CancelParams) (*scheduler.CancelResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &scheduler.CancelResult{CancelledCount: 1}, nil
+}
+
 // publishViaAPI 建草稿并发布(触发前置:目标必须 PUBLISHED),返回版本号。
 func publishViaAPI(t *testing.T, r *gin.Engine, token, name string) uint32 {
 	t.Helper()

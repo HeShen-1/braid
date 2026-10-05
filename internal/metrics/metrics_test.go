@@ -54,6 +54,9 @@ var metricNames = map[string]dto.MetricType{
 	"braid_rollback_requested_total":             dto.MetricType_COUNTER, // T9.2:回滚面三计数器(D-t92 决策 10)
 	"braid_rollback_applied_total":               dto.MetricType_COUNTER,
 	"braid_rollback_denied_total":                dto.MetricType_COUNTER,
+	"braid_cancel_requested_total":               dto.MetricType_COUNTER, // T19.3:取消面三计数器(D-t193 决策 5)
+	"braid_cancel_applied_total":                 dto.MetricType_COUNTER,
+	"braid_cancel_denied_total":                  dto.MetricType_COUNTER,
 	"braid_db_pool_open_connections":             dto.MetricType_GAUGE,
 	"braid_db_pool_in_use_connections":           dto.MetricType_GAUGE,
 	"braid_db_pool_idle_connections":             dto.MetricType_GAUGE,
@@ -113,6 +116,7 @@ func touchAll(s *Set) {
 	s.Relay.QueueTasks.WithLabelValues("default")
 	s.Login.Attempts.WithLabelValues(ResultSucceeded)
 	s.Rollback.Denied.WithLabelValues("role_denied")                // T9.2:vec 子项实例化后闭集锚才可见
+	s.Cancel.Denied.WithLabelValues("role_denied")                  // T19.3:取消面同款
 	s.Reaper.PoisonSnapshots.WithLabelValues(PoisonReasonDecode)    // T17.4
 	s.Worker.ResumeRejected.WithLabelValues(ResumeRejectFabricated) // T17.4
 }

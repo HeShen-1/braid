@@ -54,6 +54,10 @@ type Server struct {
 	// cmd/api 装配注入;requested/applied/denied{reason} 三计数器,
 	// D-2026-09-28-t92 决策 10)。
 	rollbackMetrics *metrics.RollbackSet
+	// cancelMetrics 是取消面指标(T19.3;nil = 观测关闭——测试默认,
+	// cmd/api 装配注入;requested/applied/denied{reason} 三计数器,
+	// D-2026-10-05-t193 决策 5)。
+	cancelMetrics *metrics.CancelSet
 	// loginMetrics 是登录指标面(T6.4;nil = 观测关闭——测试默认,
 	// cmd/api 装配注入)。
 	loginMetrics *metrics.LoginSet
@@ -104,6 +108,9 @@ func (s *Server) LoginMetrics(m *metrics.LoginSet) { s.loginMetrics = m }
 
 // RollbackMetrics 注入回滚面指标(T9.2;nil = 观测关闭,镜像 LoginMetrics)。
 func (s *Server) RollbackMetrics(m *metrics.RollbackSet) { s.rollbackMetrics = m }
+
+// CancelMetrics 注入取消面指标(T19.3;nil = 观测关闭,镜像 RollbackMetrics)。
+func (s *Server) CancelMetrics(m *metrics.CancelSet) { s.cancelMetrics = m }
 
 // FleetGateMetrics 注入 mode=all 硬闸拒绝计数(T15.6;镜像 LoginMetrics)。
 func (s *Server) FleetGateMetrics(m *metrics.FleetGateSet) { s.fleetGateMetrics = m }
@@ -236,6 +243,9 @@ func (s *Server) Router() *gin.Engine {
 	// (拒绝落审计 rollback.denied,中间件做不到)——形态镜像审批决定面。
 	v1.POST("/executions/:id/rollback", RequireScope(auth.ScopeExecutionsWrite), s.rollbackExecution)
 	v1.POST("/executions/:id/resume", RequireScope(auth.ScopeExecutionsWrite), s.resumeExecution)
+	// 执行取消(T19.3,D-2026-10-05-t193):author|admin in-handler 闸
+	//(拒绝落审计 cancel.denied)——形态镜像回滚面。
+	v1.POST("/executions/:id/cancel", RequireScope(auth.ScopeExecutionsWrite), s.cancelExecution)
 	// 投影只读端点(T18.4,D-2026-10-05-t184):按路径/按轮读 node_execution
 	// 投影列与 node_attempt 台账。纯读面零角色闸零审计(auditquery 先例),
 	// 租户闸 = handler 内 GetExecution 前置锚(见 projection.go);子树

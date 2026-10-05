@@ -59,10 +59,11 @@ func TestWorkflowTransitionMatrix(t *testing.T) {
 		WorkflowPending:         {WorkflowRunning, WorkflowFailed, WorkflowCancelled},
 		WorkflowRunning:         {WorkflowWaitingApproval, WorkflowSucceeded, WorkflowFailed, WorkflowCancelled},
 		WorkflowWaitingApproval: {WorkflowRunning, WorkflowCancelled},
-		WorkflowSucceeded:       {},
-		// T9.2(D-t92 决策 2a):FAILED→RUNNING 仅 RestartExecution(显式回滚)。
+		// T9.2(D-t92 决策 2a):FAILED→RUNNING 仅 RestartExecution(显式回滚);
+		// T19.3(D-2026-10-05-t193):SUCCEEDED/CANCELLED 同边扩列。
+		WorkflowSucceeded: {WorkflowRunning},
 		WorkflowFailed:    {WorkflowRunning},
-		WorkflowCancelled: {},
+		WorkflowCancelled: {WorkflowRunning},
 	}
 	if len(want) != len(wfStates) {
 		t.Fatalf("期望表状态数 %d ≠ wfStates %d(词表漂移)", len(want), len(wfStates))
@@ -126,9 +127,9 @@ func TestIllegalTransitionRejectedInProcess(t *testing.T) {
 	for _, tc := range []struct{ from, to WorkflowState }{
 		{WorkflowPending, WorkflowSucceeded},         // 未起跑不得直接成功
 		{WorkflowPending, WorkflowWaitingApproval},   // 挂起仅自 RUNNING
-		{WorkflowSucceeded, WorkflowRunning},         // 终态无出边(白名单仅 FAILED,D-t92 决策 4)
-		{WorkflowCancelled, WorkflowRunning},         // CANCELLED 不可回滚(同上)
-		{WorkflowCancelled, WorkflowFailed},          // 终态无出边
+		{WorkflowSucceeded, WorkflowFailed},          // 终态间直达非法(T19.3 后终态唯一出边 = →RUNNING 回滚复活)
+		{WorkflowCancelled, WorkflowFailed},          // 终态间直达非法
+		{WorkflowSucceeded, WorkflowCancelled},       // 终态间直达非法
 		{WorkflowWaitingApproval, WorkflowSucceeded}, // 终局前必须回 RUNNING
 	} {
 		err := TransitionWorkflow(t.Context(), rec, 1, tc.from, tc.to)

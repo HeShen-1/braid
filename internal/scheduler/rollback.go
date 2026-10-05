@@ -28,8 +28,10 @@ import (
 type RollbackErrKind string
 
 const (
-	// RollbackNotRollbackable:wf 非 FAILED(白名单仅 FAILED,D-t92 决策 4;
-	// 并发双回滚败者也落此面——RestartExecution CAS 0 行)。
+	// RollbackNotRollbackable:wf 非终态白名单(RUNNING/WA/PENDING;白名单
+	// = {FAILED, SUCCEEDED, CANCELLED},T19.3 D-2026-10-05-t193 决策 3 自
+	// D-t92 决策 4「仅 FAILED」扩列;并发双回滚败者也落此面——
+	// RestartExecution CAS 0 行)。
 	RollbackNotRollbackable RollbackErrKind = "not_rollbackable"
 	// RollbackBlockedInflight:全行集含 EXECUTING/WAITING_APPROVAL 残留
 	//(fail-fast 不等兄弟 + orphanQuiet 静默窗,D-t92 决策 4②:409 等 reaper
@@ -38,8 +40,9 @@ const (
 	// RollbackBadNode:目标不在钉住 DSL,或前驱锥存在闭包外 SKIPPED
 	//(剪枝传播必将目标静默剪掉,正确落点 = branch 节点)。
 	RollbackBadNode RollbackErrKind = "bad_node_id"
-	// RollbackNoTarget:自动定位空集(无 FAILED 行且无前驱就绪的 PENDING
-	// 冻结行的 FAILED 执行——input_eval 型终败,resume 面的显式分面)。
+	// RollbackNoTarget:自动定位空集(三档退化链全落空——FAILED 行、
+	// CANCELLED 楔源行[T19.3]、前驱就绪的 PENDING 冻结行;典型 =
+	// input_eval 型终败或 SUCCEEDED 执行走 resume,resume 面的显式分面)。
 	RollbackNoTarget RollbackErrKind = "no_resume_target"
 	// RollbackTooLarge:全行集行数超 Deps.MaxRollbackRows(lockAllRows 的
 	// 锁面随行数线性增长,D-t24#6 全行锁)——容量闸拒绝面,T15.5 实测定档
@@ -84,7 +87,7 @@ func (e *RollbackError) Error() string {
 // RollbackParams 是 RollbackTo 的入参。
 type RollbackParams struct {
 	ExecID       uint64
-	TargetNodeID string // "" = 自动定位(resume 语法糖):字典序首个 FAILED,退化到前驱全就绪的 PENDING 冻结行
+	TargetNodeID string // "" = 自动定位(resume 语法糖):字典序首个 FAILED → 字典序首个 CANCELLED(T19.3 楔源档)→ 前驱全就绪的 PENDING 冻结行
 	WorkerID     string // 派发归因(RerunNode worker_id + att 事件;api 侧建议 api:rollback:<exec> 形态)
 	ActorID      string // 操作者主体(审计 actor_id;api 侧 JWT sub)
 }
@@ -177,16 +180,18 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 			return err
 		}
 
-		// 2. 守卫①:wf==FAILED(白名单仅 FAILED)。普通读即可——终裁在
+		// 2. 守卫①:wf ∈ 终态白名单 {FAILED, SUCCEEDED, CANCELLED}
+		//(T19.3 D-2026-10-05-t193 决策 3;D-t92 决策 4 原口径「仅 FAILED」
+		// 随 SUCCEEDED/CANCELLED 放行扩列)。普通读即可——终裁在
 		// RestartExecution 的 status-only CAS(并发双回滚败者在此收敛 409)。
 		var wfStatus engine.WorkflowState
 		if err := q.QueryRowContext(ctx,
 			`SELECT status FROM workflow_execution WHERE id=?`, p.ExecID).Scan(&wfStatus); err != nil {
 			return fmt.Errorf("scheduler: rollback read execution status %d: %w", p.ExecID, err)
 		}
-		if wfStatus != engine.WorkflowFailed {
+		if !wfStatus.Terminal() {
 			return &RollbackError{Kind: RollbackNotRollbackable,
-				Detail: fmt.Sprintf("execution status %s (rollback whitelist: FAILED)", wfStatus)}
+				Detail: fmt.Sprintf("execution status %s (rollback whitelist: FAILED, SUCCEEDED, CANCELLED)", wfStatus)}
 		}
 
 		// 3. 守卫②:全行集(控制行+实例行)零 EXECUTING/WAITING_APPROVAL。
@@ -206,12 +211,23 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 				Blocked: blocked}
 		}
 
-		// 4. 目标解析:显式(守卫③ ∈ 钉住 DSL)或自动(字典序首个 FAILED,
-		// 退化到前驱全就绪的 PENDING 冻结行——input_eval 型终败的 resume 面)。
+		// 4. 目标解析:显式(守卫③ ∈ 钉住 DSL)或自动(字典序首个 FAILED →
+		// 字典序首个 CANCELLED[T19.3 楔源档:取消楔住的恢复点,修复失败源
+		// 优先于恢复取消点]→ 前驱全就绪的 PENDING 冻结行——input_eval 型
+		// 终败的 resume 面)。SUCCEEDED 执行三档全空 ⇒ no_resume_target,
+		// 只走 rollback 端点显式 target(「重跑哪个成功节点」无可推断语义)。
 		target := p.TargetNodeID
 		if target == "" {
 			for _, id := range sortedNodes(g.nodes) {
 				if rows.byNodeID[id].status == engine.NodeFailed {
+					target = id
+					break
+				}
+			}
+		}
+		if target == "" {
+			for _, id := range sortedNodes(g.nodes) {
+				if rows.byNodeID[id].status == engine.NodeCancelled {
 					target = id
 					break
 				}
@@ -460,9 +476,11 @@ func isWorkerExecType(nodeType string) bool {
 	return false
 }
 
-// stageRollbackTransition 是回滚事务节点审计行的单点(node.state_changed
-// from=旧终态/EXECUTING;高频类走暂存;actor=user/操作者,区别于 worker
-// 推进路径的 actor=worker;attempt_no 携带轮次归属 = 轮次边界证据)。
+// stageRollbackTransition 是回滚/取消事务(T19.3 起共用)节点审计行的单点
+// (node.state_changed from=旧终态/EXECUTING/非终态;高频类走暂存;
+// actor=user/操作者,区别于 worker 推进路径的 actor=worker;attempt_no
+// 携带轮次归属 = 轮次边界证据;worker_id = 行内归因快照,取消路径与 reaper
+// 孤儿收口行对称)。
 func stageRollbackTransition(ctx context.Context, q engine.DBTX, s *Scheduler,
 	execID uint64, actorID string, r *nodeRow,
 	from, to engine.NodeState, newVer uint32, attemptNo uint16) error {
@@ -473,6 +491,7 @@ func stageRollbackTransition(ctx context.Context, q engine.DBTX, s *Scheduler,
 	raw, err := json.Marshal(audit.NodeStateChangedPayload{
 		From: string(from), To: string(to),
 		NodeID: r.nodeID, Version: newVer, AttemptNo: attemptNo, InstanceNo: r.instanceNo,
+		WorkerID: r.workerID.String, // 归因快照(取消楔停行与 reaper 孤儿收口行对称)
 	})
 	if err != nil {
 		return fmt.Errorf("scheduler: marshal rollback node audit payload: %w", err)

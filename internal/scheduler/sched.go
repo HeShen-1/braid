@@ -28,7 +28,8 @@
 //     内部重试兜住(≤3 次,只重试回写、不重跑 executor、不烧 asynq 重试预算)。
 //   - 锁序 = node 行(node_id 升序)→ attempt → workflow_execution(最后),
 //     与 T2.3 心跳(attempt→wf)一致;Start 例外先拿 wf(安全性即此备忘:
-//     PENDING 执行不可能存在 claim/attempt,无并发 Complete)。
+//     PENDING 执行不可能存在 claim/attempt,无并发 Complete——T19.3 取消面
+//     不受理 PENDING 正是为维持此前提,见 cancel.go 步骤 2/对抗审计 C2)。
 //   - 终态判定在提交后的新事务(新鲜快照):不相交臂的并发完成各自事务内
 //     快照都看到对方在飞 ⇒ 都不判终态(事务内判定会漏判);提交后重查者必
 //     见全部已提交 ⇒ 不漏判。双收口由 FinishExecution 的 status-only CAS 仲裁。

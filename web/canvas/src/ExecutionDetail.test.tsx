@@ -180,10 +180,17 @@ describe('ExecutionDetail(执行详情)', () => {
     expect(err).toHaveTextContent('sign:0')
   })
 
-  it('非 FAILED 态:回滚/续跑禁用;终态 outputs 与审计事件渲染', async () => {
+  it('SUCCEEDED 态(T19.3):回滚/续跑可用、取消禁用;续跑无自动点 → 服务端 no_resume_target 错误面渲染', async () => {
+    const user = userEvent.setup()
     stubRoute(
-      [/^\/api\/v1\/executions\/9$/, /versions/, /audit/, /approvals\//],
+      [/^\/api\/v1\/executions\/9$/, /resume$/, /versions/, /audit/, /approvals\//],
       (url) => {
+        if (url.endsWith('/resume')) {
+          return new Response(JSON.stringify({ error: 'no_resume_target' }), {
+            status: 400,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
         if (url === '/api/v1/executions/9') {
           return ok({ ...baseDetail, id: '9', status: 'SUCCEEDED', outputs: { report: 'ok' }, nodes: [] })
         }
@@ -200,10 +207,50 @@ describe('ExecutionDetail(执行详情)', () => {
       },
     )
     render(<ExecutionDetail execId="9" onAuthExpired={() => {}} />)
-    expect(await screen.findByTestId('rollback-submit')).toBeDisabled()
-    expect(screen.getByTestId('resume-submit')).toBeDisabled()
+    // 回滚按钮在 SUCCEEDED 态可用性放开,但 node 选择前置(nodes 空集 ⇒
+    // disabled + 引导文案);resume 无选择前置,直接可用。
+    expect(await screen.findByTestId('resume-submit')).toBeEnabled()
+    expect(screen.getByTestId('rollback-submit')).toBeDisabled()
+    expect(screen.getByTestId('rollback-submit')).toHaveTextContent('先选节点')
+    expect(screen.getByTestId('cancel-submit')).toBeDisabled()
     expect(screen.getByTestId('exec-outputs')).toHaveTextContent('report')
     expect(await screen.findByTestId('audit-row-execution.triggered')).toBeInTheDocument()
     expect(screen.getByTestId('audit-row-execution.rolled_back')).toBeInTheDocument()
+    // SUCCEEDED 无自动定位点:续跑点击 → 400 no_resume_target 进错误面
+    //(服务端分面语义,前端如实呈现)。
+    await user.click(screen.getByTestId('resume-submit'))
+    const err = await screen.findByTestId('exec-error')
+    expect(err).toHaveTextContent('no_resume_target')
+  })
+
+  it('RUNNING 态(T19.3):取消可用 → POST cancel → flash 回显楔停行数;回滚/续跑禁用', async () => {
+    const user = userEvent.setup()
+    let cancelled = false
+    stubRoute(
+      [/^\/api\/v1\/executions\/8$/, /cancel$/, /versions/, /audit/, /approvals\//],
+      (url, init) => {
+        if (url.endsWith('/cancel')) {
+          cancelled = true
+          expect(init?.body).toBeUndefined()
+          return ok({ execution_id: '8', from_status: 'RUNNING', cancelled_count: 3 })
+        }
+        if (url === '/api/v1/executions/8') {
+          return ok({
+            ...baseDetail, id: '8', status: cancelled ? 'CANCELLED' : 'RUNNING',
+            nodes: [{ id: '14', node_id: 'a', instance_no: 0, type: 'llm', status: cancelled ? 'CANCELLED' : 'EXECUTING', attempts: 1, max_attempts: 1, error_code: null, error_message: null, started_at: '2026-10-05T06:00:01Z', finished_at: null }],
+          })
+        }
+        if (url.includes('/audit')) return ok({ items: [], next_cursor: '' })
+        return ok({ id: '1', dsl: { dsl: '1.0', name: 'wf', nodes: [], edges: [] } })
+      },
+    )
+    render(<ExecutionDetail execId="8" onAuthExpired={() => {}} />)
+    expect(await screen.findByTestId('cancel-submit')).toBeEnabled()
+    expect(screen.getByTestId('rollback-submit')).toBeDisabled()
+    expect(screen.getByTestId('resume-submit')).toBeDisabled()
+    await user.click(screen.getByTestId('cancel-submit'))
+    expect(await screen.findByTestId('exec-flash')).toHaveTextContent('3')
+    expect(cancelled).toBe(true)
+    expect(screen.getByTestId('exec-status')).toHaveTextContent('CANCELLED')
   })
 })

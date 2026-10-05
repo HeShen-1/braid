@@ -58,21 +58,28 @@ const rollbackE2EChainDSL = `{
  "outputs":{"done":"{{nodes.b.output.text}}"}}`
 
 // rbE2EStack 装配毒化可翻转的桩 + 真适配器/执行器/relay/worker。
+// block/release(T19.3):挂起全部 LLM 调用的闸——在飞取消旅程的稳定时序面
+// (worker 真执行中触发取消,不受桩响应速度竞争)。
 type rbE2EStack struct {
-	d      *sql.DB
-	sched  *scheduler.Scheduler
-	execID uint64
-	defID  uint64
-	poison atomic.Bool
+	d       *sql.DB
+	sched   *scheduler.Scheduler
+	execID  uint64
+	defID   uint64
+	poison  atomic.Bool
+	block   atomic.Bool
+	release chan struct{}
 }
 
 func rbE2EStart(t *testing.T, doc, input string) *rbE2EStack {
 	t.Helper()
 	d := sqltest.MustOpenAt(t, nodesSchema)
 	queue := fmt.Sprintf("t_n%d", atomic.AddUint32(&queueSeq, 1))
-	st := &rbE2EStack{d: d}
+	st := &rbE2EStack{d: d, release: make(chan struct{})}
 
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if st.block.Load() {
+			<-st.release // 挂住直至放行(迟到收口旅程的时序闸)
+		}
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		raw, _ := json.Marshal(body)
@@ -328,5 +335,111 @@ func TestE2ERollbackRerunJourney(t *testing.T) {
 	}
 	if a3Input.String != oldSnap.String {
 		t.Fatalf("attempt3 台账快照 ≠ 旧轮行快照(读回抄档断裂)")
+	}
+}
+
+// TestE2ECancelJourney:T19.3 取消真链路旅程(D-2026-10-05-t193)——worker
+// 真执行中(LLM 桩挂起)触发取消:全行楔停 + wf CANCELLED 原子提交;放行后
+// 迟到收口经幂等哨兵收敛(attempt DEAD + 终态守卫,节点保持 CANCELLED);
+// resume 自动定位楔源复活重跑 → wf SUCCEEDED;审计链 execution.cancelled
+// 直写行 + 逐行 CANCELLED state_changed(暂存 flush 后)。
+func TestE2ECancelJourney(t *testing.T) {
+	st := rbE2EStart(t, rollbackE2EChainDSL, `{}`)
+	st.block.Store(true) // a 的 LLM 调用挂住:EXECUTING 滞留的稳定在飞面
+
+	// 在飞:a EXECUTING(worker 阻塞在桩上)。
+	waitInstanceState(t, st.d, st.execID, "a", 0, engine.NodeExecuting)
+
+	res, err := st.sched.CancelExecution(context.Background(), scheduler.CancelParams{
+		ExecID: st.execID, WorkerID: "e2e:cancel", ActorID: "e2e-op"})
+	if err != nil {
+		t.Fatalf("CancelExecution: %v", err)
+	}
+	if res.FromStatus != engine.WorkflowRunning {
+		t.Fatalf("from_status = %s, want RUNNING", res.FromStatus)
+	}
+	assertE2ENodeState(t, st.d, st.execID, "a", engine.NodeCancelled)
+	assertE2ENodeState(t, st.d, st.execID, "b", engine.NodeCancelled)
+	var wfSt engine.WorkflowState
+	if err := st.d.QueryRow(
+		`SELECT status FROM workflow_execution WHERE id=?`, st.execID).Scan(&wfSt); err != nil || wfSt != engine.WorkflowCancelled {
+		t.Fatalf("wf = %v(%v), want CANCELLED", wfSt, err)
+	}
+
+	// 放行 → worker 迟到收口撞 attempt DEAD 幂等哨兵;节点/wf 保持 CANCELLED
+	//(真链路的竞态收敛面,scheduler 层已锚,此处复验)。有界排空而非猜测
+	// sleep:轮询 attempt 终态翻定(哨兵路径的 observable——收口事务必已跑)
+	// 或 5s 超时(仍可断言状态面,死信重试面归 asynq)。
+	st.block.Store(false)
+	close(st.release)
+	deadline := time.Now().Add(5 * time.Second)
+	sawAttemptFinal := false
+	for time.Now().Before(deadline) {
+		var cnt int
+		if err := st.d.QueryRow(`SELECT COUNT(*) FROM node_attempt na
+		  JOIN node_execution ne ON na.node_execution_id=ne.id
+		  WHERE ne.execution_id=? AND ne.node_id='a' AND na.status IN ('DEAD','FAILED')`,
+			st.execID).Scan(&cnt); err == nil && cnt > 0 {
+			sawAttemptFinal = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assertE2ENodeState(t, st.d, st.execID, "a", engine.NodeCancelled)
+	wfSt = engine.WorkflowState("")
+	if err := st.d.QueryRow(
+		`SELECT status FROM workflow_execution WHERE id=?`, st.execID).Scan(&wfSt); err != nil || wfSt != engine.WorkflowCancelled {
+		t.Fatalf("迟到收口后 wf = %v(%v), want CANCELLED(终态守卫零推进)", wfSt, err)
+	}
+	// 正向观测(对抗审计 C8):状态断言对「哨兵链整体回归」无牙
+	//(completeOnce 的 CAS 也会自守卫);attempt 面与审计面才是专属
+	// observable。取消时刻存在两个合法收敛形态:worker 已认领(attempt
+	// RUNNING → 取消事务收口 DEAD)或未认领(asynq 副本被活态闸拦,
+	// attempt 零物化)——两者都满足「RUNNING attempt 不残留、成功永不落链」。
+	var attDead, attOther int
+	if err := st.d.QueryRow(`SELECT
+	    COALESCE(SUM(na.status='DEAD'), 0), COALESCE(SUM(na.status NOT IN ('DEAD')), 0)
+	  FROM node_attempt na JOIN node_execution ne ON na.node_execution_id=ne.id
+	  WHERE ne.execution_id=? AND ne.node_id='a'`, st.execID).Scan(&attDead, &attOther); err != nil {
+		t.Fatalf("count a attempts: %v", err)
+	}
+	if attOther != 0 {
+		t.Fatalf("a 的非 DEAD attempt = %d, want 0(取消后 RUNNING 不残留)", attOther)
+	}
+	flushStagedAudit(t, st.d)
+	var succeededAfter int
+	if err := st.d.QueryRow(`SELECT COUNT(*) FROM audit_log
+	  WHERE execution_id=? AND event_type='node.state_changed' AND node_id='a'
+	    AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.to'))='SUCCEEDED'`, st.execID).Scan(&succeededAfter); err != nil || succeededAfter != 0 {
+		t.Fatalf("取消后 a 的 →SUCCEEDED 审计行 = %d(%v), want 0(迟到成功永不落链)", succeededAfter, err)
+	}
+	_ = sawAttemptFinal
+
+	// resume(空目标)→ 楔源 a(EXECUTING 取消行快照在 ⇒ RerunNode)→
+	// 重跑成功 → b 派发成功 → wf SUCCEEDED。
+	rbRes, err := st.sched.RollbackTo(context.Background(), scheduler.RollbackParams{
+		ExecID: st.execID, WorkerID: "e2e-rb", ActorID: "e2e-op"})
+	if err != nil {
+		t.Fatalf("resume cancelled: %v", err)
+	}
+	if rbRes.TargetNodeID != "a" || !rbRes.RerunTarget {
+		t.Fatalf("res = %+v, want target=a rerun=true", rbRes)
+	}
+	waitE2EExecSucceeded(t, st.d, st.execID)
+	assertE2ENodeState(t, st.d, st.execID, "a", engine.NodeSucceeded)
+	assertE2ENodeState(t, st.d, st.execID, "b", engine.NodeSucceeded)
+
+	// 审计链:execution.cancelled 直写行 + 逐行 CANCELLED state_changed。
+	var cancelled int
+	if err := st.d.QueryRow(`SELECT COUNT(*) FROM audit_log
+	  WHERE execution_id=? AND event_type='execution.cancelled'`, st.execID).Scan(&cancelled); err != nil || cancelled != 1 {
+		t.Fatalf("execution.cancelled = %d(%v), want 1", cancelled, err)
+	}
+	flushStagedAudit(t, st.d)
+	var wedged int
+	if err := st.d.QueryRow(`SELECT COUNT(*) FROM audit_log
+	  WHERE execution_id=? AND event_type='node.state_changed'
+	    AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.to'))='CANCELLED'`, st.execID).Scan(&wedged); err != nil || wedged != 2 {
+		t.Fatalf("CANCELLED state_changed = %d(%v), want 2(a+b)", wedged, err)
 	}
 }
