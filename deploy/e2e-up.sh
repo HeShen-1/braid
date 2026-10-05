@@ -79,7 +79,13 @@ seed author e2e-author-pass-1 author
 seed alice e2e-alice-pass-1 approver
 seed bob e2e-bob-pass-1 approver
 
-# ④ 四进程(api/relay/worker/reaper;env 面见各 cmd 注释)。
+# ④ 四进程(reaper → api/relay/worker;env 面见各 cmd 注释)。启动序钉死
+# reaper 先行:静态分区(0001)只盖到 2026-10-04,当日分区靠 janitor 首刷
+# 补建(+7d),而 api/worker 的 preflight 对水位不覆盖当日是硬拒(T7.3 安装
+# 序)——四进程并发起时两者是亚秒竞态,worker 先查即死(CI 实红一次,
+# 2026-10-05;错误消息自身的指引就是「start reaper first」)。等待条件 =
+# janitor 补分区日志(fresh 栈静态水位恒低于 +7d horizon ⇒ 恒有该行),
+# 不等进程探活——进程活≠分区已补。
 mkdir -p "$LOGDIR"
 start() { # $1=组件,其余 = 组件专属 env 赋值对(公共面统一注入)
   local comp="$1"
@@ -91,6 +97,16 @@ start() { # $1=组件,其余 = 组件专属 env 赋值对(公共面统一注入)
     go run "./cmd/$comp" > "$LOGDIR/$comp.log" 2>&1 &
   echo $! > "$LOGDIR/$comp.pid"
 }
+start reaper BRAID_REDIS_QUEUE_ADDR="$E2E_REDIS"
+for _ in $(seq 1 30); do
+  grep -q "audit.partition_added" "$LOGDIR/reaper.log" 2>/dev/null && break
+  sleep 1
+done
+if ! grep -q "audit.partition_added" "$LOGDIR/reaper.log" 2>/dev/null; then
+  echo "e2e reaper janitor 30s 未补建分区;日志尾:" >&2
+  tail -n 20 "$LOGDIR/reaper.log" >&2 || true
+  exit 1
+fi
 # 登录限流抬闸:旅程不测登录防御(那是 loginlimit 的面),而 e2e 每
 # run 4 登录、快速迭代连跑两次即 8/10——第三次快跑必撞 IP 窗 429 假红。
 start api BRAID_API_ADDR="$E2E_API_ADDR" BRAID_API_LOGIN_RATE=60
@@ -100,7 +116,6 @@ start worker \
   BRAID_LLM_BASE_URL="http://127.0.0.1:9/v1" \
   BRAID_LLM_API_KEY="$E2E_LLM_KEY" \
   BRAID_LLM_PRICE_TABLE='{"gpt-x":{"input_per_mtok":"0","output_per_mtok":"0","currency":"USD"}}'
-start reaper BRAID_REDIS_QUEUE_ADDR="$E2E_REDIS"
 
 # ⑤ api 就绪探针(预热后启动,120s 冷机余量)。
 for _ in $(seq 1 60); do
