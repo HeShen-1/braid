@@ -1,7 +1,8 @@
 package nodes
 
 // LLM 节点执行器(T3.6):input_snapshot(复现真相源)→ prompt 标签块渲染
-// → llm.Client 调用(平台词表)→ DSL outputs 声明抽取 → 台账桥
+// → [T18.2 预算闸 pre-call:Σ台账 + 估算超限即响亮拒] → llm.Client 调用
+// (平台词表)→ DSL outputs 声明抽取 → 台账桥
 // (Cost.AttemptUsage,worker.Outcome.Usage 携带)。
 //
 // prompt 渲染契约(schema.json prompt 描述的运行时半边):user content =
@@ -16,22 +17,30 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"strings"
+	"unicode/utf8"
 
+	"braid/internal/audit"
 	"braid/internal/engine"
 	"braid/internal/engine/dsl"
 	"braid/internal/llm"
 	"braid/internal/scheduler"
+	"braid/internal/snowflake"
 	"braid/internal/worker"
 )
 
 // LLMExecutor 执行 llm 节点。Client 为供应商缝(T3.1,生产 OpenAICompat);
 // Prices 承担计费(BRAID_LLM_PRICE_TABLE);DB 只读 input_snapshot
-// (engine.ReadNodeInput,复现入口)。
+// (engine.ReadNodeInput,复现入口)+ 预算闸门的台账 Σ 点查(T18.2)。
+// Budget 是每执行 token 预算闸(D-2026-10-05-t182-token-budget-gate):
+// 0 = 关(缺省);IDs 供拒绝审计行 snowflake id,预算关闭时可不装配。
 type LLMExecutor struct {
 	Client llm.Client
 	Prices llm.PriceTable
 	DB     *sql.DB
+	Budget llm.TokenBudget
+	IDs    *snowflake.Generator
 }
 
 // Run 执行单个 llm attempt。业务失败(调用穷尽、输出不履约、计费溢出、
@@ -57,12 +66,25 @@ func (e *LLMExecutor) Run(ctx context.Context, req worker.Request, spec *dsl.LLM
 }
 
 // executeCall 是 DB 之后的执行半边(独立函数便于失败路径单测:ctx 分类、
-// StatusError 细分、坏输出、计费溢出)。适配器已穷尽单 attempt 内瞬态重试,
-// 非 ctx 错误到达即业务失败,DSL retry 走新 attempt。
+// StatusError 细分、坏输出、计费溢出、预算拒绝)。适配器已穷尽单 attempt 内
+// 瞬态重试,非 ctx 错误到达即业务失败,DSL retry 走新 attempt。
 func (e *LLMExecutor) executeCall(ctx context.Context, req worker.Request, in scheduler.LLMInput, spec *dsl.LLMNode) (worker.Outcome, error) {
+	msgs := renderMessages(in)
+	// T18.2 预算闸 pre-call(D-t182 决策 1):Σ已计费 + 当次估算 + 完成预留
+	// 超限即拒,零触达供应商。闸门自身故障 = error 返回(基础设施失败语义)。
+	spent, est, reserve, denied, err := e.budgetCheck(ctx, req.ExecutionID, in, msgs)
+	if err != nil {
+		return worker.Outcome{}, err
+	}
+	if denied {
+		e.emitBudgetDenied(ctx, req, in.Model, spent, est, reserve)
+		return failedOutcome("llm_budget_exceeded", fmt.Sprintf(
+			"token budget exceeded for execution %d: spent %d + estimated prompt %d + completion reserve %d > budget %d (BRAID_LLM_TOKEN_BUDGET)",
+			req.ExecutionID, spent, est, reserve, uint64(e.Budget))), nil
+	}
 	resp, err := e.Client.ChatCompletion(ctx, llm.Request{
 		Model:          in.Model,
-		Messages:       renderMessages(in),
+		Messages:       msgs,
 		Temperature:    in.Temperature,
 		MaxTokens:      in.MaxTokens,
 		ResponseFormat: in.ResponseFormat, // 平台词表(text|json);方言翻译在适配器
@@ -110,6 +132,120 @@ func callErrorCode(err error) string {
 		return "llm_rate_limited"
 	}
 	return "llm_call_failed"
+}
+
+// budgetCheck 评估每执行 token 预算闸(D-t182 决策 1/6):Σ该执行已计费
+// usage + 当次 prompt 估算(估算器 T7.2,恒近似)+ max_tokens 完成预留
+// (声明时计、未声明 0——预算估算宁可高估)。闸关(0)零查询零估算直通;
+// 超限返回 denied=true(业务失败,响亮收口);闸门自身故障(SUM 查询错/
+// 估算器错)返回 error = 基础设施失败(attempt 留 RUNNING,asynq 接管)
+// ——预算拒绝才是业务失败,闸门故障不是。
+func (e *LLMExecutor) budgetCheck(ctx context.Context, execID uint64, in scheduler.LLMInput, msgs []llm.Message) (spent, estPrompt, reserve uint64, denied bool, err error) {
+	if !e.Budget.Enabled() {
+		return 0, 0, 0, false, nil
+	}
+	spent, err = e.executionTokensSpent(ctx, execID)
+	if err != nil {
+		return 0, 0, 0, false, fmt.Errorf("nodes: budget spent sum (exec %d): %w", execID, err)
+	}
+	est, err := llm.EstimatePromptTokens(in.Model, msgs)
+	if err != nil {
+		return 0, 0, 0, false, fmt.Errorf("nodes: budget prompt estimate (exec %d): %w", execID, err)
+	}
+	if in.MaxTokens > 0 {
+		reserve = uint64(in.MaxTokens)
+	}
+	return spent, uint64(est), reserve, e.Budget.Exceeded(spent, uint64(est), reserve), nil
+}
+
+// executionTokensSpent Σ 该执行已计费 usage(node_attempt.total_tokens,
+// 计费真相源 §2,仅 SUCCEEDED 落账——失败/DEAD/discarded 不进 Σ,系统性
+// 低估已登记 D-t182 决策 7②;护栏口径接受)。idx_attempt_exec 免排序
+// 聚合点查;SUM 对 INT UNSIGNED 列返回 DECIMAL,driver 以数字串交付,
+// convertAssign 直落 uint64。
+func (e *LLMExecutor) executionTokensSpent(ctx context.Context, execID uint64) (uint64, error) {
+	var spent uint64
+	err := e.DB.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(total_tokens), 0) FROM node_attempt WHERE execution_id = ?`,
+		execID).Scan(&spent)
+	if err != nil {
+		return 0, fmt.Errorf("sum node_attempt.total_tokens: %w", err)
+	}
+	return spent, nil
+}
+
+// emitBudgetDenied 落 llm.call.budget_denied 审计行(D-t182 决策 4):拒绝
+// 现场独立小事务 best-effort 直写(先例 tool.call.denied——拒绝裁决不受
+// 旁路写入失败影响,失败仅 slog);actor=llm/模型名(llm.call.completed
+// 同形归因);不携带 usage 列组(调用未发出即无用量)。node_id 需一次
+// 点查(执行器上下文只有 node_exec_id)。IDs 未装配时响亮记错跳过
+// (装配缺口可观测,拒绝裁决本身不受影响)。
+func (e *LLMExecutor) emitBudgetDenied(ctx context.Context, req worker.Request, model string, spent, estPrompt, reserve uint64) {
+	if e.IDs == nil {
+		slog.Error("nodes: budget denied audit skipped: id generator not wired (assembly bug)",
+			"node_exec_id", req.NodeExecutionID, "execution_id", req.ExecutionID)
+		return
+	}
+	var nodeID string
+	if err := e.DB.QueryRowContext(ctx,
+		`SELECT node_id FROM node_execution WHERE id = ?`, req.NodeExecutionID).Scan(&nodeID); err != nil {
+		slog.Error("nodes: budget denied audit node lookup", "err", err, "node_exec_id", req.NodeExecutionID)
+		return
+	}
+	id, err := e.IDs.Next()
+	if err != nil {
+		slog.Error("nodes: budget denied audit id gen", "err", err, "node_exec_id", req.NodeExecutionID)
+		return
+	}
+	raw, err := json.Marshal(audit.LLMCallBudgetDeniedPayload{
+		NodeID: nodeID, Model: model, Budget: uint64(e.Budget), Spent: spent,
+		EstimatedPromptTokens: estPrompt, CompletionReserve: reserve,
+	})
+	if err != nil {
+		slog.Error("nodes: marshal budget denied payload", "err", err, "node_exec_id", req.NodeExecutionID)
+		return
+	}
+	tx, err := e.DB.BeginTx(ctx, nil)
+	if err != nil {
+		slog.Error("nodes: budget denied audit tx begin", "err", err, "node_exec_id", req.NodeExecutionID)
+		return
+	}
+	// ErrTxDone 时无害(engine/api 同款);best-effort 审计行失败不阻断拒绝收口。
+	defer func() { _ = tx.Rollback() }()
+	if err := audit.Append(ctx, tx, audit.Event{
+		ID: id, EventType: audit.EventLLMBudgetDenied,
+		ExecutionID: req.ExecutionID, NodeExecID: req.NodeExecutionID,
+		NodeID: nodeID, AttemptID: req.AttemptID,
+		// actor_id 列宽 VARCHAR(128) 是字节语义,DSL schema 的 model
+		// maxLength=100 是 code point 语义——多字节模型名可合法超列宽,
+		// 入列前 rune 安全裁(对抗审计 LOW①);payload.Model 保全文
+		// (JSON 无列宽),审计行必落库不因名弃行。
+		ActorType: audit.ActorLLM, ActorID: clampActorID(model), Payload: raw,
+	}); err != nil {
+		slog.Error("nodes: audit budget denied", "err", err, "node_exec_id", req.NodeExecutionID)
+		return
+	}
+	if err := tx.Commit(); err != nil {
+		slog.Error("nodes: budget denied audit commit", "err", err, "node_exec_id", req.NodeExecutionID)
+	}
+}
+
+// clampActorID 把模型名裁到审计 actor_id 列宽内(≤128 字节,rune 边界前向
+// 裁防非法 UTF-8——镜像 llm 包 sampleCut 形态;ASCII 恰 128 直通)。
+func clampActorID(model string) string {
+	const maxActorIDBytes = 128
+	if len(model) <= maxActorIDBytes {
+		return model
+	}
+	end := 0
+	for end < maxActorIDBytes {
+		_, size := utf8.DecodeRuneInString(model[end:])
+		if size == 0 || end+size > maxActorIDBytes {
+			break
+		}
+		end += size
+	}
+	return model[:end]
 }
 
 // renderMessages 把快照渲染为 Chat Completions 消息:可选 system(受信指令

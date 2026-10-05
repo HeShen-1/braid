@@ -38,6 +38,9 @@ type Config struct {
 	// PriceTable 供应商单价表(JSON-in-env,拍板 ③);至少一个模型,可选
 	// "fallback" 保留键做未知模型估算。
 	PriceTable PriceTable
+	// TokenBudget 每执行总 token 预算(T18.2,D-t182 决策 1):Σ已计费
+	// usage + 当次估算超限即 pre-call 拒绝;0 = 闸门关闭(缺省)。
+	TokenBudget TokenBudget
 }
 
 // dispatchMargin 是组合预算对 NodeTimeout 的扣减余量:asynq 每次投递的
@@ -90,6 +93,9 @@ func (c Config) Validate() error {
 			c.attemptBudget(), scheduler.NodeTimeout("llm")-dispatchMargin, scheduler.NodeTimeout("llm"), dispatchMargin)
 	case c.PriceTable.Len() == 0:
 		return fmt.Errorf("llm: price table empty (>=1 model required; \"fallback\" key optional)")
+	case c.TokenBudget > MaxTokenBudget:
+		return fmt.Errorf("llm: token budget %d over upper bound %d (misconfig guard; 0 = gate off)",
+			uint64(c.TokenBudget), uint64(MaxTokenBudget))
 	}
 	return nil
 }
@@ -141,7 +147,24 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 			return c, err
 		}
 	}
+	if c.TokenBudget, err = envTokenBudget(getenv, "BRAID_LLM_TOKEN_BUDGET"); err != nil {
+		return c, err
+	}
 	return c, c.Validate()
+}
+
+// envTokenBudget 解析 BRAID_LLM_TOKEN_BUDGET(非负整数,0/未设 = 闸门关);
+// 上界校验归 Validate(与 Timeout/MaxAttempts 的分工一致:这里只管词法)。
+func envTokenBudget(getenv func(string) string, key string) (TokenBudget, error) {
+	raw := getenv(key)
+	if raw == "" {
+		return 0, nil
+	}
+	n, err := strconv.ParseUint(raw, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("llm: %s=%q: non-negative integer required: %w", key, raw, err)
+	}
+	return TokenBudget(n), nil
 }
 
 func envDuration(getenv func(string) string, key string, def time.Duration) (time.Duration, error) {
