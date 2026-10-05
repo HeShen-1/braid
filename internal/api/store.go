@@ -350,14 +350,35 @@ WHERE id = ? AND tenant_id = ? AND status = ?`,
 	return s.GetByID(ctx, q, tenant, id)
 }
 
+// PublishGate 在 Publish 事务内评估锁定读到的草稿内容——与即将被翻转
+// 的行同一份 cur(T20.3 发布面 TOCTOU 收口:闸对象即发布对象,事务外
+// 预读的判定窗已收)。q 是 Publish 的事务句柄:闸内只读探测必须经 q
+// 走事务连接,不得经池另取连接(持事务期间的嵌套池获取 = 并发发布
+// 自饿死面);事务边界归 WithTx,闸不得自行提交/回滚。非 nil 返回值
+// 中止整个发布(调用方事务回滚,错误透传给调用方分类)。
+type PublishGate func(ctx context.Context, q DBTX, cur Definition) error
+
+// noopPublishGate 是 PublishUngated 的恒放行闸。
+var noopPublishGate PublishGate = func(context.Context, DBTX, Definition) error { return nil }
+
+// PublishUngated 是 Publish 的无闸变体:显式命名面,测试与确无闸语义的
+// 内部调用专用——发布面调用方必须 Publish + Server.publishFleetGate,
+// 闸旁路只能以 greppable 的显式决策存在(T20.3 对抗审计 LOW 收口:nil
+// 缺省参数的静默旁路已废)。
+func (s *Store) PublishUngated(ctx context.Context, q DBTX, tenant, id uint64, actor string, allowlist ...string) (Definition, error) {
+	return s.Publish(ctx, q, tenant, id, actor, noopPublishGate, allowlist...)
+}
+
 // Publish 把草稿翻成 PUBLISHED:发布路径叠加工具白名单校验
 // (allowlist 为名单内容;空调用 = 名单空集 = 禁用一切工具),版本号
-// 取 MAX(version)+1。调用方必须经 WithTx 包裹(读号 + 翻转原子);
-// 同名并发发布的间隙锁竞态由 uk_def_name_version 兜底 ⇒ 1062 ⇒
-// ErrConflict(显式失败是并发闸,不是错误)。published_at 用库端
-// NOW(3)(会话 time_zone '+00:00' ⇒ UTC,DDL 契约)。
-func (s *Store) Publish(ctx context.Context, q DBTX, tenant, id uint64, actor string, allowlist ...string) (Definition, error) {
-	// 锁定读:白名单校验的对象必须是即将被翻转的那份内容(getByIDForUpdate
+// 取 MAX(version)+1。gate(必非 nil;无闸面走 PublishUngated)在
+// 锁定读 + DRAFT 复核后、白名单校验前对同一份 cur 执行——闸拒绝原子
+// 回滚整个发布。调用方必须经 WithTx 包裹(读号 + 翻转原子);同名并发
+// 发布的间隙锁竞态由 uk_def_name_version 兜底 ⇒ 1062 ⇒ ErrConflict
+// (显式失败是并发闸,不是错误)。published_at 用库端 NOW(3)(会话
+// time_zone '+00:00' ⇒ UTC,DDL 契约)。
+func (s *Store) Publish(ctx context.Context, q DBTX, tenant, id uint64, actor string, gate PublishGate, allowlist ...string) (Definition, error) {
+	// 锁定读:白名单与闸校验的对象必须是即将被翻转的那份内容(getByIDForUpdate
 	// 注释——快照读 + 只钉状态的 guarded UPDATE 会发布未校验的新内容)。
 	cur, err := s.getByIDForUpdate(ctx, q, tenant, id)
 	if err != nil {
@@ -365,6 +386,14 @@ func (s *Store) Publish(ctx context.Context, q DBTX, tenant, id uint64, actor st
 	}
 	if cur.Status != statusDraft {
 		return Definition{}, fmt.Errorf("%w: definition %d is %s, not DRAFT", ErrConflict, id, cur.Status)
+	}
+	if gate == nil {
+		// 闸是发布面的结构性契约:无闸发布必须显式选择 PublishUngated,
+		// 缺省参数静默旁路不可表达(响亮 500,不静默放行)。
+		return Definition{}, errors.New("api: publish gate required (use PublishUngated for ungated faces)")
+	}
+	if err := gate(ctx, q, cur); err != nil {
+		return Definition{}, err
 	}
 	if _, err := dsl.Parse(cur.DSL, dsl.WithToolAllowlist(allowlist...)); err != nil {
 		return Definition{}, asInvalidDSL(err)

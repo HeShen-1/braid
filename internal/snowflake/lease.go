@@ -408,11 +408,19 @@ type FleetInstance struct {
 	Capabilities []string // NULL = 未宣告(nil 切片)
 }
 
+// FleetScanner 是 InFleet 的最小查询面(*sql.DB 与事务句柄均满足;各包
+// 自定义 tx 面不互相 import 的仓内纪律)。发布面闸在 Publish 事务内经
+// 事务连接扫描——持事务期间经池另取连接 = 并发发布自饿死面(T20.3
+// 对抗审计收口)。
+type FleetScanner interface {
+	QueryContext(ctx context.Context, query string, args ...any) (*sql.Rows, error)
+}
+
 // InFleet 返回在场实例(expires_at >= NOW(3),kind 三类全扫——relay 无
 // 生成器不在 ENUM),按 node_id 升序。过期判定与 acquire 一致全 DB 端
 // NOW(3);查询错误原样上抛(硬闸侧 fail-closed:误拒方向安全,D-t151
-// 决策 6)。
-func InFleet(ctx context.Context, dbh *sql.DB) ([]FleetInstance, error) {
+// 决策 6)。dbh 可传池或事务句柄(发布面闸传 Publish 事务连接)。
+func InFleet(ctx context.Context, dbh FleetScanner) ([]FleetInstance, error) {
 	rows, err := dbh.QueryContext(ctx,
 		`SELECT node_id, kind, holder_id, expires_at, capabilities
 		 FROM snowflake_node_lease

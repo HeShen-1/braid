@@ -137,6 +137,31 @@ func TestFleetGatePublishNotEngagedWithoutModeAll(t *testing.T) {
 	}
 }
 
+// TestFleetGatePublishSmuggledModeAllRejected:T20.3 发布面钉——草案在
+// 发布前一刻被改写引入 mode=all(修复前「闸读旧稿、事务发新稿」前置换的
+// 走私形态),闸在 Publish 事务内对锁定读内容判定 → 503 拒 + 行保持
+// DRAFT(事务原子中止,修复草案后可重发)。
+func TestFleetGatePublishSmuggledModeAllRejected(t *testing.T) {
+	r, dbh, sign := newTestServer(t)
+	clearGateLeases(t, dbh)
+	defer clearGateLeases(t, dbh)
+	seedGateLease(t, dbh, 2, "worker", "worker:old-bin", time.Minute, false)
+	author := sign(auth.RoleAuthor)
+	name := uniqName("smuggle")
+	created := createViaAPI(t, r, author, dslDoc(name))
+	id := created["id"].(string)
+	if code, body := doJSON(t, r, http.MethodPut, "/api/v1/drafts/"+id, author, gateAllDoc(name)); code != http.StatusOK {
+		t.Fatalf("update draft to mode=all = %d %v, want 200", code, body)
+	}
+	code, body := doJSON(t, r, http.MethodPost, "/api/v1/drafts/"+id+"/publish", author, nil)
+	if code != http.StatusServiceUnavailable || body["error"] != fleetGateErrorCode {
+		t.Fatalf("publish smuggled mode=all = %d %v, want 503 %s", code, body, fleetGateErrorCode)
+	}
+	if code, body = doJSON(t, r, http.MethodGet, "/api/v1/drafts/"+id, author, nil); code != http.StatusOK || body["status"] != "DRAFT" {
+		t.Fatalf("draft after gate reject = %d %v, want 200 DRAFT(事务原子中止)", code, body)
+	}
+}
+
 // gateCountingTrigger 记录 Instantiate 调用数(闸拒绝必须发生在物化之前)。
 type gateCountingTrigger struct {
 	fakeTrigger
@@ -199,7 +224,7 @@ func TestFleetGateScanErrorFailsClosed(t *testing.T) {
 		t.Fatalf("close db: %v", err)
 	}
 	s := &Server{dbh: bad}
-	rej := s.gateFleetApprovalAll(context.Background())
+	rej := s.gateFleetApprovalAll(context.Background(), s.dbh)
 	if rej == nil {
 		t.Fatalf("gate = nil, want fail-closed rejection on scan error")
 	}
