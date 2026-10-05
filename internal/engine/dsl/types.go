@@ -161,15 +161,19 @@ type ApprovalNode struct {
 }
 
 // ParallelNode 并行节点(T9.1 Scatter-Gather,D-2026-09-28-t91):foreach 纯引用
-// (指向声明 type=array 的输入)由调度器在 Instantiate 展开为 N 实例行(同
-// node_id、instance_no 1..N、body 类型);节点自身落控制行(instance 0,gather
-// 锚)。输出契约固定:results = body 输出对象的数组,输入序。元素绑定关键字
-// 钉死 "item"(自定义名与引用形态钉死冲突,不设旋钮);OnFailure 为空 =
-// fail_fast(生效值由 scheduler 物化点补齐,approval mode/timeout 同款约定);
-// Body 是 llm|tool 单节点模板(ID 恒空,实例共享父 node_id)。
+// 指向 array——{{inputs.<name>}}(声明 type=array;T9.1)在 Instantiate 展开为
+// N 实例行,{{nodes.<id>.output.<field>}}(祖先节点的 array 输出字段;T19.2
+// D-2026-10-05-t192 动态扇出)N 派发位才知,实例行 dispatch-time 展开(Instantiate
+// 仅落控制行)。两来源下实例行同构:同 node_id、instance_no 1..N(当前轮输入
+// 序)、body 类型;节点自身落控制行(instance 0,gather 锚)。输出契约固定:
+// results = body 输出对象的数组,输入序。元素绑定关键字钉死 "item"(自定义名
+// 与引用形态钉死冲突,不设旋钮);OnFailure 为空 = fail_fast(生效值由
+// scheduler 物化点补齐,approval mode/timeout 同款约定);Body 是 llm|tool 单
+// 节点模板(ID 恒空,实例共享父 node_id)。
 // MinSuccess(T19.1,D-2026-10-05-t191):部分容忍阈值,[1,N] 整数,0 = 未启用
 // (缺省);启用 ⇒ gather 恒物化伴生键 failed_count(输出契约随配置登记),
-// 与 OnFailure 正交(失败时机 × 成功阈值两旋钮)。
+// 与 OnFailure 正交(失败时机 × 成功阈值两旋钮)。input 来源越界由 Instantiate
+// 先验拒;node 来源 N 派发位才知,越界拒移派发位(同错误码语义词)。
 type ParallelNode struct {
 	Foreach    string `json:"foreach"`
 	OnFailure  string `json:"on_failure"`  // 空 = "fail_fast"

@@ -1,0 +1,20 @@
+{
+  "dsl": "1.0",
+  "name": "parallel-dynamic",
+  "description": "T19.2 动态扇出:foreach 指向祖先节点的 array 输出字段,实例行在派发位展开(非 Instantiate 预落)。",
+  "inputs": [{"name": "topic", "type": "string", "required": true}],
+  "nodes": [
+    {"id": "gen", "type": "llm", "prompt": {"template": "列出子题",
+      "user_data": [{"name": "topic", "ref": "{{inputs.topic}}"}]}, "outputs": {"subs": "array"}},
+    {"id": "fan", "type": "parallel", "title": "动态并行展开", "parallel": {
+      "foreach": "{{nodes.gen.output.subs}}",
+      "on_failure": "wait_all",
+      "body": {"type": "llm", "prompt": {"template": "展开子题",
+        "user_data": [{"name": "sub", "ref": "{{item}}"}]}}
+    }},
+    {"id": "post", "type": "tool", "tool": "http",
+     "inputs": {"payload": "{{nodes.fan.output.results}}"}, "outputs": {"done": "boolean"}}
+  ],
+  "edges": [{"from": "gen", "to": "fan"}, {"from": "fan", "to": "post"}],
+  "outputs": {"all": "{{nodes.fan.output.results}}", "done": "{{nodes.post.output.done}}"}
+}

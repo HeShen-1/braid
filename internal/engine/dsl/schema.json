@@ -333,9 +333,9 @@
           "additionalProperties": false,
           "required": ["foreach", "body"],
           "properties": {
-            "foreach": { "$ref": "#/$defs/inputRef", "description": "T9.1 钉 {{inputs.<name>}} 纯引用且声明 type=array({{nodes.*}} 来源 P1 停车场);实例数 = 触发时数组长度(平台上限内)。" },
+            "foreach": { "anyOf": [{ "$ref": "#/$defs/inputRef" }, { "$ref": "#/$defs/nodeRef" }], "description": "纯引用,二形态(T19.2,D-2026-10-05-t192):{{inputs.<name>}} 声明 type=array(T9.1,实例数触发时已知,Instantiate 预落实例行);{{nodes.<id>.output.<field>}} 祖先节点声明 type=array 的输出字段(T19.2 动态扇出,实例数派发位才知,实例行 dispatch-time 展开)。语义裁决(祖先/非 branch/array)在 T1.2 语义校验。" },
             "on_failure": { "enum": ["fail_fast", "wait_all"], "default": "fail_fast", "description": "fail_fast=任一实例终败即收敛(既有全局语义);wait_all=全部实例终态后再判。两值下执行终态同为 FAILED,差异仅收敛时机。" },
-            "min_success": { "type": "integer", "minimum": 1, "description": "部分容忍阈值(T19.1,D-2026-10-05-t191)。缺省 = 未启用(禁用语义钉「字段不在」,显式 0 被 minimum 拒);[1,实例数] = 启用,超实例数由 Instantiate 拒(parallel_min_success_limit)。启用 ⇒ 成功数达标即/收齐后控制器可 SUCCEEDED(与 on_failure 正交:fail_fast+min_success=达标即收敛+不可能达标即早败;wait_all+min_success=收齐再判),gather 恒物化伴生键 failed_count,失败/在飞实例位 results=null 占位(输入序)。" },
+            "min_success": { "type": "integer", "minimum": 1, "description": "部分容忍阈值(T19.1,D-2026-10-05-t191)。缺省 = 未启用(禁用语义钉「字段不在」,显式 0 被 minimum 拒);[1,实例数] = 启用;input 来源超实例数由 Instantiate 拒,node 来源(T19.2 foreach 引节点输出)实例数派发位才知、越界在派发位拒(执行级 input_eval,同语义词 parallel_min_success_limit)。启用 ⇒ 成功数达标即/收齐后控制器可 SUCCEEDED(与 on_failure 正交:fail_fast+min_success=达标即收敛+不可能达标即早败;wait_all+min_success=收齐再判),gather 恒物化伴生键 failed_count,失败/在飞实例位 results=null 占位(输入序)。" },
             "body": { "$ref": "#/$defs/parallelBody" }
           }
         }

@@ -153,9 +153,12 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 	var res *RollbackResult
 	err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
 		// 0. 容量闸(T15.5,D-t92 停车场 MaxRollbackRows 兑现):COUNT 走
-		// uk_node_exec 索引范围扫;普通读足够——行集在 Instantiate 后固定
-		// (实例行随物化建,不随后续推进增减),且闸是容量面非正确性面,
-		// 锁定前拒绝零副作用。0 = 关闭(测试缺省)。
+		// uk_node_exec 索引范围扫;普通读足够——闸是容量面非正确性面,锁定前
+		// 拒绝零副作用。T19.2(D-2026-10-05-t192)后行集不再「Instantiate 后
+		// 固定」:动态扇出的实例行在派发位增长,锁前 COUNT 可能低计并发扇出
+		// ——持锁后(lockAllRows 当前读)锁定集仍准确,闸保护的是实际锁定行
+		// 数,语义不变;每并行节点行数上界仍受 MaxParallelInstances 封顶。
+		// 0 = 关闭(测试缺省)。
 		if max := s.deps.MaxRollbackRows; max > 0 {
 			var rowCnt int
 			if err := q.QueryRowContext(ctx,

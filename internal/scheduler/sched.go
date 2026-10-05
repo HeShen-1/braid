@@ -500,13 +500,19 @@ VALUES (?,?,?,0,?,'PENDING',?,1)`,
 
 // planFanouts 解析全部 parallel 节点的 foreach 展开(T9.1):node_id → 元素集
 // (输入序)。在 Instantiate 事务外调用——foreach 不可解析(非数组/缺输入/超
-// 上限)即拒绝,execution 行与事件零残留。
+// 上限)即拒绝,execution 行与事件零残留。T19.2(D-2026-10-05-t192):node 引用
+// 来源({{nodes.*.output.*}})实例数派发位才知,Instantiate 不展开(仅落控制行,
+// 见 insertParallelRows 的 elems=nil 面);min_success vs N 先验随之移派发位
+// (dispatchParallel,语义词同源)。
 func planFanouts(g *dag, shape map[string]json.RawMessage) (map[string][]json.RawMessage, error) {
 	var fanouts map[string][]json.RawMessage
 	for _, nodeID := range sortedNodes(g.nodes) {
 		n := g.nodes[nodeID]
 		if n.Parallel == nil {
 			continue
+		}
+		if r, ok := dsl.ParsePureRef(n.Parallel.Foreach); ok && r.Kind == "node" {
+			continue // 动态扇出:dispatch-time 展开
 		}
 		elems, err := resolveForeach(n.Parallel, shape)
 		if err != nil {
@@ -553,6 +559,9 @@ func resolveForeach(p *dsl.ParallelNode, shape map[string]json.RawMessage) ([]js
 // gather 锚与 {{nodes.<id>.output.*}} 引用面;无 attempt → max_attempts 1)+
 // N 实例行(instance 1..N 输入序,body 类型 + body retry 快照;worker 视角
 // = 普通节点行,TaskID/幂等键词表 att:<row>:<attempt> 天然唯一)。
+// T19.2:动态扇出(foreach = node 引用)fanouts 无条目 ⇒ elems=nil ⇒ 仅落
+// 控制行;实例行在派发位展开(reconcileFanout)。静态空数组(elems=[])同为
+// 控制行单行,行为不变。
 func insertParallelRows(ctx context.Context, q engine.DBTX, ids *snowflake.Generator,
 	execID uint64, nodeID string, n *dsl.Node, elems []json.RawMessage) error {
 	rowID, err := ids.Next()
@@ -566,27 +575,49 @@ VALUES (?,?,?,0,'parallel','PENDING',1,1)`,
 		rowID, execID, nodeID); err != nil {
 		return fmt.Errorf("scheduler: insert node %s controller: %w", nodeID, err)
 	}
+	maxAttempts, err := bodyMaxAttempts(n)
+	if err != nil {
+		return err
+	}
+	for i := range elems {
+		if _, err := insertInstanceRow(ctx, q, ids, execID, nodeID, &n.Parallel.Body, i+1, maxAttempts); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// bodyMaxAttempts 返回 parallel body 模板生效的 max_attempts 并校验 [1,10]
+// (Instantiate 预落与派发位补插共用裁决;普通节点 Instantiate 同界,schema
+// retry.maximum 同值)。nodeID 用于错误归因(实例行共享父 node_id)。
+func bodyMaxAttempts(n *dsl.Node) (int, error) {
 	maxAttempts := 1
 	if n.Parallel.Body.Retry != nil {
 		maxAttempts = n.Parallel.Body.Retry.MaxAttempts
 	}
 	if maxAttempts < 1 || maxAttempts > 10 {
-		return fmt.Errorf("scheduler: node %s body max_attempts %d out of [1,10]", nodeID, maxAttempts)
+		return 0, fmt.Errorf("scheduler: node %s body max_attempts %d out of [1,10]", n.ID, maxAttempts)
 	}
-	for i := range elems {
-		instID, err := ids.Next()
-		if err != nil {
-			return fmt.Errorf("scheduler: gen node id: %w", err)
-		}
-		if _, err := q.ExecContext(ctx, `
+	return maxAttempts, nil
+}
+
+// insertInstanceRow 落一行 PENDING 实例行并返回其行 id。Instantiate 预落与
+// 派发位 reconcile 补插(T19.2)共用——两插入位形状必须恒同(漂移 = 实例行
+// 跨轮形态不一致),单源即防漂移(对抗审计 LOW 修)。
+func insertInstanceRow(ctx context.Context, q engine.DBTX, ids *snowflake.Generator,
+	execID uint64, nodeID string, body *dsl.Node, instanceNo, maxAttempts int) (uint64, error) {
+	instID, err := ids.Next()
+	if err != nil {
+		return 0, fmt.Errorf("scheduler: gen node id: %w", err)
+	}
+	if _, err := q.ExecContext(ctx, `
 INSERT INTO node_execution
   (id, execution_id, node_id, instance_no, type, status, max_attempts, version)
 VALUES (?,?,?,?,?,'PENDING',?,1)`,
-			instID, execID, nodeID, i+1, n.Parallel.Body.Type, maxAttempts); err != nil {
-			return fmt.Errorf("scheduler: insert node %s instance %d: %w", nodeID, i+1, err)
-		}
+		instID, execID, nodeID, instanceNo, body.Type, maxAttempts); err != nil {
+		return 0, fmt.Errorf("scheduler: insert node %s instance %d: %w", nodeID, instanceNo, err)
 	}
-	return nil
+	return instID, nil
 }
 
 // Start 处理 execution.start:PENDING→RUNNING 并派发入口节点。
@@ -995,7 +1026,9 @@ func (s *Scheduler) FinishIfDone(ctx context.Context, execID uint64) error {
 // 收敛下「控制器 SUCCEEDED + 实例行 FAILED」是合法形态,实例终败的收敛语义
 // 归控制器(FAILED 控制行自阻塞;未收敛控制器恒非终态,nonTerminal 已拦),
 // 与「引用面只取控制行」同哲学。
-// 不提前:行集在 Instantiate 已全量落库,在飞兄弟已提交为非终态,新鲜快照必见。
+// 不提前:行集增长只发生在持有全行锁的派发事务内(T19.2 动态扇出,D-2026-10-05-t192
+// 决策 2①——同款前提改写见 rollback.go 步骤 0),新增行与控制器 PENDING→EXECUTING
+// 同事务以非终态原子提交,提交后新鲜快照必见;静态路径行集仍在 Instantiate 全量落库。
 // 不漏判:最后一个提交者的重查必见全部终态。双收口由 status-only CAS 仲裁
 // (Conflict 良性)。fail-fast 路径已在 Complete 事务内收口 FAILED,此处跳过。
 func (s *Scheduler) finishIfDone(ctx context.Context, execID uint64, wf *dsl.Workflow, wfInput json.RawMessage) error {
@@ -1495,38 +1528,55 @@ func effectiveMinSuccess(p *dsl.ParallelNode) int {
 }
 
 // parallelElements 在派发位解析 foreach 元素集(输入不可变,与 Instantiate
-// 先验同源;元素 = env.input 的 UseNumber 解码值,数值保真)。
+// 先验同源;元素 = env 的 UseNumber 解码值,数值保真)。T19.2:node 引用来源
+// (祖先输出,派发位已 SUCCEEDED 不可变)同经 env 解析;上限先验对两来源
+// 统一在派发位补齐(静态面已由 Instantiate 先验,此处是幂等复核)。
 func (st *execState) parallelElements(n *dsl.Node) ([]any, error) {
 	r, ok := dsl.ParsePureRef(n.Parallel.Foreach)
-	if !ok || r.Kind != "input" {
-		return nil, fmt.Errorf("foreach %s is not a pure input reference", n.Parallel.Foreach)
+	if !ok || (r.Kind != "input" && r.Kind != "node") {
+		return nil, fmt.Errorf("foreach %s is not a pure {{inputs.<name>}} or {{nodes.<id>.output.<field>}} reference", n.Parallel.Foreach)
 	}
 	v, ok := st.env.resolve(r)
 	if !ok {
-		return nil, fmt.Errorf("foreach input %q unresolved", r.Name)
+		return nil, fmt.Errorf("foreach %s %q unresolved at dispatch time", r.Kind, r.Name)
 	}
 	elems, ok := v.([]any)
 	if !ok {
 		return nil, fmt.Errorf("foreach ref %s must resolve to a JSON array", r.Text)
+	}
+	if len(elems) > MaxParallelInstances {
+		return nil, fmt.Errorf("parallel_fanout_limit: foreach yields %d elements, max %d",
+			len(elems), MaxParallelInstances)
 	}
 	return elems, nil
 }
 
 // dispatchParallel 内联展开 fan-out:先全量求值实例快照(纯内存;任一失败 =
 // input_eval,零派发残留——与普通节点/branch「求值在 claim 之前」契约同款,
-// 对抗审计 MEDIUM 修),再控制行 claim(deadline NULL,无驻留,branch 同款
-// 先例;收敛与末实例收口同事务 ⇒ 无「全终态但控制器卡 EXECUTING」窗口)→
-// 实例行逐个 claim + att 事件(多事件同事务 = 真并发派发)。空数组 = 空集
-// 汇聚:控制行同事务直接 SUCCEEDED(results=[]),等价 branch 的 claim→succeed
-// 内联。
+// 对抗审计 MEDIUM 修;T19.2:快照求值先于动态行集 reconcile,失败时零插入
+// 残留,failExecution 同事务提交不入库新增行),再控制行 claim(deadline NULL,
+// 无驻留,branch 同款先例;收敛与末实例收口同事务 ⇒ 无「全终态但控制器卡
+// EXECUTING」窗口)→ 实例行逐个 claim + att 事件(多事件同事务 = 真并发派发)。
+// 空数组 = 空集汇聚:控制行同事务直接 SUCCEEDED(results=[]),等价 branch 的
+// claim→succeed 内联。
+// T19.2(D-2026-10-05-t192):动态扇出(foreach = node 引用)实例行在此展开
+// (reconcileFanout),min_success vs 动态 N 的先验拒也移此(input 路径已在
+// planFanouts 拒,语义词同源)。
 func (st *execState) dispatchParallel(row *nodeRow, n *dsl.Node) error {
 	p := n.Parallel
 	elems, err := st.parallelElements(n)
 	if err != nil {
 		return st.failExecution("input_eval", fmt.Sprintf("node %s: %v", row.nodeID, err))
 	}
+	// T19.1 先验的动态面:k > M(含空数组 + k≥1)派发位拒,零派发残留。
+	if k := effectiveMinSuccess(p); k > len(elems) {
+		return st.failExecution("input_eval",
+			fmt.Sprintf("node %s: parallel_min_success_limit: min_success %d exceeds %d instances",
+				row.nodeID, k, len(elems)))
+	}
+	dynamic := dynamicForeach(p)
 	insts := st.rows.instances[row.nodeID]
-	if len(insts) != len(elems) {
+	if !dynamic && len(insts) != len(elems) {
 		return fmt.Errorf("scheduler: node %q has %d instance rows but foreach yields %d (definition/rows drift)",
 			row.nodeID, len(insts), len(elems))
 	}
@@ -1534,12 +1584,19 @@ func (st *execState) dispatchParallel(row *nodeRow, n *dsl.Node) error {
 	for i := range elems {
 		snap, err := buildSnapshot(&p.Body, st.env.withItem(elems[i]))
 		if err != nil {
-			// 快照求值全部先于任何 claim:失败时控制器/实例恒 PENDING、零
-			// att 事件(半程 fan-out 会空烧供应商调用——input_eval 契约)。
+			// 快照求值全部先于任何 claim/reconcile:失败时控制器/实例恒
+			// PENDING、零 att 事件、零新增行(半程 fan-out 会空烧供应商调用
+			// ——input_eval 契约)。
 			return st.failExecution("input_eval",
 				fmt.Sprintf("node %s instance %d: %v", row.nodeID, i+1, err))
 		}
 		snaps[i] = snap
+	}
+	live := insts
+	if dynamic {
+		if live, err = st.reconcileFanout(row, n, len(elems)); err != nil {
+			return err
+		}
 	}
 	snap, err := json.Marshal(parallelControllerSnapshot{Foreach: p.Foreach, Count: len(elems)})
 	if err != nil {
@@ -1562,10 +1619,10 @@ func (st *execState) dispatchParallel(row *nodeRow, n *dsl.Node) error {
 	row.version = ver
 	row.status = engine.NodeExecuting
 	row.workerID = sql.NullString{String: st.workerID, Valid: true}
-	if len(insts) == 0 {
+	if len(live) == 0 {
 		return st.convergeParallel(row, n)
 	}
-	for i, inst := range insts {
+	for i, inst := range live {
 		iver, err := engine.ClaimNode(st.ctx, st.q, inst.id, inst.version, engine.ClaimInput{
 			WorkerID:      st.workerID,
 			InputSnapshot: snaps[i],
@@ -1590,8 +1647,99 @@ func (st *execState) dispatchParallel(row *nodeRow, n *dsl.Node) error {
 		}
 	}
 	st.s.log.Info("parallel.fanout",
-		"execution_id", st.execID, "node_id", row.nodeID, "instances", len(insts))
+		"execution_id", st.execID, "node_id", row.nodeID, "instances", len(live))
 	return nil
+}
+
+// dynamicForeach 报告 parallel 节点是否为动态扇出来源(T19.2:node 引用)。
+// 形态裁决单源 dsl.ParsePureRef;非引用形态已被 validate 拒,此处防御返回
+// false 走静态 drift 检查(响亮报错,不静默)。
+func dynamicForeach(p *dsl.ParallelNode) bool {
+	r, ok := dsl.ParsePureRef(p.Foreach)
+	return ok && r.Kind == "node"
+}
+
+// reconcileFanout 把动态扇出的实例行集对齐到当前轮元素数 want(T19.2,
+// D-2026-10-05-t192 决策 3)。骑 lockAllRows 已批量锁读的行集裁决(零额外
+// 查询——「DBTX 批量读」的兑现面),全行锁单写者使「现有行数」即真相:
+//   - 缺行:补插 K+1..want(instance_no 连续追加,uk_node_exec「每执行每节点
+//     每实例恰一行」保持;同事务随后的 claim 使新行以非终态原子可见);
+//   - 盈余:M+1..K 的 PENDING 行 → SkipNode(SKIPPED 终态证据行,不删行——
+//     node_attempt 台账 FK 与 T9.2 追溯纪律;finishIfDone 终态不阻塞);
+//   - 非 PENDING 意外态 = 数据缺陷响亮报错(lockAllRows 同哲学;活轮控制器
+//     PENDING ⇒ 实例行恒经回滚闭包整组重置为 PENDING)。
+//
+// 返回活跃实例集(1..M 输入序);st.rows 同步扩容,本事务 gather 面共览。
+func (st *execState) reconcileFanout(row *nodeRow, n *dsl.Node, want int) ([]*nodeRow, error) {
+	insts := st.rows.instances[row.nodeID]
+	for i := want; i < len(insts); i++ {
+		surplus := insts[i]
+		if surplus.status != engine.NodePending {
+			return nil, fmt.Errorf("scheduler: node %q surplus instance %d is %s, want PENDING (definition/rows drift)",
+				row.nodeID, surplus.instanceNo, surplus.status)
+		}
+		ver, err := engine.SkipNode(st.ctx, st.q, surplus.id, surplus.version)
+		if err != nil {
+			return nil, err
+		}
+		if err := st.stageRow(audit.EventNodeStateChanged, surplus, 0, audit.NodeStateChangedPayload{
+			From: string(engine.NodePending), To: string(engine.NodeSkipped),
+			NodeID: surplus.nodeID, Version: ver, InstanceNo: surplus.instanceNo,
+		}); err != nil {
+			return nil, err
+		}
+		surplus.status = engine.NodeSkipped
+		surplus.version = ver
+		st.s.log.Info("parallel.surplus_skipped",
+			"execution_id", st.execID, "node_id", row.nodeID, "instance_no", surplus.instanceNo)
+	}
+	maxAttempts, err := bodyMaxAttempts(n)
+	if err != nil {
+		return nil, err
+	}
+	for i := len(insts); i < want; i++ {
+		instID, err := insertInstanceRow(st.ctx, st.q, st.s.deps.IDs, st.execID, row.nodeID, &n.Parallel.Body, i+1, maxAttempts)
+		if err != nil {
+			return nil, err
+		}
+		inst := &nodeRow{
+			id: instID, nodeID: row.nodeID, instanceNo: uint16(i + 1), version: 1,
+			status: engine.NodePending, nodeType: n.Parallel.Body.Type, maxAttempts: uint16(maxAttempts),
+		}
+		st.rows.byID[instID] = inst
+		st.rows.instances[row.nodeID] = append(st.rows.instances[row.nodeID], inst)
+	}
+	live := st.rows.instances[row.nodeID]
+	for i := 0; i < want; i++ {
+		if live[i].status != engine.NodePending {
+			return nil, fmt.Errorf("scheduler: node %q live instance %d is %s, want PENDING (definition/rows drift)",
+				row.nodeID, live[i].instanceNo, live[i].status)
+		}
+	}
+	return live[:want:want], nil
+}
+
+// liveInstances 返回 parallel 节点的当前轮活跃实例集(T19.2,
+// D-2026-10-05-t192 决策 4):SKIPPED 实例行不属当前轮——动态扇出的盈余证据行
+// (活跃控制器下实例 SKIPPED ⇔ 盈余,结构论证见 reconcileFanout)与整节点剪枝
+// (控制器同 SKIPPED,gather 永不运行)。静态路径无 SKIPPED 实例行 ⇒ 恒 no-op,
+// 逐字节不变。
+func liveInstances(rows *lockedRows, nodeID string) []*nodeRow {
+	insts := rows.instances[nodeID]
+	for _, inst := range insts {
+		if inst.status == engine.NodeSkipped {
+			// 快路径外的主流场景才分配:静态路径(无 SKIPPED 实例行)原样返回,
+			// 逐字节不变 + 零新增分配(对抗审计 LOW 修)。
+			live := make([]*nodeRow, 0, len(insts))
+			for _, in := range insts {
+				if in.status != engine.NodeSkipped {
+					live = append(live, in)
+				}
+			}
+			return live
+		}
+	}
+	return insts
 }
 
 // convergeParallel 汇聚成功收口:控制行 output = {"results":[实例输出…]}
@@ -1600,9 +1748,10 @@ func (st *execState) dispatchParallel(row *nodeRow, n *dsl.Node) error {
 // SUCCEEDED(或零实例)时调用;T19.1(D-2026-10-05-t191):min_success 部分容忍
 // 收敛亦经此——失败/在飞实例位 = null 占位(输入序保位),启用时恒伴生
 // failed_count(全成功 = 0;fail_fast 早收敛 = 收敛时刻终败计数,迟到终败
-// 不回填,下界)。
+// 不回填,下界)。T19.2:实例迭代收活跃集(盈余 SKIPPED 位不进 results,
+// 长度恒 = 当前轮 M)。
 func (st *execState) convergeParallel(row *nodeRow, n *dsl.Node) error {
-	insts := st.rows.instances[row.nodeID]
+	insts := liveInstances(st.rows, row.nodeID)
 	results := make([]any, 0, len(insts))
 	failedCount := 0
 	for _, inst := range insts {
@@ -1664,7 +1813,8 @@ func (st *execState) convergeParallel(row *nodeRow, n *dsl.Node) error {
 //
 // 未启用维持 T9.1 两模式:全部实例终态时——全 SUCCEEDED → convergeParallel;
 // 含非 SUCCEEDED 终态 → 控制器 FAILED + 执行终败(fail_fast 单败路径不经此)。
-// 未收齐 = no-op(wait_all 的中间态)。
+// 未收齐 = no-op(wait_all 的中间态)。T19.2:实例计数收活跃集(盈余 SKIPPED
+// 行不占 failed/inFlight 位)。
 func (st *execState) gatherCheck(nodeID string) error {
 	ctrl := st.rows.byNodeID[nodeID]
 	if ctrl == nil || ctrl.nodeType != "parallel" {
@@ -1673,7 +1823,7 @@ func (st *execState) gatherCheck(nodeID string) error {
 	if ctrl.status.Terminal() {
 		return nil // T19.1:已收敛(或已终败)不再重判
 	}
-	insts := st.rows.instances[nodeID]
+	insts := liveInstances(st.rows, nodeID)
 	succeeded, failed, inFlight := 0, 0, 0
 	for _, inst := range insts {
 		switch {
