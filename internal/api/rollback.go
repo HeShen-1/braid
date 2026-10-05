@@ -42,7 +42,8 @@ func (s *Server) rollbackExecution(c *gin.Context) {
 }
 
 // resumeExecution:POST /executions/:id/resume —— node_id 缺省自动定位
-// (字典序首个 FAILED,退化到前驱就绪的 PENDING 冻结行,D-t92 决策 5)。
+// (字典序首个 FAILED → 字典序首个 CANCELLED[T19.3 楔源档,D-2026-10-05-t193
+// 决策 1]→ 前驱就绪的 PENDING 冻结行;三档全空 → 400 no_resume_target)。
 func (s *Server) resumeExecution(c *gin.Context) {
 	s.handleRollback(c, true)
 }

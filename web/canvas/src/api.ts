@@ -171,6 +171,13 @@ export interface RollbackAck {
   reset_count: number
 }
 
+/** 取消响应(T19.3);cancelled_count = 楔停的节点行数(控制行+实例行)。 */
+export interface CancelAck {
+  execution_id: string
+  from_status: string
+  cancelled_count: number
+}
+
 export interface ApprovalDecisionRow {
   id: string
   execution_id: string
@@ -276,6 +283,9 @@ export const api = {
   },
   resumeExecution(id: string): Promise<RollbackAck> {
     return call('POST', `/api/v1/executions/${id}/resume`)
+  },
+  cancelExecution(id: string): Promise<CancelAck> {
+    return call('POST', `/api/v1/executions/${id}/cancel`)
   },
   getApproval(executionId: string, nodeId: string): Promise<ApprovalDetail> {
     return call('GET', `/api/v1/executions/${executionId}/approvals/${nodeId}`)

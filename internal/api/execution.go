@@ -72,6 +72,9 @@ func scopedIdempotencyKey(subject, definitionName, key string) string {
 type ExecutionTrigger interface {
 	Instantiate(ctx context.Context, p scheduler.InstantiateParams) (uint64, error)
 	RollbackTo(ctx context.Context, p scheduler.RollbackParams) (*scheduler.RollbackResult, error)
+	// CancelExecution(T19.3):RUNNING/WA 执行楔停——与 RollbackTo 同门
+	// 原语(api 同步事务暴露面)。
+	CancelExecution(ctx context.Context, p scheduler.CancelParams) (*scheduler.CancelResult, error)
 }
 
 // triggerRequest 是 POST /executions 请求体。version 缺省 = 该 name 最新

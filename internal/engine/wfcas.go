@@ -56,27 +56,31 @@ func ResumeExecution(ctx context.Context, q DBTX, execID uint64) error {
 	return TransitionWorkflow(ctx, q, execID, WorkflowWaitingApproval, WorkflowRunning)
 }
 
-// RestartExecution:FAILED→RUNNING(T9.2 回滚复活,D-2026-09-28-t92 决策 2a)。
+// RestartExecution:FAILED|SUCCEEDED|CANCELLED→RUNNING(回滚复活,T9.2
+// D-2026-09-28-t92 决策 2a;白名单扩三终态 = T19.3 D-2026-10-05-t193 决策 3)。
 // 与 TransitionWorkflow 分立:复活必须同语句清终态列组(恢复「终态列组仅终态
 // 携带」纪律——wfcas FinishExecution 注释「finished_at 恰好置一次」的 T9.2
 // 超越:先前终局时刻在审计链,行内只保最近一次终局),outputs/error 双清防
-// 「RUNNING 却携带旧终态输出」的中间窗。started_at=IFNULL 与 TransitionWorkflow
+// 「RUNNING 却携带旧终态输出」的中间窗——SUCCEEDED 复活同牙:重跑可能产出
+// 不同结果,旧产出不得跨轮存活。started_at=IFNULL 与 TransitionWorkflow
 // 的 RUNNING 语义对齐:已起跑执行跨轮回滚不动(首次起跑),PENDING→FAILED
 // 型未起跑执行的复活补本次时刻(进入 RUNNING 即起跑,T6.4 延迟指标无 NULL 洞)。
-// 白名单仅 FAILED(SUCCEEDED/CANCELLED 不可回滚,D- t92 决策 4);status-only
-// CAS(无 version),并发双回滚败者 ErrConflict → api 409。
+// status-only CAS(无 version),并发双回滚败者 ErrConflict → api 409;
+// RUNNING/WA 来源不在谓词 ⇒ Conflict(终态-only 白名单,回滚守卫链前置拦截)。
 func RestartExecution(ctx context.Context, q DBTX, execID uint64) error {
 	res, err := q.ExecContext(ctx, `
 UPDATE workflow_execution
    SET status='RUNNING', outputs=NULL, error_code=NULL, error_message=NULL,
        finished_at=NULL, started_at=IFNULL(started_at, NOW(3)),
        status_changed_at=NOW(3), last_activity_at=NOW(3)
- WHERE id=? AND status='FAILED'`,
+ WHERE id=? AND status IN ('FAILED','SUCCEEDED','CANCELLED')`,
 		execID)
 	if err != nil {
 		return fmt.Errorf("engine: restart workflow %d: %w", execID, err)
 	}
-	return checkWfCAS(ctx, q, res, execID, WorkflowFailed)
+	// from 谓词是「终态集合」,无单一 from:Expect 留空(CancelNode 同款纪律,
+	// 集合不捏造单值),复查仍能区分 NotFound 与 Conflict(Observed=真实态)。
+	return checkWfCAS(ctx, q, res, execID, "")
 }
 
 // FinishExecution 把执行迁入终态(to ∈ SUCCEEDED/FAILED/CANCELLED)。

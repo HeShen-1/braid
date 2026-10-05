@@ -19,6 +19,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"sync"
@@ -130,19 +131,12 @@ func TestRollbackGuards(t *testing.T) {
 		wantRollbackErr(t, err, RollbackNotRollbackable)
 	})
 
-	t.Run("not_rollbackable: SUCCEEDED", func(t *testing.T) {
+	t.Run("not_rollbackable: WAITING_APPROVAL", func(t *testing.T) {
+		// T19.3 后拒面只剩非终态族:WA 执行不可回滚(挂起归审批流管,
+		// 取消面可楔停)。种态走既有 helper。
 		execID := rbStart(t, s, d, rbChainDSL, `{"q":"hi"}`)
-		a := readNode(t, d, execID, "a")
-		mustComplete(t, s, execID, a.id, seedAttempt(t, d, execID, a.id, 1),
-			engine.AttemptSucceed, json.RawMessage(`{"text":"x"}`))
-		b := readNode(t, d, execID, "b")
-		mustComplete(t, s, execID, b.id, seedAttempt(t, d, execID, b.id, 1),
-			engine.AttemptSucceed, json.RawMessage(`{"text":"y"}`))
-		c := readNode(t, d, execID, "c")
-		mustComplete(t, s, execID, c.id, seedAttempt(t, d, execID, c.id, 1),
-			engine.AttemptSucceed, json.RawMessage(`{"text":"z"}`))
-		if e := readExec(t, d, execID); e.status != engine.WorkflowSucceeded {
-			t.Fatalf("种子:wf 应 SUCCEEDED,got %s", e.status)
+		if err := engine.SuspendExecution(context.Background(), d, execID); err != nil {
+			t.Fatalf("种 WA: %v", err)
 		}
 		_, err := s.RollbackTo(context.Background(), RollbackParams{
 			ExecID: execID, TargetNodeID: "b", WorkerID: "api-rb", ActorID: "op"})
@@ -197,6 +191,158 @@ func TestRollbackGuards(t *testing.T) {
 		_, err := s.RollbackTo(context.Background(), RollbackParams{
 			ExecID: execID, TargetNodeID: "f", WorkerID: "api-rb", ActorID: "op"})
 		wantRollbackErr(t, err, RollbackBadNode)
+	})
+}
+
+// TestRollbackSucceededAndCancelled:T19.3(D-2026-10-05-t193 决策 1/3)——
+// 白名单 {FAILED} → 三终态:SUCCEEDED 显式 target 旅程(闭包退化 target+
+// downstream,旧 outputs 复活即清)+ CANCELLED resume 自动定位楔源(字典序
+// 首个 CANCELLED 行 = 恢复点;EXECUTING 取消行快照保留 ⇒ RerunNode 读回
+// 重跑)+ FAILED 优先于 CANCELLED 的退化链次序。
+//
+// 变异自查:守卫仍拒 SUCCEEDED/CANCELLED → 前两子测红;自动定位无 CANCELLED
+// 档 → resume 子测 no_resume_target 红;退化链次序颠倒(CANCELLED 先于
+// FAILED)→ priority 子测 target=c 红。
+func TestRollbackSucceededAndCancelled(t *testing.T) {
+	s, d := newSched(t)
+
+	t.Run("succeeded_explicit_target", func(t *testing.T) {
+		execID := rbStart(t, s, d, rbChainDSL, `{"q":"hi"}`)
+		for _, id := range []string{"a", "b", "c"} {
+			n := readNode(t, d, execID, id)
+			mustComplete(t, s, execID, n.id, seedAttempt(t, d, execID, n.id, 1),
+				engine.AttemptSucceed, json.RawMessage(`{"text":"v`+id+`"}`))
+		}
+		if e := readExec(t, d, execID); e.status != engine.WorkflowSucceeded {
+			t.Fatalf("种子:wf 应 SUCCEEDED,got %s", e.status)
+		}
+		res, err := s.RollbackTo(context.Background(), RollbackParams{
+			ExecID: execID, TargetNodeID: "b", WorkerID: "api-rb", ActorID: "op"})
+		if err != nil {
+			t.Fatalf("回滚 SUCCEEDED: %v", err)
+		}
+		if res.TargetNodeID != "b" || !res.RerunTarget {
+			t.Fatalf("res = %+v, want target=b rerun=true", res)
+		}
+		// 闭包 = b+downstream(c);a 闭包外保持 SUCCEEDED;wf 复活 RUNNING
+		//(旧 outputs 同语句清除)。
+		if st := readNode(t, d, execID, "a").status; st != engine.NodeSucceeded {
+			t.Errorf("闭包外 a = %s, want SUCCEEDED", st)
+		}
+		if st := readNode(t, d, execID, "b").status; st != engine.NodeExecuting {
+			t.Errorf("目标 b = %s, want EXECUTING(RerunNode 重跑)", st)
+		}
+		if st := readNode(t, d, execID, "c").status; st != engine.NodePending {
+			t.Errorf("downstream c = %s, want PENDING(重置待派发)", st)
+		}
+		if e := readExec(t, d, execID); e.status != engine.WorkflowRunning {
+			t.Fatalf("wf = %s, want RUNNING(复活)", e.status)
+		}
+	})
+
+	t.Run("cancelled_resume_targets_wedge_source", func(t *testing.T) {
+		execID := rbStart(t, s, d, rbChainDSL, `{"q":"hi"}`)
+		if _, err := s.CancelExecution(context.Background(), CancelParams{
+			ExecID: execID, WorkerID: "api:cancel", ActorID: "op"}); err != nil {
+			t.Fatalf("种子取消: %v", err)
+		}
+		if e := readExec(t, d, execID); e.status != engine.WorkflowCancelled {
+			t.Fatalf("种子:wf 应 CANCELLED,got %s", e.status)
+		}
+		// resume 空目标:楔源退化链定位字典序首个 CANCELLED(a);a 自
+		// EXECUTING 取消,快照保留 ⇒ RerunNode 读回重跑。
+		res, err := s.RollbackTo(context.Background(), RollbackParams{
+			ExecID: execID, WorkerID: "api-rb", ActorID: "op"})
+		if err != nil {
+			t.Fatalf("回滚 CANCELLED(resume): %v", err)
+		}
+		if res.TargetNodeID != "a" {
+			t.Fatalf("target = %s, want a(字典序首个 CANCELLED 楔源)", res.TargetNodeID)
+		}
+		if !res.RerunTarget {
+			t.Fatalf("rerun = false, want true(EXECUTING 取消行快照在)")
+		}
+		if st := readNode(t, d, execID, "a").status; st != engine.NodeExecuting {
+			t.Errorf("a = %s, want EXECUTING(重跑)", st)
+		}
+		if e := readExec(t, d, execID); e.status != engine.WorkflowRunning {
+			t.Fatalf("wf = %s, want RUNNING(复活)", e.status)
+		}
+	})
+
+	t.Run("min_success_partial_succeeded_rollback", func(t *testing.T) {
+		// T19.1 × T19.3 交叉(对抗审计 C9):min_success 部分容忍收敛的
+		// SUCCEEDED 执行(控制器 SUCCEEDED + 闭包外 FAILED 实例行证据保留)
+		// 回滚 downstream 目标重跑——闭包只按控制行计算,实例 FAILED 行
+		// 闭包外不动(证据保留),finishIfDone 的实例容忍(T19.1)使重跑
+		// 收敛后终态仍可达。
+		doc := fmt.Sprintf(parallelDynamicDoc, `"min_success": 1, "on_failure": "wait_all",`)
+		execID, instances := runDynToFanReady(t, s, d, doc, `{"topic": "x"}`, preOut(`["a","b"]`))
+		if len(instances) != 2 {
+			t.Fatalf("instances = %d, want 2", len(instances))
+		}
+		// 实例 1 成功、实例 2 终败:max=1 → min_success=1 满足。
+		mustComplete(t, s, execID, instances[0], seedAttempt(t, d, execID, instances[0], 1),
+			engine.AttemptSucceed, json.RawMessage(`{"verdict":"v1"}`))
+		mustComplete(t, s, execID, instances[1], seedAttempt(t, d, execID, instances[1], 1),
+			engine.AttemptFailed, nil)
+		if err := completeNode(t, s, d, execID, "post", engine.AttemptSucceed,
+			json.RawMessage(`{"done":true}`)); err != nil {
+			t.Fatalf("complete post: %v", err)
+		}
+		if e := readExec(t, d, execID); e.status != engine.WorkflowSucceeded {
+			t.Fatalf("种子:wf 应 SUCCEEDED(部分容忍),got %s", e.status)
+		}
+		// 回滚显式目标 = post:闭包 {post}(fan 控制行 SUCCEEDED 闭包外,
+		// FAILED 实例行证据保留);post 是 worker 型且快照在 ⇒ Rerun 分流
+		//(闭包内无其他终态行,ResetCount=0)。
+		res, err := s.RollbackTo(context.Background(), RollbackParams{
+			ExecID: execID, TargetNodeID: "post", WorkerID: "api-rb", ActorID: "op"})
+		if err != nil {
+			t.Fatalf("回滚部分容忍 SUCCEEDED: %v", err)
+		}
+		if res.TargetNodeID != "post" || !res.RerunTarget || res.ResetCount != 0 {
+			t.Fatalf("res = %+v, want target=post rerun=true reset=0", res)
+		}
+		if st := instanceRowOf(t, d, execID, "fan", 2).status; st != engine.NodeFailed {
+			t.Errorf("闭包外 FAILED 实例行 = %s, want FAILED(证据保留不重置)", st)
+		}
+		if st := instanceRowOf(t, d, execID, "fan", 0).status; st != engine.NodeSucceeded {
+			t.Errorf("闭包外 fan 控制器 = %s, want SUCCEEDED", st)
+		}
+		// 重跑 post → finishIfDone(T19.1 实例容忍)再次收敛 SUCCEEDED。
+		if err := completeNode(t, s, d, execID, "post", engine.AttemptSucceed,
+			json.RawMessage(`{"done":true}`)); err != nil {
+			t.Fatalf("complete post(二轮): %v", err)
+		}
+		if e := readExec(t, d, execID); e.status != engine.WorkflowSucceeded {
+			t.Fatalf("二轮 wf = %s, want SUCCEEDED(实例容忍下终态可达)", e.status)
+		}
+	})
+
+	t.Run("failed_beats_cancelled_in_chain", func(t *testing.T) {
+		// wf FAILED + EXECUTING 兄弟被 reaper 孤儿收口成 CANCELLED 的混合
+		// 形态(reaper scan 既有语义):退化链 FAILED 优先(修复失败源先于
+		// 恢复取消点)。
+		execID := rbStart(t, s, d, rbDiamondDSL, `{"q":"hi"}`)
+		a := readNode(t, d, execID, "a")
+		mustComplete(t, s, execID, a.id, seedAttempt(t, d, execID, a.id, 1),
+			engine.AttemptSucceed, json.RawMessage(`{"text":"va"}`))
+		b := readNode(t, d, execID, "b")
+		mustComplete(t, s, execID, b.id, seedAttempt(t, d, execID, b.id, 1),
+			engine.AttemptFailed, nil) // fail-fast:wf FAILED,c 仍 EXECUTING
+		c := readNode(t, d, execID, "c")
+		if _, err := engine.CancelNode(context.Background(), d, c.id, c.version); err != nil {
+			t.Fatalf("种 c CANCELLED(reaper 孤儿收口同款): %v", err)
+		}
+		res, err := s.RollbackTo(context.Background(), RollbackParams{
+			ExecID: execID, WorkerID: "api-rb", ActorID: "op"})
+		if err != nil {
+			t.Fatalf("resume 混合态: %v", err)
+		}
+		if res.TargetNodeID != "b" {
+			t.Fatalf("target = %s, want b(FAILED 优先于 CANCELLED)", res.TargetNodeID)
+		}
 	})
 }
 

@@ -99,14 +99,16 @@ var nodeEdges = map[NodeState][]NodeState{
 // PENDING→RUNNING→(WAITING_APPROVAL⇄RUNNING)*→SUCCEEDED|FAILED|CANCELLED;
 // PENDING 可直接→FAILED(reconciler 判死)。
 // 终态(SUCCEEDED)仅自 RUNNING 出:挂起的执行必须先回 RUNNING 才能终局。
-// T9.2(D-2026-09-28-t92 决策 2a):FAILED→RUNNING 仅经 RestartExecution
-// (显式回滚复活,同语句清终态列组);终态对自动路径仍恒无出边,SUCCEEDED/
-// CANCELLED 不可回滚(白名单仅 FAILED,决策 4)。
+// T9.2(D-2026-09-28-t92 决策 2a)+ T19.3(D-2026-10-05-t193):全部终态
+// →RUNNING 仅经 RestartExecution(显式回滚复活,同语句清终态列组);终态对
+// 自动路径仍恒无出边;三终态回滚白名单见 wfcas.RestartExecution。
 var wfEdges = map[WorkflowState][]WorkflowState{
 	WorkflowPending:         {WorkflowRunning, WorkflowFailed, WorkflowCancelled},
 	WorkflowRunning:         {WorkflowWaitingApproval, WorkflowSucceeded, WorkflowFailed, WorkflowCancelled},
 	WorkflowWaitingApproval: {WorkflowRunning, WorkflowCancelled},
 	WorkflowFailed:          {WorkflowRunning /*仅 RestartExecution(T9.2 显式回滚)*/},
+	WorkflowSucceeded:       {WorkflowRunning /*仅 RestartExecution(T19.3 显式回滚)*/},
+	WorkflowCancelled:       {WorkflowRunning /*仅 RestartExecution(T19.3 显式回滚)*/},
 }
 
 // CanTransitionNode 报告节点边 from→to 是否在矩阵内。矩阵外的迁移是调用方 bug。

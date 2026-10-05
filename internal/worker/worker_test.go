@@ -782,3 +782,92 @@ func TestStaleRoundTaskAcksWithoutMaterializing(t *testing.T) {
 		t.Fatalf("executor calls = %d, want 1(新轮任务正常执行)", got)
 	}
 }
+
+// TestNonExecutingTaskAcksWithoutMaterializing:T19.3 worker 活态闸
+// (D-2026-10-05-t193 决策 4)——取消/收口/挂起后的滞留 asynq 副本认领时
+// 节点非 EXECUTING ⇒ 幂等 ack、零物化零执行。与轮次校验正交:取消不动
+// attempts_base(轮次校验放行,拦不住),白烧面由活态闸单点收编。表驱动
+// 覆盖全部非 EXECUTING 面(对抗审计 C5:闸窄化为 CANCELLED-only 须红——
+// 决策 4「已收口/挂起滞留副本提前放弃」整面回归须可测)。种态一律走
+// 既有 CAS helper。
+func TestNonExecutingTaskAcksWithoutMaterializing(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		seed func(t *testing.T, d *sql.DB, id uint64, ver uint32)
+	}{
+		{"cancelled", func(t *testing.T, d *sql.DB, id uint64, ver uint32) {
+			if _, err := engine.CancelNode(context.Background(), d, id, ver); err != nil {
+				t.Fatalf("种 CANCELLED: %v", err)
+			}
+		}},
+		{"succeeded", func(t *testing.T, d *sql.DB, id uint64, ver uint32) {
+			if _, err := engine.SucceedNode(context.Background(), d, id, ver, "seed-dispatcher",
+				json.RawMessage(`{"text":"done"}`)); err != nil {
+				t.Fatalf("种 SUCCEEDED: %v", err)
+			}
+		}},
+		{"skipped", func(t *testing.T, d *sql.DB, id uint64, ver uint32) {
+			// SKIPPED 仅自 PENDING(剪枝边):种子重置回初生态再走 SkipNode
+			//(种子面操作,非生产迁移)。
+			if _, err := d.Exec(`UPDATE node_execution SET status='PENDING' WHERE id=?`, id); err != nil {
+				t.Fatalf("seed PENDING: %v", err)
+			}
+			if _, err := engine.SkipNode(context.Background(), d, id, ver); err != nil {
+				t.Fatalf("种 SKIPPED: %v", err)
+			}
+		}},
+		{"waiting_approval", func(t *testing.T, d *sql.DB, id uint64, ver uint32) {
+			if _, err := engine.SuspendNode(context.Background(), d, id, ver, "seed-dispatcher",
+				time.Now().Add(72*time.Hour)); err != nil {
+				t.Fatalf("种 WAITING_APPROVAL: %v", err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			d := sqltest.MustOpenAt(t, workerSchema)
+			execID, nodeExecID := seedNodeExec(t, d)
+
+			// 现场:节点自 EXECUTING 迁入非 EXECUTING 态(attempts=1、
+			// attempts_base=0 ⇒ 本轮任务轮次合法,轮次校验放行——
+			// 唯一能拦的面就是活态闸)。
+			if _, err := d.Exec(`UPDATE node_execution SET input_snapshot='{"q":"x"}' WHERE id=?`, nodeExecID); err != nil {
+				t.Fatalf("seed snapshot: %v", err)
+			}
+			var ver uint32
+			var st engine.NodeState
+			if err := d.QueryRow(`SELECT version, status FROM node_execution WHERE id=?`, nodeExecID).
+				Scan(&ver, &st); err != nil {
+				t.Fatalf("read node: %v", err)
+			}
+			if st != engine.NodeExecuting {
+				t.Fatalf("种子:节点应 EXECUTING,got %s", st)
+			}
+			tc.seed(t, d, nodeExecID, ver)
+
+			ex := &fakeExec{fn: func(req Request, callNo int) (Outcome, error) {
+				return Outcome{Status: engine.AttemptSucceed}, nil
+			}}
+			queue := startWorker(t, d, ex, DefaultConfig())
+			client := asynq.NewClient(redistest.MustOpt(t))
+			t.Cleanup(func() { _ = client.Close() })
+
+			// 滞留任务(本轮轮次合法):ack、零物化、零执行。
+			drained := fmt.Sprintf("att:%d:1", nodeExecID)
+			if _, err := enqueue(t, client, queue, drained,
+				nodeTaskPayload{ExecutionID: execID, NodeExecutionID: nodeExecID, AttemptNo: 1}); err != nil {
+				t.Fatalf("enqueue drained: %v", err)
+			}
+			insp := asynq.NewInspector(redistest.MustOpt(t))
+			t.Cleanup(func() { _ = insp.Close() })
+			waitTaskGone(t, insp, queue, drained)
+			if got := ex.count(); got != 0 {
+				t.Fatalf("executor calls = %d, want 0(非 EXECUTING 节点不得执行)", got)
+			}
+			var rows int
+			if err := d.QueryRow(`SELECT COUNT(*) FROM node_attempt WHERE node_execution_id=? AND attempt_no=1`,
+				nodeExecID).Scan(&rows); err != nil || rows != 0 {
+				t.Fatalf("attempt 行 = %d(%v), want 0(零物化)", rows, err)
+			}
+		})
+	}
+}

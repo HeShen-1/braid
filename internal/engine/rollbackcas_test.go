@@ -1,6 +1,7 @@
 package engine
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -240,34 +241,69 @@ func TestRerunNodeRejectsInvalidSnapshot(t *testing.T) {
 }
 
 func TestRestartExecution(t *testing.T) {
+	// T19.3(D-2026-10-05-t193):白名单 {FAILED} → 三终态——SUCCEEDED 旧
+	// outputs 与 CANCELLED 均可复活(清列断言对 SUCCEEDED 有牙:重跑可能产出
+	// 不同结果,旧产出不得跨轮存活)。
+	for _, tc := range []struct {
+		name string
+		from WorkflowState
+	}{
+		{"failed", WorkflowFailed},
+		{"succeeded", WorkflowSucceeded},
+		{"cancelled", WorkflowCancelled},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture(t)
+			// PENDING→FAILED/CANCELLED 是既有合法边(reconciler 判死/取消
+			// 形态);SUCCEEDED 只能自 RUNNING 收口,先 Start 起跑。终态列组
+			// 由 FinishExecution 写就,Restart 的清列断言有牙。
+			var out json.RawMessage
+			if tc.from == WorkflowSucceeded {
+				if err := StartExecution(f.ctx(), f.db, f.execID); err != nil {
+					t.Fatalf("start: %v", err)
+				}
+				out = json.RawMessage(`{"k":"v"}`)
+			}
+			if err := FinishExecution(f.ctx(), f.db, f.execID, tc.from, out, "reconciler_timeout", "boom"); err != nil {
+				t.Fatalf("finish: %v", err)
+			}
+			before := scanWf(t, f)
+			if !before.finishedAt.Valid {
+				t.Fatalf("种子行应携带终态列组")
+			}
+			if tc.from == WorkflowSucceeded && !before.outputs.Valid {
+				t.Fatalf("SUCCEEDED 种子行应携带 outputs")
+			}
+			if err := RestartExecution(f.ctx(), f.db, f.execID); err != nil {
+				t.Fatalf("restart from %s: %v", tc.from, err)
+			}
+			r := scanWf(t, f)
+			if r.status != WorkflowRunning {
+				t.Fatalf("status = %s, want RUNNING", r.status)
+			}
+			if r.outputs.Valid || r.errorCode.Valid || r.finishedAt.Valid {
+				t.Errorf("终态列组未清空(outputs/error_code/finished_at)")
+			}
+			if !r.startedAt.Valid {
+				t.Fatalf("started_at 应被 IFNULL 补齐(未起跑执行的复活=首次起跑,无 NULL 洞)")
+			}
+		})
+	}
+	// 幂等面:非白名单来源一律 Conflict(含并发双回滚败者);缺行 NotFound。
 	f := newFixture(t)
-	// PENDING→FAILED 是既有合法边(reconciler 判死形态);终态列组由
-	// FinishExecution 写就,Restart 的清列断言有牙。
 	if err := FinishExecution(f.ctx(), f.db, f.execID, WorkflowFailed, nil, "reconciler_timeout", "boom"); err != nil {
 		t.Fatalf("finish: %v", err)
-	}
-	before := scanWf(t, f)
-	if !before.finishedAt.Valid || !before.errorCode.Valid {
-		t.Fatalf("种子行应携带终态列组")
 	}
 	if err := RestartExecution(f.ctx(), f.db, f.execID); err != nil {
 		t.Fatalf("restart: %v", err)
 	}
-	r := scanWf(t, f)
-	if r.status != WorkflowRunning {
-		t.Fatalf("status = %s, want RUNNING", r.status)
-	}
-	if r.outputs.Valid || r.errorCode.Valid || r.finishedAt.Valid {
-		t.Errorf("终态列组未清空(outputs/error_code/finished_at)")
-	}
-	if !r.startedAt.Valid {
-		t.Fatalf("started_at 应被 IFNULL 补齐(未起跑执行的复活=首次起跑,无 NULL 洞)")
-	}
-	// 幂等面:非 FAILED 来源一律 Conflict(含并发双回滚败者);缺行 NotFound。
 	if err := RestartExecution(f.ctx(), f.db, f.execID); !errors.Is(err, ErrConflict) {
 		t.Fatalf("重复 restart err = %v, want ErrConflict", err)
 	}
-	if err := RestartExecution(f.ctx(), f.db, newID()); !errors.Is(err, ErrNotFound) {
+	if err := TransitionWorkflow(f.ctx(), f.db, newID(), WorkflowPending, WorkflowRunning); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("缺行 err = %v, want ErrNotFound", err)
+	}
+	if err := RestartExecution(f.ctx(), f.db, newID()); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("缺行 restart err = %v, want ErrNotFound", err)
 	}
 }

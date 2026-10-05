@@ -133,6 +133,25 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     }
   }, [])
 
+  // T19.3 取消动作:与 runAction 同形,flash 回显楔停行数。
+  const runCancel = useCallback(async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const ack = await api.cancelExecution(execId)
+      setFlash(`已取消(楔停 ${ack.cancelled_count} 行)`)
+      await load()
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 401) {
+        onAuthExpired()
+        return
+      }
+      faceError(err)
+    } finally {
+      setBusy(false)
+    }
+  }, [execId, load, onAuthExpired, faceError])
+
   const runAction = useCallback(
     async (fn: () => Promise<{ target_node_id: string; reset_count: number; rerun_target: boolean }>) => {
       setBusy(true)
@@ -162,7 +181,11 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     )
   }
 
-  const canAct = detail.status === 'FAILED' && !busy
+  // T19.3:回滚面放开到三终态(FAILED/SUCCEEDED/CANCELLED);取消面 = 非终态
+  // 活执行(RUNNING/WA)。SUCCEEDED 续跑无自动定位点(服务端 no_resume_target
+  // 分面报错),显式选节点走回滚。
+  const canAct = ['FAILED', 'SUCCEEDED', 'CANCELLED'].includes(detail.status) && !busy
+  const canCancel = ['RUNNING', 'WAITING_APPROVAL'].includes(detail.status) && !busy
   const statusRows = detail.nodes ?? []
   const graph = doc !== null ? toCanvas(doc) : null
 
@@ -201,7 +224,16 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
           disabled={!canAct}
           onClick={() => void runAction(() => api.resumeExecution(execId))}
         >
-          续跑(自动定位失败节点)
+          续跑(自动定位失败/取消点)
+        </button>
+        <button
+          type="button"
+          className="f-add"
+          data-testid="cancel-submit"
+          disabled={!canCancel}
+          onClick={() => void runCancel()}
+        >
+          取消执行
         </button>
         <button type="button" className="f-add" data-testid="detail-refresh" onClick={() => void load()}>
           刷新

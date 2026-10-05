@@ -125,6 +125,8 @@ const (
 	EventExecutionTriggered         = "execution.triggered"
 	EventExecutionRolledBack        = "execution.rolled_back"
 	EventRollbackDenied             = "rollback.denied"
+	EventExecutionCancelled         = "execution.cancelled"
+	EventCancelDenied               = "cancel.denied"
 	EventToolCallDenied             = "tool.call.denied"
 	// node.taint_propagated(T18.3,D-2026-10-05-t183-taint-tracking):污点传播
 	// 证据行——带污点数据的节点 attempt 收口/branch 路由时同事务发射,paths 是
@@ -182,6 +184,8 @@ var knownEvents = map[string]bool{
 	EventExecutionTriggered:         true,
 	EventExecutionRolledBack:        true,
 	EventRollbackDenied:             true,
+	EventExecutionCancelled:         true,
+	EventCancelDenied:               true,
 	EventToolCallDenied:             true,
 	EventNodeTaintPropagated:        true,
 }

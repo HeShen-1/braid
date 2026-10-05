@@ -440,6 +440,14 @@ func (f ldapFakeTrigger) RollbackTo(_ context.Context, p scheduler.RollbackParam
 	return &scheduler.RollbackResult{TargetNodeID: p.TargetNodeID}, nil
 }
 
+// CancelExecution(T19.3):fake 面与 RollbackTo 同构。
+func (f ldapFakeTrigger) CancelExecution(context.Context, scheduler.CancelParams) (*scheduler.CancelResult, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return &scheduler.CancelResult{CancelledCount: 1}, nil
+}
+
 // ldapDoJSON:api 包 doJSON 同形复制(httptest 往返)。
 func ldapDoJSON(t *testing.T, r *gin.Engine, method, path, token string, body []byte) (int, map[string]any) {
 	t.Helper()
