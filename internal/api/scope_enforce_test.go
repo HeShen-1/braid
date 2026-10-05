@@ -41,6 +41,10 @@ var scpPolicies = []scpPolicy{
 	{http.MethodGet, "/api/v1/executions/:id", "/api/v1/executions/1", auth.ScopeExecutionsRead},
 	{http.MethodPost, "/api/v1/executions/:id/rollback", "/api/v1/executions/1/rollback", auth.ScopeExecutionsWrite},
 	{http.MethodPost, "/api/v1/executions/:id/resume", "/api/v1/executions/1/resume", auth.ScopeExecutionsWrite},
+	// T18.4 投影只读三端点(按路径/按轮列表/单轮详情)——executions:read。
+	{http.MethodGet, "/api/v1/executions/:id/nodes/:node_id", "/api/v1/executions/1/nodes/n1", auth.ScopeExecutionsRead},
+	{http.MethodGet, "/api/v1/executions/:id/nodes/:node_id/attempts", "/api/v1/executions/1/nodes/n1/attempts", auth.ScopeExecutionsRead},
+	{http.MethodGet, "/api/v1/executions/:id/nodes/:node_id/attempts/:round", "/api/v1/executions/1/nodes/n1/attempts/1", auth.ScopeExecutionsRead},
 	{http.MethodGet, "/api/v1/approvals/pending", "/api/v1/approvals/pending", auth.ScopeExecutionsRead},
 	{http.MethodGet, "/api/v1/executions/:id/approvals/:node_id", "/api/v1/executions/1/approvals/n1", auth.ScopeExecutionsRead},
 	{http.MethodPost, "/api/v1/executions/:id/approvals/:node_id/decision", "/api/v1/executions/1/approvals/n1/decision", auth.ScopeApprovalsWrite},

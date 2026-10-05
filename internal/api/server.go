@@ -236,6 +236,13 @@ func (s *Server) Router() *gin.Engine {
 	// (拒绝落审计 rollback.denied,中间件做不到)——形态镜像审批决定面。
 	v1.POST("/executions/:id/rollback", RequireScope(auth.ScopeExecutionsWrite), s.rollbackExecution)
 	v1.POST("/executions/:id/resume", RequireScope(auth.ScopeExecutionsWrite), s.resumeExecution)
+	// 投影只读端点(T18.4,D-2026-10-05-t184):按路径/按轮读 node_execution
+	// 投影列与 node_attempt 台账。纯读面零角色闸零审计(auditquery 先例),
+	// 租户闸 = handler 内 GetExecution 前置锚(见 projection.go);子树
+	// static 段 nodes/ 与 approvals/ 平行,:node_id 参数名与审批面同名。
+	v1.GET("/executions/:id/nodes/:node_id", RequireScope(auth.ScopeExecutionsRead), s.getNodeProjection)
+	v1.GET("/executions/:id/nodes/:node_id/attempts", RequireScope(auth.ScopeExecutionsRead), s.listNodeAttempts)
+	v1.GET("/executions/:id/nodes/:node_id/attempts/:round", RequireScope(auth.ScopeExecutionsRead), s.getNodeAttempt)
 
 	// 待办列表(T4.4):任意有效 token,主体过滤即读边界(名单真相源 =
 	// 快照 approvers,谓词面见 approvaltodo.go)。审批态读面同判
