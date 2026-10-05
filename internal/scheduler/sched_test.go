@@ -729,8 +729,10 @@ func TestCompleteIdempotentReplay(t *testing.T) {
 		t.Fatalf("node b = %+v(重放引发重复派发)", b2)
 	}
 	// 收口权已旁落 ⇒ 幂等收敛零新增审计行(review 修:负向控制)。
+	// T18.3:a 直引 inputs.q,收口段含 taint 行(chainDSL 全链染)。
 	assertAuditSequence(t, d, execID, []auditEvent{
 		wantEvent(audit.EventNodeStateChanged, "a", 0),
+		wantEvent(audit.EventNodeTaintPropagated, "a", attemptA),
 		wantEvent(audit.EventNodeStateChanged, "a", attemptA),
 		wantEvent(audit.EventNodeStateChanged, "b", 0),
 	})

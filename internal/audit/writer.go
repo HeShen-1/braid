@@ -26,7 +26,8 @@
 // sanitize.go)。usage/cost 冗余列已随 T3.1 llm.call.completed 启用
 // (Event.Usage,与 node_attempt 双录;其余事件类型仍不携带)。
 // T6.1 起本包双写入路径:Append(本文件,同步直写,低频/回读事件)与
-// Enqueue(stage.go,同事务暂存 audit_pending,高频四类)——分阶段口径
+// Enqueue(stage.go,同事务暂存 audit_pending,高频五类,T18.3 起含
+// node.taint_propagated)——分阶段口径
 // 见 stage.go 头注释;搬运半边 = flush.go(reaper flush 循环消费)。
 package audit
 
@@ -42,6 +43,7 @@ import (
 	"go.opentelemetry.io/otel/trace"
 
 	"braid/internal/engine"
+	"braid/internal/engine/dsl"
 )
 
 // ErrInvalidEvent:事件参数非法,调用方 bug(校验在触 DB 之前完成,风格对齐
@@ -124,6 +126,11 @@ const (
 	EventExecutionRolledBack        = "execution.rolled_back"
 	EventRollbackDenied             = "rollback.denied"
 	EventToolCallDenied             = "tool.call.denied"
+	// node.taint_propagated(T18.3,D-2026-10-05-t183-taint-tracking):污点传播
+	// 证据行——带污点数据的节点 attempt 收口/branch 路由时同事务发射,paths 是
+	// 传递源路径集(⊆ DSL 声明 inputs 词表,与 node_id 同信任类的作者标识符,
+	// 非自由文本)。仅路径集非空发射(无污点工作流审计面零变化)。
+	EventNodeTaintPropagated = "node.taint_propagated"
 )
 
 // actor 词表逐字 = DDL actor_type 列注释(user/system/worker/tool/llm/approval)。
@@ -176,6 +183,7 @@ var knownEvents = map[string]bool{
 	EventExecutionRolledBack:        true,
 	EventRollbackDenied:             true,
 	EventToolCallDenied:             true,
+	EventNodeTaintPropagated:        true,
 }
 
 var knownActors = map[string]bool{
@@ -353,6 +361,13 @@ func validate(evt Event) error {
 		return fmt.Errorf("%w: usage columns on %q (llm.call.completed/discarded only)",
 			ErrInvalidEvent, evt.EventType)
 	}
+	// taint 形状闸(T18.3):node.taint_propagated 是词表首个路径数组 payload,
+	// PII 红线不能只靠发射面自觉——机器可检半边在此(fail-closed)。
+	if evt.EventType == EventNodeTaintPropagated {
+		if err := validateTaintPayload(evt.Payload); err != nil {
+			return err
+		}
+	}
 	// usage 组域约束镜像(engine 单点定义,双录两半边同规)。
 	if err := evt.Usage.Validate(); err != nil {
 		return fmt.Errorf("%w: %s", ErrInvalidEvent, err)
@@ -365,6 +380,36 @@ func validate(evt Event) error {
 	// 走 json.Marshal(自动 U+FFFD 替换),此校验是未来直传字节调用方的防线。
 	if !utf8.Valid(evt.Payload) {
 		return fmt.Errorf("%w: payload not valid UTF-8", ErrInvalidEvent)
+	}
+	return nil
+}
+
+// validateTaintPayload 是 node.taint_propagated 的 PII 红线形状闸(T18.3,
+// D-t183):paths 全员过 dsl.ValidTaintPath(标识符字符集正则单源钉死,
+// 自由字节零入口)、sink ∈ 闭集、非空、条数 ≤ dsl.MaxTaintPaths。形态闸
+// 非内容过滤——与 D-t183 决策 1「不做运行时值过滤」不冲突;防的是未来
+// 发射面回归(误传求值后的值/绕过静态分析拼 payload)静默把自由字节写进
+// 审计行(「结构性兜底优于自觉」判据,D-t176 同源表述)。
+func validateTaintPayload(raw json.RawMessage) error {
+	var p NodeTaintPropagatedPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("%w: taint payload decode: %v", ErrInvalidEvent, err)
+	}
+	if p.NodeID == "" {
+		return fmt.Errorf("%w: taint payload empty node_id", ErrInvalidEvent)
+	}
+	if p.Sink != SinkLLM && p.Sink != SinkTool && p.Sink != SinkNone {
+		return fmt.Errorf("%w: taint payload sink %q not in vocabulary", ErrInvalidEvent, p.Sink)
+	}
+	if len(p.Paths) == 0 || len(p.Paths) > dsl.MaxTaintPaths {
+		return fmt.Errorf("%w: taint payload paths len %d (want 1..%d)",
+			ErrInvalidEvent, len(p.Paths), dsl.MaxTaintPaths)
+	}
+	for _, path := range p.Paths {
+		if !dsl.ValidTaintPath(path) {
+			return fmt.Errorf("%w: taint path %q outside pinned identifier charset",
+				ErrInvalidEvent, path)
+		}
 	}
 	return nil
 }

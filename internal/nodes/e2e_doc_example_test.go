@@ -386,22 +386,30 @@ func TestE2EDocExampleApproveProducesReport(t *testing.T) {
 	}
 
 	// 审计链全序(execution 串联;排除跨进程竞态的 triggered 行)。
+	// T18.3:示例输入全链染——每个外发节点 attempt 收口段各一 taint 行
+	// (tool/llm.call.completed 之后);gate(branch)锚 branch.evaluated 后;
+	// human_review(approval)结构性零数据引用,恒零 taint 行。
 	assertDocAuditSequence(t, env.d, execID, []docAuditRow{
 		{audit.EventNodeStateChanged, "read_doc"},
 		{audit.EventToolCallCompleted, "read_doc"},
+		{audit.EventNodeTaintPropagated, "read_doc"},
 		{audit.EventNodeStateChanged, "read_doc"},
 		{audit.EventNodeStateChanged, "parse"},
 		{audit.EventLLMCallCompleted, "parse"},
+		{audit.EventNodeTaintPropagated, "parse"},
 		{audit.EventNodeStateChanged, "parse"},
 		{audit.EventNodeStateChanged, "compliance"},
 		{audit.EventLLMCallCompleted, "compliance"},
+		{audit.EventNodeTaintPropagated, "compliance"},
 		{audit.EventNodeStateChanged, "compliance"},
 		{audit.EventNodeStateChanged, "gate"},            // branch:PENDING→EXECUTING
 		{audit.EventNodeStateChanged, "gate"},            // EXECUTING→SUCCEEDED(内联)
 		{audit.EventBranchEvaluated, "gate"},             // next=summary
+		{audit.EventNodeTaintPropagated, "gate"},         // 本地消费(sink=none)
 		{audit.EventNodeStateChanged, "report_revision"}, // 独立尾剪枝
 		{audit.EventNodeStateChanged, "summary"},
 		{audit.EventLLMCallCompleted, "summary"},
+		{audit.EventNodeTaintPropagated, "summary"},
 		{audit.EventNodeStateChanged, "summary"},
 		{audit.EventNodeStateChanged, "human_review"}, // →EXECUTING
 		{audit.EventNodeStateChanged, "human_review"}, // →WAITING_APPROVAL
@@ -411,6 +419,7 @@ func TestE2EDocExampleApproveProducesReport(t *testing.T) {
 		{audit.EventNodeStateChanged, "human_review"}, // →SUCCEEDED
 		{audit.EventNodeStateChanged, "report"},
 		{audit.EventLLMCallCompleted, "report"},
+		{audit.EventNodeTaintPropagated, "report"},
 		{audit.EventNodeStateChanged, "report"},
 	})
 	assertDocTriggeredRow(t, env.d, execID)
@@ -456,24 +465,30 @@ func TestE2EDocExampleComplianceFailRoutesToRevision(t *testing.T) {
 		t.Fatalf("outputs.report = %v, want 显式 null(主线被剪枝)", outputs["report"])
 	}
 
+	// T18.3:taint 行同款口径(见上);本臂 revision 尾外发(gate 默认路由)。
 	assertDocAuditSequence(t, env.d, execID, []docAuditRow{
 		{audit.EventNodeStateChanged, "read_doc"},
 		{audit.EventToolCallCompleted, "read_doc"},
+		{audit.EventNodeTaintPropagated, "read_doc"},
 		{audit.EventNodeStateChanged, "read_doc"},
 		{audit.EventNodeStateChanged, "parse"},
 		{audit.EventLLMCallCompleted, "parse"},
+		{audit.EventNodeTaintPropagated, "parse"},
 		{audit.EventNodeStateChanged, "parse"},
 		{audit.EventNodeStateChanged, "compliance"},
 		{audit.EventLLMCallCompleted, "compliance"},
+		{audit.EventNodeTaintPropagated, "compliance"},
 		{audit.EventNodeStateChanged, "compliance"},
 		{audit.EventNodeStateChanged, "gate"},
 		{audit.EventNodeStateChanged, "gate"},
 		{audit.EventBranchEvaluated, "gate"},          // next=report_revision(default)
+		{audit.EventNodeTaintPropagated, "gate"},      // 本地消费(sink=none)
 		{audit.EventNodeStateChanged, "summary"},      // 级联剪枝闭包
 		{audit.EventNodeStateChanged, "human_review"}, //
 		{audit.EventNodeStateChanged, "report"},       //
 		{audit.EventNodeStateChanged, "report_revision"},
 		{audit.EventLLMCallCompleted, "report_revision"},
+		{audit.EventNodeTaintPropagated, "report_revision"},
 		{audit.EventNodeStateChanged, "report_revision"},
 	})
 	assertDocTriggeredRow(t, env.d, execID)
@@ -521,22 +536,28 @@ func TestE2EDocExampleApprovalRejectFailsFast(t *testing.T) {
 		t.Fatalf("outputs = %v, want null(fail-fast 无产物)", out["outputs"])
 	}
 
+	// T18.3:taint 行同款口径(见首测);审批驳回臂(human_review 恒零 taint 行)。
 	assertDocAuditSequence(t, env.d, execID, []docAuditRow{
 		{audit.EventNodeStateChanged, "read_doc"},
 		{audit.EventToolCallCompleted, "read_doc"},
+		{audit.EventNodeTaintPropagated, "read_doc"},
 		{audit.EventNodeStateChanged, "read_doc"},
 		{audit.EventNodeStateChanged, "parse"},
 		{audit.EventLLMCallCompleted, "parse"},
+		{audit.EventNodeTaintPropagated, "parse"},
 		{audit.EventNodeStateChanged, "parse"},
 		{audit.EventNodeStateChanged, "compliance"},
 		{audit.EventLLMCallCompleted, "compliance"},
+		{audit.EventNodeTaintPropagated, "compliance"},
 		{audit.EventNodeStateChanged, "compliance"},
 		{audit.EventNodeStateChanged, "gate"},
 		{audit.EventNodeStateChanged, "gate"},
 		{audit.EventBranchEvaluated, "gate"},
+		{audit.EventNodeTaintPropagated, "gate"},
 		{audit.EventNodeStateChanged, "report_revision"},
 		{audit.EventNodeStateChanged, "summary"},
 		{audit.EventLLMCallCompleted, "summary"},
+		{audit.EventNodeTaintPropagated, "summary"},
 		{audit.EventNodeStateChanged, "summary"},
 		{audit.EventNodeStateChanged, "human_review"},
 		{audit.EventNodeStateChanged, "human_review"},

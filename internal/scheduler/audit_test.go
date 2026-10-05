@@ -99,10 +99,15 @@ func TestAuditTrailChainLifecycle(t *testing.T) {
 
 	assertAuditSequence(t, d, execID, []auditEvent{
 		wantEvent(audit.EventNodeStateChanged, "a", 0), // Start 派发 claim
+		// T18.3:chainDSL 三节点全染(inputs.q 直染 a,闭包染 b/c),每 attempt
+		// 收口段各一 taint 行(3c 段先于节点收口迁移行)。
+		wantEvent(audit.EventNodeTaintPropagated, "a", attA),
 		wantEvent(audit.EventNodeStateChanged, "a", attA),
 		wantEvent(audit.EventNodeStateChanged, "b", 0), // 同事务推进派发
+		wantEvent(audit.EventNodeTaintPropagated, "b", attB),
 		wantEvent(audit.EventNodeStateChanged, "b", attB),
 		wantEvent(audit.EventNodeStateChanged, "c", 0),
+		wantEvent(audit.EventNodeTaintPropagated, "c", attC),
 		wantEvent(audit.EventNodeStateChanged, "c", attC),
 	})
 }

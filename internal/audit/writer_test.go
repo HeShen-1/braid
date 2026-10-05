@@ -99,11 +99,16 @@ func TestValidateRejectsInvalidEvents(t *testing.T) {
 	}
 	// 合法全集快速回归(全部事件词表 × 两种 actor)。
 	// 遍历 knownEvents 而非硬编码清单:新词登记后此循环自动覆盖,防词表回归静默逃逸。
+	// T18.3 起 node.taint_propagated 有 payload 形状闸,该词在此用合法形状
+	// (其余词的通用 {} 形状不受闸影响)。
 	for et := range knownEvents {
 		for _, at := range []string{ActorWorker, ActorSystem, ActorUser, ActorTool, ActorLLM, ActorApproval} {
 			evt := valid
 			evt.EventType = et
 			evt.ActorType = at
+			if et == EventNodeTaintPropagated {
+				evt.Payload = json.RawMessage(`{"node_id":"n1","sink":"none","paths":["inputs.q"]}`)
+			}
 			if err := validate(evt); err != nil {
 				t.Fatalf("validate(%s/%s) = %v, want nil", et, at, err)
 			}
@@ -636,4 +641,52 @@ SELECT model, prompt_tokens, completion_tokens, total_tokens,
 	if got[1] != *unbilled {
 		t.Errorf("unbilled row = %+v, want %+v(cost NULL 语义)", got[1], *unbilled)
 	}
+}
+
+// TestValidateTaintPayloadShape(T18.3,D-t183):node.taint_propagated 的 PII
+// 红线形状闸——paths 必须全匹配 dsl 钉死的标识符形态、sink ∈ 闭集、非空、
+// 条数有界。结构保证单点在 ComputeTaintSets,本闸是 audit 边界的机器可检
+// 半边(「结构性兜底优于自觉」,防未来发射面回归静默写自由字节)。
+func TestValidateTaintPayloadShape(t *testing.T) {
+	valid := Event{
+		ID: 1, EventType: EventNodeTaintPropagated, ExecutionID: 2,
+		NodeExecID: 3, NodeID: "n1", AttemptID: 4,
+		ActorType: ActorWorker, ActorID: "w1",
+		Payload: json.RawMessage(`{"node_id":"n1","sink":"llm","paths":["inputs.bio","inputs.q2"]}`),
+	}
+	if err := validate(valid); err != nil {
+		t.Fatalf("validate(valid taint) = %v, want nil", err)
+	}
+	cases := []struct {
+		name    string
+		payload string
+	}{
+		{"path free-text bytes", `{"node_id":"n1","sink":"llm","paths":["inputs.evil<SoS>"]}`},
+		{"path caller-ish dotted key", `{"node_id":"n1","sink":"llm","paths":["inputs.a.b"]}`},
+		{"path wrong namespace", `{"node_id":"n1","sink":"llm","paths":["workflow.email"]}`},
+		{"path empty segment", `{"node_id":"n1","sink":"llm","paths":["inputs."]"]}`},
+		{"empty paths", `{"node_id":"n1","sink":"llm","paths":[]}`},
+		{"sink unknown", `{"node_id":"n1","sink":"outputs","paths":["inputs.q"]}`},
+		{"empty node_id", `{"node_id":"","sink":"none","paths":["inputs.q"]}`},
+		{"path count over bound", mkTaintPayloadOverflow()},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			evt := valid
+			evt.Payload = json.RawMessage(tc.payload)
+			if err := validate(evt); !errors.Is(err, ErrInvalidEvent) {
+				t.Fatalf("validate(%s) = %v, want ErrInvalidEvent", tc.name, err)
+			}
+		})
+	}
+}
+
+// mkTaintPayloadOverflow 构造 65 条合法路径(越 inputs maxItems=64 上界)。
+func mkTaintPayloadOverflow() string {
+	paths := make([]string, 65)
+	for i := range paths {
+		paths[i] = fmt.Sprintf("inputs.p%02d", i)
+	}
+	b, _ := json.Marshal(map[string]any{"node_id": "n1", "sink": "llm", "paths": paths})
+	return string(b)
 }
