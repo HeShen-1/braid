@@ -73,7 +73,7 @@
 - 双重校验:**定义时白名单 × 执行时 RBAC**,均强制。
 - `ToolRunner` 抽象:P0 本地进程实现,P1 换 Docker 容器沙箱不动核心;沙箱运行时基线(非 runc 默认即安全)在 P1 安全评审时定义。
 - 凭证:per-call 短时 scoped token;平台主凭证(DB/LLM key)永不进沙箱环境、永不落审计。
-- SSRF 三层修(P0):DSL 层 host 静态白名单(LLM 只填 path/query);运行时 `net.Dialer.Control` 在拨号瞬间复核实际 IP(拒私网/环回/链路本地/CGNAT/metadata 段,防 DNS rebinding TOCTOU)+ `CheckRedirect` 每跳重校验并剥 Authorization/Cookie + 仅 https;网络层 egress 默认拒绝代理 P1。
+- SSRF 三层修(P0):DSL 层 host 静态白名单(LLM 只填 path/query);运行时 `net.Dialer.Control` 在拨号瞬间复核实际 IP(拒私网/环回/链路本地/CGNAT/metadata 段 + 扩禁五段 NAT64 64:ff9b::/96、198.18.0.0/15、192.0.0.0/24、0.0.0.0/8、240.0.0.0/4,D-2026-10-05-ssrf-five-ranges;防 DNS rebinding TOCTOU)+ `CheckRedirect` 每跳重校验并剥 Authorization/Cookie + 仅 https;网络层 egress 默认拒绝代理 P1。
 - 插件:P0 内部 registry;P1 工具包签名 + MCP 双向。
 - 内置工具 P0:http + file_read(路径白名单);db_query 移 P1(只读账号、参数化、凭证作用域)。
 
