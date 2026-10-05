@@ -35,6 +35,10 @@ var wantCause = map[string][]string{
 	"parallel_body_branch.json":      {"at '/nodes/0/parallel/body'", "additional properties", "'cases'", "'default'"},
 	"parallel_foreach_node_ref.json": {"does not match pattern"},
 	"parallel_missing_foreach.json":  {"missing property 'foreach'"},
+	// T19.1 min_success 拒绝样例:0 撞 minimum(缺省/禁用语义钉「字段不在」
+	// 而非 0 值);字符串撞类型(逐字钉 jsonschema v6 措辞,升版须对拍)。
+	"parallel_min_success_zero.json":   {"minimum"},
+	"parallel_min_success_string.json": {"integer"},
 }
 
 // T1.1 验收:≥5 合法样例全部通过,≥5 非法样例全部被拒且原因正确。

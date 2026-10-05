@@ -417,6 +417,74 @@ func TestE2EParallelFailureSemantics(t *testing.T) {
 	})
 }
 
+// TestE2EParallelMinSuccess(T19.1,D-2026-10-05-t191):min_success 部分容忍
+// 真链路——bad 立即终败(0 成功 + 3 在飞 ≥ 3,仍可能达标 ⇒ 不早败)→
+// 门控释放 3 路收齐成功 → 部分容忍收敛:控制器 SUCCEEDED、results 失败位
+// null 保位 + failed_count=1 → post 恰一次 → 执行终态 SUCCEEDED(部分容忍
+// = 成功语义;实例 2 FAILED 行是证据,不阻塞收口)。
+func TestE2EParallelMinSuccess(t *testing.T) {
+	d := sqltest.MustOpenAt(t, nodesSchema)
+	queue := fmt.Sprintf("t_n%d", atomic.AddUint32(&queueSeq, 1))
+	arrivedOnce = sync.Once{}
+	stub := newParallelStub(t, true)
+	executor := parallelMux(t, d, queue, stub.srv.URL)
+	sched := mustE2ESched(t, d, queue)
+	defID, execID := seedParallelExec(t, d, sched, `"min_success": 3,`,
+		`{"items": ["good1", "bad", "good2", "good3"]}`)
+	t.Cleanup(func() { cleanupNodesE2E(t, d, execID, defID) })
+	startParallelRelay(t, d)
+	wcfg := worker.DefaultConfig()
+	wcfg.HeartbeatInterval = 40 * time.Millisecond
+	startE2EWorker(t, d, executor, wcfg, queue)
+
+	// bad 终败而 good 三路门控在飞:不可能达标判定不触发(0+3 ≥ 3),
+	// 执行保持 RUNNING(fail-fast 推广 = 只在不可能达标时早败)。
+	waitInstanceState(t, d, execID, "fan", 2, engine.NodeFailed)
+	if st := execStatus(t, d, execID); st != engine.WorkflowRunning {
+		t.Fatalf("execution = %s with one terminal failure but 3 gated in flight, want RUNNING (min_success 仍可达)", st)
+	}
+	if st := instanceStateNow(t, d, execID, "fan", 0); st != engine.NodeExecuting {
+		t.Fatalf("controller = %s, want EXECUTING (阈值未达不收敛)", st)
+	}
+	close(stub.release)
+	waitE2EExecSucceeded(t, d, execID)
+
+	if got := stub.postCalls.Load(); got != 1 {
+		t.Fatalf("post calls = %d, want 1 (gather exactly-once)", got)
+	}
+	var ctrlOut sql.NullString
+	if err := d.QueryRow(`SELECT output FROM node_execution
+	  WHERE execution_id=? AND node_id='fan' AND instance_no=0`, execID).Scan(&ctrlOut); err != nil {
+		t.Fatalf("read controller: %v", err)
+	}
+	dec := json.NewDecoder(strings.NewReader(ctrlOut.String))
+	dec.UseNumber()
+	var ctrl map[string]any
+	if err := dec.Decode(&ctrl); err != nil {
+		t.Fatalf("controller output: %v", err)
+	}
+	results, _ := ctrl["results"].([]any)
+	if len(results) != 4 {
+		t.Fatalf("results len = %d, want 4 (失败位保位)", len(results))
+	}
+	if results[1] != nil {
+		t.Fatalf("results[1] = %v, want null (失败位 = 输入序占位)", results[1])
+	}
+	for i, idx := range []int{0, 2, 3} {
+		want := fmt.Sprintf("ok-%s", []string{"good1", "good2", "good3"}[i])
+		m, _ := results[idx].(map[string]any)
+		if m == nil || m["verdict"] != want {
+			t.Fatalf("results[%d] = %v, want verdict %q", idx, results[idx], want)
+		}
+	}
+	if fc, ok := ctrl["failed_count"].(json.Number); !ok || fc.String() != "1" {
+		t.Fatalf("failed_count = %v, want 1", ctrl["failed_count"])
+	}
+	if st := instanceStateNow(t, d, execID, "fan", 2); st != engine.NodeFailed {
+		t.Fatalf("failed instance row = %s, want FAILED (失败证据行保留)", st)
+	}
+}
+
 func instanceStateNow(t *testing.T, d *sql.DB, execID uint64, nodeID string, instanceNo uint16) engine.NodeState {
 	t.Helper()
 	var st engine.NodeState

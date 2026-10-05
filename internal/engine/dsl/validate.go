@@ -74,7 +74,14 @@ func (v *validator) checkNodes() {
 		case n.Parallel != nil:
 			// 输出契约固定(T9.1 D-2026-09-28-t91):results = body 输出对象的数组
 			// (gather 输入序)。不可作者声明——下游引用面以此单源校验。
-			v.outs[n.ID] = map[string]string{"results": "array"}
+			// T19.1(D-2026-10-05-t191):min_success 启用时追加 failed_count
+			// (gather 恒物化,全成功 = 0)——契约与运行时形状同构,未启用引用
+			// 即此拒(llm 节点 outs 随声明配置的先例)。
+			if n.Parallel.MinSuccess > 0 {
+				v.outs[n.ID] = map[string]string{"results": "array", "failed_count": "number"}
+			} else {
+				v.outs[n.ID] = map[string]string{"results": "array"}
+			}
 		case n.Branch != nil:
 			// branch 无输出
 		default:
