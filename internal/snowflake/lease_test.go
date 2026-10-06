@@ -510,12 +510,12 @@ func (f *fakeLeaseOps) scan(context.Context) (map[uint16]bool, map[uint16]bool, 
 	return f.live, f.expired, nil
 }
 
-func (f *fakeLeaseOps) claim(_ context.Context, node uint16) error {
+func (f *fakeLeaseOps) claim(_ context.Context, node uint16) (uint64, error) {
 	f.claims = append(f.claims, node)
 	if len(f.claims) <= f.failN {
-		return ErrLeaseRace
+		return 0, ErrLeaseRace
 	}
-	return nil
+	return uint64(len(f.claims)), nil // 模拟 claimAndRead 的代际回读
 }
 
 // TestAutoRetryLoop:竞态败者 ≤3 次退避重扫后拒启;两败一成 = 成功。
@@ -524,7 +524,7 @@ func TestAutoRetryLoop(t *testing.T) {
 	t.Run("recovers within budget", func(t *testing.T) {
 		ops := &fakeLeaseOps{live: map[uint16]bool{0: true}, expired: map[uint16]bool{1: true}, failN: 2}
 		l := &Lease{}
-		node, err := l.acquireAutoLoop(ctx, ops.scan, ops.claim, func(time.Duration) {})
+		node, _, err := l.acquireAutoLoop(ctx, ops.scan, ops.claim, func(time.Duration) {})
 		if err != nil || node != 1 {
 			t.Fatalf("acquireAutoLoop = (%d,%v), want (1,nil)", node, err)
 		}
@@ -535,7 +535,7 @@ func TestAutoRetryLoop(t *testing.T) {
 	t.Run("refuses after budget", func(t *testing.T) {
 		ops := &fakeLeaseOps{live: map[uint16]bool{0: true}, expired: map[uint16]bool{1: true}, failN: 99}
 		l := &Lease{}
-		_, err := l.acquireAutoLoop(ctx, ops.scan, ops.claim, func(time.Duration) {})
+		_, _, err := l.acquireAutoLoop(ctx, ops.scan, ops.claim, func(time.Duration) {})
 		if !errors.Is(err, ErrPoolContention) {
 			t.Fatalf("err = %v, want ErrPoolContention", err)
 		}
@@ -550,7 +550,7 @@ func TestAutoRetryLoop(t *testing.T) {
 		}
 		ops := &fakeLeaseOps{live: full}
 		l := &Lease{}
-		if _, err := l.acquireAutoLoop(ctx, ops.scan, ops.claim, func(time.Duration) {}); !errors.Is(err, ErrPoolExhausted) {
+		if _, _, err := l.acquireAutoLoop(ctx, ops.scan, ops.claim, func(time.Duration) {}); !errors.Is(err, ErrPoolExhausted) {
 			t.Fatalf("err = %v, want ErrPoolExhausted", err)
 		}
 		if len(ops.claims) != 0 {

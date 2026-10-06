@@ -80,7 +80,7 @@ func TestLatestMigrationVersionMatchesShippedFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LatestMigrationVersion(): %v", err)
 	}
-	if want := uint(14); got != want {
+	if want := uint(15); got != want {
 		t.Fatalf("LatestMigrationVersion() = %d, want %d (bump this anchor when adding migrations)", got, want)
 	}
 }
