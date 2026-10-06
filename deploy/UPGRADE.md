@@ -287,10 +287,12 @@ DELETE FROM braid.snowflake_node_lease
 WHERE node_id = <N> AND holder_id = '<kind>:<hostname>';
 ```
 
-**边界如实登记**(D-t151 决策 8-①):全 DB 端时钟只排除时钟漂移路径;
-MySQL 异步 failover 尾吞授予/续期 + 进程冻结的 zombie 双持窗存在(症状 =
-业务表 PK 1062 响亮写入中止,不损已提交数据),半同步收紧、fencing
-token 登记后续,不随 T15.2 实施。**同宿主同类双进程**(裸机手工起两个
+**边界如实登记**(D-t151 决策 8-①;**T20.1 起已收口其 DB 提交面**,
+D-2026-10-06-t201):全 DB 端时钟只排除时钟漂移路径;MySQL 异步 failover
+尾吞授予/续期 + 进程冻结的 zombie 双持窗中,失冠进程的一切编排层写入由
+租约 fence(行上 holder+epoch 等值加冕,0015 列)结构性回滚——残留窗 =
+failover 尾吞下 truth-source 行回退(≤TTL/3 检测、fail-closed 方向,
+半同步复制是运营域缓解,决策 4 既定)+ 外部副作用双烧(结构性不可逆)。**同宿主同类双进程**(裸机手工起两个
 同类进程且共享 hostname ⇒ holder_id 相同):仲裁无法区分「本进程重启
 复航」与「另一活实例」,双双通过复占持有同号(决策 8-③ 活体同 owner
 冲突同族)——holder 唯一性是部署契约(k8s pod 名/compose 容器名天然
