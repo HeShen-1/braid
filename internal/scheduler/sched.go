@@ -1623,7 +1623,15 @@ func (st *execState) dispatchParallel(row *nodeRow, n *dsl.Node) error {
 	if len(live) == 0 {
 		return st.convergeParallel(row, n)
 	}
+	kept := 0
 	for i, inst := range live {
+		if inst.status == engine.NodeSucceeded {
+			// T19.5 保活实例(D-t195):重派只 claim 非 SUCCEEDED 行——旧输出
+			// 原样,gather 收敛面自会收割(results 合并新旧)。快照未消费
+			//(不重写),依赖门已保证旧输入仍真。
+			kept++
+			continue
+		}
 		iver, err := engine.ClaimNode(st.ctx, st.q, inst.id, inst.version, engine.ClaimInput{
 			WorkerID:      st.workerID,
 			InputSnapshot: snaps[i],
@@ -1647,8 +1655,16 @@ func (st *execState) dispatchParallel(row *nodeRow, n *dsl.Node) error {
 			return err
 		}
 	}
+	// instances 恒 = 活跃实例行数(存量语义;新 claim 数 = instances-recovered,
+	// 评审 LOW 修:字段语义不静默改义)。
 	st.s.log.Info("parallel.fanout",
-		"execution_id", st.execID, "node_id", row.nodeID, "instances", len(live))
+		"execution_id", st.execID, "node_id", row.nodeID, "instances", len(live), "recovered", kept)
+	if kept > 0 {
+		// T19.5:有保活行时收敛判定移入派发事务尾部——全保活零重跑下无人驱动
+		// 收敛(实例 claim 即驱动面,缺失 = 控制器滞留 EXECUTING);min_success
+		// fail_fast 的早收敛机会也在此捕捉。全在飞时 no-op(存量行为不变)。
+		return st.gatherCheck(row.nodeID)
+	}
 	return nil
 }
 
@@ -1668,7 +1684,9 @@ func dynamicForeach(p *dsl.ParallelNode) bool {
 //   - 盈余:M+1..K 的 PENDING 行 → SkipNode(SKIPPED 终态证据行,不删行——
 //     node_attempt 台账 FK 与 T9.2 追溯纪律;finishIfDone 终态不阻塞);
 //   - 非 PENDING 意外态 = 数据缺陷响亮报错(lockAllRows 同哲学;活轮控制器
-//     PENDING ⇒ 实例行恒经回滚闭包整组重置为 PENDING)。
+//     PENDING ⇒ 实例行 ∈ {PENDING,T19.5 保活 SUCCEEDED}——依赖门结构性
+//     排除「保活行进 shrink/grow 裁剪面」:动态扇出行集变化必经 foreach 来源
+//     重跑 ⇒ 来源必在闭包 ⇒ 依赖门已关,见 recover.go)。
 //
 // 返回活跃实例集(1..M 输入序);st.rows 同步扩容,本事务 gather 面共览。
 func (st *execState) reconcileFanout(row *nodeRow, n *dsl.Node, want int) ([]*nodeRow, error) {
@@ -1712,9 +1730,9 @@ func (st *execState) reconcileFanout(row *nodeRow, n *dsl.Node, want int) ([]*no
 	}
 	live := st.rows.instances[row.nodeID]
 	for i := 0; i < want; i++ {
-		if live[i].status != engine.NodePending {
-			return nil, fmt.Errorf("scheduler: node %q live instance %d is %s, want PENDING (definition/rows drift)",
-				row.nodeID, live[i].instanceNo, live[i].status)
+		if s := live[i].status; s != engine.NodePending && s != engine.NodeSucceeded {
+			return nil, fmt.Errorf("scheduler: node %q live instance %d is %s, want PENDING or kept-SUCCEEDED (definition/rows drift)",
+				row.nodeID, live[i].instanceNo, s)
 		}
 	}
 	return live[:want:want], nil
