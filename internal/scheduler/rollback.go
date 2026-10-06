@@ -373,7 +373,10 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 
 		// 9. 闭包重置:每 node_id 全行集(控制行+实例行,行集一致性地整组);
 		// 已 PENDING 的行零动作(EXECUTING/WA 已被守卫②拦,Reset 谓词只吃终态)。
-		resetCount := 0
+		// T19.5(D-t195):parallel 增量恢复保活裁定先行——保活行跳过 Reset
+		//(output/finished_at/attempts 原样,零审计零预算),门控见 recover.go。
+		keepPlan := planIncrementalRecovery(rows, g, wf, closure, target)
+		resetCount, keptCount := 0, 0
 		for _, id := range sortedNodes(g.nodes) {
 			if !closure[id] {
 				continue
@@ -385,6 +388,10 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 				}
 				if rerun && r == ctrl {
 					continue // 目标控制行走 Rerun 分流
+				}
+				if keepAliveRow(keepPlan, r) {
+					keptCount++
+					continue // T19.5:保活行零写(增量恢复)
 				}
 				from := r.status
 				newVer, err := engine.ResetNodeToPending(ctx, q, r.id, r.version)
@@ -400,6 +407,11 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 				r.workerID = sql.NullString{}
 				resetCount++
 			}
+		}
+
+		if keptCount > 0 {
+			s.log.Info("rollback.incremental_recovery",
+				"execution_id", p.ExecID, "target", target, "kept", keptCount, "reset", resetCount)
 		}
 
 		// 10. 目标重跑:RerunNode(快照读回重写 + attempts+1 即新轮 claim)
