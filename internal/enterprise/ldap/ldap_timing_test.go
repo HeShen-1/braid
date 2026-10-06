@@ -5,13 +5,17 @@ package ldap
 // bind 往返 + 目录侧验证)的响应时域差 = 未认证探测者可聚合的账号
 // 枚举 oracle(D-t176 边界⑤登记)。垫平机制 = 零命中分支纯客户端
 // 等待 levelPad(启动期实测),零新增目录操作 ⇒ 服务账号自锁风险
-// 结构性消亡——本文件的四类断言各钉一头:
+// 结构性消亡——本文件的断言族各钉一头:
 //
 //   - 对齐断言(pairwise):注入对称 op 延迟下两臂中位时耗差 ≤ 容差
 //   - 存在性锚(下限-only):删掉垫平即红(auth 包时序测试同纪律,
 //     不设上限防 flake)
 //   - 结构锚:记账证明零命中路径零用户 DN bind、恰一次服务 bind
 //   - 判定保真:ctx 取消打断垫平仍返凭据族判定,不升 500 族
+//   - clamp 接线锚(对抗审计 MEDIUM① 修):实测近零必须钳到下界,
+//     裸中位变异 = 快目录上垫平静默失效
+//   - rebind fail-loud 锚(对抗审计 MEDIUM② 修):目录拒 rebind =
+//     构造响亮败,吞错降级变异即红
 //
 // 全部零栈零 docker(berfake_test.go 基建);BRAID_TEST_REDIS_DB
 // 不涉(零 MySQL/Redis 面,判定先于 AnchorLoginUser 返回)。
@@ -20,6 +24,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -118,7 +123,7 @@ func TestAuthenticateTimingAlignment(t *testing.T) {
 	}
 	t.Logf("unknown_user median=%v wrong_password median=%v diff=%v", medC, medD, diff)
 	if diff > timingAlignTol {
-		t.Fatalf("timing residual between unknown_user (%v) and wrong_password (%v) = %v, want ≤ %v (enumeration oracle survives)", medC, medD, diff, timingAlignTol)
+		t.Fatalf("timing residual between unknown_user (%v) and wrong_password (%v) = %v, want ≤ %v — pad semantics broken OR asymmetric load spike on this run (medians of %d samples each; rerun once before diagnosing semantics, 对抗审计 LOW 修:负载假红与语义破坏同文案会误导诊断)", medC, medD, diff, timingAlignTol, timingSamples)
 	}
 }
 
@@ -188,7 +193,8 @@ func TestZeroHitIssuesNoUserBind(t *testing.T) {
 	_, err = wrongPw.Authenticate(context.Background(), "alice", "wrong-pw")
 	mustCredsReason(t, err, auth.ReasonWrongPassword)
 	ops = wrongPwSrv.Ops()[4:]
-	if len(ops) != 3 || ops[2].kind != fakeOpBind || ops[2].dn != userDN {
+	if len(ops) != 3 || ops[0].kind != fakeOpBind || ops[0].dn != svcDN ||
+		ops[1].kind != fakeOpSearch || ops[2].kind != fakeOpBind || ops[2].dn != userDN {
 		t.Fatalf("wrong-password ops = %+v, want [bind(svc), search, bind(user)] for contrast arm", ops)
 	}
 }
@@ -196,17 +202,29 @@ func TestZeroHitIssuesNoUserBind(t *testing.T) {
 // TestPadPreservesVerdictOnCanceledContext:垫平的 ctx 语义 = 可被
 // 取消打断,但判定已由目录应答决定,打断后仍返凭据族——绝不把
 // ctx.Canceled 原样上抛升 500 族(login.go default 分支会把它当身份源
-// 故障:不计数不审计,判定语义漂移)。
+// 故障:不计数不审计,判定语义漂移)。时耗上界(对抗审计 LOW 修)
+// 钉死「打断」半边:删掉 ctx.Done 臂(变异)则垫平整段睡满,耗时翻
+// 倍即红——只验判定不验时耗的话,该变异零噪声存活。
 func TestPadPreservesVerdictOnCanceledContext(t *testing.T) {
+	const bindDelay = 50 * time.Millisecond // ⇒ levelPad ≈ 50ms
 	p, _ := newTimingProvider(t, fakeDirOpt{
 		svcDN:        "cn=svc,dc=example,dc=org",
-		svcBindDelay: 10 * time.Millisecond,
+		svcBindDelay: bindDelay,
 	})
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel() // 进入垫平前即取消:select 走 ctx.Done 臂,判定仍须返回
 
+	t0 := time.Now()
 	_, err := p.Authenticate(ctx, "ghost", "pw")
+	elapsed := time.Since(t0)
 	mustCredsReason(t, err, auth.ReasonUnknownUser)
+	// 单侧余量论证(与 TestZeroHitLevelPadFloor 白盒上界同纪律):带
+	// ctx.Done 臂的路径 = 拨号 + 服务 bind 50ms 睡眠 + search + 立即
+	// 返回 ≈ 51ms;变异路径 ≈ 101ms。断言 < 80ms = 路径 + 30ms 余量,
+	// 睡眠不欠睡,假红需要非睡眠开销 60% 膨胀。
+	if elapsed >= 80*time.Millisecond {
+		t.Fatalf("canceled-ctx authenticate took %v, want < 80ms (ctx.Done arm missing → pad sleeps in full → cancel-timing distinguishable)", elapsed)
+	}
 }
 
 // TestClampLevelPad:实测值钳制边界(纯函数,零 fake)。下界防退化
@@ -219,6 +237,7 @@ func TestClampLevelPad(t *testing.T) {
 	}{
 		{"zero floors to min", 0, levelPadMin},
 		{"sub-millisecond floors to min", 500 * time.Microsecond, levelPadMin},
+		{"boundary min passes through", levelPadMin, levelPadMin},
 		{"in-range passes through", 5 * time.Millisecond, 5 * time.Millisecond},
 		{"boundary max passes through", levelPadMax, levelPadMax},
 		{"pathological directory ceilings", 2 * time.Second, levelPadMax},
@@ -229,5 +248,46 @@ func TestClampLevelPad(t *testing.T) {
 				t.Fatalf("clampLevelPad(%v) = %v, want %v", tt.in, got, tt.want)
 			}
 		})
+	}
+}
+
+// TestLevelPadClampWiring:clamp 接线锚(对抗审计 MEDIUM① 修)——
+// TestClampLevelPad 只钉纯函数,不钉 measureLevelPad 确实调用了它;
+// 裸中位变异(ldap.go 去掉 clampLevelPad 调用)曾令四族断言全绿存活,
+// 而 min 钳恰是快目录(实测 < 1ms、真实用户 bind 成本不近零)上唯一
+// 保证非零垫平的要素。本测试用零延迟 fake(回环 RTT 数十 µs,≪ 1ms
+// 下界 20 倍余量)断言构造期实测值恰等于 levelPadMin;裸中位 ≈ 0 即
+// 红。max 侧接线经纯函数表驱动传递覆盖(不做 1s+ 慢测试)。
+func TestLevelPadClampWiring(t *testing.T) {
+	p, _ := newTimingProvider(t, fakeDirOpt{svcDN: "cn=svc,dc=example,dc=org"}) // 全零延迟
+	if p.levelPad != levelPadMin {
+		t.Fatalf("levelPad = %v, want exactly %v (sub-millisecond loopback measurement must clamp to the floor — bare-median mutation silently disables the pad on fast directories)", p.levelPad, levelPadMin)
+	}
+}
+
+// TestNewLDAPBindProviderRebindFailLoud:rebind 失败 fail-loud 路径锚
+// (对抗审计 MEDIUM② 修;D-t205 决策 2 封套②「个别实现/策略拒
+// rebind = 启动失败即回退路径,响亮不静默」)。fake 自第 2 次服务
+// bind 起回 49(探测 bind 过、首次 rebind 拒)⇒ 构造必须报错且错误
+// 链两层可见(startup probe 外层 wrap + measure rebind 因由);吞错
+// 降级变异(rebind 失败则 continue、pad 兜底 0)= 垫平静默消失即红。
+func TestNewLDAPBindProviderRebindFailLoud(t *testing.T) {
+	s := newFakeDirServer(t, fakeDirOpt{
+		svcDN:           "cn=svc,dc=example,dc=org",
+		svcBindFailFrom: 2,
+	})
+	cfg := LDAPConfig{
+		Addr: s.Addr(), BindDN: "cn=svc,dc=example,dc=org", BindPassword: "svc-secret",
+		BaseDN: "dc=example,dc=org", Filter: DefaultLDAPFilter,
+	}
+	_, err := NewLDAPBindProvider(context.Background(), cfg, nil)
+	if err == nil {
+		t.Fatal("rebind-rejecting directory must fail the constructor loudly (silent degradation = timing pad off, enumeration oracle reopens)")
+	}
+	if !strings.Contains(err.Error(), "startup probe") || !strings.Contains(err.Error(), "measure rebind") {
+		t.Fatalf("err = %v, want startup-probe wrap carrying a measure-rebind cause", err)
+	}
+	if ops := s.Ops(); len(ops) != 2 {
+		t.Fatalf("fake ops = %+v, want exactly 2 service binds (probe ok + first rebind rejected)", ops)
 	}
 }

@@ -41,6 +41,11 @@ type fakeDirOpt struct {
 	userBindDelay  time.Duration // 用户 bind 处理延迟(模拟目录侧口令验证)
 	userBindResult int           // 用户 bind 应答码:0 或 49
 	entries        []string      // search 命中 DN 列表(空 = 零命中)
+	// svcBindFailFrom 非零时,全局第 ≥ 该序号(1 起)的服务 bind 回 49
+	// 而非 0——模拟「个别实现/策略拒同连接 rebind」目录,驱动
+	// measureLevelPad 的 fail-loud 路径(对抗审计 MEDIUM② 修)。计数
+	// 跨连接全局(探测连接 4 连 bind 形态下,1 = 全拒,2 = 首过后续拒)。
+	svcBindFailFrom int
 }
 
 // fakeOp 是 fake 的记账条目:操作类型("bind"/"search")与 bind 的
@@ -65,8 +70,9 @@ type fakeDirServer struct {
 	ln  net.Listener
 	opt fakeDirOpt
 
-	mu  sync.Mutex
-	ops []fakeOp
+	mu       sync.Mutex
+	ops      []fakeOp
+	svcBinds int // 服务 bind 全局序号(svcBindFailFrom 判据)
 }
 
 // newFakeDirServer 起监听并进入 accept 循环;生命周期挂 t.Cleanup。
@@ -108,6 +114,14 @@ func (s *fakeDirServer) record(kind, dn string) {
 	s.ops = append(s.ops, fakeOp{kind: kind, dn: dn})
 }
 
+// nextSvcBindOrdinal 取服务 bind 的全局 1 起序号(svcBindFailFrom 判据)。
+func (s *fakeDirServer) nextSvcBindOrdinal() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.svcBinds++
+	return s.svcBinds
+}
+
 // serveConn 单连接消息循环:读 BER 报文,按 op 类型注入延迟并应答。
 func (s *fakeDirServer) serveConn(c net.Conn) {
 	defer func() { _ = c.Close() }()
@@ -127,8 +141,12 @@ func (s *fakeDirServer) serveConn(c net.Conn) {
 			dn := berParseBindDN(opContent)
 			s.record(fakeOpBind, dn)
 			if dn == s.opt.svcDN {
+				code := 0
+				if s.opt.svcBindFailFrom > 0 && s.nextSvcBindOrdinal() >= s.opt.svcBindFailFrom {
+					code = 49
+				}
 				time.Sleep(s.opt.svcBindDelay)
-				_, _ = c.Write(berBindResponse(id, 0))
+				_, _ = c.Write(berBindResponse(id, code))
 			} else {
 				time.Sleep(s.opt.userBindDelay)
 				_, _ = c.Write(berBindResponse(id, s.opt.userBindResult))

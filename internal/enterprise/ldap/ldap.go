@@ -34,6 +34,7 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/url"
 	"slices"
@@ -108,6 +109,11 @@ func NewLDAPBindProvider(ctx context.Context, cfg LDAPConfig, db auth.DBTX) (LDA
 		return LDAPBindProvider{}, fmt.Errorf("auth: ldap startup probe %q: %w", cfg.Addr, err)
 	}
 	_ = conn.Close() // 探测连接不缓存:bind 语义不可复用连接身份
+	// 实测垫平值落日志(对抗审计 perf 视角 LOW 修):时值非秘密(攻击者
+	// 本就可测),运维诊断启动封套失败/漂移过冲(停车场「运行期重校准」
+	// 触发判据)需要知道构造期到底测到了什么。slog.Default 惯例镜像
+	// internal/enterprise/im。
+	slog.Info("auth: ldap timing pad measured", "addr", cfg.Addr, "level_pad", pad)
 	return LDAPBindProvider{Cfg: cfg, DB: db, levelPad: pad}, nil
 }
 
