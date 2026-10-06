@@ -207,6 +207,11 @@ func (s *Server) publishDraft(c *gin.Context) {
 	// registry = 禁用一切工具)。
 	var def Definition
 	err := WithTx(c.Request.Context(), s.dbh, func(tx DBTX) error {
+		// fence 首置(T20.1):publish 是 api 五写面之一(zombie api 不得落
+		// 新定义版本)。
+		if ferr := s.fence(c.Request.Context(), tx); ferr != nil {
+			return ferr
+		}
 		var err error
 		def, err = s.st.Publish(c.Request.Context(), tx, tenantFrom(c), id, actorFrom(c), s.publishFleetGate, s.toolReg.Names()...)
 		return err

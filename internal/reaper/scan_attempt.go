@@ -14,6 +14,7 @@ import (
 	"braid/internal/metrics"
 	"braid/internal/outbox"
 	"braid/internal/scheduler"
+	"braid/internal/snowflake"
 )
 
 // errSkip 是处置事务内的哨兵:锁后复核判定「无需处置」(活 worker 复活 /
@@ -196,9 +197,32 @@ func (r *Reaper) reapAttempt(ctx context.Context, nodeExecID, execID uint64, ent
 // fail_fast 且控制器滞留 EXECUTING;委托面自带全行锁序与同款语义)。
 // verified(T17.4):外层已完成 asynq 活性核验,分支 B 陈旧 DISPATCHED
 // 哨兵旁路(至多一轮,防核验-重入死循环)。
+// fence 是处置事务首置的加冕校验(T20.1,D-2026-10-06-t201 决策 4):裁决
+// 权威的合法性 = 自身租约行加冕——zombie reaper 的裁决写(attempt 判死/
+// 审批处置/PENDING 终局化)在真相源上结构性回滚(fail-closed:本轮 skip,
+// 下一 tick 重试);拒绝计入 ReaperSet.FenceRejected(观测面,决策 7;
+// 对抗审计 MEDIUM 修复——三处置面同源同判)。nil Lease = legacy 恒放行;
+// 租约行恒首锁,与 worker/scheduler 的 fence 事务锁序一致。
+func (r *Reaper) fence(ctx context.Context, q engine.DBTX, scan string, kv ...any) error {
+	err := r.deps.Lease.Fence(ctx, q)
+	if errors.Is(err, snowflake.ErrFenced) {
+		if r.deps.Metrics != nil {
+			r.deps.Metrics.FenceRejected.Inc()
+		}
+		args := append([]any{"scan", scan}, kv...)
+		r.log.Warn("reap.fenced", append(args, "err", err)...)
+	}
+	return err
+}
+
 func (r *Reaper) reapOnce(ctx context.Context, nodeExecID, execID uint64, ent entry, verified bool) (delegate bool, err error) {
 	delegate = false
 	err = engine.WithTx(ctx, r.deps.DB, func(q engine.DBTX) error {
+		// [0] fence 首置(T20.1,D-2026-10-06-t201;对抗审计 MEDIUM 修复:
+		// 三处置事务同挂)。
+		if ferr := r.fence(ctx, q, "attempt", "node_execution_id", nodeExecID); ferr != nil {
+			return ferr
+		}
 		// [1] 锁 node 行。
 		var (
 			nodeID       string

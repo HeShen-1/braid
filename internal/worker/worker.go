@@ -138,6 +138,11 @@ type Deps struct {
 	Sched    *scheduler.Scheduler // T2.4 调度器(完成回写 + execution.start);nil 拒启动
 	Notifier ApprovalNotifier     // T4.5 审批通知面(T14.3 双通道扇出);nil = 全通道未配置降级
 	Logger   *slog.Logger
+	// Lease 是本进程的节点租约(T20.1 fence 面,D-2026-10-06-t201):claim/
+	// 接管复核/心跳三写事务首置加冕校验——zombie 不能建新 attempt 行、不能
+	// 接管重置心跳挫败判死、不能维持心跳。nil = legacy 无 fence(滚动窗/测试
+	// 装配;*Lease.Fence 的 nil 接收者恒放行,调用点免判空)。
+	Lease *snowflake.Lease
 	// Metrics 是观测面(T6.4):nil = 关闭(测试默认)。notify 结果计数 +
 	// asynq archived 死信 gauge(探测 goroutine 随 Run 生命周期)。
 	Metrics *metrics.WorkerSet
@@ -318,15 +323,24 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 			"hint", "closed-round task drained after rollback; ack without materializing")
 		return 0, nil
 	}
-	err = engine.InsertAttempt(ctx, h.deps.DB, engine.AttemptParams{
-		ID:             id,
-		NodeExecID:     p.NodeExecutionID,
-		ExecID:         p.ExecutionID,
-		AttemptNo:      p.AttemptNo,
-		WorkerID:       h.cfg.WorkerID,
-		IdempotencyKey: taskID,
-		AsynqTaskID:    taskID,
-		InputSnapshot:  json.RawMessage(snap),
+	// claim 物化经 fence 事务(T20.1,D-2026-10-06-t201):zombie 的 attempt
+	// 行物化在租约加冕校验后结构性回滚——双执行证据行(及其心跳维持)不再
+	// 可能由失冠进程建立。id 铸造在事务外(铸造面由 Guard 停发闸承载)。
+	err = engine.WithTx(ctx, h.deps.DB, func(q engine.DBTX) error {
+		if ferr := h.deps.Lease.Fence(ctx, q); ferr != nil {
+			h.countFenceRejected(ferr)
+			return ferr
+		}
+		return engine.InsertAttempt(ctx, q, engine.AttemptParams{
+			ID:             id,
+			NodeExecID:     p.NodeExecutionID,
+			ExecID:         p.ExecutionID,
+			AttemptNo:      p.AttemptNo,
+			WorkerID:       h.cfg.WorkerID,
+			IdempotencyKey: taskID,
+			AsynqTaskID:    taskID,
+			InputSnapshot:  json.RawMessage(snap),
+		})
 	})
 	switch {
 	case err == nil:
@@ -354,6 +368,15 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 		var observed engine.AttemptState
 		aborted := false
 		if err := engine.WithTx(ctx, h.deps.DB, func(q engine.DBTX) error {
+			// fence 首置(T20.1):zombie 不得接管重置心跳(那是挫败 reaper
+			// 判死的最重吞点);租约行恒首锁,锁序与 claim/Complete 一致。
+			// fence 拒绝 = 中止接管(与 reset 的尽力语义分立:瞬态 reset
+			// 失败仍可由本发常规心跳接管窗口兜底,fence 拒绝 = 本进程已失
+			// 冠,执行面归下一投递的活体)。
+			if ferr := h.deps.Lease.Fence(ctx, q); ferr != nil {
+				h.countFenceRejected(ferr)
+				return ferr
+			}
 			if err := q.QueryRowContext(ctx,
 				`SELECT status FROM node_attempt WHERE id=? FOR UPDATE`, rowID).Scan(&observed); err != nil {
 				return err
@@ -364,6 +387,9 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 			}
 			return engine.TouchAttemptHeartbeat(ctx, q, rowID, p.ExecutionID)
 		}); err != nil {
+			if errors.Is(err, snowflake.ErrFenced) {
+				return 0, fmt.Errorf("worker: takeover attempt %d: %w", rowID, err)
+			}
 			h.log.Warn("takeover.heartbeat_reset_fail", "attempt_id", rowID, "err", err)
 		} else if aborted {
 			h.log.Info("attempt.already_final",
@@ -634,6 +660,15 @@ func (h *attHandler) mResumeRejected(facet string) {
 	}
 }
 
+// countFenceRejected 在 fence 拒绝时计观测面(T20.1,D-2026-10-06-t201
+// 决策 7;nil Metrics = 观测关闭)。日志是事件的详细载体,计数器是告警
+// 面的消费源(alerts.yml fence 规则)。
+func (h *attHandler) countFenceRejected(err error) {
+	if errors.Is(err, snowflake.ErrFenced) && h.deps.Metrics != nil {
+		h.deps.Metrics.FenceRejected.Inc()
+	}
+}
+
 // heartbeat 周期刷新 attempt 心跳(尽力语义:失败记日志不中断执行——判死
 // 归 T2.5,心跳窗口内单次失败不构成失联证据)。
 func (h *attHandler) heartbeat(ctx context.Context, attemptID, execID uint64) {
@@ -645,6 +680,12 @@ func (h *attHandler) heartbeat(ctx context.Context, attemptID, execID uint64) {
 			return
 		case <-t.C:
 			err := engine.WithTx(ctx, h.deps.DB, func(q engine.DBTX) error {
+				// fence 首置(T20.1):zombie 心跳结构性停跳 → reaper 判死接管
+				//(尽力语义不变:失败记 warn 不中断执行,收口面挡其提交)。
+				if ferr := h.deps.Lease.Fence(ctx, q); ferr != nil {
+					h.countFenceRejected(ferr)
+					return ferr
+				}
 				return engine.TouchAttemptHeartbeat(ctx, q, attemptID, execID)
 			})
 			if err != nil && ctx.Err() == nil {

@@ -118,6 +118,9 @@ func (s *Scheduler) cancelWithRetry(ctx context.Context, p CancelParams,
 func (s *Scheduler) cancelOnce(ctx context.Context, p CancelParams, g *dag) (*CancelResult, error) {
 	var res *CancelResult
 	err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		if err := s.fence(ctx, q); err != nil {
+			return err
+		}
 		// 0. 容量闸(与回滚共闸,rollbackOnce 步骤 0 同款:COUNT 走
 		// uk_node_exec 索引范围扫,普通读足够——闸是容量面非正确性面;
 		// 0 = 关闭)。

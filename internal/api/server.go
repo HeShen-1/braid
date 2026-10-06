@@ -1,7 +1,9 @@
 package api
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"fmt"
 	"reflect"
 
@@ -10,6 +12,7 @@ import (
 
 	"braid/internal/auth"
 	"braid/internal/metrics"
+	"braid/internal/snowflake"
 	"braid/internal/tools"
 )
 
@@ -50,6 +53,14 @@ type Server struct {
 	// 注入姿势)。span 边界 = authed 组每请求;trace id 是 audit 行与
 	// outbox 行的传播载体(D-2026-09-27-t62-otel-trace)。
 	tracer trace.Tracer
+	// lease 是本进程的节点租约(T20.1 fence 面,D-2026-10-06-t201):api
+	// 五写面(publish/审批决定/回滚/取消 + 各面证据事务;触发物化经
+	// scheduler.Instantiate 的 Deps.Lease 承载)写事务首置加冕校验——
+	// zombie api 的解冻写(含静默触发重放面)结构性回滚。nil = legacy
+	// 无 fence(滚动窗/测试装配;*Lease.Fence 的 nil 接收者恒放行)。
+	lease *snowflake.Lease
+	// fenceMetrics 是 fence 拒绝计数面(T20.1 决策 7;nil = 观测关闭)。
+	fenceMetrics *metrics.FenceSet
 	// rollbackMetrics 是回滚面指标(T9.2/T6.4;nil = 观测关闭——测试默认,
 	// cmd/api 装配注入;requested/applied/denied{reason} 三计数器,
 	// D-2026-09-28-t92 决策 10)。
@@ -105,6 +116,26 @@ func NewServer(cfg Config, dbh *sql.DB, ids IDGen, toolReg *tools.Registry, trig
 
 // LoginMetrics 注入登录指标面(T6.4;cmd/api 装配,测试默认 nil)。
 func (s *Server) LoginMetrics(m *metrics.LoginSet) { s.loginMetrics = m }
+
+// SnowflakeLease 注入本进程节点租约(T20.1 fence 面;cmd/api 装配,测试
+// 默认 nil = legacy 无 fence——*Lease.Fence 的 nil 接收者恒放行)。
+func (s *Server) SnowflakeLease(l *snowflake.Lease) { s.lease = l }
+
+// FenceMetrics 注入 fence 拒绝计数面(T20.1 决策 7;cmd/api 装配,测试
+// 默认 nil = 观测关闭)。
+func (s *Server) FenceMetrics(m *metrics.FenceSet) { s.fenceMetrics = m }
+
+// fence 是 api 写事务首置的租约加冕校验(T20.1,D-2026-10-06-t201 决策 4):
+// 行上 (holder_id, fencing_epoch) 等值才放行。q 接受 api.DBTX 与
+// engine.DBTX(both 结构性满足 snowflake.FenceScanner 最小面)。拒绝计入
+// FenceSet.Rejected(zombie api 停写面的告警消费源,对抗审计 MEDIUM 修复)。
+func (s *Server) fence(ctx context.Context, q snowflake.FenceScanner) error {
+	err := s.lease.Fence(ctx, q)
+	if errors.Is(err, snowflake.ErrFenced) && s.fenceMetrics != nil {
+		s.fenceMetrics.Rejected.Inc()
+	}
+	return err
+}
 
 // RollbackMetrics 注入回滚面指标(T9.2;nil = 观测关闭,镜像 LoginMetrics)。
 func (s *Server) RollbackMetrics(m *metrics.RollbackSet) { s.rollbackMetrics = m }

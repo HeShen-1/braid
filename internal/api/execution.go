@@ -356,6 +356,11 @@ func (s *Server) writeTriggerAudit(ctx context.Context, execID, defID uint64, ac
 		return
 	}
 	err = WithTx(ctx, s.dbh, func(tx DBTX) error {
+		// fence 首置(T20.1):zombie api 的触发面证据事务(与物化事务
+		// scheduler.Instantiate 的 Deps.Lease 同源同判)。
+		if ferr := s.fence(ctx, tx); ferr != nil {
+			return ferr
+		}
 		return audit.Append(ctx, tx, audit.Event{
 			ID:          auditID,
 			EventType:   audit.EventExecutionTriggered,

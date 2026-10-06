@@ -307,6 +307,11 @@ func (s *Server) writeRollbackDeniedAudit(c *gin.Context, execID uint64, nodeID,
 	// T9.3:串链协议要求调用方事务(裸池句柄 ⇒ 链叉);"独立小事务"从
 	// 注释变为事实。
 	if err := engine.WithTx(c.Request.Context(), s.dbh, func(q engine.DBTX) error {
+		// fence 首置(T20.1):回滚面证据事务同源同判(engine.DBTX 结构性
+		// 满足 fence 最小面)。
+		if ferr := s.fence(c.Request.Context(), q); ferr != nil {
+			return ferr
+		}
 		return audit.Append(c.Request.Context(), q, audit.Event{
 			ID: id, EventType: audit.EventRollbackDenied, ExecutionID: execID,
 			NodeID: nodeID, ActorType: audit.ActorUser, ActorID: actor,

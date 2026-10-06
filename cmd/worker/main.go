@@ -268,7 +268,7 @@ func run(ctx context.Context) error {
 	// Metrics 适配 = metrics.Set(T12.2 起:LLM 丢弃 + Redispatches{attempt_failed}
 	// 双发射;原 mset.LLM 单方法注入已随 Set 适配方法收编)。接线验证纪律
 	// (D-t64 两次漏接教训):grep 可见此行即接线面。
-	sched, err := scheduler.New(scheduler.Deps{DB: mysqlDB, IDs: ids, Logger: slog.Default(), Metrics: mset})
+	sched, err := scheduler.New(scheduler.Deps{DB: mysqlDB, IDs: ids, Lease: lease, Logger: slog.Default(), Metrics: mset})
 	if err != nil {
 		return fmt.Errorf("worker: scheduler: %w", err)
 	}
@@ -366,6 +366,7 @@ func run(ctx context.Context) error {
 		Sched:    sched,
 		Notifier: notifier,
 		Logger:   slog.Default(),
+		Lease:    lease,                            // T20.1:claim/接管/心跳 fence(与 scheduler Deps 同一租约)
 		Metrics:  mset.Worker,                      // T6.4:notify 计数 + archived 探测(漏接 = 观测生产死代码)
 		Tracer:   traceProv.Tracer("braid/worker"), // T6.2:消费半边 payload extract 续链
 	}, cfg, asynq.RedisClientOpt{Addr: addr})

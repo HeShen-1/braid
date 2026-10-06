@@ -220,6 +220,11 @@ type decisionCall struct {
 // 不受影响(对抗审计修正:原注释把空列写成 linked_trace_id,失真)。
 func (s *Server) applyApprovalDecision(ctx context.Context, call decisionCall) (out decisionDTO, replay bool, err error) {
 	err = WithTx(ctx, s.dbh, func(tx DBTX) error {
+		// fence 首置(T20.1):审批决定事务是 api 五写面之一(zombie api
+		// 不得落决策行/触发 resume 链)。
+		if ferr := s.fence(ctx, tx); ferr != nil {
+			return ferr
+		}
 		execID, nodeID, actor, dbDecision := call.ExecID, call.NodeID, call.Actor, call.Decision
 		node, err := s.st.lockApprovalNode(ctx, tx, execID, nodeID, true)
 		if err != nil {
@@ -577,6 +582,10 @@ func (s *Server) writeDecisionDeniedAudit(c *gin.Context, execID uint64, nodeID,
 		return
 	}
 	err = WithTx(c.Request.Context(), s.dbh, func(tx DBTX) error {
+		// fence 首置(T20.1):审批面证据事务同源同判。
+		if ferr := s.fence(c.Request.Context(), tx); ferr != nil {
+			return ferr
+		}
 		return audit.Append(c.Request.Context(), tx, audit.Event{
 			ID: auditID, EventType: audit.EventApprovalDecisionDenied,
 			ExecutionID: execID, NodeExecID: nodeExecID, NodeID: nodeID,

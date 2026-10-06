@@ -894,14 +894,16 @@ func TestCompleteDiscardedByReaper(t *testing.T) {
 }
 
 // discardCounter 是 MetricsSink 最小测试桩(T6.4;T12.2 扩
-// IncNodeRedispatched —— D-t64 留位词表发射)。
+// IncNodeRedispatched —— D-t64 留位词表发射;T20.1 扩 IncFenceRejected)。
 type discardCounter struct {
 	n            atomic.Int32
 	redispatches atomic.Int32
+	fence        atomic.Int32
 }
 
 func (c *discardCounter) IncLLMCallDiscarded() { c.n.Add(1) }
 func (c *discardCounter) IncNodeRedispatched() { c.redispatches.Add(1) }
+func (c *discardCounter) IncFenceRejected()    { c.fence.Add(1) }
 
 // TestCompleteDiscardedEmitsLLMCallDiscardedAudit(T6.4,D-t36 §7 移交回收):
 // reaper 判 DEAD 后,迟到 SUCCEEDED 携 usage 被 Complete 让位丢弃——供应商

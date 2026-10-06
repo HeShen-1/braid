@@ -30,6 +30,10 @@
 //     与 T2.3 心跳(attempt→wf)一致;Start 例外先拿 wf(安全性即此备忘:
 //     PENDING 执行不可能存在 claim/attempt,无并发 Complete——T19.3 取消面
 //     不受理 PENDING 正是为维持此前提,见 cancel.go 步骤 2/对抗审计 C2)。
+//     T20.1 起新增不变量:租约行(snowflake_node_lease)恒为 fence 事务的
+//     **首**锁(s.fence 首置锁定读,D-2026-10-06-t201)——与 reaper 的
+//     node→attempt→wf、claimant 启动/续期的租约行单语句无环;任何「先拿
+//     node 行再回锁租约行」的路径都违反本节,禁止。
 //   - 终态判定在提交后的新事务(新鲜快照):不相交臂的并发完成各自事务内
 //     快照都看到对方在飞 ⇒ 都不判终态(事务内判定会漏判);提交后重查者必
 //     见全部已提交 ⇒ 不漏判。双收口由 FinishExecution 的 status-only CAS 仲裁。
@@ -152,18 +156,25 @@ const (
 // MetricsSink 是调度器的指标缝(T6.4;T12.2 扩重派发射):由 cmd 装配注入
 // (生产 = metrics.Set 适配方法,测试默认 nil = 观测关闭)。发射点两处:
 // Complete 让位丢弃(llm.call.discarded)+ Complete 重试再派发
-// (Redispatches{attempt_failed},D-t64 留位兑现)。
+// (Redispatches{attempt_failed},D-t64 留位兑现)。T20.1 加 fence 拒绝计数
+// (zombie 停写面的观测信号,D-2026-10-06-t201 决策 7)。
 type MetricsSink interface {
 	IncLLMCallDiscarded()
 	IncNodeRedispatched()
+	IncFenceRejected()
 }
 
 // Deps 是运行依赖。Router 为 nil 用 CondRouter;Queue 为空用 "default"(必须在
 // worker ServeQueues 内,否则事件永挂 pending——outbox 包注释的已知边界);
 // Logger 为 nil 用 slog.Default();Metrics nil = 观测关闭。
 type Deps struct {
-	DB      *sql.DB
-	IDs     *snowflake.Generator // execution/node/outbox 行 id(应用侧 Snowflake)
+	DB  *sql.DB
+	IDs *snowflake.Generator // execution/node/outbox 行 id(应用侧 Snowflake)
+	// Lease 是本进程的节点租约(T20.1 fence 面,D-2026-10-06-t201):写事务
+	// 首置加冕校验——zombie(被接管/复占/冻结后易主)的编排层写入在真相源
+	// 上结构性回滚。nil = legacy 无 fence(滚动窗/测试装配;*Lease.Fence 的
+	// nil 接收者恒放行,调用点免判空)。
+	Lease   *snowflake.Lease
 	Router  Router
 	Queue   string
 	Logger  *slog.Logger
@@ -174,6 +185,20 @@ type Deps struct {
 	// (D-t24#6),大 DAG 回滚的容量闸;默认档见 DefaultMaxRollbackRows
 	// (T15.5 实测定档)。
 	MaxRollbackRows uint32
+}
+
+// fence 是写事务首置的租约加冕校验(T20.1,D-2026-10-06-t201 决策 3/4):
+// 本进程租约行上 (holder_id, fencing_epoch) 等值才放行——zombie 的一切
+// 编排层写入(物化/派发/收口/挂起/续跑/回滚/取消/判死重派)在真相源上
+// 结构性回滚,ErrFenced 原样上抛由调用方语义收敛。锁序契约:租约行恒为
+// fence 事务首锁(与 reaper 的 node→attempt→wf、claimant 启动的租约行单
+// 语句无环)。nil Lease(legacy 装配)恒放行。
+func (s *Scheduler) fence(ctx context.Context, q engine.DBTX) error {
+	err := s.deps.Lease.Fence(ctx, q)
+	if errors.Is(err, snowflake.ErrFenced) && s.deps.Metrics != nil {
+		s.deps.Metrics.IncFenceRejected()
+	}
+	return err
 }
 
 // Scheduler 是调度器实例(无内部状态,字段在构造时定格)。
@@ -440,6 +465,9 @@ func (s *Scheduler) Instantiate(ctx context.Context, p InstantiateParams) (uint6
 	}
 
 	err = engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		if err := s.fence(ctx, q); err != nil {
+			return err
+		}
 		var idem any
 		if p.IdempotencyKey != "" {
 			idem = p.IdempotencyKey
@@ -636,6 +664,9 @@ func (s *Scheduler) Start(ctx context.Context, execID uint64, workerID string) e
 		return err
 	}
 	return engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		if err := s.fence(ctx, q); err != nil {
+			return err
+		}
 		// 锁序例外(先 wf 后 node 行)的安全性见包注释锁序节。
 		var status engine.WorkflowState
 		err := q.QueryRowContext(ctx,
@@ -774,6 +805,9 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 	wf *dsl.Workflow, g *dag, wfInput json.RawMessage) error {
 	var termGuard bool
 	err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		if err := s.fence(ctx, q); err != nil {
+			return err
+		}
 		// 1. 有序全行锁(当前读):本执行全部节点行,node_id 升序。
 		rows, err := lockAllRows(ctx, q, req.ExecID, g)
 		if err != nil {
@@ -1930,6 +1964,9 @@ func (s *Scheduler) ReapInstanceExhausted(ctx context.Context, execID, nodeExecI
 		return err
 	}
 	err = engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		if err := s.fence(ctx, q); err != nil {
+			return err
+		}
 		rows, err := lockAllRows(ctx, q, execID, g)
 		if err != nil {
 			return err

@@ -108,6 +108,9 @@ func (s *Scheduler) suspendOnce(ctx context.Context, req SuspendRequest,
 	wf *dsl.Workflow, g *dag, wfInput json.RawMessage) error {
 	var termGuard bool
 	err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		if err := s.fence(ctx, q); err != nil {
+			return err
+		}
 		// 1. 有序全行锁(与 completeOnce 同集同序:并发 Complete/Suspend 在
 		// 该序列上串行,静默检查的「数在飞兄弟」不可能读到过期快照)。
 		rows, err := lockAllRows(ctx, q, req.ExecID, g)

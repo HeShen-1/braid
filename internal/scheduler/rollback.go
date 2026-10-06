@@ -164,6 +164,9 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 	wf *dsl.Workflow, g *dag, wfInput json.RawMessage) (*RollbackResult, error) {
 	var res *RollbackResult
 	err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		if err := s.fence(ctx, q); err != nil {
+			return err
+		}
 		// 0. 容量闸(T15.5,D-t92 停车场 MaxRollbackRows 兑现):COUNT 走
 		// uk_node_exec 索引范围扫;普通读足够——闸是容量面非正确性面,锁定前
 		// 拒绝零副作用。T19.2(D-2026-10-05-t192)后行集不再「Instantiate 后

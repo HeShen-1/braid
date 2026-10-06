@@ -23,9 +23,14 @@ import (
 // NodeTimeout 词表;Locker 为 nil = leaderless(每 tick 全跑,fail-open 的
 // 静态形态,测试与降级部署用)。Logger 为 nil 用 slog.Default()。
 type Deps struct {
-	DB     *sql.DB
-	Sched  *scheduler.Scheduler
-	IDs    *snowflake.Generator // 重派事件行 id(应用侧 Snowflake)
+	DB    *sql.DB
+	Sched *scheduler.Scheduler
+	IDs   *snowflake.Generator // 重派事件行 id(应用侧 Snowflake)
+	// Lease 是本进程的节点租约(T20.1 fence 面,D-2026-10-06-t201):reaper
+	// 是裁决权威,其合法性 = 自身租约行加冕——reapOnce 处置事务首置加冕
+	// 校验,zombie reaper 不得 stomping(裁决写不需要 worker token,权威的
+	// 合法性同源同判)。nil = legacy 无 fence(滚动窗/测试装配)。
+	Lease  *snowflake.Lease
 	Locker Locker
 	Logger *slog.Logger
 	// Metrics 是观测面(T6.4):nil = 关闭(测试默认)。gauge 采集器也在
