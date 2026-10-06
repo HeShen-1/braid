@@ -118,6 +118,7 @@ func TestMultiReplicaDrill(t *testing.T) {
 	t.Run("arm4 redis restart outbox recovery", s.armRedisRestart)
 	t.Run("arm5 mode=all fleet gate", s.armFleetGate)
 	t.Run("arm7 rollback under least privilege", s.armRollbackResume)
+	t.Run("arm8 lease fencing deposes thawed zombie", s.armLeaseFencing)
 	t.Run("arm6 hash chain green", s.armChainVerify)
 }
 
@@ -799,6 +800,80 @@ func (s *stack) armRollbackResume(t *testing.T) {
 
 // armChainVerify:⑥终态——全部演练执行哈希链全链绿(D-t93③/R8 口径)
 // + 组件日志零 1062(定档 A 后 flush 单跑;claim CAS 无 dup-key)。
+// arm8:⑧ 租约 fencing 废黜(T20.1,D-2026-10-06-t201):冻结 zombie 的
+// fleet 级停写证据。链路:docker pause worker1(整容器 SIGSTOP = 进程
+// 冻结/长 GC 的确定性注入)→ 租约滑出在场窗(TTL 保真 30s)→ 易主注入
+// (过期行 epoch+1,接管者等价;真实接管路径的 bump 语义由
+// internal/snowflake 表驱动锚定)→ 解冻 = zombie 苏醒(持有字符串未变、
+// 代际已失配)→ 旧代际续期结构性落空(lost 词面)→ Exit(1) →
+// unless-stopped 复活 → 同 holder 复占 bump(≥3,新代际复航而非旧代际
+// 复燃)→ 易主后执行照常收敛 + 代际不回退。
+// 回归锚:master(续期无代际谓词)上解冻进程会静默续上过期行自加冕,
+// 本臂在 lost 词面与 epoch≥3 两处红。
+func (s *stack) armLeaseFencing(t *testing.T) {
+	name := s.publishDef(drillAnyDSL(s.uniqName("fence")))
+	container := s.containerName("worker1")
+	const holder = "worker:braid-drill-worker1"
+
+	s.run("docker", "pause", container)
+	t.Cleanup(func() { // 幂等兜底解冻:臂内已 unpause(或容器已换代)时报
+		// 「not paused」退出 1,尽力语义吞掉——要防的是冻结残留,不是重复解冻。
+		if out, err := exec.Command("docker", "unpause", container).CombinedOutput(); err != nil &&
+			!strings.Contains(string(out), "is not paused") {
+			s.t.Logf("drill: cleanup unpause %s: %v (%s)", container, err, out)
+		}
+	})
+
+	// 冻结包络:租约行滑出在场窗(kill 不释放、pause 不释放,同残窗形态)。
+	s.eventually("worker1 lease slid out of fleet under pause", armWait, func() bool {
+		return s.qInt(`SELECT COUNT(*) FROM snowflake_node_lease
+			WHERE holder_id=? AND expires_at >= NOW(3)`, holder) == 0
+	})
+
+	// 易主注入(接管者等价形态):行已被他人 CAS 接管 = 代际 +1。
+	if _, err := s.dbh.Exec(
+		`UPDATE snowflake_node_lease SET fencing_epoch = fencing_epoch + 1 WHERE holder_id=?`, holder,
+	); err != nil {
+		t.Fatalf("supersede frozen lease: %v", err)
+	}
+
+	// 解冻 = zombie 苏醒:旧代际续期必须落空 → lost(停发 + 响亮)。
+	s.run("docker", "unpause", container)
+	s.eventually("worker1 re-crowned with fresh epoch (>=3)", armWait, func() bool {
+		return s.qInt(`SELECT COUNT(*) FROM snowflake_node_lease
+			WHERE holder_id=? AND expires_at >= NOW(3) AND fencing_epoch >= 3`, holder) == 1
+	})
+	// 废黜证据:解冻进程在旧代际上的续期落空词面(Exit(1) → 复活复占)。
+	logs := s.serviceLogs("worker1")
+	if !strings.Contains(logs, "lease renewal lost row") && !strings.Contains(logs, "lease renewal error") {
+		t.Fatalf("worker1 logs missing deposed-renewal evidence (epoch-mismatch lost): %s", lastLines(logs, 20))
+	}
+
+	// 易主后执行照常收敛(裁决/执行面不被 fence 扰动)。attempt 归属由
+	// claim 竞速决定——复航后的 worker1 是新代历持有者,其物化属正常调度
+	//(失冠进程零物化的确定性断言在单测层:TestClaimAttemptFence
+	// RejectsSupersededLease,drill 不重复断言竞速时序)。
+	execID := s.triggerExec(name, http.StatusCreated)
+	s.approveAll(execID, "a", "b", "c", "d")
+	s.waitSucceeded(execID)
+	if n := s.qInt(`SELECT COUNT(*) FROM node_attempt WHERE execution_id=?`, execID); n < 4 {
+		t.Fatalf("execution %d attempts = %d, want ≥4(四节点链完整物化)", execID, n)
+	}
+	// 代际不回退:worker1 现役行保持新代际(≥3;旧代际不得复燃)。
+	if e := s.qInt(`SELECT COALESCE(MAX(fencing_epoch),0) FROM snowflake_node_lease WHERE holder_id=?`, holder); e < 3 {
+		t.Fatalf("worker1 lease epoch = %d, want ≥3(新代际复航,旧代际被废黜)", e)
+	}
+}
+
+// lastLines 截尾日志(失败诊断面;全量日志过巨)。
+func lastLines(s string, n int) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	if len(lines) > n {
+		lines = lines[len(lines)-n:]
+	}
+	return strings.Join(lines, "\n")
+}
+
 func (s *stack) armChainVerify(t *testing.T) {
 	if len(s.execIDs) == 0 {
 		t.Fatalf("no executions collected for chain verify")

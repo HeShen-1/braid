@@ -148,6 +148,11 @@ type ReaperSet struct {
 	ChainVerifyRows    prometheus.Counter
 	ChainBrokenTotal   prometheus.Counter
 	ChainBrokenHeads   prometheus.Gauge
+	// FenceRejected counts reaper-side lease-fence rejections (T20.1,
+	// D-2026-10-06-t201): verdict txs (attempt/approval/pending-exec scans)
+	// rolled back because this reaper lost its lease crown. Twin of
+	// FenceSet.Rejected / WorkerSet.FenceRejected (same family, reaper face).
+	FenceRejected      prometheus.Counter
 	AuditPendingRows   prometheus.Gauge
 	AuditPendingOldest prometheus.Gauge
 	// AuditPartitionWatermarkDays / AuditPminRows:T20.7——水位衰减的唯一
@@ -196,6 +201,11 @@ type WorkerSet struct {
 	// still propagated (asynq retry → archived stays the visible dead letter);
 	// the counter makes the defense surface observable per facet.
 	ResumeRejected *prometheus.CounterVec
+	// FenceRejected counts worker-side lease-fence rejections (T20.1,
+	// D-2026-10-06-t201): claim/heartbeat writes structurally rolled back
+	// because this process lost the lease crown (superseded/taken over).
+	// Durable twin = the fence error in handler/heartbeat warn logs.
+	FenceRejected prometheus.Counter
 }
 
 // RelaySet covers outbox delivery outcomes and queue-Redis health.
@@ -254,6 +264,15 @@ type CancelSet struct {
 	Denied    *prometheus.CounterVec // by reason (role_denied/not_cancellable/too_large)
 }
 
+// FenceSet covers the T20.1 lease-fence rejection surface (scheduler-side:
+// Instantiate/Start/Complete/Suspend/resume/rollback/cancel/ReapInstance-
+// Exhausted txs; worker-side twin = WorkerSet.FenceRejected). A rejection
+// means the process lost its lease crown mid-flight (zombie window closed at
+// the truth source) — the write tx rolled back structurally.
+type FenceSet struct {
+	Rejected prometheus.Counter
+}
+
 // Set aggregates every component subset; exactly one per process.
 type Set struct {
 	LLM       *LLMSet
@@ -264,11 +283,18 @@ type Set struct {
 	Rollback  *RollbackSet
 	Cancel    *CancelSet
 	FleetGate *FleetGateSet
+	Fence     *FenceSet
 	DBPool    *DBPoolSet
 }
 
 // IncLLMCallDiscarded satisfies the scheduler MetricsSink seam (T6.4).
 func (s *Set) IncLLMCallDiscarded() { s.LLM.IncLLMCallDiscarded() }
+
+// IncFenceRejected satisfies the scheduler MetricsSink seam addition (T20.1,
+// D-2026-10-06-t201): scheduler-orchestrated write txs rolled back by the
+// lease-fence crown check. Surface-agnostic by design (per-face attribution
+// rides the fence error logs; the alert face is process-level).
+func (s *Set) IncFenceRejected() { s.Fence.Rejected.Inc() }
 
 // IncNodeRedispatched satisfies the scheduler MetricsSink seam addition
 // (T12.2, D-t64 reserved-vocabulary activation): the in-worker scheduler
@@ -419,6 +445,10 @@ func NewSet() (*Set, *prometheus.Registry) {
 				Name: "braid_reaper_asynq_probe_unreachable_total",
 				Help: "Branch-B liveness probes that errored and fail-opened to the dispatch-stale bounded window (T18.7); persistent growth = the reaper cannot reach queue Redis (probe degraded, hardening silently off).",
 			}),
+			FenceRejected: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_reaper_fence_rejected_total",
+				Help: "Lease-fence rejections (T20.1): reaper verdict txs (attempt/approval/pending-exec scans) rolled back because this reaper lost its lease crown; twin of braid_fence_rejected_total / braid_worker_fence_rejected_total.",
+			}),
 		},
 		Worker: &WorkerSet{
 			NotifyResults: f.NewCounterVec(prometheus.CounterOpts{
@@ -441,6 +471,10 @@ func NewSet() (*Set, *prometheus.Registry) {
 				Name: "braid_resume_events_rejected_total",
 				Help: "execution.resume deliveries refused by scheduler.Resume as stale/fabricated/premature/anchor-drift (5a defense, T17.4); per-delivery (redeliveries re-observe), durable twin = the archived task + scheduler error log.",
 			}, []string{"reason"}),
+			FenceRejected: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_worker_fence_rejected_total",
+				Help: "Lease-fence rejections (T20.1): worker-side write txs (claim/heartbeat) rolled back because this process lost its lease crown; scheduler-side twin = braid_fence_rejected_total.",
+			}),
 		},
 		Relay: &RelaySet{
 			Deliveries: f.NewCounterVec(prometheus.CounterOpts{
@@ -501,6 +535,12 @@ func NewSet() (*Set, *prometheus.Registry) {
 				Name: "braid_cancel_denied_total",
 				Help: "Rejected execution-cancel requests by reason (role_denied/not_cancellable/too_large).",
 			}, []string{"reason"}),
+		},
+		Fence: &FenceSet{
+			Rejected: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_fence_rejected_total",
+				Help: "Lease-fence rejections (T20.1, D-2026-10-06-t201): scheduler-orchestrated write txs rolled back by the lease crown check; a rejection means this process was superseded mid-flight (zombie window closed at the truth source).",
+			}),
 		},
 		FleetGate: &FleetGateSet{
 			Rejected: f.NewCounterVec(prometheus.CounterOpts{

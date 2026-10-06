@@ -67,6 +67,9 @@ var metricNames = map[string]dto.MetricType{
 	"braid_reaper_poison_snapshots_total":        dto.MetricType_COUNTER, // T17.4:快照漂移毒行
 	"braid_approval_im_notified_missing_rows":    dto.MetricType_GAUGE,   // T17.4:im_notified 对账
 	"braid_resume_events_rejected_total":         dto.MetricType_COUNTER, // T17.4:5a premature/fabricated
+	"braid_fence_rejected_total":                 dto.MetricType_COUNTER, // T20.1:scheduler 面 fence 拒(D-t201)
+	"braid_worker_fence_rejected_total":          dto.MetricType_COUNTER, // T20.1:worker 面 fence 拒(D-t201)
+	"braid_reaper_fence_rejected_total":          dto.MetricType_COUNTER, // T20.1:reaper 面 fence 拒(D-t201)
 	"braid_reaper_asynq_alive_defers_total":      dto.MetricType_COUNTER, // T17.4:Inspector 活性让位
 	"braid_reaper_asynq_probe_unreachable_total": dto.MetricType_COUNTER, // T18.7:探测不可达 fail-open
 }

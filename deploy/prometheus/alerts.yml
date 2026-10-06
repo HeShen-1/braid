@@ -256,3 +256,28 @@ groups:
         annotations:
           summary: "{{ $value }} 条审计哈希链断链(闩已落定,写路径已拒)"
           description: "四族判据之一命中:行篡改/行删除/链尾丢失/分区挪移(D-t93 #5)。该执行新审计写入已被拒绝(fail-closed),需人工取证后复位 chain_heads.broken_at。字源 braid_audit_chain_broken_heads(reaper 第七作业 gauge)。"
+
+  # T20.1 租约 fencing(D-2026-10-06-t201 决策 7):zombie 停写面的值守线。
+  # 滚动升级/正常重启窗(复占 bump → 前身在飞事务被拒)的少量拒绝是设计
+  # 工作正常的证据;持续增长 = 冻结进程解冻后持续写(真 zombie)或同
+  # owner 双活违例(D-t151 决策 8-③ 残余面,复占 bump 已收其双签发面)。
+  # 字源:scheduler 面 braid_fence_rejected_total + worker 面
+  # braid_worker_fence_rejected_total(双族聚合;per-face 归因走 fence
+  # 错误日志)。snowflake.go:37/outbox append.go:96 登记的「1062 告警」
+  # 承诺由此兑现——zombie 主成因面先于 1062 在 fence 计数器可见(1062
+  # 本身无仓内指标字源,残余面 = 真生成器缺陷,日志承载)。
+  - name: braid-lease-fencing
+    rules:
+      - alert: LeaseFenceRejections
+        # 三族各自聚合再 or(increase 丢 __name__ 后各族空标签集相同,同选
+        # 择器单表达式会撞 labelset;or 语义 = 任一族持续超阈即告警)。
+        expr: |
+          sum(increase(braid_fence_rejected_total[15m])) > 20
+            or sum(increase(braid_worker_fence_rejected_total[15m])) > 20
+            or sum(increase(braid_reaper_fence_rejected_total[15m])) > 20
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "租约 fence 拒绝持续({{ $value }} 次/15m)"
+          description: "失冠进程的写事务被结构性回滚(D-t201)。滚动窗少量拒绝 = 设计工作正常;持续增长 = 冻结 zombie 解冻续写或同 owner 双活违例。查 fence 拒绝日志(heartbeat.fail / takeover.heartbeat_reset_fail / reap.fenced / lease renewal lost 词面)与 snowflake_node_lease 行态。"
