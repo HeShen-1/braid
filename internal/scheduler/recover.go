@@ -32,10 +32,11 @@ import (
 	"braid/internal/engine/dsl"
 )
 
-// recoveryKeep 描述单个 parallel 节点在闭包重置面的保活裁定。
+// recoveryKeep 描述单个 parallel 节点在闭包重置面的保活裁定:map 存在性
+// 即「保活 SUCCEEDED 实例行」(控制行重置的增量恢复形状);whole 进一步
+// 升格为控制行 SUCCEEDED 下的整行集保活(零重置,行集自证)。
 type recoveryKeep struct {
-	whole bool // 控制行 SUCCEEDED:整行集保活(零重置,行集自证)
-	succ  bool // 控制行重置:仅 SUCCEEDED 实例行保活(增量恢复)
+	whole bool
 }
 
 // planIncrementalRecovery 对闭包内 parallel 节点逐个裁定保活面。纯函数:
@@ -61,10 +62,10 @@ func planIncrementalRecovery(rows *lockedRows, g *dag, wf *dsl.Workflow,
 			if !noBranchAncestorInClosure(g, id, closure) {
 				continue // 控制依赖门(对抗审计 HIGH 修):路由可能改变,整行集重跑
 			}
-			plan[id] = recoveryKeep{whole: true, succ: true}
+			plan[id] = recoveryKeep{whole: true}
 			continue
 		}
-		plan[id] = recoveryKeep{succ: true}
+		plan[id] = recoveryKeep{}
 	}
 	return plan
 }

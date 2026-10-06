@@ -1655,8 +1655,10 @@ func (st *execState) dispatchParallel(row *nodeRow, n *dsl.Node) error {
 			return err
 		}
 	}
+	// instances 恒 = 活跃实例行数(存量语义;新 claim 数 = instances-recovered,
+	// 评审 LOW 修:字段语义不静默改义)。
 	st.s.log.Info("parallel.fanout",
-		"execution_id", st.execID, "node_id", row.nodeID, "instances", len(live)-kept, "recovered", kept)
+		"execution_id", st.execID, "node_id", row.nodeID, "instances", len(live), "recovered", kept)
 	if kept > 0 {
 		// T19.5:有保活行时收敛判定移入派发事务尾部——全保活零重跑下无人驱动
 		// 收敛(实例 claim 即驱动面,缺失 = 控制器滞留 EXECUTING);min_success

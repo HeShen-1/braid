@@ -330,11 +330,13 @@ func TestE2EParallelCancelWedgeRecoveryJourney(t *testing.T) {
 	waitInstanceState(t, st.d, st.execID, "fan", 3, engine.NodeCancelled)
 
 	// 放行 → 迟到收口撞取消事务已收口的 DEAD attempt(幂等哨兵),节点保持
-	// CANCELLED;有界排空后回滚(T19.3 旅程同款口径)。
+	// CANCELLED;有界排空后回滚(T19.3 旅程同款口径)。排空超时 = 硬错
+	//(评审 LOW 修:软锚独立成立——幂等哨兵回归不得靠回滚步 8 兜底静默过)。
 	st.blockHang.Store(false)
 	if st.released.CompareAndSwap(false, true) {
 		close(st.release)
 	}
+	sawDead := false
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		if n := prAttemptCount(t, st.d, st.execID, 2); n >= 1 {
@@ -343,10 +345,14 @@ func TestE2EParallelCancelWedgeRecoveryJourney(t *testing.T) {
 			  JOIN node_execution ne ON na.node_execution_id=ne.id
 			  WHERE ne.execution_id=? AND ne.node_id='fan' AND ne.instance_no=2
 			    AND na.status='DEAD'`, st.execID).Scan(&dead); err == nil && dead >= 1 {
+				sawDead = true
 				break
 			}
 		}
 		time.Sleep(50 * time.Millisecond)
+	}
+	if !sawDead {
+		t.Errorf("取消楔源实例的 RUNNING attempt 未在 5s 内落 DEAD(幂等哨兵回归)")
 	}
 	waitInstanceState(t, st.d, st.execID, "fan", 2, engine.NodeCancelled)
 

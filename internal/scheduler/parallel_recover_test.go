@@ -81,6 +81,21 @@ SELECT status, version, attempts, attempts_base, output, finished_at
 	return r
 }
 
+// assertFanResults 断言 fan 控制器已收敛且 results 与 want 语义相等
+//(UseNumber 解码;合并新旧/全旧保活/全新重跑三态共用,评审 LOW 收敛)。
+func assertFanResults(t *testing.T, d *sql.DB, execID uint64, want []any) {
+	t.Helper()
+	ctrl := instanceRowOf(t, d, execID, "fan", 0)
+	if ctrl.status != engine.NodeSucceeded || !ctrl.output.Valid {
+		t.Fatalf("fan controller = %s output=%v, want SUCCEEDED with results",
+			ctrl.status, ctrl.output.Valid)
+	}
+	if got := decodeSem(t, ctrl.output.String); !reflect.DeepEqual(got,
+		map[string]any{"results": want}) {
+		t.Fatalf("fan controller output = %v, want results %v", got, want)
+	}
+}
+
 // rollbackAuto 是无显式 target 的回滚快捷(自动定位恢复点)。
 func rollbackAuto(t testing.TB, s *Scheduler, execID uint64) *RollbackResult {
 	t.Helper()
@@ -112,7 +127,8 @@ func TestRecoverKeepsSucceededInstances(t *testing.T) {
 	execID, instances := runToFanReady(t, s, d, doc, input, "fan")
 	t.Cleanup(func() { cleanupExec(t, d, execID) })
 
-	// 实例 1 终败、0/2 成功(wait_all 收齐再判 → 控制器 FAILED、执行 FAILED)。
+	// instances[1](instance_no 2)终败、instances[0]/[2](instance_no 1/3)成功
+	//(wait_all 收齐再判 → 控制器 FAILED、执行 FAILED)。
 	at := seedAttempt(t, d, execID, instances[1], 1)
 	mustComplete(t, s, execID, instances[1], at, engine.AttemptFailed, nil)
 	for _, idx := range []int{0, 2} {
@@ -164,19 +180,11 @@ func TestRecoverKeepsSucceededInstances(t *testing.T) {
 	at2 := seedAttempt(t, d, execID, instances[1], 2)
 	mustComplete(t, s, execID, instances[1], at2, engine.AttemptSucceed,
 		json.RawMessage(`{"verdict":"v1new"}`))
-	ctrl := instanceRowOf(t, d, execID, "fan", 0)
-	if ctrl.status != engine.NodeSucceeded || !ctrl.output.Valid {
-		t.Fatalf("controller = %s output=%v, want SUCCEEDED with results", ctrl.status, ctrl.output.Valid)
-	}
-	wantResults := []any{
+	assertFanResults(t, d, execID, []any{
 		map[string]any{"verdict": "v0"},
 		map[string]any{"verdict": "v1new"},
 		map[string]any{"verdict": "v2"},
-	}
-	if got := decodeSem(t, ctrl.output.String); !reflect.DeepEqual(got,
-		map[string]any{"results": wantResults}) {
-		t.Fatalf("controller output = %v, want merged %v (旧输出保活收割)", got, wantResults)
-	}
+	})
 	if err := completeNode(t, s, d, execID, "post", engine.AttemptSucceed, json.RawMessage(`{"done":true}`)); err != nil {
 		t.Fatalf("complete post: %v", err)
 	}
@@ -196,7 +204,8 @@ func TestRecoverCancelWedgeIncremental(t *testing.T) {
 	execID, instances := runToFanReady(t, s, d, doc, input, "fan")
 	t.Cleanup(func() { cleanupExec(t, d, execID) })
 
-	// 实例 0 先成功;实例 1 在飞(种 RUNNING attempt 模拟 worker 持有)。
+	// instances[0](instance_no 1)先成功;instances[1](instance_no 2)在飞
+	//(种 RUNNING attempt 模拟 worker 持有)。
 	a0 := seedAttempt(t, d, execID, instances[0], 1)
 	mustComplete(t, s, execID, instances[0], a0, engine.AttemptSucceed, json.RawMessage(`{"verdict":"v0"}`))
 	att1 := seedAttempt(t, d, execID, instances[1], 1)
@@ -245,19 +254,11 @@ func TestRecoverCancelWedgeIncremental(t *testing.T) {
 		mustComplete(t, s, execID, instances[idx], a, engine.AttemptSucceed,
 			json.RawMessage(fmt.Sprintf(`{"verdict":"v%d"}`, idx)))
 	}
-	ctrl := instanceRowOf(t, d, execID, "fan", 0)
-	if ctrl.status != engine.NodeSucceeded || !ctrl.output.Valid {
-		t.Fatalf("controller = %s, want SUCCEEDED", ctrl.status)
-	}
-	wantResults := []any{
+	assertFanResults(t, d, execID, []any{
 		map[string]any{"verdict": "v0"},
 		map[string]any{"verdict": "v1"},
 		map[string]any{"verdict": "v2"},
-	}
-	if got := decodeSem(t, ctrl.output.String); !reflect.DeepEqual(got,
-		map[string]any{"results": wantResults}) {
-		t.Fatalf("controller output = %v, want merged %v", got, wantResults)
-	}
+	})
 	if err := completeNode(t, s, d, execID, "post", engine.AttemptSucceed, json.RawMessage(`{"done":true}`)); err != nil {
 		t.Fatalf("complete post: %v", err)
 	}
@@ -311,19 +312,11 @@ func TestRecoverRefreshIntentFullRerun(t *testing.T) {
 		mustComplete(t, s, execID, instances[idx], a, engine.AttemptSucceed,
 			json.RawMessage(fmt.Sprintf(`{"verdict":"fresh%d"}`, idx)))
 	}
-	ctrl := instanceRowOf(t, d, execID, "fan", 0)
-	if ctrl.status != engine.NodeSucceeded || !ctrl.output.Valid {
-		t.Fatalf("controller = %s, want SUCCEEDED", ctrl.status)
-	}
-	wantResults := []any{
+	assertFanResults(t, d, execID, []any{
 		map[string]any{"verdict": "fresh0"},
 		map[string]any{"verdict": "fresh1"},
 		map[string]any{"verdict": "fresh2"},
-	}
-	if got := decodeSem(t, ctrl.output.String); !reflect.DeepEqual(got,
-		map[string]any{"results": wantResults}) {
-		t.Fatalf("controller output = %v, want fresh %v (零旧输出残留)", got, wantResults)
-	}
+	})
 }
 
 // TestRecoverDependencyGateConservative:依赖门——显式 target=pre(刷新上游)
@@ -443,8 +436,9 @@ func TestRecoverAllKeptConvergesAtDispatch(t *testing.T) {
 	execID, instances := runToFanReady(t, s, d, doc, input, "fan")
 	t.Cleanup(func() { cleanupExec(t, d, execID) })
 
-	// 0/2 常规成功;实例 1 绕过 Complete 直收 SUCCEEDED(engine CAS helper,
-	// 「种 WA」先例)——控制器滞留 EXECUTING、三实例全 SUCCEEDED 的竞速形状。
+	// instances[0]/[2] 常规成功;instances[1](instance_no 2)绕过 Complete 直收
+	// SUCCEEDED(engine CAS helper,「种 WA」先例)——控制器滞留 EXECUTING、
+	// 三实例全 SUCCEEDED 的竞速形状。
 	for _, idx := range []int{0, 2} {
 		a := seedAttempt(t, d, execID, instances[idx], 1)
 		mustComplete(t, s, execID, instances[idx], a, engine.AttemptSucceed,
@@ -468,20 +462,11 @@ func TestRecoverAllKeptConvergesAtDispatch(t *testing.T) {
 		t.Fatalf("reset_count = %d, want 2 (controller + post;三实例全保活)", res.ResetCount)
 	}
 	// 核心断言:控制器同事务收敛(results 全旧输出),非滞留 EXECUTING。
-	ctrl := instanceRowOf(t, d, execID, "fan", 0)
-	if ctrl.status != engine.NodeSucceeded || !ctrl.output.Valid {
-		t.Fatalf("controller = %s output=%v, want SUCCEEDED with results (全保活派发内收敛)",
-			ctrl.status, ctrl.output.Valid)
-	}
-	wantResults := []any{
+	assertFanResults(t, d, execID, []any{
 		map[string]any{"verdict": "v0"},
 		map[string]any{"verdict": "v1late"},
 		map[string]any{"verdict": "v2"},
-	}
-	if got := decodeSem(t, ctrl.output.String); !reflect.DeepEqual(got,
-		map[string]any{"results": wantResults}) {
-		t.Fatalf("controller output = %v, want %v (全保活旧输出)", got, wantResults)
-	}
+	})
 	if post := readNode(t, d, execID, "post"); post.status != engine.NodeExecuting {
 		t.Fatalf("post = %s, want EXECUTING (收敛后推进)", post.status)
 	}
@@ -526,19 +511,11 @@ func TestRecoverDynamicFanoutKeptRows(t *testing.T) {
 	at2 := seedAttempt(t, d, execID, instances[1], 2)
 	mustComplete(t, s, execID, instances[1], at2, engine.AttemptSucceed,
 		json.RawMessage(`{"verdict":"v1new"}`))
-	ctrl := instanceRowOf(t, d, execID, "fan", 0)
-	if ctrl.status != engine.NodeSucceeded || !ctrl.output.Valid {
-		t.Fatalf("controller = %s, want SUCCEEDED", ctrl.status)
-	}
-	wantResults := []any{
+	assertFanResults(t, d, execID, []any{
 		map[string]any{"verdict": "v0"},
 		map[string]any{"verdict": "v1new"},
 		map[string]any{"verdict": "v2"},
-	}
-	if got := decodeSem(t, ctrl.output.String); !reflect.DeepEqual(got,
-		map[string]any{"results": wantResults}) {
-		t.Fatalf("controller output = %v, want merged %v", got, wantResults)
-	}
+	})
 }
 
 // parallelRecoverBranchDSL:对抗审计 HIGH 修锚——pre(flag)→ gate(branch)→
@@ -748,7 +725,8 @@ func TestRecoverDynamicSourceInClosureFullRerun(t *testing.T) {
 	execID, instances := runDynToFanReady(t, s, d, parallelDynNoRefBody, `{"topic":"x"}`, preOut(`["a","b","c"]`))
 	t.Cleanup(func() { cleanupExec(t, d, execID) })
 
-	// 1 终败、0/2 成功(wait_all 收齐含败 → FAILED)。
+	// instances[1](instance_no 2)终败、instances[0]/[2] 成功(wait_all 收齐含败
+	// → FAILED)。
 	at := seedAttempt(t, d, execID, instances[1], 1)
 	mustComplete(t, s, execID, instances[1], at, engine.AttemptFailed, nil)
 	for _, idx := range []int{0, 2} {
@@ -779,18 +757,10 @@ func TestRecoverDynamicSourceInClosureFullRerun(t *testing.T) {
 		mustComplete(t, s, execID, instances[idx], a, engine.AttemptSucceed,
 			json.RawMessage(fmt.Sprintf(`{"text":"fresh%d"}`, idx)))
 	}
-	ctrl := instanceRowOf(t, d, execID, "fan", 0)
-	if ctrl.status != engine.NodeSucceeded || !ctrl.output.Valid {
-		t.Fatalf("controller = %s, want SUCCEEDED with results", ctrl.status)
-	}
-	wantResults := []any{
+	assertFanResults(t, d, execID, []any{
 		map[string]any{"text": "fresh0"},
 		map[string]any{"text": "fresh1"},
-	}
-	if got := decodeSem(t, ctrl.output.String); !reflect.DeepEqual(got,
-		map[string]any{"results": wantResults}) {
-		t.Fatalf("controller output = %v, want fresh %v (新轮 M=2 零旧值)", got, wantResults)
-	}
+	})
 	if err := completeNode(t, s, d, execID, "post", engine.AttemptSucceed, json.RawMessage(`{"done":true}`)); err != nil {
 		t.Fatalf("complete post: %v", err)
 	}
