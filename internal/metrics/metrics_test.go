@@ -54,6 +54,7 @@ var metricNames = map[string]dto.MetricType{
 	"braid_rollback_requested_total":             dto.MetricType_COUNTER, // T9.2:回滚面三计数器(D-t92 决策 10)
 	"braid_rollback_applied_total":               dto.MetricType_COUNTER,
 	"braid_rollback_denied_total":                dto.MetricType_COUNTER,
+	"braid_rollback_replayed_total":              dto.MetricType_COUNTER, // T18.5:重放 200 幂等收敛面
 	"braid_cancel_requested_total":               dto.MetricType_COUNTER, // T19.3:取消面三计数器(D-t193 决策 5)
 	"braid_cancel_applied_total":                 dto.MetricType_COUNTER,
 	"braid_cancel_denied_total":                  dto.MetricType_COUNTER,

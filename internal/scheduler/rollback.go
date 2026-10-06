@@ -184,9 +184,14 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 		//(T19.3 D-2026-10-05-t193 决策 3;D-t92 决策 4 原口径「仅 FAILED」
 		// 随 SUCCEEDED/CANCELLED 放行扩列)。普通读即可——终裁在
 		// RestartExecution 的 status-only CAS(并发双回滚败者在此收敛 409)。
+		// trace_id 同语句读出(T18.5 ⑦ 世系:rolled_back 行 linked 指回
+		// root X,审批 decided 段首单点先例;列 Instantiate 后无 UPDATE
+		// 路径,快照读无损)。
 		var wfStatus engine.WorkflowState
+		var rootTrace sql.NullString
 		if err := q.QueryRowContext(ctx,
-			`SELECT status FROM workflow_execution WHERE id=?`, p.ExecID).Scan(&wfStatus); err != nil {
+			`SELECT status, trace_id FROM workflow_execution WHERE id=?`, p.ExecID).
+			Scan(&wfStatus, &rootTrace); err != nil {
 			return fmt.Errorf("scheduler: rollback read execution status %d: %w", p.ExecID, err)
 		}
 		if !wfStatus.Terminal() {
@@ -446,6 +451,7 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 		if err := audit.Append(ctx, q, audit.Event{
 			ID: id, EventType: audit.EventExecutionRolledBack, ExecutionID: p.ExecID,
 			NodeID: target, ActorType: audit.ActorUser, ActorID: p.ActorID, Payload: raw,
+			LinkedTraceID: rootTrace.String, // T18.5 ⑦:段链 Z 指回执行 root X
 		}); err != nil {
 			return err
 		}

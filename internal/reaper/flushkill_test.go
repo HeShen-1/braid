@@ -112,7 +112,8 @@ func TestFlushKillMidDrainReplaysExactlyOnce(t *testing.T) {
 			case i%2 == 0:
 				r.trace = fmt.Sprintf("%032x", id)
 			case i%7 == 0:
-				// 段首形:linked 仅 approval.decided/decision_denied 词表许可
+				// 段首形:linked 仅段首家族词表许可(本测试取 approval.decided
+				// 代表;T18.5 起家族含回滚/取消四词,见 audit.linkedTraceAllowed)
 				r.linked = fmt.Sprintf("%032x", id+1)
 				eventType = audit.EventApprovalDecided
 				r.trace = fmt.Sprintf("%032x", id) // 段首新链 Z + linked 指 root 形

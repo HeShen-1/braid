@@ -6,6 +6,7 @@ package api
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"net/http"
 	"testing"
@@ -75,6 +76,12 @@ func TestHTTPCancelEndpoint(t *testing.T) {
 
 	t.Run("200 成功 + 重复 409 not_cancellable", func(t *testing.T) {
 		execID := seedRunning(t)
+		// T18.5 ⑦:种 root X,denied 行 linked 指回(镜像回滚面 + 审批
+		// decision_denied 点查先例)。
+		const rootX = "0123456789abcdef0123456789abcdef"
+		if _, err := dbh.Exec(`UPDATE workflow_execution SET trace_id=? WHERE id=?`, rootX, execID); err != nil {
+			t.Fatalf("seed root trace: %v", err)
+		}
 		code, body := doJSON(t, r, http.MethodPost,
 			fmt.Sprintf("/api/v1/executions/%d/cancel", execID), author, nil)
 		if code != http.StatusOK {
@@ -83,17 +90,22 @@ func TestHTTPCancelEndpoint(t *testing.T) {
 		if body["from_status"] != "RUNNING" || body["cancelled_count"] != float64(3) {
 			t.Fatalf("body = %v, want from=RUNNING count=3", body)
 		}
-		// 幂等锚:wf 已 CANCELLED → 二次取消 409(重复点击报错非重放)+
-		// denied 审计分面(对抗审计 C6:not_cancellable 面须落行且 reason 可辨)。
+		// 幂等锚:wf 已 CANCELLED → 二次取消 409(重复点击报错非重放,
+		// D-t193 决策 2 镜像口径保持)+ denied 审计分面(对抗审计 C6:
+		// not_cancellable 面须落行且 reason 可辨)。
 		code, body = doJSON(t, r, http.MethodPost,
 			fmt.Sprintf("/api/v1/executions/%d/cancel", execID), author, nil)
 		if code != http.StatusConflict || body["error"] != "not_cancellable" {
 			t.Fatalf("repeat code = %d %v, want 409 not_cancellable", code, body)
 		}
 		var reason string
-		if err := dbh.QueryRow(`SELECT JSON_UNQUOTE(JSON_EXTRACT(payload,'$.reason'))
-			FROM audit_log WHERE execution_id=? AND event_type='cancel.denied'`, execID).Scan(&reason); err != nil || reason != "not_cancellable" {
+		var linked sql.NullString
+		if err := dbh.QueryRow(`SELECT JSON_UNQUOTE(JSON_EXTRACT(payload,'$.reason')), linked_trace_id
+			FROM audit_log WHERE execution_id=? AND event_type='cancel.denied'`, execID).Scan(&reason, &linked); err != nil || reason != "not_cancellable" {
 			t.Fatalf("denied reason = %q(%v), want not_cancellable", reason, err)
+		}
+		if !linked.Valid || linked.String != rootX {
+			t.Fatalf("denied linked = %+v, want root X", linked)
 		}
 	})
 

@@ -16,6 +16,7 @@ package scheduler
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,8 +150,10 @@ func (s *Scheduler) cancelOnce(ctx context.Context, p CancelParams, g *dag) (*Ca
 		// 未起跑执行的取消等 Start 后再发(幂等重试面)。终裁兜底在
 		// FinishExecution 的 status-only CAS。
 		var wfStatus engine.WorkflowState
+		var rootTrace sql.NullString
 		if err := q.QueryRowContext(ctx,
-			`SELECT status FROM workflow_execution WHERE id=? FOR UPDATE`, p.ExecID).Scan(&wfStatus); err != nil {
+			`SELECT status, trace_id FROM workflow_execution WHERE id=? FOR UPDATE`, p.ExecID).
+			Scan(&wfStatus, &rootTrace); err != nil {
 			return fmt.Errorf("scheduler: cancel read execution status %d: %w", p.ExecID, err)
 		}
 		if wfStatus != engine.WorkflowRunning && wfStatus != engine.WorkflowWaitingApproval {
@@ -249,6 +252,7 @@ func (s *Scheduler) cancelOnce(ctx context.Context, p CancelParams, g *dag) (*Ca
 		if err := audit.Append(ctx, q, audit.Event{
 			ID: id, EventType: audit.EventExecutionCancelled, ExecutionID: p.ExecID,
 			ActorType: audit.ActorUser, ActorID: p.ActorID, Payload: raw,
+			LinkedTraceID: rootTrace.String, // T18.5 ⑦:段链 Z 指回执行 root X(回滚 rolled_back 同判)
 		}); err != nil {
 			return err
 		}

@@ -3,11 +3,14 @@ package api
 // T9.2 回滚/断点续跑端点(D-2026-09-28-t92-rollback-same-branch 决策 5/8):
 // POST /executions/:id/rollback {node_id 必填} 与 POST /executions/:id/resume
 // {node_id 可选(自动定位)}——同一 scheduler.RollbackTo 原语(resume 是
-// 语法糖),api 同步事务、零新队列/词表。幂等 = wf status-only CAS 败者 409
-//(重放 200 语义停车场);RBAC = author|admin in-handler 闸(拒绝必须落审计
+// 语法糖),api 同步事务、零新队列/词表。幂等 = 重放 200(T18.5 兑现
+// D-t92 决策 8 停车场:重复/并发败者读回最新 execution.rolled_back 台账
+// 匹配 target → 200 回显首答,审批同轮重放先例;无台账/异 target 保持
+// 409 拒绝);RBAC = author|admin in-handler 闸(拒绝必须落审计
 // rollback.denied,decideApproval 先例——路由中间件 403 无审计面)。
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -120,6 +123,20 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 		ActorID:  claims.Subject,
 	})
 	if err != nil {
+		// T18.5 重放收敛:重复请求(顺序重复 = 守卫① not_rollbackable)与
+		// 并发双回滚败者(裸 ErrConflict CAS 败)读回台账匹配 target →
+		// 200 回显首答(零新写、不灌 denied——T6.4 denied 计数器/告警只吃
+		// 真拒绝)。blocked_inflight/too_large 等是首答未生效的新拒绝,
+		// 重放旧答案会失真,不进漏斗。
+		if rollbackReplayable(err) {
+			if dto, ok := s.tryRollbackReplay(c, execID, req.NodeID); ok {
+				if s.rollbackMetrics != nil {
+					s.rollbackMetrics.Replayed.Inc()
+				}
+				c.JSON(http.StatusOK, dto)
+				return
+			}
+		}
 		var re *scheduler.RollbackError
 		if errors.As(err, &re) {
 			// 业务拒绝全分面落审计(对抗审计 HIGH 修:此前仅 role_denied
@@ -146,6 +163,60 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 		RerunTarget:  res.RerunTarget,
 		ResetCount:   res.ResetCount,
 	})
+}
+
+// rollbackReplayable 报告错误是否落在重放收敛面:守卫① not_rollbackable
+// (wf 非终态——顺序重复回滚与并发败者的当前读形态)或裸 ErrConflict
+// (并发败者的 CAS 形态)。其余拒绝面语义各异(在飞残留等 settle / 容量
+// 闸),读回旧答案会失真。
+func rollbackReplayable(err error) bool {
+	var re *scheduler.RollbackError
+	if errors.As(err, &re) {
+		return re.Kind == scheduler.RollbackNotRollbackable
+	}
+	return errors.Is(err, engine.ErrConflict)
+}
+
+// tryRollbackReplay 读回该执行最新 execution.rolled_back 行重建首答 DTO。
+// 显式 target 须与台账一致;resume(auto target)在 wf 非终态下无法重解析
+// (失败源已被首答收编),采信台账 target。读失败/无台账/目标不符 =
+// false,调用方直通原拒绝语义(不吞原调度器错误:重放是旁路不是兜底;
+// 自身读失败留 slog——零遥测的错误吸收点是本 handler 唯一例外,不做)。
+func (s *Server) tryRollbackReplay(c *gin.Context, execID uint64, nodeID string) (rollbackDTO, bool) {
+	// 薄读(对抗审计 MEDIUM 修):GetExecution 全列投影拖 input/outputs
+	// 大 blob——重试风暴面恰是重放要吸收的,读侧不放大;exec_date 与
+	// execCols 同式 DB 端单源。ErrConflict 形态下 wf 若仍终态 = 冲突源
+	// 未必是「回滚已被并发赢家兑现」(本调用面裸 ErrConflict 源 =
+	// RestartExecution status-only CAS 败,快照窗后 wf 已被他者迁移),
+	// 终态时重放旧纪元答案是失真,保持冲突语义。
+	var status, execDate string
+	if err := s.dbh.QueryRowContext(c.Request.Context(),
+		`SELECT status, DATE_FORMAT(created_at,'%Y-%m-%d') FROM workflow_execution WHERE id=?`,
+		execID).Scan(&status, &execDate); err != nil {
+		slog.Error("api: rollback replay read execution", "err", err, "execution_id", execID)
+		return rollbackDTO{}, false
+	}
+	if engine.WorkflowState(status).Terminal() {
+		return rollbackDTO{}, false
+	}
+	p, found, err := s.st.LatestRolledBackPayload(c.Request.Context(), s.dbh,
+		tenantFrom(c), execID, execDate)
+	if err != nil {
+		slog.Error("api: rollback replay read ledger", "err", err, "execution_id", execID)
+		return rollbackDTO{}, false
+	}
+	if !found {
+		return rollbackDTO{}, false
+	}
+	if nodeID != "" && nodeID != p.TargetNodeID {
+		return rollbackDTO{}, false
+	}
+	return rollbackDTO{
+		ExecutionID:  strconv.FormatUint(execID, 10),
+		TargetNodeID: p.TargetNodeID,
+		RerunTarget:  p.RerunTarget,
+		ResetCount:   p.ResetCount,
+	}, true
 }
 
 // mapRollbackError 是回滚面错误映射第三单点(mapApprovalError 先例):
@@ -194,6 +265,16 @@ func (s *Server) mapRollbackError(c *gin.Context, err error) {
 // (对抗审计 HIGH 修:此前仅 role_denied 落行)。执行缺行时 Append 的分区键
 // 点查失败 = 天然防灌水,镜像 decided 面的锚定语义。
 func (s *Server) writeRollbackDeniedAudit(c *gin.Context, execID uint64, nodeID, actor, reason string, blockedCount int) {
+	// T18.5 ⑦:root X 池上点查(镜像 writeDecisionDeniedAudit)——denied
+	// 行自身 trace = 拒绝请求段链 Z,linked 指回执行主链;best-effort 面
+	// 瞬态故障跳过但零遥测不可接受(同审批先例)。
+	var rootTrace sql.NullString
+	if err := s.dbh.QueryRowContext(c.Request.Context(),
+		`SELECT trace_id FROM workflow_execution WHERE id=?`, execID).
+		Scan(&rootTrace); err != nil {
+		slog.Error("api: anchor rollback.denied trace", "err", err, "execution_id", execID)
+		return
+	}
 	id, err := s.ids.Next()
 	if err != nil {
 		slog.Error("api: gen rollback.denied id", "err", err)
@@ -211,7 +292,8 @@ func (s *Server) writeRollbackDeniedAudit(c *gin.Context, execID uint64, nodeID,
 	if err := engine.WithTx(c.Request.Context(), s.dbh, func(q engine.DBTX) error {
 		return audit.Append(c.Request.Context(), q, audit.Event{
 			ID: id, EventType: audit.EventRollbackDenied, ExecutionID: execID,
-			NodeID: nodeID, ActorType: audit.ActorUser, ActorID: actor, Payload: raw,
+			NodeID: nodeID, ActorType: audit.ActorUser, ActorID: actor,
+			LinkedTraceID: rootTrace.String, Payload: raw,
 		})
 	}); err != nil {
 		slog.Error("api: anchor rollback.denied", "err", err, "execution_id", execID)

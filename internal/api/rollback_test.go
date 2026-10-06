@@ -20,6 +20,8 @@ import (
 	"braid/internal/engine"
 	"braid/internal/scheduler"
 	"braid/internal/snowflake"
+	"braid/internal/tools"
+	"braid/internal/tracing"
 )
 
 // rbChainDoc:a→b→c llm 链(b 的 user_data 引 a 输出;max 缺省 1)。
@@ -169,7 +171,7 @@ func TestHTTPRollbackEndpoint(t *testing.T) {
 		}
 	})
 
-	t.Run("201 成功 + 重复 409", func(t *testing.T) {
+	t.Run("201 成功 + 重复 200 重放", func(t *testing.T) {
 		code, body := doJSON(t, r, http.MethodPost,
 			fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
 			[]byte(`{"node_id":"b"}`))
@@ -179,12 +181,187 @@ func TestHTTPRollbackEndpoint(t *testing.T) {
 		if body["target_node_id"] != "b" || body["rerun_target"] != true {
 			t.Fatalf("body = %v, want target b rerun", body)
 		}
-		// 幂等锚:wf 已 RUNNING → 二次回滚 409(wf CAS 败者收敛面)。
+		// T18.5 重放幂等:wf 已 RUNNING → 二次同 target 回滚 200 回显首答
+		//(审批同轮重放 200 先例;201-vs-200 状态码即重放信号,零新写)。
 		code, body = doJSON(t, r, http.MethodPost,
 			fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
 			[]byte(`{"node_id":"b"}`))
-		if code != http.StatusConflict {
-			t.Fatalf("repeat code = %d %v, want 409", code, body)
+		if code != http.StatusOK {
+			t.Fatalf("repeat code = %d %v, want 200 replay", code, body)
+		}
+		if body["target_node_id"] != "b" || body["rerun_target"] != true ||
+			body["reset_count"] == nil {
+			t.Fatalf("replay body = %v, want target b rerun + reset echo", body)
+		}
+		// 零新写:rolled_back 恰 1 行;重放不灌 denied(not_rollbackable
+		// 拒绝行 0——否则 T6.4 denied 计数器/告警把无害重放当拒绝证据)。
+		var rolled, denied int
+		if err := dbh.QueryRow(`SELECT
+			SUM(event_type='execution.rolled_back'),
+			COALESCE(SUM(event_type='rollback.denied'
+				AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.reason'))='not_rollbackable'),0)
+			FROM audit_log WHERE execution_id=?`, execID).Scan(&rolled, &denied); err != nil {
+			t.Fatalf("count audit: %v", err)
+		}
+		if rolled != 1 || denied != 0 {
+			t.Fatalf("rolled_back=%d not_rollbackable_denied=%d, want 1/0", rolled, denied)
+		}
+	})
+}
+
+// TestHTTPRollbackReplayFaces:T18.5 重放裁决分面——重放不是 RUNNING 的
+// 后门:无台账(全新 RUNNING,从未回滚)仍 409;同 target 才重放,异
+// target 409 落 denied;resume(auto target 无法重解析)重试采信台账
+// target 同享重放。
+func TestHTTPRollbackReplayFaces(t *testing.T) {
+	dbh := openAPITestDB(t)
+	schedIDs, err := snowflake.New(5)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: schedIDs})
+	if err != nil {
+		t.Fatalf("scheduler: %v", err)
+	}
+	r, _, sign := newTestServerWithTrigger(t, sched)
+	author := sign(auth.RoleAuthor)
+
+	t.Run("无台账 RUNNING 仍 409", func(t *testing.T) {
+		name := uniqName("rb-rep0")
+		rbPublish(t, r, author, name, rbChainDoc(name))
+		code, body := doJSON(t, r, http.MethodPost, "/api/v1/executions", author,
+			[]byte(fmt.Sprintf(`{"definition_name":%q,"input":{"q":"hi"}}`, name)))
+		if code != http.StatusCreated {
+			t.Fatalf("trigger: code %d body %v", code, body)
+		}
+		execID := uint64(mustParseUint(t, body["id"].(string)))
+		if err := sched.Start(context.Background(), execID, "w1"); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		// T18.5 ⑦:种 root X 后 denied 行应携 linked 指回(镜像
+		// approval.decision_denied 点查先例)。
+		const rootX = "0123456789abcdef0123456789abcdef"
+		if _, err := dbh.Exec(`UPDATE workflow_execution SET trace_id=? WHERE id=?`, rootX, execID); err != nil {
+			t.Fatalf("seed root trace: %v", err)
+		}
+		code, body = doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
+			[]byte(`{"node_id":"b"}`))
+		if code != http.StatusConflict || body["error"] != "not_rollbackable" {
+			t.Fatalf("code = %d %v, want 409 not_rollbackable(无重放台账)", code, body)
+		}
+		var denied int
+		var linked sql.NullString
+		if err := dbh.QueryRow(`SELECT COUNT(*), MAX(linked_trace_id) FROM audit_log
+			WHERE execution_id=? AND event_type='rollback.denied'
+			AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.reason'))='not_rollbackable'`,
+			execID).Scan(&denied, &linked); err != nil || denied != 1 {
+			t.Fatalf("not_rollbackable denied = %d(%v), want 1", denied, err)
+		}
+		if !linked.Valid || linked.String != rootX {
+			t.Fatalf("denied linked_trace_id = %+v, want root X", linked)
+		}
+	})
+
+	t.Run("异 target 仍 409 落 denied", func(t *testing.T) {
+		name := uniqName("rb-rep1")
+		rbPublish(t, r, author, name, rbChainDoc(name))
+		execID, _ := rbDriveToFailed(t, r, sched, dbh, author, name)
+		code, _ := doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
+			[]byte(`{"node_id":"b"}`))
+		if code != http.StatusCreated {
+			t.Fatalf("first rollback code = %d, want 201", code)
+		}
+		// 台账 target=b ≠ 请求 a:非重放,原 409 语义 + denied 证据。
+		code, body := doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
+			[]byte(`{"node_id":"a"}`))
+		if code != http.StatusConflict || body["error"] != "not_rollbackable" {
+			t.Fatalf("code = %d %v, want 409 not_rollbackable(异 target 非重放)", code, body)
+		}
+		var denied int
+		if err := dbh.QueryRow(`SELECT COUNT(*) FROM audit_log
+			WHERE execution_id=? AND event_type='rollback.denied'
+			AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.reason'))='not_rollbackable'`,
+			execID).Scan(&denied); err != nil || denied != 1 {
+			t.Fatalf("not_rollbackable denied = %d(%v), want 1", denied, err)
+		}
+	})
+
+	t.Run("resume 重试重放", func(t *testing.T) {
+		name := uniqName("rb-rep2")
+		rbPublish(t, r, author, name, rbChainDoc(name))
+		execID, _ := rbDriveToFailed(t, r, sched, dbh, author, name)
+		code, _ := doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/resume", execID), author, nil)
+		if code != http.StatusCreated {
+			t.Fatalf("resume code = %d, want 201", code)
+		}
+		// 重试的 resume 无法重解析 auto target(wf 已 RUNNING,FAILED 行
+		// 已被首答收编)→ 采信台账 target 重放。
+		code, body := doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/resume", execID), author, nil)
+		if code != http.StatusOK {
+			t.Fatalf("resume retry code = %d %v, want 200 replay", code, body)
+		}
+		if body["target_node_id"] != "b" {
+			t.Fatalf("replay target = %v, want b(台账回显)", body["target_node_id"])
+		}
+		var rolled int
+		if err := dbh.QueryRow(`SELECT COUNT(*) FROM audit_log
+			WHERE execution_id=? AND event_type='execution.rolled_back'`,
+			execID).Scan(&rolled); err != nil || rolled != 1 {
+			t.Fatalf("rolled_back = %d(%v), want 1(重放零新写)", rolled, err)
+		}
+	})
+
+	t.Run("无台账 RUNNING 的 resume 仍 409", func(t *testing.T) {
+		// auto target 面的 !found 闸:台账缺席时重放不得凭空回 200 +
+		// 空 target(变异自查:删 !found 早退/ErrNoRows 误报 found → 红)。
+		name := uniqName("rb-rep3")
+		rbPublish(t, r, author, name, rbChainDoc(name))
+		code, body := doJSON(t, r, http.MethodPost, "/api/v1/executions", author,
+			[]byte(fmt.Sprintf(`{"definition_name":%q,"input":{"q":"hi"}}`, name)))
+		if code != http.StatusCreated {
+			t.Fatalf("trigger: code %d body %v", code, body)
+		}
+		execID := uint64(mustParseUint(t, body["id"].(string)))
+		if err := sched.Start(context.Background(), execID, "w1"); err != nil {
+			t.Fatalf("Start: %v", err)
+		}
+		code, body = doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/resume", execID), author, nil)
+		if code != http.StatusConflict || body["error"] != "not_rollbackable" {
+			t.Fatalf("resume code = %d %v, want 409 not_rollbackable(无台账)", code, body)
+		}
+	})
+
+	t.Run("重选取最新台账", func(t *testing.T) {
+		// 双纪元:回滚 b → 重跑再终败 → 回滚 a。台账两行,重放必须重建
+		// 最新纪元(ORDER BY 最新锚;变异自查:序倒转 → 取到 b ≠ a → 409 红)。
+		name := uniqName("rb-rep4")
+		rbPublish(t, r, author, name, rbChainDoc(name))
+		execID, bNode := rbDriveToFailed(t, r, sched, dbh, author, name)
+		code, _ := doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
+			[]byte(`{"node_id":"b"}`))
+		if code != http.StatusCreated {
+			t.Fatalf("epoch1 rollback code = %d, want 201", code)
+		}
+		rbComplete(t, sched, execID, bNode, rbSeedAttempt(t, dbh, execID, bNode, 2),
+			engine.AttemptFailed, nil)
+		code, _ = doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
+			[]byte(`{"node_id":"a"}`))
+		if code != http.StatusCreated {
+			t.Fatalf("epoch2 rollback code = %d, want 201", code)
+		}
+		code, body := doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
+			[]byte(`{"node_id":"a"}`))
+		if code != http.StatusOK || body["target_node_id"] != "a" {
+			t.Fatalf("latest-ledger replay = %d %v, want 200 target a(最新纪元)", code, body)
 		}
 	})
 }
@@ -325,5 +502,175 @@ func TestHTTPRollbackTooLarge(t *testing.T) {
 		fmt.Sprintf("/api/v1/executions/%d/resume", execID), author, nil)
 	if code != http.StatusConflict || body["error"] != "rollback_too_large" {
 		t.Fatalf("resume: code %d body %v, want 409 rollback_too_large", code, body)
+	}
+}
+
+// TestHTTPRollbackTraceLineage:T18.5 ⑦ 世系——真请求 span 两端:触发请求
+// root X(经 InstantiateParams 落 workflow_execution.trace_id)、回滚请求
+// 段链 Z(rolled_back 行自身 trace);linked=X 指回主链(审批 decided 段首
+// 单点先例);重跑任务 outbox 行 trace=Z(重跑段与回滚请求同链,审批
+// resume 事件同形)。Provider = ExporterOff(trace id 照生成零导出,
+// doc-example e2e 同式)。
+func TestHTTPRollbackTraceLineage(t *testing.T) {
+	dbh := openAPITestDB(t)
+	cleanExecutionChain(t, dbh)
+	schedIDs, err := snowflake.New(6)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: schedIDs})
+	if err != nil {
+		t.Fatalf("scheduler: %v", err)
+	}
+	prov, err := tracing.NewProvider(tracing.Config{
+		Exporter: tracing.ExporterOff, ServiceName: "braid-api-test"})
+	if err != nil {
+		t.Fatalf("trace provider: %v", err)
+	}
+	t.Cleanup(func() { _ = prov.Shutdown(context.Background()) })
+	// 本地装配(镜像 newTestServerWithTrigger,唯一差异 = Tracing 面;
+	// 该 helper 不暴露 tracer 注入口)。
+	ids, err := snowflake.New(1)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	reg, err := tools.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
+		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
+		LoginMaxFailures: 100000, LoginLockout: time.Minute}
+	srv := NewServer(cfg, dbh, ids, reg, sched, auth.BuiltinProvider{DB: dbh})
+	srv.Tracing(prov.Tracer("braid/api"))
+	r := srv.Router()
+	author, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAuthor}, 0)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	name := uniqName("rb-trace")
+	rbPublish(t, r, author, name, rbChainDoc(name))
+	execID, bNode := rbDriveToFailed(t, r, sched, dbh, author, name)
+
+	// X = 触发请求 root trace(应用层强制;api 触发路径非空)。
+	var x string
+	if err := dbh.QueryRow(`SELECT trace_id FROM workflow_execution WHERE id=?`, execID).
+		Scan(&x); err != nil || x == "" {
+		t.Fatalf("workflow_execution.trace_id = %q err=%v, want 非空(API 触发 root)", x, err)
+	}
+
+	code, _ := doJSON(t, r, http.MethodPost,
+		fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
+		[]byte(`{"node_id":"b"}`))
+	if code != http.StatusCreated {
+		t.Fatalf("rollback code = %d, want 201", code)
+	}
+
+	// 段首面:rolled_back 行 trace=Z(非空、≠X)+ linked=X。
+	var z, linked sql.NullString
+	if err := dbh.QueryRow(`SELECT trace_id, linked_trace_id FROM audit_log
+	  WHERE execution_id=? AND event_type='execution.rolled_back'`, execID).Scan(&z, &linked); err != nil {
+		t.Fatalf("read rolled_back: %v", err)
+	}
+	if !z.Valid || z.String == "" || z.String == x {
+		t.Fatalf("rolled_back trace = %v, want 非空且 ≠ root(回滚请求段链 Z)", z)
+	}
+	if !linked.Valid || linked.String != x {
+		t.Fatalf("rolled_back linked = %v, want root X(段首指回主链)", linked)
+	}
+
+	// 重跑任务面:RerunNode 派发的 att 任务 outbox 行 trace=Z——重跑段与
+	// 回滚请求同链(worker 消费侧 remote parent 续 Z,审批 resume 同形)。
+	var taskTrace sql.NullString
+	if err := dbh.QueryRow(`SELECT trace_id FROM outbox
+	  WHERE execution_id=? AND task_id=?`, execID, fmt.Sprintf("att:%d:%d", bNode, 2)).Scan(&taskTrace); err != nil {
+		t.Fatalf("read rerun outbox row: %v", err)
+	}
+	if !taskTrace.Valid || taskTrace.String != z.String {
+		t.Fatalf("rerun outbox trace = %v, want Z=%v(重跑段同链)", taskTrace, z.String)
+	}
+}
+
+// TestHTTPRollbackConflictReplay:T18.5 重放收敛第二形态——裸 ErrConflict
+// (并发双回滚败者 CAS 形态)经 fakeTrigger 注入钉 handler 接线;终态
+// 复核闸用「台账在场但 wf 已终态」的执行锚定(变异自查:删 ErrConflict
+// 分支 → 200 臂红;删终态复核 → conflict 臂红为 200)。种子走真 scheduler
+// 链,server B(fakeTrigger)只读不写——两 server 共享 dbh。
+func TestHTTPRollbackConflictReplay(t *testing.T) {
+	dbh := openAPITestDB(t)
+	schedIDs, err := snowflake.New(8)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: schedIDs})
+	if err != nil {
+		t.Fatalf("scheduler: %v", err)
+	}
+	reg, err := tools.NewRegistry()
+	if err != nil {
+		t.Fatalf("registry: %v", err)
+	}
+	cfg := Config{Addr: DefaultAddr, JWTSecret: testSecret, SnowflakeNode: snowflake.Explicit(1),
+		LoginRateLimit: 100000, LoginRateWindow: time.Minute,
+		LoginMaxFailures: 100000, LoginLockout: time.Minute}
+	ids, err := snowflake.New(1)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	// 种子 server(真 trigger:发布 + 触发 + 真回滚落台账)。
+	seedSrv := NewServer(cfg, dbh, ids, reg, sched, auth.BuiltinProvider{DB: dbh})
+	seedR := seedSrv.Router()
+	author, err := auth.SignToken(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAuthor}, 0)
+	if err != nil {
+		t.Fatalf("sign token: %v", err)
+	}
+
+	// 执行一:FAILED → 真回滚 → RUNNING + 台账(重放成功臂的种子)。
+	name := uniqName("rb-cfl1")
+	rbPublish(t, seedR, author, name, rbChainDoc(name))
+	execRunning, _ := rbDriveToFailed(t, seedR, sched, dbh, author, name)
+	if _, err := sched.RollbackTo(context.Background(), scheduler.RollbackParams{
+		ExecID: execRunning, TargetNodeID: "b", WorkerID: "api-rb", ActorID: "op"}); err != nil {
+		t.Fatalf("seed rollback: %v", err)
+	}
+
+	// 执行二:FAILED → 真回滚 → 重跑再终败 → 台账在场但 wf FAILED
+	//(终态复核臂的种子:终态时 ErrConflict 保持冲突语义不重放)。
+	name2 := uniqName("rb-cfl2")
+	rbPublish(t, seedR, author, name2, rbChainDoc(name2))
+	execFailed, b2 := rbDriveToFailed(t, seedR, sched, dbh, author, name2)
+	if _, err := sched.RollbackTo(context.Background(), scheduler.RollbackParams{
+		ExecID: execFailed, TargetNodeID: "b", WorkerID: "api-rb", ActorID: "op"}); err != nil {
+		t.Fatalf("seed rollback: %v", err)
+	}
+	rbComplete(t, sched, execFailed, b2, rbSeedAttempt(t, dbh, execFailed, b2, 2),
+		engine.AttemptFailed, nil)
+	var st engine.WorkflowState
+	if err := dbh.QueryRow(`SELECT status FROM workflow_execution WHERE id=?`, execFailed).
+		Scan(&st); err != nil || st != engine.WorkflowFailed {
+		t.Fatalf("种子二 wf = %v(%v), want FAILED(台账在场+终态)", st, err)
+	}
+
+	// 被测 server:fakeTrigger 注入裸 ErrConflict(并发败者 CAS 形态)。
+	conflictSrv := NewServer(cfg, dbh, ids, reg,
+		fakeTrigger{err: engine.ErrConflict}, auth.BuiltinProvider{DB: dbh})
+	cr := conflictSrv.Router()
+
+	code, body := doJSON(t, cr, http.MethodPost,
+		fmt.Sprintf("/api/v1/executions/%d/rollback", execRunning), author,
+		[]byte(`{"node_id":"b"}`))
+	if code != http.StatusOK {
+		t.Fatalf("conflict-loser replay code = %d %v, want 200(RUNNING+台账匹配)", code, body)
+	}
+	if body["target_node_id"] != "b" {
+		t.Fatalf("replay body = %v, want target b", body)
+	}
+
+	code, body = doJSON(t, cr, http.MethodPost,
+		fmt.Sprintf("/api/v1/executions/%d/rollback", execFailed), author,
+		[]byte(`{"node_id":"b"}`))
+	if code != http.StatusConflict || body["error"] != "conflict" {
+		t.Fatalf("terminal code = %d %v, want 409 conflict(终态复核拒重放)", code, body)
 	}
 }

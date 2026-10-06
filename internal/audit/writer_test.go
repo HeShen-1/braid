@@ -77,8 +77,8 @@ func TestValidateRejectsInvalidEvents(t *testing.T) {
 		{"trace id wrong length", func(e *Event) { e.TraceID = "0123456789abcdef0123456789abcde" }},
 		{"linked trace id not hex", func(e *Event) { e.LinkedTraceID = "NOTHEX" }},
 		{"linked trace id wrong length", func(e *Event) { e.LinkedTraceID = "0123456789abcdef0123456789abcde" }},
-		{"linked on non-approval event", func(e *Event) {
-			e.LinkedTraceID = "0123456789abcdef0123456789abcdef" // 词表闸:段首双词之外拒绝
+		{"linked on non-segment-head event", func(e *Event) {
+			e.LinkedTraceID = "0123456789abcdef0123456789abcdef" // 词表闸:段首家族(node.state_changed 等行)之外拒绝
 		}},
 		{"payload not json", func(e *Event) { e.Payload = json.RawMessage(`{`) }},
 		{"payload invalid utf-8", func(e *Event) {
@@ -120,7 +120,10 @@ func TestValidateRejectsInvalidEvents(t *testing.T) {
 	if err := validate(evt); err != nil {
 		t.Fatalf("validate(valid trace) = %v, want nil", err)
 	}
-	// linked_trace_id 同域(审批链段首双词单点携带,T6.2;词表闸见上表)。
+	// linked_trace_id 同域(段首家族单点携带——审批双词[T6.2]+ 回滚/取消
+	// 四词[T18.5];词表闸见上表与本文件正例组)。
+	// T18.5 起段首家族扩四词:回滚/取消两族的触发行同携 linked 指回执行
+	// root(镜像审批 decided/decision_denied);node 行仍拒绝(段首单点)。
 	evt.LinkedTraceID = "fedcba9876543210fedcba9876543210"
 	evt.EventType = EventApprovalDecided
 	if err := validate(evt); err != nil {
@@ -129,6 +132,15 @@ func TestValidateRejectsInvalidEvents(t *testing.T) {
 	evt.EventType = EventApprovalDecisionDenied
 	if err := validate(evt); err != nil {
 		t.Fatalf("validate(approval.decision_denied with linked) = %v, want nil", err)
+	}
+	for _, et := range []string{
+		EventExecutionRolledBack, EventRollbackDenied,
+		EventExecutionCancelled, EventCancelDenied,
+	} {
+		evt.EventType = et
+		if err := validate(evt); err != nil {
+			t.Fatalf("validate(%s with linked) = %v, want nil(T18.5 段首家族)", et, err)
+		}
 	}
 }
 

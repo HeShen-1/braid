@@ -7,9 +7,13 @@ package api
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
+
+	"braid/internal/audit"
 )
 
 // AuditEvent 是 audit_log 一行的查询面模型。prev_hash / row_hash 已随
@@ -158,6 +162,32 @@ func (s *Store) ListAuditEvents(ctx context.Context, q DBTX, aq AuditQuery, curs
 		return out, &AuditCursor{EventAt: last.EventAt, ID: last.ID}, nil
 	}
 	return out, nil, nil
+}
+
+// LatestRolledBackPayload 读回执行最新一条 execution.rolled_back 的
+// payload(T18.5 重放重建源):rolled_back 是同步直写词,首答提交即可见。
+// 访问路径与 auditPredicate 执行维度同式——exec_date 钉分区裁剪 +
+// idx_audit_exec + event_type 残差过滤,LIMIT 1 免翻页;found=false =
+// 无台账,调用方按原拒绝语义直通。
+func (s *Store) LatestRolledBackPayload(ctx context.Context, q DBTX, tenantID uint64,
+	execID uint64, execDate string) (audit.ExecutionRolledBackPayload, bool, error) {
+	var raw []byte
+	if err := q.QueryRowContext(ctx,
+		`SELECT payload FROM audit_log
+		 WHERE tenant_id=? AND exec_date=? AND execution_id=?
+		   AND event_type='execution.rolled_back'
+		 ORDER BY event_at DESC, id DESC LIMIT 1`,
+		tenantID, execDate, execID).Scan(&raw); err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return audit.ExecutionRolledBackPayload{}, false, nil
+		}
+		return audit.ExecutionRolledBackPayload{}, false, fmt.Errorf("api: latest rolled_back: %w", err)
+	}
+	var p audit.ExecutionRolledBackPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return audit.ExecutionRolledBackPayload{}, false, fmt.Errorf("api: unmarshal rolled_back payload: %w", err)
+	}
+	return p, true, nil
 }
 
 func scanAuditEvent(r rowScanner) (AuditEvent, error) {

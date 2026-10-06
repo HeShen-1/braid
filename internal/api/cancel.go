@@ -8,6 +8,7 @@ package api
 // decideApproval/rollback 双先例)。
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -125,6 +126,15 @@ func (s *Server) mapCancelError(c *gin.Context, err error) {
 // writeRollbackDeniedAudit 全部纪律——执行缺行时 Append 分区键点查失败 =
 // 天然防灌水)。
 func (s *Server) writeCancelDeniedAudit(c *gin.Context, execID uint64, actor, reason string) {
+	// T18.5 ⑦:root X 池上点查(镜像 writeDecisionDeniedAudit;回滚 denied
+	// 同判)——段链 Z 指回执行主链,best-effort 面同先例。
+	var rootTrace sql.NullString
+	if err := s.dbh.QueryRowContext(c.Request.Context(),
+		`SELECT trace_id FROM workflow_execution WHERE id=?`, execID).
+		Scan(&rootTrace); err != nil {
+		slog.Error("api: anchor cancel.denied trace", "err", err, "execution_id", execID)
+		return
+	}
 	id, err := s.ids.Next()
 	if err != nil {
 		slog.Error("api: gen cancel.denied id", "err", err)
@@ -139,7 +149,8 @@ func (s *Server) writeCancelDeniedAudit(c *gin.Context, execID uint64, actor, re
 	if err := engine.WithTx(c.Request.Context(), s.dbh, func(q engine.DBTX) error {
 		return audit.Append(c.Request.Context(), q, audit.Event{
 			ID: id, EventType: audit.EventCancelDenied, ExecutionID: execID,
-			ActorType: audit.ActorUser, ActorID: actor, Payload: raw,
+			ActorType: audit.ActorUser, ActorID: actor,
+			LinkedTraceID: rootTrace.String, Payload: raw,
 		})
 	}); err != nil {
 		slog.Error("api: anchor cancel.denied", "err", err, "execution_id", execID)

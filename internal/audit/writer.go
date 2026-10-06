@@ -20,8 +20,9 @@
 // appendChain(chain.go)在 chain_heads 行锁下取链尾算 hash,暂存/直写两路
 // 径同链;断链闩 = ErrChainBroken fail-closed。
 // trace_id/linked_trace_id 已随 T6.2 OTel 贯穿接线:TraceID 从 ctx span
-// context 自动提取(applyCtxTrace,显式值优先),LinkedTraceID 由审批链
-// 段首行单点显式携带。pii_masked 已随 T6.1 脱敏钩子
+// context 自动提取(applyCtxTrace,显式值优先),LinkedTraceID 由段首
+// 家族行单点显式携带(审批双词[T6.2]+ 回滚/取消四词[T18.5],词表 =
+// linkedTraceAllowed)。pii_masked 已随 T6.1 脱敏钩子
 // 接线(SanitizePayload 掩蔽标志;现有词表无自由文本 ⇒ 恒 0,见
 // sanitize.go)。usage/cost 冗余列已随 T3.1 llm.call.completed 启用
 // (Event.Usage,与 node_attempt 双录;其余事件类型仍不携带)。
@@ -197,6 +198,19 @@ var knownActors = map[string]bool{
 
 var traceIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
 
+// linkedTraceAllowed 是 linked_trace_id 的段首家族词表(词表闸判据单点):
+// 审批 decided/decision_denied(T6.2)+ 回滚 rolled_back/rollback.denied
+// 与取消 cancelled/cancel.denied(T18.5 世系补链,镜像审批先例)。扩列须
+// 同步 writer_test 正例与本表。
+var linkedTraceAllowed = map[string]bool{
+	EventApprovalDecided:        true,
+	EventApprovalDecisionDenied: true,
+	EventExecutionRolledBack:    true,
+	EventRollbackDenied:         true,
+	EventExecutionCancelled:     true,
+	EventCancelDenied:           true,
+}
+
 // Event 是 audit_log 行的写入参数。ID 应用生成(snowflake,复用调用方生成器),
 // 零值被拒。NodeExecID/AttemptID/NodeID/TraceID 零值/空串 → NULL(P0 各事件的
 // 携带约定见 payload 结构注释)。Usage 非 nil 时落 usage/cost 冗余列组
@@ -211,8 +225,10 @@ type Event struct {
 	ActorType   string
 	ActorID     string
 	TraceID     string
-	// LinkedTraceID 落 linked_trace_id:审批链段首行单点携带(决策行指向
-	// 执行主链 root trace,D-2026-09-27-t62-otel-trace);其余事件零值 → NULL。
+	// LinkedTraceID 落 linked_trace_id:段首家族行单点携带(行自身 trace =
+	// 触发请求段链 Z,本列指向执行主链 root trace X)——审批 decided/
+	// decision_denied(D-2026-09-27-t62-otel-trace)+ 回滚/取消四词
+	// (T18.5);其余事件零值 → NULL(词表闸 = linkedTraceAllowed)。
 	LinkedTraceID string
 	Payload       json.RawMessage
 	Usage         *engine.AttemptUsage
@@ -220,7 +236,7 @@ type Event struct {
 
 // applyCtxTrace 在 TraceID 未显式设置时从 ctx 的 span context 提取(T6.2):
 // 生产调用方传请求/任务 ctx 即自动携带,十处发射点零改动;显式非空值优先
-// (测试注入位)。LinkedTraceID 不走 ctx——段首单点显式赋值,见 Event 注释。
+// (测试注入位)。LinkedTraceID 不走 ctx——段首家族单点显式赋值,见 Event 注释。
 func applyCtxTrace(ctx context.Context, evt *Event) {
 	if evt.TraceID == "" {
 		if sc := trace.SpanContextFromContext(ctx); sc.HasTraceID() {
@@ -356,10 +372,12 @@ func validate(evt Event) error {
 	case evt.LinkedTraceID != "" && !traceIDRe.MatchString(evt.LinkedTraceID):
 		return fmt.Errorf("%w: linked_trace_id %q", ErrInvalidEvent, evt.LinkedTraceID)
 	// linked 词表闸(「段首单点」查询语义的机器可检半边,review LOW):
-	// 段首双词之外的事件携带 linked = 调用方 bug,静默落列会稀释按链
-	// 串联的查询语义——fail-closed 同词表哲学。
-	case evt.LinkedTraceID != "" && evt.EventType != EventApprovalDecided && evt.EventType != EventApprovalDecisionDenied:
-		return fmt.Errorf("%w: linked_trace_id on %q (approval.decided/decision_denied only)",
+	// 段首家族之外的事件携带 linked = 调用方 bug,静默落列会稀释按链
+	// 串联的查询语义——fail-closed 同词表哲学。家族 = 审批双词(T6.2
+	// 决策行/拒绝行)+ 回滚/取消两族触发行(T18.5 世系补链,镜像审批
+	// 先例:请求段链 Z 指回执行 root X);node 行恒不携(段首单点纪律)。
+	case evt.LinkedTraceID != "" && !linkedTraceAllowed[evt.EventType]:
+		return fmt.Errorf("%w: linked_trace_id on %q (segment-head family only)",
 			ErrInvalidEvent, evt.EventType)
 	case evt.Usage != nil && evt.EventType != EventLLMCallCompleted && evt.EventType != EventLLMCallDiscarded:
 		return fmt.Errorf("%w: usage columns on %q (llm.call.completed/discarded only)",

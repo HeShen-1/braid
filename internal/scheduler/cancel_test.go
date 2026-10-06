@@ -428,3 +428,32 @@ func countJSONNulls(t *testing.T, raw string) int {
 	}
 	return n
 }
+
+// TestCancelAuditLinksRootTrace:T18.5 ⑦ 世系锚(取消孪生面,与回滚
+// rolled_back 同判)——execution.cancelled 行 linked_trace_id = 执行
+// root X(受理守卫同语句读出);行自身 trace_id 走 ctx(Background =
+// NULL,prod = 取消请求段链)。变异自查:守卫不读 trace_id / 审计行漏落
+// linked → 断言红。
+func TestCancelAuditLinksRootTrace(t *testing.T) {
+	s, d := newSched(t)
+	execID := rbStart(t, s, d, rbChainDSL, `{"q":"hi"}`)
+	const rootX = "0123456789abcdef0123456789abcdef"
+	if _, err := d.Exec(`UPDATE workflow_execution SET trace_id=? WHERE id=?`, rootX, execID); err != nil {
+		t.Fatalf("seed root trace: %v", err)
+	}
+	if _, err := s.CancelExecution(context.Background(), CancelParams{
+		ExecID: execID, WorkerID: "api:cancel", ActorID: "op"}); err != nil {
+		t.Fatalf("CancelExecution: %v", err)
+	}
+	var trace, linked sql.NullString
+	if err := d.QueryRow(`SELECT trace_id, linked_trace_id FROM audit_log
+	  WHERE execution_id=? AND event_type='execution.cancelled'`, execID).Scan(&trace, &linked); err != nil {
+		t.Fatalf("read cancelled trace cols: %v", err)
+	}
+	if trace.Valid {
+		t.Fatalf("trace_id = %q, want NULL(Background ctx 无段)", trace.String)
+	}
+	if !linked.Valid || linked.String != rootX {
+		t.Fatalf("linked_trace_id = %+v, want root X(段首指回执行主链)", linked)
+	}
+}
