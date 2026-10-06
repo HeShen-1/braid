@@ -185,7 +185,7 @@ func TestAPIFenceAllWriteFaces(t *testing.T) {
 	if n := auditRowCount(t, dbh, deniedExec1, "cancel.denied"); n != 1 {
 		t.Fatalf("crowned cancel.denied rows = %d, want 1", n)
 	}
-	srv.writeRollbackDeniedAudit(fakeGinC(), deniedExec1, "", "alice", "role_denied", 0)
+	srv.writeRollbackDeniedAudit(fakeGinC(), deniedExec1, "", "alice", "role_denied", 0, false)
 	if n := auditRowCount(t, dbh, deniedExec1, "rollback.denied"); n != 1 {
 		t.Fatalf("crowned rollback.denied rows = %d, want 1", n)
 	}
@@ -218,7 +218,7 @@ func TestAPIFenceAllWriteFaces(t *testing.T) {
 	if n := auditRowCount(t, dbh, deniedExec2, "cancel.denied"); n != 0 {
 		t.Fatalf("superseded cancel.denied rows = %d, want 0", n)
 	}
-	srv.writeRollbackDeniedAudit(fakeGinC(), deniedExec2, "", "alice", "role_denied", 0)
+	srv.writeRollbackDeniedAudit(fakeGinC(), deniedExec2, "", "alice", "role_denied", 0, false)
 	if n := auditRowCount(t, dbh, deniedExec2, "rollback.denied"); n != 0 {
 		t.Fatalf("superseded rollback.denied rows = %d, want 0", n)
 	}
