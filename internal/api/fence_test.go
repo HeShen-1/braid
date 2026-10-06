@@ -109,7 +109,7 @@ func TestPublishFenceRejectsSupersededLease(t *testing.T) {
 // 快照),返回 (execID, nodeExecID)。
 func seedApprovalFenceChain(t *testing.T, dbh *sql.DB, tag string) (uint64, uint64) {
 	t.Helper()
-	ids, err := snowflake.New(2)
+	ids, err := snowflake.New(21) // 专属节点号:rollback_test.go:134 占 node 2,同毫秒首号会撞 PK(CI 实证)
 	if err != nil {
 		t.Fatalf("snowflake: %v", err)
 	}
