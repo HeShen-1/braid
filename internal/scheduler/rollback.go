@@ -5,8 +5,11 @@ package scheduler
 // 失败源自动收编(闭包外仅允许 SUCCEEDED/SKIPPED,终态可达结构性保证)。
 // 通道 = api 同步事务(approval「等用户输入」先例动机不适用;Instantiate
 // 直调先例),不经 outbox ⇒ 零新词表/零 worker handler/零队列配置。
-// 锁序铁律:lockAllRows(node 全行集)→ node_attempt(RUNNING 收口)→
-// workflow_execution(RestartExecution 最后)——与 reaper reapOnce 同序,无 AB-BA。
+// 锁获取序 = node 全行集(lockAllRows)→ workflow_execution(守卫① FOR
+// UPDATE,T19.6 起)→ node_attempt(步骤 6.5/8 收口):wf 行锁虽早于 attempt
+// 获取,RestartExecution 收口仍在步骤 11(语义序最后);与 reaper/complete
+// 的 node→wf 序、Start 例外(wf 先但其备忘前提「PENDING 无并发 node 锁持有
+// 者」不与本面相交)均无 AB-BA。
 
 import (
 	"context"
@@ -34,8 +37,9 @@ const (
 	// RestartExecution CAS 0 行)。
 	RollbackNotRollbackable RollbackErrKind = "not_rollbackable"
 	// RollbackBlockedInflight:全行集含 EXECUTING/WAITING_APPROVAL 残留
-	//(fail-fast 不等兄弟 + orphanQuiet 静默窗,D-t92 决策 4②:409 等 reaper
-	// settle,不做事务内收口)。Blocked 携带节点清单引导运维。
+	//(fail-fast 不等兄弟 + orphanQuiet 静默窗)。无 quiesce 旗标时 409 等
+	// reaper settle,Blocked 携带节点清单引导运维;T19.6(D-2026-10-06-t196)
+	// 起 = 协议观测态:重试携 quiesce=true 即单事务楔停收敛(决策 1)。
 	RollbackBlockedInflight RollbackErrKind = "blocked_inflight"
 	// RollbackBadNode:目标不在钉住 DSL,或前驱锥存在闭包外 SKIPPED
 	//(剪枝传播必将目标静默剪掉,正确落点 = branch 节点)。
@@ -90,13 +94,18 @@ type RollbackParams struct {
 	TargetNodeID string // "" = 自动定位(resume 语法糖):字典序首个 FAILED → 字典序首个 CANCELLED(T19.3 楔源档)→ 前驱全就绪的 PENDING 冻结行
 	WorkerID     string // 派发归因(RerunNode worker_id + att 事件;api 侧建议 api:rollback:<exec> 形态)
 	ActorID      string // 操作者主体(审计 actor_id;api 侧 JWT sub)
+	// Quiesce:T19.6(D-t196 决策 1)——true 时守卫② 检出的 EXECUTING/WA
+	// 残留在本事务内楔停收敛(D-t193 楔停原语的行级子集);false = 409
+	// blocked_inflight 等 reaper settle(现行为,等待保值语义见决策 1)。
+	Quiesce bool
 }
 
 // RollbackResult 是回滚成功的事务结果(响应体与审计 payload 同源)。
 type RollbackResult struct {
-	TargetNodeID string
-	RerunTarget  bool // true = RerunNode 快照读回重跑;false = 重评估(advance 重派)
-	ResetCount   int  // ResetNodeToPending 命中行数(含实例行)
+	TargetNodeID  string
+	RerunTarget   bool // true = RerunNode 快照读回重跑;false = 重评估(advance 重派)
+	ResetCount    int  // ResetNodeToPending 命中行数(含实例行)
+	QuiescedCount int  // T19.6:楔停收敛的残留行数(0 = 非楔停回滚/零残留)
 }
 
 // RollbackTo 单事务执行回滚:守卫链 → 闭包计算(自动收编)→ RUNNING attempt
@@ -182,15 +191,19 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 
 		// 2. 守卫①:wf ∈ 终态白名单 {FAILED, SUCCEEDED, CANCELLED}
 		//(T19.3 D-2026-10-05-t193 决策 3;D-t92 决策 4 原口径「仅 FAILED」
-		// 随 SUCCEEDED/CANCELLED 放行扩列)。普通读即可——终裁在
-		// RestartExecution 的 status-only CAS(并发双回滚败者在此收敛 409)。
-		// trace_id 同语句读出(T18.5 ⑦ 世系:rolled_back 行 linked 指回
-		// root X,审批 decided 段首单点先例;列 Instantiate 后无 UPDATE
-		// 路径,快照读无损)。
+		// 随 SUCCEEDED/CANCELLED 放行扩列)。FOR UPDATE 当前读(D-t195 审计
+		// MEDIUM④ 收编,镜像 cancel.go 受理守卫/D-t193 审计 C1 修):容量闸
+		// 的 COUNT 是本事务首个一致读,已在闸时刻建立 RR read view——其后的
+		// 普通 SELECT 会回放过期快照(对真实 FAILED 执行误拒 409);wf 行锁
+		// 在 node 全行集之后获取(获取序 node→wf→attempt,见文件头),
+		// RestartExecution 收口语义序仍在最后。终裁兜底 = RestartExecution
+		// 的 status-only CAS(并发双回滚败者收敛面)。trace_id 同语句读出
+		//(T18.5 ⑦ 世系:rolled_back 行 linked 指回 root X,审批 decided 段首
+		// 单点先例;列 Instantiate 后无 UPDATE 路径,快照读无损)。
 		var wfStatus engine.WorkflowState
 		var rootTrace sql.NullString
 		if err := q.QueryRowContext(ctx,
-			`SELECT status, trace_id FROM workflow_execution WHERE id=?`, p.ExecID).
+			`SELECT status, trace_id FROM workflow_execution WHERE id=? FOR UPDATE`, p.ExecID).
 			Scan(&wfStatus, &rootTrace); err != nil {
 			return fmt.Errorf("scheduler: rollback read execution status %d: %w", p.ExecID, err)
 		}
@@ -200,19 +213,23 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 		}
 
 		// 3. 守卫②:全行集(控制行+实例行)零 EXECUTING/WAITING_APPROVAL。
+		// 无旗标 → 409(协议观测态);Quiesce → 残留行集暂存交楔停步(6.5)
+		// 同事务收敛(T19.6 D-t196 决策 2)。
+		var residue []*nodeRow
 		var blocked []string
 		for _, id := range sortedNodes(g.nodes) {
 			rowSet := append([]*nodeRow{rows.byNodeID[id]}, rows.instances[id]...)
 			for _, r := range rowSet {
 				if r.status == engine.NodeExecuting || r.status == engine.NodeWaitingApproval {
+					residue = append(residue, r)
 					blocked = append(blocked, fmt.Sprintf("%s:%d", r.nodeID, r.instanceNo))
 				}
 			}
 		}
-		if len(blocked) > 0 {
+		if len(blocked) > 0 && !p.Quiesce {
 			sort.Strings(blocked)
 			return &RollbackError{Kind: RollbackBlockedInflight,
-				Detail:  "in-flight residue; wait for reaper settle (orphanQuiet) and retry",
+				Detail:  "in-flight residue; wait for reaper settle (orphanQuiet) and retry, or retry with quiesce=true to wedge residue in-transaction",
 				Blocked: blocked}
 		}
 
@@ -306,6 +323,69 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 			if rows.byNodeID[a].status == engine.NodeSkipped && !closure[a] {
 				return &RollbackError{Kind: RollbackBadNode,
 					Detail: fmt.Sprintf("node %q is under a pruned branch (skipped ancestor %q); rollback the branch node instead", target, a)}
+			}
+		}
+
+		// 6.5 T19.6 quiesce 楔停(D-2026-10-06-t196 决策 2):守卫② 检出的
+		// 残留行在 Quiesce=true 时同事务收敛——D-t193 楔停机制的行级子集
+		//(cancelOnce 步骤 3/4 同构):RUNNING attempt 收口(锁获取序见文件头;
+		// code=rollback_quiesce 区分归因——同事务晚到的步骤 8 对这些行幂等
+		// 空转)→ CancelNode(attempts 不动,轮次单调)→ 审计(from=EXECUTING/
+		// WA)。闭包归属 = 步骤 5 收编谓词(控制行键控)零追加:控制行残行
+		//(EXECUTING/WA)必非 {SUCCEEDED,SKIPPED} ⇒ 已被步骤 5 收编;SUCCEEDED
+		// 控制器下的实例残行楔停后留闭包外 = CANCELLED 证据行,与步骤 5 锚定的
+		// FAILED 证据行同判(T19.1 实例容忍),不连带重置输入未变的下游
+		//(对抗审计 M1:与等待路径/证据行语义一致性,addDown 追加被否)。
+		// 在飞 worker 迟到收口撞版本 CAS 必败 = 幂等哨兵;asynq 滞留副本由
+		// worker.claimAttempt 活态闸拦——收敛保证全继承 D-t193。WithTx 单提交:
+		// 任何后置失败整体回滚,零部分楔停。楔停后 CANCELLED ∈ Terminal ⇒
+		// 步骤 7 重跑分流对残行目标自然生效(CancelNode 不清快照)。
+		quiesced := 0
+		if len(residue) > 0 {
+			rq, ok := q.(engine.RowsDBTX)
+			if !ok {
+				return fmt.Errorf("scheduler: DBTX lacks the multi-row facet (engine.RowsDBTX)")
+			}
+			for _, r := range residue {
+				rs, err := rq.QueryContext(ctx,
+					`SELECT id FROM node_attempt WHERE node_execution_id=? AND status='RUNNING' FOR UPDATE`, r.id)
+				if err != nil {
+					return fmt.Errorf("scheduler: rollback quiesce lock attempts node %s: %w", r.nodeID, err)
+				}
+				var attIDs []uint64
+				for rs.Next() {
+					var attID uint64
+					if err := rs.Scan(&attID); err != nil {
+						_ = rs.Close()
+						return fmt.Errorf("scheduler: rollback quiesce scan attempt node %s: %w", r.nodeID, err)
+					}
+					attIDs = append(attIDs, attID)
+				}
+				if err := rs.Err(); err != nil {
+					_ = rs.Close()
+					return fmt.Errorf("scheduler: rollback quiesce attempts node %s: %w", r.nodeID, err)
+				}
+				if err := rs.Close(); err != nil {
+					return fmt.Errorf("scheduler: rollback quiesce close attempts node %s: %w", r.nodeID, err)
+				}
+				for _, attID := range attIDs {
+					if err := engine.CloseAttemptDead(ctx, q, attID,
+						"rollback_quiesce",
+						fmt.Sprintf("rolled back with quiesce (%s)", p.WorkerID)); err != nil {
+						return fmt.Errorf("scheduler: rollback quiesce close attempt %d: %w", attID, err)
+					}
+				}
+				from := r.status
+				newVer, err := engine.CancelNode(ctx, q, r.id, r.version)
+				if err != nil {
+					return err
+				}
+				if err := stageRollbackTransition(ctx, q, s, p.ExecID, p.ActorID, r, from, engine.NodeCancelled, newVer, r.attempts); err != nil {
+					return err
+				}
+				r.status = engine.NodeCancelled
+				r.version = newVer
+				quiesced++
 			}
 		}
 
@@ -452,10 +532,11 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 			return fmt.Errorf("scheduler: gen rollback audit id: %w", err)
 		}
 		raw, err := json.Marshal(audit.ExecutionRolledBackPayload{
-			TargetNodeID: target,
-			FromStatus:   string(wfStatus),
-			ResetCount:   resetCount,
-			RerunTarget:  rerun,
+			TargetNodeID:  target,
+			FromStatus:    string(wfStatus),
+			ResetCount:    resetCount,
+			RerunTarget:   rerun,
+			QuiescedCount: quiesced,
 		})
 		if err != nil {
 			return fmt.Errorf("scheduler: marshal rollback audit payload: %w", err)
@@ -478,7 +559,7 @@ func (s *Scheduler) rollbackOnce(ctx context.Context, p RollbackParams,
 		if err := st.advance(sortedNodes(g.nodes)); err != nil {
 			return err
 		}
-		res = &RollbackResult{TargetNodeID: target, RerunTarget: rerun, ResetCount: resetCount}
+		res = &RollbackResult{TargetNodeID: target, RerunTarget: rerun, ResetCount: resetCount, QuiescedCount: quiesced}
 		return engine.TouchExecution(ctx, q, p.ExecID)
 	})
 	return res, err

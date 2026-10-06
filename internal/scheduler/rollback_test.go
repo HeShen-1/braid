@@ -24,6 +24,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"braid/internal/db/sqltest"
 	"braid/internal/engine"
@@ -759,6 +760,77 @@ func TestRollbackAuditLinksRootTrace(t *testing.T) {
 	}
 	if !linked.Valid || linked.String != rootX {
 		t.Fatalf("linked_trace_id = %+v, want root X(段首指回执行主链)", linked)
+	}
+}
+
+// TestRollbackGuardCurrentRead:D-t196 决策 5(D-t195 审计 MEDIUM④ 收编)
+// 的回归锚——容量闸开启(生产缺省)时守卫① 普通 SELECT 会回放 COUNT 时刻
+// 的 RR 快照:并发终态迁移发生在 lockAllRows 阻塞窗内则误拒 409。双连接
+// 锁传感编排(asynq_verify_test lockSensingProbe 同族):helper 持 a 行锁并
+// 同事务置 wf FAILED(未提交)→ 回滚 COUNT(RUNNING 时代)→ lockAllRows
+// 阻塞 → helper 提交 → 守卫① FOR UPDATE 当前读 FAILED 放行。变异(删
+// FOR UPDATE)读快照 RUNNING → not_rollbackable 红。
+//
+// 变异自查:守卫①退化为普通 SELECT → 本测 409 红;helper 未提交前回滚
+// 不可达(锁等待),时序确定性由行锁编排保证(innodb_trx 轮询确认回滚
+// 已进入 LOCK WAIT 再提交;不可见时保守 sleep 兜底)。
+func TestRollbackGuardCurrentRead(t *testing.T) {
+	s, d := newCappedSched(t, 4000) // 开闸才有「COUNT 先行建立 read view」窗口
+	execID := rbStart(t, s, d, rbChainDSL, `{"q":"hi"}`)
+	a := readNode(t, d, execID, "a")
+	if st := readExec(t, d, execID).status; st != engine.WorkflowRunning {
+		t.Fatalf("种子:wf 应 RUNNING,got %s", st)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	helper, err := d.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("helper tx: %v", err)
+	}
+	// 锁序与回滚一致(node 先):持 a 行锁,同事务把 wf 迁到 FAILED。
+	if _, err := helper.ExecContext(ctx,
+		`UPDATE node_execution SET status='FAILED', version=version+1 WHERE id=?`, a.id); err != nil {
+		t.Fatalf("helper lock node: %v", err)
+	}
+	if _, err := helper.ExecContext(ctx,
+		`UPDATE workflow_execution SET status='FAILED' WHERE id=?`, execID); err != nil {
+		t.Fatalf("helper flip wf: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := s.RollbackTo(ctx, RollbackParams{
+			ExecID: execID, WorkerID: "api-rb", ActorID: "op"})
+		done <- err
+	}()
+	// 确认回滚已阻塞在 a 行锁(helper 持锁 ⇒ lockAllRows 等待);2s 内
+	// 未见(权限/视图差异)则保守再等一拍——行锁持有本身保证回滚未越过
+	// lockAllRows,提交时点晚于 COUNT 即可复现窗口。
+	sawWait := false
+	waitDeadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(waitDeadline) {
+		var n int
+		if err := d.QueryRow(`SELECT COUNT(*) FROM information_schema.innodb_trx
+		  WHERE trx_state='LOCK WAIT'`).Scan(&n); err == nil && n > 0 {
+			sawWait = true
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	_ = sawWait
+	time.Sleep(200 * time.Millisecond)
+	if err := helper.Commit(); err != nil {
+		t.Fatalf("helper commit: %v", err)
+	}
+
+	// 守卫① 当前读 FAILED → 放行(helper 已把 a 置 FAILED,无残留;
+	// 快照读形态在此误拒 409 = 本锚的牙)。
+	if err := <-done; err != nil {
+		t.Fatalf("RollbackTo err = %v, want nil(当前读放行;409 = 守卫① 快照回放变异)", err)
+	}
+	if e := readExec(t, d, execID); e.status != engine.WorkflowRunning {
+		t.Fatalf("wf = %s, want RUNNING(复活)", e.status)
 	}
 }
 

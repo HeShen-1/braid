@@ -213,21 +213,24 @@ type LLMCallBudgetDeniedPayload struct {
 // 冗余列作对账锚);reset_count = 本轮重置行数(含实例行);rerun_target
 // 区分目标重跑(RerunNode)与重评估(Reset 后由 advance 重派)两种形态。
 type ExecutionRolledBackPayload struct {
-	TargetNodeID string `json:"target_node_id"`
-	FromStatus   string `json:"from_status"`  // 回滚前执行状态(白名单三终态)
-	ResetCount   int    `json:"reset_count"`  // ResetNodeToPending 命中行数(含实例行)
-	RerunTarget  bool   `json:"rerun_target"` // true = RerunNode 快照读回重跑;false = advance 重评估派发
+	TargetNodeID  string `json:"target_node_id"`
+	FromStatus    string `json:"from_status"`    // 回滚前执行状态(白名单三终态)
+	ResetCount    int    `json:"reset_count"`    // ResetNodeToPending 命中行数(含实例行)
+	RerunTarget   bool   `json:"rerun_target"`   // true = RerunNode 快照读回重跑;false = advance 重评估派发
+	QuiescedCount int    `json:"quiesced_count"` // T19.6(D-t196):楔停收敛的 EXECUTING/WA 残留行数(0 = 非楔停/零残留;api 重放重建同源)
 }
 
 // RollbackDeniedPayload 是 rollback.denied(回滚请求被拒,T9.2)的事件体。
 // 拒绝面归审计(镜像 approval.decision_denied 的独立小事务先例)。reason
 // 是错误分面枚举:not_rollbackable | blocked_inflight | bad_node_id |
 // no_resume_target | too_large | role_denied(too_large 自 T15.5 容量闸;
-// api 侧全业务分面落行);blocked 携阻塞节点清单上限(截断如实计数)。
+// api 侧全业务分面落行);blocked 携阻塞节点清单上限(截断如实计数);
+// quiesce = 请求是否携 T19.6 破坏性收敛旗标(拒绝面的显式 opt-in 证据)。
 type RollbackDeniedPayload struct {
 	Reason       string `json:"reason"`
 	TargetNodeID string `json:"target_node_id,omitempty"`
 	BlockedCount int    `json:"blocked_count,omitempty"`
+	Quiesce      bool   `json:"quiesce"`
 }
 
 // ExecutionCancelledPayload 是 execution.cancelled(T19.3 取消决定事务,

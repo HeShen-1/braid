@@ -23,7 +23,7 @@
 - [x] T19.3 SUCCEEDED/CANCELLED 执行回滚 — M-L — 独立 D- — 捆绑楔源预扫 + 执行级取消原语(现白名单仅 FAILED);是 T19.5/T19.6 的前置(T19.3 交付:D-2026-10-05-t193,楔源=取消楔停行集双捆绑[取消事务预扫+resume 自动定位退化链 FAILED→CANCELLED→PENDING 冻结]、CancelExecution 原语[在飞照样楔停,T19.6 前置]、RestartExecution 白名单三终态、worker 活态闸[认领时非 EXECUTING 幂等 ack,与轮次校验正交]、POST /executions/:id/cancel + CancelSet + canvas;零 DDL 不占 0015)
 - [x] T19.4 reaper 自动续跑策略 — M — 拍板类(D-t92#5 现明文不自动复活终态执行;拍板是否开)— **定案:维持不开**(2026-10-06 用户拍板,零改动收口;重开触发器 = 真实运营续跑诉求,须新 D-)
 - [x] T19.5 parallel 增量恢复 — M — 依赖 T19.3 — 独立 D-(单实例粒度恢复,现整行集重跑;与实例收口/ReapInstanceExhausted 语义交叉)(T19.5 交付:D-2026-10-06-t195,重置面保活 + 三重门控[意图 target×终态/快照依赖闭包交集/行集原子性]、dispatchParallel claim 过滤 + 尾部 gatherCheck、零 engine 改动零迁移;取消楔源恢复自动增量,再生意图整行集重跑)
-- [ ] T19.6 在飞回滚 quiesce 协议 — L — 依赖 T19.3 — 独立 D-(现 409 blocked_inflight 等 reaper settle)
+- [x] T19.6 在飞回滚 quiesce 协议 — L — 依赖 T19.3 — 独立 D-(现 409 blocked_inflight 等 reaper settle)(T19.6 交付:D-2026-10-06-t196,quiesce 显式旗标[缺省 409 观测态保持——状态码/Retry-After/blocked 逐字,detail 补 quiesce 出路;等待保值/楔停换速度两态一等公民] + 单事务楔停收敛[attempt 收口 code=rollback_quiesce + CancelNode + 审计,闭包归属=既有收编谓词零追加,D-t193 原语行级子集] + 观测三面[rolled_back.quiesced_count / DTO 重放镜像 / Quiesced 计数器] + 守卫① FOR UPDATE[D-t195 审计 MEDIUM④ 遗留收编] + canvas quiesce 复选;零 DDL 不占 0015、零 engine)
 
 ## M20 可靠性收口波(P3-3,与 M18 并行,零 engine 耦合)
 

@@ -5,11 +5,14 @@ package api
 // 成功 201 回显、拒绝审计 rollback.denied、resume 自动定位语法糖。
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -109,6 +112,136 @@ func rbDriveToFailed(t *testing.T, r *gin.Engine, sched *scheduler.Scheduler, db
 		t.Fatalf("种子 wf = %v(%v), want FAILED", st, err)
 	}
 	return execID, b
+}
+
+// rbDiamondDoc:a→(b,c)→d 菱形(fail-fast 残留形状:b 终败时 c 在飞)。
+func rbDiamondDoc(name string) []byte {
+	return fmt.Appendf(nil, `{"dsl":"1.0","name":%q,
+"edges":[{"from":"a","to":"b"},{"from":"a","to":"c"},{"from":"b","to":"d"},{"from":"c","to":"d"}],
+"nodes":[
+ {"id":"a","type":"llm","prompt":{"template":"a"},"outputs":{"text":"string"}},
+ {"id":"b","type":"llm","prompt":{"template":"b"},"outputs":{"text":"string"}},
+ {"id":"c","type":"llm","prompt":{"template":"c"},"outputs":{"text":"string"}},
+ {"id":"d","type":"llm","prompt":{"template":"d","user_data":[{"name":"v","ref":"{{nodes.b.output.text}}"},{"name":"w","ref":"{{nodes.c.output.text}}"}]},"outputs":{"text":"string"}}],
+"outputs":{"done":"{{nodes.d.output.text}}"}}`, name)
+}
+
+// TestHTTPRollbackQuiesce:T19.6(D-t196)HTTP 契约面——无旗标 409 携
+// quiesce 出路提示(detail 自描述 + Retry-After 保持);旗标 201 回显
+// quiesced_count;重放 200 镜像 quiesced_count(台账整结构体回读)。
+func TestHTTPRollbackQuiesce(t *testing.T) {
+	dbh := openAPITestDB(t)
+	schedIDs, err := snowflake.New(2)
+	if err != nil {
+		t.Fatalf("snowflake: %v", err)
+	}
+	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: schedIDs})
+	if err != nil {
+		t.Fatalf("scheduler: %v", err)
+	}
+	r, _, sign := newTestServerWithTrigger(t, sched)
+	author := sign(auth.RoleAuthor)
+	name := uniqName("rb-quiesce")
+	rbPublish(t, r, author, name, rbDiamondDoc(name))
+
+	// 种子:a 成功 → b 终败(fail-fast,wf FAILED、c EXECUTING 残留)。
+	code, body := doJSON(t, r, http.MethodPost, "/api/v1/executions", author,
+		[]byte(fmt.Sprintf(`{"definition_name":%q,"input":{"q":"hi"}}`, name)))
+	if code != http.StatusCreated {
+		t.Fatalf("trigger: code %d body %v", code, body)
+	}
+	execID := uint64(mustParseUint(t, body["id"].(string)))
+	if err := sched.Start(context.Background(), execID, "w1"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	a := rbNodeID(t, dbh, execID, "a")
+	rbComplete(t, sched, execID, a, rbSeedAttempt(t, dbh, execID, a, 1),
+		engine.AttemptSucceed, json.RawMessage(`{"text":"va"}`))
+	b := rbNodeID(t, dbh, execID, "b")
+	rbComplete(t, sched, execID, b, rbSeedAttempt(t, dbh, execID, b, 1),
+		engine.AttemptFailed, nil)
+	c := rbNodeID(t, dbh, execID, "c")
+	attC := rbSeedAttempt(t, dbh, execID, c, 1)
+
+	t.Run("无旗标 409 携 quiesce 出路", func(t *testing.T) {
+		// 原生请求(doJSON 不回 header):Retry-After 与 blocked 清单同锚
+		//(观测态契约面,对抗审计 LOW 修——注释声称锚过的面必须真锚)。
+		req := httptest.NewRequest(http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/rollback", execID),
+			bytes.NewReader([]byte(`{"node_id":"b"}`)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Authorization", "Bearer "+author)
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		if w.Code != http.StatusConflict {
+			t.Fatalf("code = %d body %s, want 409", w.Code, w.Body.String())
+		}
+		if got := w.Header().Get("Retry-After"); got != "120" {
+			t.Fatalf("Retry-After = %q, want 120(reaper settle 量级)", got)
+		}
+		var body map[string]any
+		if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+			t.Fatalf("body: %v", err)
+		}
+		if body["error"] != "rollback_blocked_inflight" {
+			t.Fatalf("error = %v, want rollback_blocked_inflight", body["error"])
+		}
+		detail, _ := body["detail"].(string)
+		if !strings.Contains(detail, "quiesce=true") {
+			t.Fatalf("detail = %q, want quiesce=true 出路提示(协议自描述)", detail)
+		}
+		blocked, _ := body["blocked"].([]any)
+		foundC := false
+		for _, x := range blocked {
+			if s, ok := x.(string); ok && strings.HasPrefix(s, "c:") {
+				foundC = true
+			}
+		}
+		if !foundC {
+			t.Fatalf("blocked = %v, want 含 c 残行", blocked)
+		}
+		// denied 行 payload:quiesce=false 镜像(拒绝面的旗标证据锚)。
+		var deniedQ sql.NullString
+		if err := dbh.QueryRow(`SELECT JSON_UNQUOTE(JSON_EXTRACT(payload,'$.quiesce'))
+		  FROM audit_log WHERE execution_id=? AND event_type='rollback.denied'`, execID).
+			Scan(&deniedQ); err != nil {
+			t.Fatalf("read denied payload: %v", err)
+		}
+		if deniedQ.String != "false" {
+			t.Fatalf("denied quiesce = %q, want false(旗标镜像)", deniedQ.String)
+		}
+	})
+
+	t.Run("旗标 201 楔停收敛 + 重放 200 镜像", func(t *testing.T) {
+		code, body := doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
+			[]byte(`{"node_id":"b","quiesce":true}`))
+		if code != http.StatusCreated {
+			t.Fatalf("code = %d %v, want 201", code, body)
+		}
+		if body["quiesced_count"] != float64(1) {
+			t.Fatalf("quiesced_count = %v, want 1", body["quiesced_count"])
+		}
+		// 楔停收口锚:残留 attempt DEAD + code=rollback_quiesce。
+		var status, errCode string
+		if err := dbh.QueryRow(`SELECT status, error_code FROM node_attempt WHERE id=?`, attC).
+			Scan(&status, &errCode); err != nil {
+			t.Fatalf("read attempt: %v", err)
+		}
+		if status != "DEAD" || errCode != "rollback_quiesce" {
+			t.Fatalf("attempt = %s/%q, want DEAD/rollback_quiesce", status, errCode)
+		}
+		// 重放 200:台账 payload 的 quiesced_count 镜像回显。
+		code, body = doJSON(t, r, http.MethodPost,
+			fmt.Sprintf("/api/v1/executions/%d/rollback", execID), author,
+			[]byte(`{"node_id":"b","quiesce":true}`))
+		if code != http.StatusOK {
+			t.Fatalf("replay code = %d %v, want 200", code, body)
+		}
+		if body["quiesced_count"] != float64(1) {
+			t.Fatalf("replay quiesced_count = %v, want 1(台账镜像)", body["quiesced_count"])
+		}
+	})
 }
 
 func mustParseUint(t *testing.T, s string) uint64 {

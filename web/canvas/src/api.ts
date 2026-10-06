@@ -169,6 +169,8 @@ export interface RollbackAck {
   target_node_id: string
   rerun_target: boolean
   reset_count: number
+  /** T19.6:楔停收敛的 EXECUTING/WA 残留行数(0 = 非楔停回滚/零残留)。 */
+  quiesced_count: number
 }
 
 /** 取消响应(T19.3);cancelled_count = 楔停的节点行数(控制行+实例行)。 */
@@ -278,11 +280,19 @@ export const api = {
       { 'Idempotency-Key': idempotencyKey },
     )
   },
-  rollbackExecution(id: string, nodeId: string): Promise<RollbackAck> {
-    return call('POST', `/api/v1/executions/${id}/rollback`, JSON.stringify({ node_id: nodeId }))
+  rollbackExecution(id: string, nodeId: string, quiesce = false): Promise<RollbackAck> {
+    // T19.6:quiesce=true → EXECUTING/WA 残留同事务楔停(缺省 false = 服务端
+    // 409 blocked_inflight 等后台收敛,等待保值语义)。
+    return call(
+      'POST',
+      `/api/v1/executions/${id}/rollback`,
+      JSON.stringify(quiesce ? { node_id: nodeId, quiesce: true } : { node_id: nodeId }),
+    )
   },
-  resumeExecution(id: string): Promise<RollbackAck> {
-    return call('POST', `/api/v1/executions/${id}/resume`)
+  resumeExecution(id: string, quiesce = false): Promise<RollbackAck> {
+    return quiesce
+      ? call('POST', `/api/v1/executions/${id}/resume`, JSON.stringify({ quiesce: true }))
+      : call('POST', `/api/v1/executions/${id}/resume`)
   },
   cancelExecution(id: string): Promise<CancelAck> {
     return call('POST', `/api/v1/executions/${id}/cancel`)
