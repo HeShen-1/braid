@@ -399,12 +399,25 @@ func TestLeaseConcurrentSameHolderStartsDistinctEpochs(t *testing.T) {
 		err   error
 		lease *Lease
 	}
+	// start 带错峰重试:8 路同 holder 并发下 1213(INSERT 意向锁 × 行锁环)
+	// 可在同步退避窗内反复烧尽 ≤3 重扫预算(CI 2 核实证)——预算语义归
+	// T15.2 决策 2 不动,本锚只证代际互异,ErrPoolContention 错峰重试。
+	start := func() (*Lease, error) {
+		deadline := time.Now().Add(15 * time.Second)
+		for {
+			l, err := StartLease(ctx, dbh, leaseCfg(KindAPI, "h1", Explicit(5)))
+			if err == nil || !errors.Is(err, ErrPoolContention) || time.Now().After(deadline) {
+				return l, err
+			}
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
 	out := make([]res, n)
 	for i := 0; i < n; i++ {
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			l, err := StartLease(ctx, dbh, leaseCfg(KindAPI, "h1", Explicit(5)))
+			l, err := start()
 			out[i] = res{err: err, lease: l}
 			if err == nil {
 				out[i].epoch = l.Epoch()
