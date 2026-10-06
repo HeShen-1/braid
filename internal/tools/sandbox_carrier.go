@@ -461,6 +461,13 @@ func SandboxSweep(ctx context.Context, dockerBin, owner string) ([]string, error
 // 前移口径)。var 供测试收缩(sandboxHelperReadTimeout 同款)。
 var sandboxSweepTimeout = 30 * time.Second
 
+// SweepSkipWarnPhrase 是 holdoff 跳过 WARN 的核心词面(t20.4):唯一跨包
+// 消费方 = internal/drill arm3(词面锚——boot 到达跳过决策点的正向证据,
+// 与 cmd/worker 复核 reason 的「live peer node」子短语双词计数归因到
+// 「活体命中 ⇒ 跳过」分支)。导出常量使文案演进必须显式同步发射点与
+// 消费点(编译期钉死);改措辞须同改 drill。
+const SweepSkipWarnPhrase = "sandbox sweep skipped: owner lease liveness recheck"
+
 // SandboxStartupCheck 是 worker 启动接线(T10.1 T6,基线 #7/#13):按
 // BRAID_TOOL_SANDBOX 词表决策——off(含未设)= 无操作零 docker 接触
 // (dev 栈照跑);docker = SandboxProbe 部署性前移(缺 bin/daemon 不可达/
@@ -501,7 +508,7 @@ func SandboxStartupCheck(ctx context.Context, getenv func(string) string, sweepH
 		return nil, err
 	}
 	if sweepHoldoff != "" {
-		slog.Warn("tools: sandbox sweep skipped: owner lease liveness recheck (t20.4)", "reason", sweepHoldoff)
+		slog.Warn("tools: "+SweepSkipWarnPhrase+" (t20.4)", "reason", sweepHoldoff)
 		return nil, nil
 	}
 	sctx, cancel := context.WithTimeout(ctx, sandboxSweepTimeout)

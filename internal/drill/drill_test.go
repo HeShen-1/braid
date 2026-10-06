@@ -3,7 +3,9 @@ package drill
 // T15.6 多副本整体演练 runner(D-t151 决策 6 注入集五项 + R8 复核):
 //  ①双 worker 抢 claim 零 1062 + 租约号互异;
 //  ②kill -9 持租约 worker → 残窗按决策 2 语义收敛 + reaper 判死接管;
-//  ③滚动重启沙箱在飞 → owner-scoped 清扫不互杀(recreate 孤儿/runbook 另验);
+//  ③滚动重启沙箱在飞 → owner-scoped 清扫不互杀 + t20.4 语义追认(t20.8):
+//    同 owner 活租约在场 ⇒ 启动清扫跳过,清行/TTL 过期后下次启动收敛
+//    (recreate 孤儿/runbook 另验);
 //  ④Redis 重启(AOF)→ outbox 恢复投递 + 重派收敛;
 //  ⑤mode=all 硬闸断言(钉在「新 api 收到的请求」,演练栈 api 单副本);
 //  ⑦least-privilege 回滚缝(驳回→resume→重跑,授权缺角运行时红);
@@ -31,6 +33,7 @@ import (
 	"golang.org/x/crypto/bcrypt"
 
 	"braid/internal/audit"
+	"braid/internal/tools"
 )
 
 const (
@@ -553,8 +556,13 @@ func (s *stack) defIDByName(name string) uint64 {
 	return id
 }
 
-// armOwnerSweep:③滚动重启(docker restart,身份稳定)下 owner-scoped
-// 清扫不互杀——w1 的 braid.sandbox 容器被自清,w2 的原样存活。
+// armOwnerSweep:③滚动重启(docker restart,身份稳定)下的沙箱清扫,t20.8
+// 起追认 T20.4 语义(D-t204 边界①/⑤,先存回归登记见 #174 评论):同 owner
+// 活租约在场 ⇒ 启动清扫跳过(误跳过窗);显式清行(runbook)/优雅释放/
+// TTL 过期后,下次启动清扫收敛——w1 的 braid.sandbox 容器被自清,w2 的
+// 原样存活(互杀红线)。T15.6 原版「restart 即清扫」期望在 t20.4 合入后
+// 确定性红(arm2 kill -9 有机残行恰落在 arm3 boot 的 TTL 窗内),本版
+// 把期望改写为 T20.4 的真实契约。
 func (s *stack) armOwnerSweep(t *testing.T) {
 	seed := func(owner string, i int) string {
 		cname := fmt.Sprintf("drill-sbx-t%d-%s-%d", s.slot, owner, i)
@@ -564,18 +572,91 @@ func (s *stack) armOwnerSweep(t *testing.T) {
 		return cname
 	}
 	var w1Names, w2Names []string
-	for i := 0; i < 2; i++ {
-		w1Names = append(w1Names, seed("braid-drill-worker1", i))
-		w2Names = append(w2Names, seed("braid-drill-worker2", i))
-	}
+	// 清理先于播种注册(闭包按变量捕获,增长后的切片清理时可见):seed 循环
+	// 中途失败已起的容器不泄漏。
 	t.Cleanup(func() {
 		for _, n := range append(append([]string{}, w1Names...), w2Names...) {
 			_ = exec.Command("docker", "rm", "-f", n).Run()
 		}
 	})
+	for i := 0; i < 2; i++ {
+		w1Names = append(w1Names, seed("braid-drill-worker1", i))
+		w2Names = append(w2Names, seed("braid-drill-worker2", i))
+	}
+
+	const holder = "worker:braid-drill-worker1"
+	// fakeNode:伪活租约行的 node 号(与 arm5 硬闸假行 900 错开;两行均为
+	// 臂内瞬态,各自清理)。
+	const fakeNode = 901
+	liveRows := func() int {
+		return s.qInt(`SELECT COUNT(*) FROM snowflake_node_lease
+			WHERE holder_id=? AND expires_at >= NOW(3)`, holder)
+	}
+	skips := func() int {
+		// 双词面同行计数:主短语与 tools 发射点共用导出常量(编译期钉死,
+		// 改文案必须显式同步两处);「live peer node」子短语来自 cmd/worker
+		// sandboxSweepHoldoff 的 reason 拼装——两词同现把断言归因钉到
+		// 「活体命中 ⇒ 跳过」分支,排除复核不可达 fail-safe 跳过
+		//(reason = "liveness probe failed: ...")的冒名顶替。
+		n := 0
+		for _, ln := range strings.Split(s.serviceLogs("worker1"), "\n") {
+			if strings.Contains(ln, tools.SweepSkipWarnPhrase) && strings.Contains(ln, "live peer node") {
+				n++
+			}
+		}
+		return n
+	}
+
+	// Phase 1 误跳过窗(D-t204 边界①):伪同 owner 活租约行(+300s,arm5
+	// 假行同款手法)钉住「活租约在场 ⇒ 跳过」——arm2 kill -9 的有机残行
+	// 也命中同语义,但其 TTL 窗有限,伪行使断言不踩时序边际。播种先清后插
+	//(同栈重跑幂等,防硬杀残行撞 PK 1062);DELETE 带 holder 守卫对齐
+	// runbook UPGRADE §7 清行模板(node+holder 二元组,误删活体面归零)。
+	if _, err := s.dbh.Exec(`DELETE FROM snowflake_node_lease WHERE node_id=? AND holder_id=?`, fakeNode, holder); err != nil {
+		t.Fatalf("pre-clean fake lease row: %v", err)
+	}
+	if _, err := s.dbh.Exec(`INSERT INTO snowflake_node_lease
+		(node_id, kind, holder_id, expires_at, capabilities)
+		VALUES (?, 'worker', ?, DATE_ADD(NOW(3), INTERVAL 300 SECOND), NULL)`, fakeNode, holder); err != nil {
+		t.Fatalf("seed fake live lease row: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := s.dbh.Exec(`DELETE FROM snowflake_node_lease WHERE node_id=? AND holder_id=?`, fakeNode, holder); err != nil {
+			t.Logf("cleanup fake lease row %d: %v", fakeNode, err)
+		}
+	})
 
 	container := s.containerName("worker1")
-	s.run("docker", "restart", container) // 优雅重启:SIGTERM + 35s 宽限
+	skipsBefore := skips()
+	s.run("docker", "restart", container) // 优雅重启:SIGTERM + 35s 宽限(当前租约行随 Release 删除)
+	// 跳过决策锚:boot 到达 SandboxStartupCheck 且按 D-t204 语义跳过
+	//(holdoff 非空 ⇒ WARN;WARN 出现即清扫路径早退,容器负断言零时序边际)。
+	s.eventually("startup sweep skipped under live same-owner lease (D-t204 holdoff)", armWait, func() bool {
+		return skips() > skipsBefore
+	})
+	for _, n := range w1Names {
+		if !containerExists(n) {
+			t.Fatalf("worker1 sandbox container %q swept despite live same-owner lease(D-t204 holdoff 回归)", n)
+		}
+	}
+	for _, n := range w2Names {
+		if !containerExists(n) {
+			t.Fatalf("worker2 sandbox container %q swept by worker1 restart(互杀红线)", n)
+		}
+	}
+
+	// Phase 2 清行收敛(①的 runbook 收敛路径 + ⑤优雅释放路径):删伪行
+	//(显式清行)→ 优雅停机(Release 删当前行;即便停机释放失败,残行也走
+	// TTL 过期)→ 轮询 holder 现役行清零(进程已停无人续期,确定性)→
+	// 下次启动复核无行 ⇒ 清扫执行。
+	if _, err := s.dbh.Exec(`DELETE FROM snowflake_node_lease WHERE node_id=? AND holder_id=?`, fakeNode, holder); err != nil {
+		t.Fatalf("clear fake lease row: %v", err)
+	}
+	s.run("docker", "stop", "-t", "35", container)
+	s.eventually("worker1 live lease rows settled to zero", armWait, func() bool {
+		return liveRows() == 0
+	})
+	s.run("docker", "start", container)
 	// 启动清扫 = SandboxStartupCheck 的 owner 二元组过滤(T15.3)。
 	s.eventually("worker1 own sandbox containers swept", armWait, func() bool {
 		for _, n := range w1Names {
