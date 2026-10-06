@@ -122,7 +122,13 @@ func run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("api: %w", err)
 	}
-	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: ids, MaxRollbackRows: maxRollbackRows})
+	// T6.4:Prometheus 指标面——与 /healthz 同端口同回环绑定(BRAID_API_ADDR
+	// 部署约定);登录防御计数(login_audit 0005 的指标半边)在此注册。
+	// T20.1:构造先于 scheduler(编排层 fence 拒绝计数经 MetricsSink 注入,
+	// 对抗审计 MEDIUM 修复——zombie api 停写面对告警可见)。
+	mset, mreg := metrics.NewSet()
+	go metrics.CollectDBPool(ctx, dbh, mset.DBPool) // T7.1:池 gauge 30s 常量周期(braid_db_pool_*)
+	sched, err := scheduler.New(scheduler.Deps{DB: dbh, IDs: ids, Lease: lease, Metrics: mset, MaxRollbackRows: maxRollbackRows})
 	if err != nil {
 		return fmt.Errorf("api: scheduler: %w", err)
 	}
@@ -130,10 +136,6 @@ func run(ctx context.Context) error {
 	// 认证身份源真源(T5.3):内置 BuiltinProvider = 用户名口令 + bcrypt
 	// (默认);凭证核验型插件在此换装(LDAP bind = T17.6,下方
 	// BRAID_LDAP_* 组),契约见 internal/auth/identity.go。
-	// T6.4:Prometheus 指标面——与 /healthz 同端口同回环绑定(BRAID_API_ADDR
-	// 部署约定);登录防御计数(login_audit 0005 的指标半边)在此注册。
-	mset, mreg := metrics.NewSet()
-	go metrics.CollectDBPool(ctx, dbh, mset.DBPool) // T7.1:池 gauge 30s 常量周期(braid_db_pool_*)
 	// T6.2:OTel trace 贯穿——off = 丢弃导出器(span/trace id 照生成,审计列
 	// 不随观测开关退化);Tracer 显式注入组件,不注册 otel 全局(镜像 metrics
 	// 先例)。P0 装配面 = api + worker;D-2026-09-27-t62-otel-trace。
@@ -174,6 +176,8 @@ func run(ctx context.Context) error {
 		slog.Info("api: ldap login enabled", "addr", ldapCfg.Addr, "base_dn", ldapCfg.BaseDN, "starttls", ldapCfg.StartTLS)
 	}
 	apiSrv := api.NewServer(cfg, dbh, ids, toolReg, sched, idp)
+	apiSrv.SnowflakeLease(lease)    // T20.1:api 五写面 fence(与 scheduler Deps 同一租约)
+	apiSrv.FenceMetrics(mset.Fence) // T20.1:api 面 fence 拒绝计数(对抗审计 MEDIUM 修复)
 	if ldapCfg.Configured() {
 		apiSrv.CredentialLoginMethod(api.LoginMethodLDAP) // login_audit.method 归因(0014)
 	}

@@ -187,6 +187,12 @@ func (r *Reaper) reapApproval(ctx context.Context, nodeExecID, execID uint64, en
 // 复活 / deadline 复活 / wf 复活各自让位(errSkip 空事务回滚)。
 func (r *Reaper) reapApprovalOnce(ctx context.Context, nodeExecID, execID uint64, ent approvalEntry) error {
 	return engine.WithTx(ctx, r.deps.DB, func(q engine.DBTX) error {
+		// [0] fence 首置(T20.1,D-2026-10-06-t201 决策 4:裁决权威的合法
+		// 性 = 自身租约行加冕;对抗审计 MEDIUM 修复——审批处置面同挂,
+		// zombie reaper 不得 escalate/fail/重派)。
+		if ferr := r.fence(ctx, q, "approval", "node_execution_id", nodeExecID); ferr != nil {
+			return ferr
+		}
 		// [1] 锁 node 行。
 		var (
 			nodeID      string

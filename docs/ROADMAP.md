@@ -27,7 +27,7 @@
 
 ## M20 可靠性收口波(P3-3,与 M18 并行,零 engine 耦合)
 
-- [ ] T20.1 租约 fencing token — M-L — D- 立项先行 — zombie 双签发/双执行窗收口(贯穿租约仲裁与任务执行两面;D-t151 决策8①「另议」至今未裁)
+- [x] T20.1 租约 fencing token — M-L — D- 立项先行 — zombie 双签发/双执行窗收口(贯穿租约仲裁与任务执行两面;D-t151 决策8①「另议」至今未裁)(T20.1 交付:D-2026-10-06-t201-lease-fencing,等值加冕路线——0015 fencing_epoch 单列,持有变化同语句 +1(复占也 bump,收 D-t204 复占双活面);执法 = 编排层写事务首置同源锁定读,engine 零触;判等统一 utf8mb4_bin;双 metric 族 + LeaseFenceRejections 告警 + drill arm8 废黜臂)
 - [ ] T20.2 scp 拒绝面审计补全 — M — D- 微条先行 — scope 执法语义自路由中间件移入 handler 层(现 scoped 拒绝短路于中间件、不落审计)
 - [x] T20.3 fleet 闸 TOCTOU 闭合 — S-M — 发布面 DSL 读取移入 Publish 事务(触发面闸钉版快照为最后防线,收前置窗)
 - [x] T20.4 租约活性复核转正 — S-M — sweep 前复核(T15.3 followup 位;活体同 owner 互杀面可选缓解)

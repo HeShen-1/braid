@@ -118,18 +118,19 @@ func run(ctx context.Context) error {
 		case <-ctx.Done():
 		}
 	}()
-	sched, err := scheduler.New(scheduler.Deps{DB: mysqlDB, IDs: ids, Queue: cfg.Queue})
-	if err != nil {
-		return fmt.Errorf("reaper: scheduler: %w", err)
-	}
-
 	// 选主 fail-open(D-t25 #1,与 relay/worker 的「Redis 可达自检启动即败」
 	// 刻意相反):正确性结构性不依赖 Redis,拉起一个连不上 Redis 的 reaper
 	// 仍完全可用(leaderless 全跑),拒启反而制造「断 Redis 期间无人对账」
 	// 的停摆面——恰是验收要消灭的场景。不可达只 warn。
 	// T6.4:Prometheus 指标面(裁决计数 + flush 观测 + 周期 gauge 采集)。
 	// BRAID_METRICS_ADDR 空 = 不启;Deps.Metrics 与采集器同生命周期。
+	// T20.1:构造先于 scheduler(编排层 fence 拒绝计数经 MetricsSink 注入,
+	// 对抗审计 MEDIUM 修复——zombie reaper 停写面对告警可见)。
 	mset, mreg := metrics.NewSet()
+	sched, err := scheduler.New(scheduler.Deps{DB: mysqlDB, IDs: ids, Lease: lease, Metrics: mset, Queue: cfg.Queue})
+	if err != nil {
+		return fmt.Errorf("reaper: scheduler: %w", err)
+	}
 	if _, ok, err := metrics.Serve(ctx, cfg.MetricsAddr, mreg); err != nil {
 		return fmt.Errorf("reaper: %w", err)
 	} else if ok {
@@ -137,7 +138,7 @@ func run(ctx context.Context) error {
 	}
 	go metrics.CollectDBPool(ctx, mysqlDB, mset.DBPool) // T7.1:池 gauge 30s 常量周期(braid_db_pool_*)
 
-	deps := reaper.Deps{DB: mysqlDB, Sched: sched, IDs: ids, Metrics: mset.Reaper}
+	deps := reaper.Deps{DB: mysqlDB, Sched: sched, IDs: ids, Lease: lease, Metrics: mset.Reaper}
 	if cfg.RedisQueueAddr != "" {
 		// T7.3:队列 Redis 契约探测仅 warn(D-t25 fail-open 同族:锁实例破约
 		// 的失败模式 = 锁丢失退化为 leaderless,安全;拒启反制造停摆面)。

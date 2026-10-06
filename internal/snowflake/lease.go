@@ -1,9 +1,10 @@
 // lease.go 承载 D-2026-10-01-t151 决策 2 的节点号租约仲裁(MySQL 租约表
 // migration 0012):acquire(显式直达 / auto 池线性抢注)→ 续期(TTL/3)
 // → lost(停止签发 + 响亮)→ 释放(SIGTERM DELETE)。过期判定全 DB 端
-// NOW(3)(会话 time_zone='+00:00' 连接契约,结构性排除应用时钟漂移;
-// 不声称排除一切双持——MySQL 异步 failover 尾吞 + 心跳停顿的 zombie 窗
-// 如实登记于 D-t151 决策 8-①,fencing 不随 T15.2 实施)。
+// NOW(3)(会话 time_zone='+00:00' 连接契约,结构性排除应用时钟漂移)。
+// 租约 fencing(代际 + 等值加冕)随 T20.1 落地:D-2026-10-06-t201(0015
+// 加 fencing_epoch 列;MySQL 异步 failover 尾吞 + 心跳停顿的 zombie 双签发/
+// 双执行窗由此收口,残余边界见该条决策 8)。
 package snowflake
 
 import (
@@ -81,6 +82,12 @@ var (
 
 	// ErrLeaseRace:claim 竞态落空(内部可重试信号,非终态错误)。
 	ErrLeaseRace = errors.New("snowflake: lease claim lost race")
+
+	// ErrFenced:写事务被租约 fence 拒(D-2026-10-06-t201:行上
+	// (holder_id, fencing_epoch) 已与本持有代际不符——被接管/复占/释放)。
+	// 这是 zombie 停写的结构性信号,不是可重试错误:调用方整事务回滚,
+	// 证据走事务外(slog warn + FenceRejected 计数器)。
+	ErrFenced = errors.New("snowflake: lease fence rejected write (holder superseded)")
 )
 
 // LeaseConfig 是租约装配输入:Kind 三类之一;Holder 是实例身份(裸值,
@@ -107,6 +114,7 @@ type Lease struct {
 	holder string // 完整 holder_id = kind + ":" + 实例身份
 	spec   NodeSpec
 	node   uint16
+	epoch  uint64 // 本持代际(D-t201:acquire 时行上起算;fence 等值基准)
 	ttl    time.Duration
 	caps   any // 宣告 JSON 字符串(空宣告 = nil → SQL NULL);三条写路径共用
 
@@ -160,14 +168,15 @@ func StartLease(ctx context.Context, dbh *sql.DB, cfg LeaseConfig) (*Lease, erro
 		renewDone: make(chan struct{}),
 	}
 	var (
-		node uint16
-		err  error
+		node  uint16
+		epoch uint64
+		err   error
 	)
 	switch cfg.Spec.Mode {
 	case NodeExplicit:
-		node, err = l.acquireExplicit(ctx)
+		node, epoch, err = l.acquireExplicit(ctx)
 	case NodeAuto:
-		node, err = l.acquireAuto(ctx)
+		node, epoch, err = l.acquireAuto(ctx)
 	default:
 		return nil, fmt.Errorf("snowflake: unknown node mode %d", cfg.Spec.Mode)
 	}
@@ -175,12 +184,83 @@ func StartLease(ctx context.Context, dbh *sql.DB, cfg LeaseConfig) (*Lease, erro
 		return nil, err
 	}
 	l.node = node
+	l.epoch = epoch
 	go l.renewLoop()
 	return l, nil
 }
 
+// claimAndRead 在单事务内执行 claim 语句并锁定回读本持代际(D-t201
+// 对抗审计 HIGH① 修复):行锁自 claim 的 UPDATE/INSERT 语句持至回读
+// SELECT FOR UPDATE,并发同 holder 的 bump 被阻塞到本事务提交——回读
+// 恒为本持自己的 bump 值,两进程不可能共持同 (holder, fencing_epoch)
+// (复占双活语义 = 行加冕唯一持有者,代际在加冕点即分流)。claim 回
+// ErrLeaseRace ⇒ 事务回滚、由调用方重扫;其余错误原样上抛。
+func (l *Lease) claimAndRead(ctx context.Context, n uint16, claim func(context.Context, *sql.Tx) error) (uint64, error) {
+	tx, err := l.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("snowflake: lease claim tx: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }() // Commit 后幂等无害
+	if err := claim(ctx, tx); err != nil {
+		return 0, err
+	}
+	var epoch uint64
+	if err := tx.QueryRowContext(ctx,
+		`SELECT fencing_epoch FROM snowflake_node_lease WHERE node_id = ? FOR UPDATE`, n,
+	).Scan(&epoch); err != nil {
+		return 0, fmt.Errorf("snowflake: lease epoch readback (node %d): %w", n, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("snowflake: lease claim commit: %w", err)
+	}
+	return epoch, nil
+}
+
 // Node 返回仲裁成功的节点号(0..MaxNodeID)。
 func (l *Lease) Node() uint16 { return l.node }
+
+// Epoch 返回本持代际(D-t201:fence 等值基准;持有变化 +1,续期不变)。
+func (l *Lease) Epoch() uint64 { return l.epoch }
+
+// HolderID 返回完整持有者身份(kind:identity;fence 判等与对账面的
+// 随身身份,拼装单源在本包)。
+func (l *Lease) HolderID() string { return l.holder }
+
+// Fence 是写事务内的加冕校验(D-t201 决策 3):同源锁定读,行上当前
+// (holder_id, fencing_epoch) 与本持精确等值才放行;0 行 = ErrFenced、
+// 整事务回滚。谓词不含 expires_at(加冕语义:夺写只因易主,不因墙钟——
+// 懒回收下过期未被接管即无第二持有者,撞号与双执行的加害者都必经「成为
+// 第二持有者」,而第二持有者必经 bump)。holder 比较显式 utf8mb4_bin
+// (D-t204 :778 交接缝:表缺省 ai_ci 会把 case 变体互认成同持有者)。
+// FOR UPDATE 持行锁至事务结束:并发接管与本校验在行锁上串行;锁序契约
+// = 租约行恒为 fence 事务首锁(与 reaper 的 node→attempt→wf、claimant
+// 启动的租约行单语句无环)。q 接受 *sql.DB / *sql.Tx / engine.DBTX
+// (各包自定义 tx 面不互相 import 的仓内纪律,FleetScanner 同款最小面)。
+// nil 接收者 = legacy 无 fence 装配(滚动窗/测试),恒放行。
+func (l *Lease) Fence(ctx context.Context, q FenceScanner) error {
+	if l == nil {
+		return nil
+	}
+	var one int
+	err := q.QueryRowContext(ctx,
+		`SELECT 1 FROM snowflake_node_lease
+		 WHERE node_id = ? AND holder_id COLLATE utf8mb4_bin = ? AND fencing_epoch = ?
+		 FOR UPDATE`,
+		l.node, l.holder, l.epoch).Scan(&one)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("%w: node %d epoch %d superseded (holder %q)", ErrFenced, l.node, l.epoch, l.holder)
+	}
+	if err != nil {
+		return fmt.Errorf("snowflake: lease fence check (node %d): %w", l.node, err)
+	}
+	return nil
+}
+
+// FenceScanner 是 Fence 的最小查询面(*sql.DB、*sql.Tx 与各包自定义事务
+// 句柄[如 engine.DBTX]均满足)。
+type FenceScanner interface {
+	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
+}
 
 // Lost 在租约丢失时收到唯一一次错误(续期失败:行被他持接管或 DB 错)。
 // 复航 = 进程退出后重新 acquire(容器 restart 承载),无进程内复用面。
@@ -208,44 +288,68 @@ func (l *Lease) Release(ctx context.Context) error {
 		}
 		dctx, cancel := context.WithTimeout(context.Background(), releaseDeleteTimeout)
 		defer cancel()
+		// 判等 bin + 代际限定(D-t201):前身进程不得误释放复占后继者的行
+		//(lost 后调用本就是 0 行幂等,失败语义不变)。
 		_, err = l.db.ExecContext(dctx,
-			`DELETE FROM snowflake_node_lease WHERE node_id = ? AND holder_id = ?`, l.node, l.holder)
+			`DELETE FROM snowflake_node_lease
+			 WHERE node_id = ? AND holder_id COLLATE utf8mb4_bin = ? AND fencing_epoch = ?`,
+			l.node, l.holder, l.epoch)
 	})
 	return err
 }
 
 // --- acquire -----------------------------------------------------------------
 
-// acquireExplicit 显式号直达:INSERT 抢注;在场则 CAS 复占(同 holder 或
-// 已过期)。RowsAffected=0 后用 SELECT 仲裁:go-sql-driver 缺省
-// clientFoundRows=false(0 = changed 非 matched——engine CAS 语义依赖此
-// 口径,不动 DSN 契约),复占值与行完全同毫秒相同时 changed=0 但确已
-// 持有(CI 实证:首租约续期与重启复占同毫秒碰撞);holder==mine 即成功,
-// 否则被他持拒启。行消失(释放竞态)视作重扫信号,共用 ≤3 预算。
-func (l *Lease) acquireExplicit(ctx context.Context) (uint16, error) {
+// acquireExplicit 显式号直达:单事务内(claimAndRead)INSERT 抢注,在场
+// 则同事务 CAS 复占(同 holder 或已过期)+ 锁定回读代际。CAS 落空后用
+// 独立 SELECT 仲裁他持详情。SET 恒含 fencing_epoch+1(D-t201 决策 5)
+// ⇒ 命中即 changed ≥ 1(go-sql-driver 缺省 clientFoundRows=false,
+// 0 = changed 非 matched——engine CAS 语义依赖此口径,不动 DSN 契约),
+// T15.2 的 matched-unchanged(同毫秒零改值)歧路对复占结构性不可达,
+// 仲裁段 holder==mine 分支保留为 belt、按重扫处理(决策 5 登记);否则
+// 被他持拒启。行消失(释放竞态)视作重扫信号,共用 ≤3 预算;1213/1205
+// (并发同 holder 多启的 INSERT 意向锁 × 行锁环)按 engine.Transient 同
+// 口径折叠为退避重扫。
+func (l *Lease) acquireExplicit(ctx context.Context) (uint16, uint64, error) {
 	for attempt := 0; attempt < autoClaimAttempts; attempt++ {
 		if attempt > 0 {
 			select {
 			case <-ctx.Done():
-				return 0, ctx.Err()
+				return 0, 0, ctx.Err()
 			case <-time.After(autoBackoffBase << uint(attempt-1)):
 			}
 		}
-		if err := l.tryInsert(ctx, l.cfgNode()); err == nil {
-			return l.cfgNode(), nil
-		} else if !errors.Is(err, ErrLeaseRace) {
-			return 0, err
+		epoch, err := l.claimAndRead(ctx, l.cfgNode(), func(ctx context.Context, tx *sql.Tx) error {
+			if err := l.tryInsert(ctx, tx, l.cfgNode()); err == nil {
+				return nil
+			} else if !errors.Is(err, ErrLeaseRace) {
+				return err
+			}
+			// INSERT 撞在场行(缺行竞态败者):同事务内 CAS——同 holder
+			// 复占或过期接管(SET 恒含 epoch+1 ⇒ 命中即 changed ≥ 1,
+			// RowsAffected=changed 口径下无 matched-unchanged 歧路)。
+			res, err := tx.ExecContext(ctx,
+				`UPDATE snowflake_node_lease
+				 SET kind = ?, holder_id = ?, expires_at = DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), capabilities = ?,
+				     fencing_epoch = fencing_epoch + 1
+				 WHERE node_id = ? AND (holder_id COLLATE utf8mb4_bin = ? OR expires_at < NOW(3))`,
+				string(l.kind), l.holder, l.ttl.Microseconds(), l.caps, l.cfgNode(), l.holder)
+			if err != nil {
+				return fmt.Errorf("snowflake: lease explicit reclaim: %w", err)
+			}
+			if n, err := res.RowsAffected(); err == nil && n == 1 {
+				return nil // 同 holder 复占 / 过期接管
+			}
+			return ErrLeaseRace // 落空 ⇒ 仲裁段重判(独立连接,见下)
+		})
+		if err == nil {
+			return l.cfgNode(), epoch, nil
 		}
-		res, err := l.db.ExecContext(ctx,
-			`UPDATE snowflake_node_lease
-			 SET kind = ?, holder_id = ?, expires_at = DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), capabilities = ?
-			 WHERE node_id = ? AND (holder_id = ? OR expires_at < NOW(3))`,
-			string(l.kind), l.holder, l.ttl.Microseconds(), l.caps, l.cfgNode(), l.holder)
-		if err != nil {
-			return 0, fmt.Errorf("snowflake: lease explicit reclaim: %w", err)
+		if isTransientDB(err) {
+			continue // 并发同 holder 抢注的 InnoDB 死锁(INSERT 意向锁 × 行锁环):退避重扫
 		}
-		if n, err := res.RowsAffected(); err == nil && n == 1 {
-			return l.cfgNode(), nil // 同 holder 复占 / 过期接管(changed ≥ 1)
+		if !errors.Is(err, ErrLeaseRace) {
+			return 0, 0, err
 		}
 		var holder string
 		var expires time.Time
@@ -256,22 +360,24 @@ func (l *Lease) acquireExplicit(ctx context.Context) (uint16, error) {
 		case errors.Is(qerr, sql.ErrNoRows):
 			continue // 行刚被释放:重扫
 		case qerr != nil:
-			return 0, fmt.Errorf("snowflake: lease explicit held-detail: %w", qerr)
+			return 0, 0, fmt.Errorf("snowflake: lease explicit held-detail: %w", qerr)
 		}
 		if holder == l.holder {
-			// matched-unchanged:UPDATE 已匹配本持行但新旧值同毫秒完全一致
-			//(changed=0)。复占成立。
-			return l.cfgNode(), nil
+			// 结构性不可达的 belt(D-t201 决策 5:SET 恒含 epoch+1,命中即
+			// changed ≥ 1,不可能既匹配本持又零改值)——保守按重扫处理,
+			// 杜绝「不 bump 直接加冕」路径存在。
+			continue
 		}
-		return 0, fmt.Errorf("%w: node %d by %s until %v (kill -9 residual window ≤ TTL; runbook: deploy/UPGRADE.md §7 清行应急)",
+		return 0, 0, fmt.Errorf("%w: node %d by %s until %v (kill -9 residual window ≤ TTL; runbook: deploy/UPGRADE.md §7 清行应急)",
 			ErrLeaseHeld, l.cfgNode(), holder, expires.UTC())
 	}
-	return 0, fmt.Errorf("snowflake: explicit claim of node %d: %w", l.cfgNode(), ErrPoolContention)
+	return 0, 0, fmt.Errorf("snowflake: explicit claim of node %d: %w", l.cfgNode(), ErrPoolContention)
 }
 
 // acquireAuto 装配真实 scan/claim 并跑重扫环。
-func (l *Lease) acquireAuto(ctx context.Context) (uint16, error) {
-	return l.acquireAutoLoop(ctx, l.scanPool, l.claimFree, sleepCtx(ctx))
+func (l *Lease) acquireAuto(ctx context.Context) (uint16, uint64, error) {
+	node, epoch, err := l.acquireAutoLoop(ctx, l.scanPool, l.claimFree, sleepCtx(ctx))
+	return node, epoch, err
 }
 
 // scanPool 读全池(≤1024 行)分 live/expired——过期判定全 DB 端 NOW(3)。
@@ -301,33 +407,40 @@ func (l *Lease) scanPool(ctx context.Context) (map[uint16]bool, map[uint16]bool,
 	return live, expired, nil
 }
 
-// claimFree 对候选号抢注:缺行 → INSERT;在场(扫描时过期)→ CAS 接管。
-// 两语句条件互斥,任一落空 = ErrLeaseRace(状态已被并发改写)。
-func (l *Lease) claimFree(ctx context.Context, n uint16) error {
-	if err := l.tryInsert(ctx, n); err == nil {
-		return nil
-	} else if !errors.Is(err, ErrLeaseRace) {
-		return err
-	}
-	res, err := l.db.ExecContext(ctx,
-		`UPDATE snowflake_node_lease
-		 SET kind = ?, holder_id = ?, expires_at = DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), capabilities = ?
-		 WHERE node_id = ? AND expires_at < NOW(3)`,
-		string(l.kind), l.holder, l.ttl.Microseconds(), l.caps, n)
-	if err != nil {
-		return fmt.Errorf("snowflake: lease expired takeover: %w", err)
-	}
-	if k, err := res.RowsAffected(); err == nil && k == 1 {
-		return nil
-	}
-	return ErrLeaseRace
+// claimFree 对候选号抢注并同事务回读代际:缺行 → INSERT;在场(扫描时
+// 过期)→ CAS 接管。两语句条件互斥,任一落空 = ErrLeaseRace(状态已被
+// 并发改写,事务回滚重扫)。
+func (l *Lease) claimFree(ctx context.Context, n uint16) (uint64, error) {
+	return l.claimAndRead(ctx, n, func(ctx context.Context, tx *sql.Tx) error {
+		if err := l.tryInsert(ctx, tx, n); err == nil {
+			return nil
+		} else if !errors.Is(err, ErrLeaseRace) {
+			return err
+		}
+		res, err := tx.ExecContext(ctx,
+			`UPDATE snowflake_node_lease
+			 SET kind = ?, holder_id = ?, expires_at = DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), capabilities = ?,
+			     fencing_epoch = fencing_epoch + 1
+			 WHERE node_id = ? AND expires_at < NOW(3)`,
+			string(l.kind), l.holder, l.ttl.Microseconds(), l.caps, n)
+		if err != nil {
+			return fmt.Errorf("snowflake: lease expired takeover: %w", err)
+		}
+		if k, err := res.RowsAffected(); err == nil && k == 1 {
+			return nil
+		}
+		return ErrLeaseRace
+	})
 }
 
-// tryInsert 抢注缺行:PK 冲突(1062)= 竞态信号。
-func (l *Lease) tryInsert(ctx context.Context, n uint16) error {
-	_, err := l.db.ExecContext(ctx,
-		`INSERT INTO snowflake_node_lease (node_id, kind, holder_id, expires_at, capabilities)
-		 VALUES (?, ?, ?, DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), ?)`,
+// tryInsert 抢注缺行:PK 冲突(1062)= 竞态信号。新行起代 1(D-t201;
+// 缺行无前身,1 = 首个非零代际,legacy DEFAULT 0 只属于 0015 前存量行)。
+// 语句在 claimAndRead 的事务连接上执行(1062 语句级失败不毁事务,调用方
+// 同事务续走 CAS)。
+func (l *Lease) tryInsert(ctx context.Context, tx *sql.Tx, n uint16) error {
+	_, err := tx.ExecContext(ctx,
+		`INSERT INTO snowflake_node_lease (node_id, kind, holder_id, expires_at, capabilities, fencing_epoch)
+		 VALUES (?, ?, ?, DATE_ADD(NOW(3), INTERVAL ? MICROSECOND), ?, 1)`,
 		n, string(l.kind), l.holder, l.ttl.Microseconds(), l.caps)
 	if err == nil {
 		return nil
@@ -343,6 +456,14 @@ func isDupKey(err error) bool {
 	return errors.As(err, &me) && me.Number == 1062
 }
 
+// isTransientDB 折叠 1213/1205(InnoDB 死锁/锁等待超时)为可重试竞态信号
+// (engine.Transient 同口径;本包不 import engine——叶工具包保持零内部
+// 依赖,并发同 holder 多启的 INSERT 意向锁 × 行锁环由退避重扫收敛)。
+func isTransientDB(err error) bool {
+	var me *gomysql.MySQLError
+	return errors.As(err, &me) && (me.Number == 1213 || me.Number == 1205)
+}
+
 // --- 重扫环(scan/claim/sleep 注入,纯单元可测) ----------------------------
 
 // acquireAutoLoop:auto 池线性取空闲号(缺行或过期行),claim 竞态败者
@@ -350,22 +471,22 @@ func isDupKey(err error) bool {
 func (l *Lease) acquireAutoLoop(
 	ctx context.Context,
 	scan func(context.Context) (map[uint16]bool, map[uint16]bool, error),
-	claim func(context.Context, uint16) error,
+	claim func(context.Context, uint16) (uint64, error),
 	sleep func(time.Duration),
-) (uint16, error) {
+) (uint16, uint64, error) {
 	for attempt := 0; attempt < autoClaimAttempts; attempt++ {
 		if attempt > 0 {
 			if err := ctx.Err(); err != nil {
-				return 0, err
+				return 0, 0, err
 			}
 			sleep(autoBackoffBase << uint(attempt-1))
 		}
 		live, _, err := scan(ctx)
 		if err != nil {
-			return 0, err
+			return 0, 0, err
 		}
 		if len(live) > int(MaxNodeID) {
-			return 0, ErrPoolExhausted
+			return 0, 0, ErrPoolExhausted
 		}
 		for n := uint16(0); ; n++ {
 			if live[n] {
@@ -374,17 +495,17 @@ func (l *Lease) acquireAutoLoop(
 				}
 				continue
 			}
-			cerr := claim(ctx, n)
+			epoch, cerr := claim(ctx, n)
 			if cerr == nil {
-				return n, nil
+				return n, epoch, nil
 			}
-			if !errors.Is(cerr, ErrLeaseRace) {
-				return 0, cerr
+			if !errors.Is(cerr, ErrLeaseRace) && !isTransientDB(cerr) {
+				return 0, 0, cerr
 			}
 			break // 状态已被并发改写:重扫新鲜状态
 		}
 	}
-	return 0, ErrPoolContention
+	return 0, 0, ErrPoolContention
 }
 
 // sleepCtx 尊重 ctx 的退避睡眠(生产形态;单测注入空睡眠)。
@@ -456,8 +577,9 @@ func InFleet(ctx context.Context, dbh FleetScanner) ([]FleetInstance, error) {
 // holder_id 拼装(kind:identity)单源在本包,同宿主跨类不互认;判等显式
 // utf8mb4_bin 字节精确(与沙箱 owner label 的 docker 过滤同语义——表缺省
 // ai_ci 大小写不敏感,异 case 的两个合法 owner 会被互判活体,恒误跳过
-// 自家残容器清扫;acquire 的 CAS 判等维持表缺省不动,那是 T15.2 既有
-// 复占面,归 T20.1 fencing 口径)。判活与 acquire/InFleet 同口径:全 DB 端
+// 自家残容器清扫;本判等口径原为 T20.1 交接缝[D-t204 决策 1],已随
+// D-2026-10-06-t201 决策 5 统一:acquire CAS / 续期 / Release / Fence 的
+// holder 比较现全部显式 bin,与本函数同口径)。判活与 acquire/InFleet 同口径:全 DB 端
 // NOW(3),应用时钟漂移不入库。查询错误原样上抛——调用侧 fail-safe:
 // 复核不可达 ⇒ 跳过清扫(误跳过 < 误杀,同 D-t151 决策 6 取舍)。预期
 // 调用时点 = 调用方 StartLease 之前(自身行尚不存在,任何同 holder 在场
@@ -506,11 +628,14 @@ func (l *Lease) renewLoop() {
 		case <-ticker.C:
 		}
 		rctx, cancel := context.WithTimeout(context.Background(), l.ttl)
+		// 续期判等 bin + 代际限定(D-t201):case 变体抢注者不被旧持有者
+		// 续命;同 holder 复占(bump)后前身续期落空 → lost(复占双活的
+		// 停摆收口——行加冕唯一持有者,前身必须停签发并下线)。
 		res, err := l.db.ExecContext(rctx,
 			`UPDATE snowflake_node_lease
 			 SET expires_at = DATE_ADD(NOW(3), INTERVAL ? MICROSECOND)
-			 WHERE node_id = ? AND holder_id = ?`,
-			l.ttl.Microseconds(), l.node, l.holder)
+			 WHERE node_id = ? AND holder_id COLLATE utf8mb4_bin = ? AND fencing_epoch = ?`,
+			l.ttl.Microseconds(), l.node, l.holder, l.epoch)
 		cancel()
 		if err == nil {
 			if n, rerr := res.RowsAffected(); rerr == nil && n == 1 {

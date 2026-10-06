@@ -147,6 +147,10 @@ func (s *Server) writeCancelDeniedAudit(c *gin.Context, execID uint64, actor, re
 	}
 	// T9.3 串链协议要求调用方事务(裸池句柄 ⇒ 链叉)。
 	if err := engine.WithTx(c.Request.Context(), s.dbh, func(q engine.DBTX) error {
+		// fence 首置(T20.1):取消面证据事务同源同判。
+		if ferr := s.fence(c.Request.Context(), q); ferr != nil {
+			return ferr
+		}
 		return audit.Append(c.Request.Context(), q, audit.Event{
 			ID: id, EventType: audit.EventCancelDenied, ExecutionID: execID,
 			ActorType: audit.ActorUser, ActorID: actor,

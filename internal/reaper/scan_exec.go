@@ -65,6 +65,11 @@ SELECT id FROM workflow_execution
 // (事件穷尽即判死依据)。
 func (r *Reaper) reapPendingExec(ctx context.Context, execID uint64) error {
 	err := engine.WithTx(ctx, r.deps.DB, func(q engine.DBTX) error {
+		// [0] fence 首置(T20.1,D-2026-10-06-t201 决策 4;对抗审计 MEDIUM
+		// 修复——PENDING 执行终局化同挂,zombie reaper 不得判 FAILED)。
+		if ferr := r.fence(ctx, q, "pending_exec", "execution_id", execID); ferr != nil {
+			return ferr
+		}
 		var status engine.WorkflowState
 		if err := q.QueryRowContext(ctx,
 			`SELECT status FROM workflow_execution WHERE id=? FOR UPDATE`, execID).

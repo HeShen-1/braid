@@ -111,6 +111,9 @@ func (s *Scheduler) Resume(ctx context.Context, req ResumeRequest) error {
 func (s *Scheduler) resumeOnce(ctx context.Context, req ResumeRequest,
 	wf *dsl.Workflow, g *dag, wfInput []byte) error {
 	err := engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		if err := s.fence(ctx, q); err != nil {
+			return err
+		}
 		// 1. 有序全行锁(与 suspendOnce/completeOnce 同集同序:并发续跑/
 		// 完成/挂起在该序列上串行,幂等收敛守卫的裁决不可能读到过期状态)。
 		rows, err := lockAllRows(ctx, q, req.ExecID, g)
