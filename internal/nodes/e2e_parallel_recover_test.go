@@ -72,8 +72,9 @@ func prE2EStart(t *testing.T, doc, input string) *prE2EStack {
 	d := sqltest.MustOpenAt(t, nodesSchema)
 	queue := fmt.Sprintf("t_n%d", atomic.AddUint32(&queueSeq, 1))
 	st := &prE2EStack{d: d, release: make(chan struct{})}
-	// 失败路径防死锁:LIFO 使本 cleanup 先于 httptest 的 stub.Close()(后者
-	// 等待在飞句柄)——测试体任何红点退出前先放行 hang 句柄。
+	// 失败路径防死锁(与 handler 的 Done 逃生口互为独立保险,不依赖注册序:
+	// 本 cleanup 注册先于 httptest 内部的 stub.Close,LIFO 实际最后跑——
+	// 评审 MEDIUM 修正注释):测试体任何退出路径前放行 hang 句柄。
 	t.Cleanup(func() {
 		if st.released.CompareAndSwap(false, true) {
 			close(st.release)
@@ -86,7 +87,16 @@ func prE2EStart(t *testing.T, doc, input string) *prE2EStack {
 		raw, _ := json.Marshal(body)
 		s := string(raw)
 		if st.blockHang.Load() && strings.Contains(s, "hang") {
-			<-st.release // hang 实例挂住直至放行(迟到收口旅程的时序闸)
+			// hang 实例挂住直至放行(迟到收口旅程的时序闸);Done 逃生口 =
+			// 兄弟先例 e2e_parallel_test 同款——客户端断连即返,失败路径
+			// cleanup 的 stub.Close 不必等 release(评审 MEDIUM 修:release
+			// cleanup 注册序在 stub.Close 之前、LIFO 反而最后跑,裸 <-release
+			// 会把红点路径死锁在 Close 上)。
+			select {
+			case <-st.release:
+			case <-r.Context().Done():
+				return
+			}
 		}
 		if st.poison.Load() && strings.Contains(s, "boom") {
 			w.WriteHeader(http.StatusInternalServerError)
