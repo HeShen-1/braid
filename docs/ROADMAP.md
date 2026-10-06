@@ -34,7 +34,7 @@
 - [ ] T20.5 LDAP 时序残差垫平 — S-M — unknown_user/wrong_password 时域差(P1 加固通道;先解服务账号自锁风险)
 - [ ] T20.6 docker 网络泄漏回收 runbook — S — 文档活:并入孤儿清理节 + default-address-pools 上界注记(≈31 用户网/daemon)
 - [x] T20.7 静态分区水位时弹收口 — S-M — 遗留自 t2.5 时弹族;独立 D- 两口径先行(① 0015 扩静态水位,治本但会再过期;② 安装口径钉死 reaper 先起,零迁移)— 验收:dev/t13/e2e/生产口径统一,水位过期不再触发 preflight 硬拒 × janitor 首刷竞态(e2e-up 已先行钉死,33c95d1)(T20.7 交付:D-2026-10-05-t207-install-order,裁②侧;braid audit-ready 判定动词 + 四栈分层执法 + 水位/p_min 双哨兵)
-- [ ] T20.8 drill arm3 断言追认 T20.4 语义 — S — 先存回归(#174 评论登记):sandboxSweepHoldoff「同 owner 活租约 ⇒ 跳过启动清扫」(D-t204 边界①,cmd/worker/main.go:399)与 T15.6 arm3「restart 即清扫」期望冲突,arm3 确定性 60s 超时(master 基线同红,arm1/2 过)— 验收:arm3 断言改造为「等 TTL 过期/显式释放后清扫收敛」或 arm 序列调整避免复占活租约形态;TestMultiReplicaDrill 三臂全绿
+- [x] T20.8 drill arm3 断言追认 T20.4 语义 — S — 先存回归(#174 评论登记):sandboxSweepHoldoff「同 owner 活租约 ⇒ 跳过启动清扫」(D-t204 边界①,cmd/worker/main.go:399)与 T15.6 arm3「restart 即清扫」期望冲突,arm3 确定性 60s 超时(master 基线同红,arm1/2 过)— 验收:arm3 断言改造为「等 TTL 过期/显式释放后清扫收敛」或 arm 序列调整避免复占活租约形态;TestMultiReplicaDrill 三臂全绿(T20.8 交付:GATE 1 裁断言改造路线——arm3 两幕:伪活租约钉误跳过负断言 + WARN 词面 tools 导出常量编译期钉死 + 清行/优雅释放/TTL 过期后下次启动收敛;drill 五臂绿 + 三件套绿 + 对抗审计 1 MEDIUM/8 LOW 全收)
 
 ## P3 停车场(触发器休眠,防遗忘)
 
