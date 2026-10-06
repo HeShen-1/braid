@@ -216,11 +216,14 @@ type LoginSet struct {
 // D-2026-09-28-t92 decision 10). Requested counts every authenticated
 // attempt reaching the scheduler seam; Applied counts committed rollbacks;
 // Denied breaks rejections down by reason facet (mirroring the structured
-// error kinds + the role gate).
+// error kinds + the role gate). Replayed counts T18.5 replay hits —
+// duplicate/concurrent-loser requests converged to 200 with the first
+// answer (zero new writes), so they stop inflating Denied.
 type RollbackSet struct {
 	Requested prometheus.Counter
 	Applied   prometheus.Counter
 	Denied    *prometheus.CounterVec // by reason
+	Replayed  prometheus.Counter
 }
 
 // FleetGateReason* are the T15.6 fleet capability gate rejection facets:
@@ -473,6 +476,10 @@ func NewSet() (*Set, *prometheus.Registry) {
 				Name: "braid_rollback_denied_total",
 				Help: "Rejected rollback/resume requests by reason (role_denied/not_rollbackable/blocked_inflight/bad_node_id/no_resume_target).",
 			}, []string{"reason"}),
+			Replayed: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_rollback_replayed_total",
+				Help: "Duplicate rollback/resume requests replayed with the first answer (T18.5 idempotent 200; no new writes).",
+			}),
 		},
 		Cancel: &CancelSet{
 			Requested: f.NewCounter(prometheus.CounterOpts{

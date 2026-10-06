@@ -733,6 +733,35 @@ func TestRollbackAuditPayload(t *testing.T) {
 	}
 }
 
+// TestRollbackAuditLinksRootTrace:T18.5 ⑦ 世系锚——execution.rolled_back
+// 行 linked_trace_id = 执行 root X(守卫① 同语句读出,审批 decided 段首
+// 单点先例);行自身 trace_id 走 ctx(本测试 Background = NULL,prod =
+// 回滚请求段链 Z≠X——重跑段经 linked 指回主链)。变异自查:守卫不读
+// trace_id / 审计行漏落 linked → 断言红。
+func TestRollbackAuditLinksRootTrace(t *testing.T) {
+	s, d := newSched(t)
+	execID, _, _ := rbFailChain(t, s, d)
+	const rootX = "0123456789abcdef0123456789abcdef"
+	if _, err := d.Exec(`UPDATE workflow_execution SET trace_id=? WHERE id=?`, rootX, execID); err != nil {
+		t.Fatalf("seed root trace: %v", err)
+	}
+	if _, err := s.RollbackTo(context.Background(), RollbackParams{
+		ExecID: execID, TargetNodeID: "b", WorkerID: "api-rb", ActorID: "op"}); err != nil {
+		t.Fatalf("RollbackTo: %v", err)
+	}
+	var trace, linked sql.NullString
+	if err := d.QueryRow(`SELECT trace_id, linked_trace_id FROM audit_log
+	  WHERE execution_id=? AND event_type='execution.rolled_back'`, execID).Scan(&trace, &linked); err != nil {
+		t.Fatalf("read rolled_back trace cols: %v", err)
+	}
+	if trace.Valid {
+		t.Fatalf("trace_id = %q, want NULL(Background ctx 无段,prod = 请求链 Z)", trace.String)
+	}
+	if !linked.Valid || linked.String != rootX {
+		t.Fatalf("linked_trace_id = %+v, want root X(段首指回执行主链)", linked)
+	}
+}
+
 // newCappedSched 返回带行数上限的调度器(T15.5 容量闸测试专用;复用
 // braid_scheduler_test schema 与测试雪花)。
 func newCappedSched(t *testing.T, max uint32) (*Scheduler, *sql.DB) {

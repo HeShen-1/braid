@@ -12,7 +12,7 @@
 - [x] T18.2 token 预算闸门消费点 — M — 验收:config 旋钮 + Validate/启动期接线 + 超限拒绝语义(审计分面);前置 T7.1/T7.2 已交付,悬置理由失效(全仓无消费点已核)(T18.2 交付:D-2026-10-05-t182-token-budget-gate,每执行口径,审计分面 llm.call.budget_denied)
 - [x] T18.3 完整 taint 追踪 — M — 验收:输入→节点→审计的污点传播追踪(方案 D- 先行:追踪粒度/存储面/审计呈现;数据安全纵深叙事)— D-2026-10-05-t183-taint-tracking(字段级声明名+保守闭包 / 仅审计呈现零迁移 / node.taint_propagated 词表)
 - [x] T18.4 回滚族⑥ 投影只读端点 — M — **已交付**(D-2026-10-05-t184-projection-read-endpoints:按路径 = node path 投影详情[?instance_no 寻址]/按轮 = attempt 台账瘦列表 + 单轮四件套,round ≡ attempt_no;零 engine 触碰) — 验收:api 按轮/按路径投影只读端点(纯读面追加)
-- [ ] T18.5 回滚族①⑦ — S — 验收:重放 200 幂等语义(重复回滚 409→重放)+ trace_id 世系归属复核
+- [x] T18.5 回滚族①⑦ — S — **已交付**(D-2026-10-06-t185-rollback-replay-and-trace-lineage:重放 = api 层错误路径读回最新 rolled_back 台账[not_rollbackable/ErrConflict 两收敛面,操作级幂等不校验 actor,200+审计重建 DTO 零新写 + Replayed 计数器];⑦ = 段首家族扩四词[rolled_back/rollback.denied/cancelled/cancel.denied 携 linked=X,词表闸单点化],重跑任务 trace 同链锚) — 验收:重放 200 幂等语义(重复回滚 409→重放)+ trace_id 世系归属复核
 - [x] T18.6 回滚族⑧ 留档保留期 — S-M — 验收:node_attempt 留档接 janitor(现四面未覆盖)+ docs/CAPACITY.md 补面(T18.6 交付:D-2026-10-05-t186-node-attempt-retention,30d 容量定档/heartbeat_at 时钟骑既有索引/活执行守卫/RUNNING 永不删/专属轮上限 25000 对账摄入帽,零 DDL)
 - [x] T18.7 T17.4 观测缝隙收口 — S-M — 验收:reaper probe 面测试锚逐项补齐 + 探测不可达 fail-open 计数 + im_notified 对账分轮
 
