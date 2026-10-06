@@ -218,12 +218,15 @@ type LoginSet struct {
 // Denied breaks rejections down by reason facet (mirroring the structured
 // error kinds + the role gate). Replayed counts T18.5 replay hits —
 // duplicate/concurrent-loser requests converged to 200 with the first
-// answer (zero new writes), so they stop inflating Denied.
+// answer (zero new writes), so they stop inflating Denied. Quiesced counts
+// T19.6 quiesce rollbacks that wedged >=1 in-flight residue row (wedge-
+// in-transaction convergence replacing the reaper settle wait).
 type RollbackSet struct {
 	Requested prometheus.Counter
 	Applied   prometheus.Counter
 	Denied    *prometheus.CounterVec // by reason
 	Replayed  prometheus.Counter
+	Quiesced  prometheus.Counter
 }
 
 // FleetGateReason* are the T15.6 fleet capability gate rejection facets:
@@ -479,6 +482,10 @@ func NewSet() (*Set, *prometheus.Registry) {
 			Replayed: f.NewCounter(prometheus.CounterOpts{
 				Name: "braid_rollback_replayed_total",
 				Help: "Duplicate rollback/resume requests replayed with the first answer (T18.5 idempotent 200; no new writes).",
+			}),
+			Quiesced: f.NewCounter(prometheus.CounterOpts{
+				Name: "braid_rollback_quiesced_total",
+				Help: "Committed rollbacks that wedged >=1 in-flight residue row in-transaction (T19.6 quiesce protocol).",
 			}),
 		},
 		Cancel: &CancelSet{

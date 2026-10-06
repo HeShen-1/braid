@@ -44,6 +44,9 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
   const [approvals, setApprovals] = useState<Record<string, ApprovalDetail | null>>({})
   const [audit, setAudit] = useState<AuditEvent[]>([])
   const [target, setTarget] = useState<string | null>(null)
+  // T19.6 quiesce 旗标:回滚/续跑时把 EXECUTING/等待审批的残留节点同事务
+  // 楔停(缺省不勾 = 服务端 409 等后台收敛,保值等待)。
+  const [quiesce, setQuiesce] = useState(false)
   const [flash, setFlash] = useState('')
   const [error, setError] = useState<{ text: string; blocked?: string[] } | null>(null)
   const [busy, setBusy] = useState(false)
@@ -153,12 +156,16 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
   }, [execId, load, onAuthExpired, faceError])
 
   const runAction = useCallback(
-    async (fn: () => Promise<{ target_node_id: string; reset_count: number; rerun_target: boolean }>) => {
+    async (fn: () => Promise<{ target_node_id: string; reset_count: number; rerun_target: boolean; quiesced_count: number }>) => {
       setBusy(true)
       setError(null)
       try {
         const ack = await fn()
-        setFlash(`已回滚到 ${ack.target_node_id}(重置 ${ack.reset_count} 行${ack.rerun_target ? ',目标节点重执行' : ''})`)
+        setFlash(
+          `已回滚到 ${ack.target_node_id}(重置 ${ack.reset_count} 行${ack.rerun_target ? ',目标节点重执行' : ''}${
+            ack.quiesced_count > 0 ? `,静默在飞 ${ack.quiesced_count} 行` : ''
+          })`,
+        )
         await load()
       } catch (err) {
         if (err instanceof ApiError && err.status === 401) {
@@ -208,12 +215,24 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
       </div>
 
       <div className="rollback-bar">
+        <label
+          className="quiesce-toggle"
+          title="勾选后回滚/续跑把在飞(EXECUTING/等待审批)残留节点同事务楔停;不勾保持 409 等后台收敛"
+        >
+          <input
+            type="checkbox"
+            data-testid="quiesce-toggle"
+            checked={quiesce}
+            onChange={(e) => setQuiesce(e.target.checked)}
+          />
+          静默在飞
+        </label>
         <button
           type="button"
           className="f-add"
           data-testid="rollback-submit"
           disabled={!canAct || target === null}
-          onClick={() => void runAction(() => api.rollbackExecution(execId, target as string))}
+          onClick={() => void runAction(() => api.rollbackExecution(execId, target as string, quiesce))}
         >
           回滚{target !== null ? `到 ${target}` : '(先选节点)'}
         </button>
@@ -222,7 +241,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
           className="f-add"
           data-testid="resume-submit"
           disabled={!canAct}
-          onClick={() => void runAction(() => api.resumeExecution(execId))}
+          onClick={() => void runAction(() => api.resumeExecution(execId, quiesce))}
         >
           续跑(自动定位失败/取消点)
         </button>

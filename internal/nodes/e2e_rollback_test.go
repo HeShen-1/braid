@@ -15,10 +15,12 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -57,24 +59,43 @@ const rollbackE2EChainDSL = `{
    "outputs":{"text":"string"}}],
  "outputs":{"done":"{{nodes.b.output.text}}"}}`
 
+// quiesceE2EDSL:T19.6 quiesce 旅程——菱形,b 毒标终败(fail-fast),c 带
+// 慢标(桩延迟应答 = wf FAILED 下 c 稳定在飞的残窗)。
+const quiesceE2EDSL = `{
+ "dsl":"1.0","name":"rb-e2e-quiesce",
+ "edges":[{"from":"a","to":"b"},{"from":"a","to":"c"},{"from":"b","to":"d"},{"from":"c","to":"d"}],
+ "nodes":[
+  {"id":"a","type":"llm","model":"glm-5.3","prompt":{"template":"阶段A"},"outputs":{"text":"string"}},
+  {"id":"b","type":"llm","model":"glm-5.3","prompt":{"template":"boom-毒标节点"},"outputs":{"text":"string"}},
+  {"id":"c","type":"llm","model":"glm-5.3","prompt":{"template":"旁路慢标节点"},"outputs":{"text":"string"}},
+  {"id":"d","type":"llm","model":"glm-5.3",
+   "prompt":{"template":"汇聚","user_data":[{"name":"v","ref":"{{nodes.b.output.text}}"},{"name":"w","ref":"{{nodes.c.output.text}}"}]},
+   "outputs":{"text":"string"}}],
+ "outputs":{"done":"{{nodes.d.output.text}}"}}`
+
 // rbE2EStack 装配毒化可翻转的桩 + 真适配器/执行器/relay/worker。
 // block/release(T19.3):挂起全部 LLM 调用的闸——在飞取消旅程的稳定时序面
-// (worker 真执行中触发取消,不受桩响应速度竞争)。
+// (worker 真执行中触发取消,不受桩响应速度竞争)。slowGate(T19.6):模板含
+// 「慢标」的调用阻塞至显式放行——fail-fast 后残留兄弟的确定性在飞窗
+// (固定 sleep 在满载下会与毒化重试链竞速:失败侧被拉长、残窗同时耗尽)。
 type rbE2EStack struct {
-	d       *sql.DB
-	sched   *scheduler.Scheduler
-	execID  uint64
-	defID   uint64
-	poison  atomic.Bool
-	block   atomic.Bool
-	release chan struct{}
+	d        *sql.DB
+	sched    *scheduler.Scheduler
+	execID   uint64
+	defID    uint64
+	poison   atomic.Bool
+	block    atomic.Bool
+	slow     atomic.Bool
+	slowOnce sync.Once
+	slowGate chan struct{}
+	release  chan struct{}
 }
 
 func rbE2EStart(t *testing.T, doc, input string) *rbE2EStack {
 	t.Helper()
 	d := sqltest.MustOpenAt(t, nodesSchema)
 	queue := fmt.Sprintf("t_n%d", atomic.AddUint32(&queueSeq, 1))
-	st := &rbE2EStack{d: d, release: make(chan struct{})}
+	st := &rbE2EStack{d: d, release: make(chan struct{}), slowGate: make(chan struct{})}
 
 	stub := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if st.block.Load() {
@@ -83,6 +104,9 @@ func rbE2EStart(t *testing.T, doc, input string) *rbE2EStack {
 		var body map[string]any
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		raw, _ := json.Marshal(body)
+		if st.slow.Load() && strings.Contains(string(raw), "慢标") {
+			<-st.slowGate // T19.6:确定性在飞残窗——楔停必发生在应答前,放行才迟到
+		}
 		if st.poison.Load() && strings.Contains(string(raw), "boom") {
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`{"error":{"message":"poisoned"}}`))
@@ -99,6 +123,9 @@ func rbE2EStart(t *testing.T, doc, input string) *rbE2EStack {
 		})
 	}))
 	t.Cleanup(stub.Close)
+	// 兜底放行(须后于 stub.Close 注册:LIFO 先执行——否则失败路径上
+	// stub.Close 等待挂起在闸上的请求,测试二进制挂到包超时;对抗审计 M5)。
+	t.Cleanup(func() { st.releaseSlow() })
 
 	llmCfg := llm.DefaultConfig()
 	llmCfg.BaseURL = stub.URL
@@ -188,6 +215,11 @@ func (st *rbE2EStack) waitExecStatus(t *testing.T, want engine.WorkflowState) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("execution 未达 %s(60s)", want)
+}
+
+// releaseSlow 放行慢标闸(sync.Once:测试体与 t.Cleanup 双路径幂等)。
+func (st *rbE2EStack) releaseSlow() {
+	st.slowOnce.Do(func() { close(st.slowGate) })
 }
 
 // TestE2ERollbackAnnexJourney:旅程 A——菱形,b 首轮毒化终败 → 回滚目标 d
@@ -335,6 +367,151 @@ func TestE2ERollbackRerunJourney(t *testing.T) {
 	}
 	if a3Input.String != oldSnap.String {
 		t.Fatalf("attempt3 台账快照 ≠ 旧轮行快照(读回抄档断裂)")
+	}
+}
+
+// TestE2ERollbackQuiesceJourney:T19.6(D-2026-10-06-t196)quiesce 真链路
+// 旅程——fail-fast 残留(c 的 LLM 调用阻塞在桩闸上 = 确定性在飞残窗):
+// 无旗标 409(协议观测态)→ quiesce=true 单事务楔停收敛(不等 reaper
+// orphanQuiet 2min)→ 重置重跑 → wf SUCCEEDED;迟到收口经 attempt DEAD
+// 幂等哨兵吸收(D-t193 机制继承);审计链 rolled_back.quiesced_count +
+// c 的 from=EXECUTING→CANCELLED 楔停行。
+func TestE2ERollbackQuiesceJourney(t *testing.T) {
+	st := rbE2EStart(t, quiesceE2EDSL, `{}`)
+	st.poison.Store(true)
+	st.slow.Store(true)
+
+	// 第一轮:b 毒化终败(max=1)→ wf FAILED;c 的调用睡在桩里(在飞残留,
+	// 场景本体:现行为须等 reaper orphanQuiet 2min 才 settle)。
+	st.waitExecStatus(t, engine.WorkflowFailed)
+	waitInstanceState(t, st.d, st.execID, "c", 0, engine.NodeExecuting)
+	// 认领钉死(对抗审计 M4):node 行 EXECUTING 在 dispatch 即置位,attempt
+	// 行 worker 认领时才物化——未认领形态下楔停收口环零对象、台账恰 1 行,
+	// 下游 atts==2 断言假红(合法形态的两分法见 TestE2ECancelJourney)。本
+	// 旅程按已认领形态锚:轮询 c 的 RUNNING attempt 出现才继续。
+	claimDeadline := time.Now().Add(30 * time.Second)
+	claimed := false
+	for time.Now().Before(claimDeadline) {
+		var n int
+		if err := st.d.QueryRow(`SELECT COUNT(*) FROM node_attempt na
+		  JOIN node_execution ne ON na.node_execution_id=ne.id
+		  WHERE ne.execution_id=? AND ne.node_id='c' AND na.status='RUNNING'`, st.execID).Scan(&n); err == nil && n > 0 {
+			claimed = true
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if !claimed {
+		t.Fatalf("c 未被 worker 认领(30s)——旅程前提(已认领形态)未成立")
+	}
+
+	// 无旗标 = 409 blocked_inflight(协议观测态;Blocked 清单引导)。
+	_, err := st.sched.RollbackTo(context.Background(), scheduler.RollbackParams{
+		ExecID: st.execID, TargetNodeID: "d", WorkerID: "rb-e2e", ActorID: "e2e-op"})
+	var re *scheduler.RollbackError
+	if !errors.As(err, &re) || re.Kind != scheduler.RollbackBlockedInflight {
+		t.Fatalf("无旗标 err = %v, want blocked_inflight(观测态)", err)
+	}
+
+	// quiesce=true:单事务楔停 c + 回滚(b 收编;c 重置 PENDING → advance
+	// 重派)。楔停时 c 的调用仍阻塞在闸上 = 残留在场;回滚返回后放行(关
+	// slow + 开 gate):旧调用迟到走哨兵、重派轮即时应答。
+	st.poison.Store(false)
+	res, err := st.sched.RollbackTo(context.Background(), scheduler.RollbackParams{
+		ExecID: st.execID, TargetNodeID: "d", WorkerID: "rb-e2e", ActorID: "e2e-op", Quiesce: true})
+	if err != nil {
+		st.slow.Store(false)
+		st.releaseSlow()
+		t.Fatalf("RollbackTo(quiesce): %v", err)
+	}
+	if res.QuiescedCount != 1 {
+		st.slow.Store(false)
+		st.releaseSlow()
+		t.Fatalf("quiesced_count = %d, want 1(c 残行恰一)", res.QuiescedCount)
+	}
+	st.slow.Store(false)
+	st.releaseSlow()
+
+	// 重跑轮:b/c 重派成功(slow 已关,新调用即时应答)→ d 汇聚 → wf
+	// SUCCEEDED。放行后 c 的旧调用迟到达 → attempt DEAD 哨兵吸收。
+	waitE2EExecSucceeded(t, st.d, st.execID)
+	assertE2ENodeState(t, st.d, st.execID, "b", engine.NodeSucceeded)
+	assertE2ENodeState(t, st.d, st.execID, "c", engine.NodeSucceeded)
+	assertE2ENodeState(t, st.d, st.execID, "d", engine.NodeSucceeded)
+
+	// 台账:c 恰两 attempt——旧轮 DEAD/rollback_quiesce(楔停收口 + 归因
+	// code,区别 rollback_reset),重跑轮 SUCCEEDED。
+	type attRow struct {
+		no     uint16
+		status string
+		code   sql.NullString
+	}
+	atts := []attRow{}
+	rs, err := st.d.Query(`SELECT na.attempt_no, na.status, na.error_code
+	  FROM node_attempt na JOIN node_execution ne ON na.node_execution_id=ne.id
+	  WHERE ne.execution_id=? AND ne.node_id='c' ORDER BY na.attempt_no`, st.execID)
+	if err != nil {
+		t.Fatalf("query c attempts: %v", err)
+	}
+	for rs.Next() {
+		var a attRow
+		if err := rs.Scan(&a.no, &a.status, &a.code); err != nil {
+			t.Fatalf("scan attempt: %v", err)
+		}
+		atts = append(atts, a)
+	}
+	_ = rs.Close()
+	if len(atts) != 2 {
+		t.Fatalf("c attempts = %d, want 2(旧轮楔停 + 重跑轮)", len(atts))
+	}
+	if atts[0].status != "DEAD" || atts[0].code.String != "rollback_quiesce" {
+		t.Fatalf("旧轮 = %s/%v, want DEAD/rollback_quiesce", atts[0].status, atts[0].code)
+	}
+	if atts[1].status != "SUCCEEDED" {
+		t.Fatalf("重跑轮 = %s, want SUCCEEDED", atts[1].status)
+	}
+
+	// 审计链:rolled_back payload 携 quiesced_count;c 的 from=EXECUTING
+	//→CANCELLED 楔停行(暂存 flush 后)。
+	var payload []byte
+	if err := st.d.QueryRow(`SELECT payload FROM audit_log
+	  WHERE execution_id=? AND event_type='execution.rolled_back'`, st.execID).Scan(&payload); err != nil {
+		t.Fatalf("read rolled_back: %v", err)
+	}
+	var p struct {
+		QuiescedCount int `json:"quiesced_count"`
+	}
+	if err := json.Unmarshal(payload, &p); err != nil || p.QuiescedCount != 1 {
+		t.Fatalf("rolled_back.quiesced_count = %+v(%v), want 1", p, err)
+	}
+	flushStagedAudit(t, st.d)
+	var wedged int
+	if err := st.d.QueryRow(`SELECT COUNT(*) FROM audit_log
+	  WHERE execution_id=? AND event_type='node.state_changed' AND node_id='c'
+	    AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.from'))='EXECUTING'
+	    AND JSON_UNQUOTE(JSON_EXTRACT(payload,'$.to'))='CANCELLED'`, st.execID).Scan(&wedged); err != nil || wedged != 1 {
+		t.Fatalf("c 的 EXECUTING→CANCELLED 楔停行 = %d(%v), want 1", wedged, err)
+	}
+
+	// 迟到收敛稳定性:旧调用放行后收口,状态面不动——哨兵吸收零痕迹
+	//(有界等待窗过,断言终态稳定;D-t193 取消旅程同款收敛机制的复验)。
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		var attCnt int
+		if err := st.d.QueryRow(`SELECT COUNT(*) FROM node_attempt na
+		  JOIN node_execution ne ON na.node_execution_id=ne.id
+		  WHERE ne.execution_id=? AND ne.node_id='c'`, st.execID).Scan(&attCnt); err == nil && attCnt == 2 {
+			// attempt 面已定型;再等一拍让迟到收口事务跑完。
+			time.Sleep(500 * time.Millisecond)
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	assertE2ENodeState(t, st.d, st.execID, "c", engine.NodeSucceeded)
+	var wfLate engine.WorkflowState
+	if err := st.d.QueryRow(`SELECT status FROM workflow_execution WHERE id=?`,
+		st.execID).Scan(&wfLate); err != nil || wfLate != engine.WorkflowSucceeded {
+		t.Fatalf("迟到收口后 wf = %v(%v), want SUCCEEDED(哨兵吸收)", wfLate, err)
 	}
 }
 

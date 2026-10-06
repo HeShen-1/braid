@@ -108,7 +108,7 @@ describe('ExecutionDetail(执行详情)', () => {
         if (url.endsWith('/rollback')) {
           rolled = true
           expect(init?.body).toBe(JSON.stringify({ node_id: 'gate' }))
-          return ok({ execution_id: '7', target_node_id: 'gate', rerun_target: true, reset_count: 2 }, 201)
+          return ok({ execution_id: '7', target_node_id: 'gate', rerun_target: true, reset_count: 2, quiesced_count: 0 }, 201)
         }
         if (url === '/api/v1/executions/7') {
           return ok({
@@ -125,6 +125,37 @@ describe('ExecutionDetail(执行详情)', () => {
     await user.click(screen.getByTestId('node-row-gate-0'))
     await user.click(screen.getByTestId('rollback-submit'))
     expect(await screen.findByTestId('exec-flash')).toHaveTextContent('2')
+    expect(rolled).toBe(true)
+  })
+
+  it('T19.6 quiesce:勾选后回滚体带旗标,flash 带静默行数', async () => {
+    const user = userEvent.setup()
+    let rolled = false
+    stubRoute(
+      [/^\/api\/v1\/executions\/7$/, /rollback$/, /versions/, /audit/, /approvals\//],
+      (url, init) => {
+        if (url.endsWith('/rollback')) {
+          rolled = true
+          expect(init?.body).toBe(JSON.stringify({ node_id: 'gate', quiesce: true }))
+          return ok({ execution_id: '7', target_node_id: 'gate', rerun_target: true, reset_count: 1, quiesced_count: 1 }, 201)
+        }
+        if (url === '/api/v1/executions/7') {
+          return ok({
+            ...baseDetail, status: rolled ? 'RUNNING' : 'FAILED',
+            nodes: [{ id: '13', node_id: 'gate', instance_no: 0, type: 'approval', status: rolled ? 'EXECUTING' : 'FAILED', attempts: 1, max_attempts: 1, error_code: null, error_message: null, started_at: null, finished_at: null }],
+          })
+        }
+        if (url.includes('/audit')) return ok({ items: [], next_cursor: '' })
+        return ok({ id: '1', dsl: { dsl: '1.0', name: 'wf', nodes: [], edges: [] } })
+      },
+    )
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    await screen.findByTestId('node-row-gate-0')
+    await user.click(screen.getByTestId('node-row-gate-0'))
+    // 勾选旗标 → 体携 quiesce;缺省路径由上一用例锚(体形状不变)。
+    await user.click(screen.getByTestId('quiesce-toggle'))
+    await user.click(screen.getByTestId('rollback-submit'))
+    expect(await screen.findByTestId('exec-flash')).toHaveTextContent('静默在飞 1 行')
     expect(rolled).toBe(true)
   })
 

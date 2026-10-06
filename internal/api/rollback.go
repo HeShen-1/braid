@@ -25,18 +25,24 @@ import (
 	"braid/internal/scheduler"
 )
 
-// rollbackRequest 是两端点共用请求体(resume 的 node_id 可缺省)。
+// rollbackRequest 是两端点共用请求体(resume 的 node_id 可缺省)。quiesce
+// 是 T19.6(D-2026-10-06-t196 决策 1)收敛旗标:true 时 EXECUTING/WA 残留
+// 在回滚事务内楔停(缺省 false = 409 blocked_inflight 等 reaper settle,
+// 等待保值语义:残留自然完成可出闭包并保活)。
 type rollbackRequest struct {
-	NodeID string `json:"node_id"`
+	NodeID  string `json:"node_id"`
+	Quiesce bool   `json:"quiesce"`
 }
 
 // rollbackDTO 是回滚成功响应(201;契约回显,镜像 executionAckDTO 纪律——
-// snowflake 字符串化防 IEEE754 折叠)。
+// snowflake 字符串化防 IEEE754 折叠)。quiesced_count = 楔停收敛的残留行数
+// (重放重建同源,T18.5 台账镜像)。
 type rollbackDTO struct {
-	ExecutionID  string `json:"execution_id"`
-	TargetNodeID string `json:"target_node_id"`
-	RerunTarget  bool   `json:"rerun_target"`
-	ResetCount   int    `json:"reset_count"`
+	ExecutionID   string `json:"execution_id"`
+	TargetNodeID  string `json:"target_node_id"`
+	RerunTarget   bool   `json:"rerun_target"`
+	ResetCount    int    `json:"reset_count"`
+	QuiescedCount int    `json:"quiesced_count"`
 }
 
 // rollbackExecution:POST /executions/:id/rollback —— node_id 必填。
@@ -93,7 +99,7 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 		// 落行闸(D-t112 审计收口):同 decideApproval——拒绝审计只对
 		// 本租户可见执行落,跨租户/不存在不注入受害者证据链。
 		if s.execVisibleInTenant(c, execID) {
-			s.writeRollbackDeniedAudit(c, execID, req.NodeID, claims.Subject, "role_denied", 0)
+			s.writeRollbackDeniedAudit(c, execID, req.NodeID, claims.Subject, "role_denied", 0, req.Quiesce)
 		}
 		if s.rollbackMetrics != nil {
 			s.rollbackMetrics.Denied.WithLabelValues("role_denied").Inc()
@@ -121,6 +127,7 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 		// 与 reaper:<id> 同式的进程词表。
 		WorkerID: "api:rollback",
 		ActorID:  claims.Subject,
+		Quiesce:  req.Quiesce,
 	})
 	if err != nil {
 		// T18.5 重放收敛:重复请求(顺序重复 = 守卫① not_rollbackable)与
@@ -142,7 +149,7 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 			// 业务拒绝全分面落审计(对抗审计 HIGH 修:此前仅 role_denied
 			// 落行,与 D-t92 决策 9/10 及告警 runbook 引用的证据源脱节)。
 			// infra 错误/conflict(瞬态/并发收敛面)不落——自愈路径不灌水。
-			s.writeRollbackDeniedAudit(c, execID, req.NodeID, claims.Subject, string(re.Kind), len(re.Blocked))
+			s.writeRollbackDeniedAudit(c, execID, req.NodeID, claims.Subject, string(re.Kind), len(re.Blocked), req.Quiesce)
 		}
 		if s.rollbackMetrics != nil {
 			if re != nil {
@@ -156,12 +163,18 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 	}
 	if s.rollbackMetrics != nil {
 		s.rollbackMetrics.Applied.Inc()
+		if res.QuiescedCount > 0 {
+			// T19.6:楔停收敛回滚单独计数(Replayed 先例——只计真发生
+			// 楔停的成功面,零残留 no-op 不灌水)。
+			s.rollbackMetrics.Quiesced.Inc()
+		}
 	}
 	c.JSON(http.StatusCreated, rollbackDTO{
-		ExecutionID:  strconv.FormatUint(execID, 10),
-		TargetNodeID: res.TargetNodeID,
-		RerunTarget:  res.RerunTarget,
-		ResetCount:   res.ResetCount,
+		ExecutionID:   strconv.FormatUint(execID, 10),
+		TargetNodeID:  res.TargetNodeID,
+		RerunTarget:   res.RerunTarget,
+		ResetCount:    res.ResetCount,
+		QuiescedCount: res.QuiescedCount,
 	})
 }
 
@@ -212,10 +225,11 @@ func (s *Server) tryRollbackReplay(c *gin.Context, execID uint64, nodeID string)
 		return rollbackDTO{}, false
 	}
 	return rollbackDTO{
-		ExecutionID:  strconv.FormatUint(execID, 10),
-		TargetNodeID: p.TargetNodeID,
-		RerunTarget:  p.RerunTarget,
-		ResetCount:   p.ResetCount,
+		ExecutionID:   strconv.FormatUint(execID, 10),
+		TargetNodeID:  p.TargetNodeID,
+		RerunTarget:   p.RerunTarget,
+		ResetCount:    p.ResetCount,
+		QuiescedCount: p.QuiescedCount, // T19.6:台账整结构体回读自动流过
 	}, true
 }
 
@@ -231,7 +245,8 @@ func (s *Server) mapRollbackError(c *gin.Context, err error) {
 			c.JSON(http.StatusConflict, gin.H{"error": "not_rollbackable", "detail": re.Detail})
 		case scheduler.RollbackBlockedInflight:
 			// Retry-After = reaper settle 的量级(orphanQuiet 2min + tick);
-			// 阻塞清单引导运维/自动化按行退避(D-t92 决策 4②)。
+			// 阻塞清单引导运维/自动化按行退避(D-t92 决策 4②)。T19.6 起
+			// 收敛出路 = 重试携 quiesce=true(detail 同提示,协议自描述)。
 			c.Header("Retry-After", "120")
 			c.JSON(http.StatusConflict, gin.H{
 				"error": "rollback_blocked_inflight", "detail": re.Detail, "blocked": re.Blocked})
@@ -262,9 +277,10 @@ func (s *Server) mapRollbackError(c *gin.Context, err error) {
 // 旁路写入失败影响;失败仅 slog 零遥测不可接受,对抗审计 LOW 修)。全部
 // 业务分面(role_denied/not_rollbackable/blocked_inflight/bad_node_id/
 // no_resume_target)都落行:告警 runbook 与 T6.4 denied 计数器的证据源
-// (对抗审计 HIGH 修:此前仅 role_denied 落行)。执行缺行时 Append 的分区键
+// (对抗审计 HIGH 修:此前仅 role_denied 落行)。quiesce = 请求旗标镜像
+// (T19.6:破坏性 opt-in 的拒绝面证据)。执行缺行时 Append 的分区键
 // 点查失败 = 天然防灌水,镜像 decided 面的锚定语义。
-func (s *Server) writeRollbackDeniedAudit(c *gin.Context, execID uint64, nodeID, actor, reason string, blockedCount int) {
+func (s *Server) writeRollbackDeniedAudit(c *gin.Context, execID uint64, nodeID, actor, reason string, blockedCount int, quiesce bool) {
 	// T18.5 ⑦:root X 池上点查(镜像 writeDecisionDeniedAudit)——denied
 	// 行自身 trace = 拒绝请求段链 Z,linked 指回执行主链;best-effort 面
 	// 瞬态故障跳过但零遥测不可接受(同审批先例)。
@@ -282,6 +298,7 @@ func (s *Server) writeRollbackDeniedAudit(c *gin.Context, execID uint64, nodeID,
 	}
 	raw, err := json.Marshal(audit.RollbackDeniedPayload{
 		Reason: reason, TargetNodeID: nodeID, BlockedCount: blockedCount,
+		Quiesce: quiesce,
 	})
 	if err != nil {
 		slog.Error("api: marshal rollback.denied payload", "err", err)

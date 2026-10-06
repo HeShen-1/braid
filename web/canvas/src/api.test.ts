@@ -66,8 +66,8 @@ describe('execution domain client', () => {
     expect(JSON.parse(String(init?.body))).toEqual({ definition_name: 'wf', input: { docs: ['a'] } })
   })
 
-  it('rollbackExecution:POST rollback + node_id 体;resume 无体', async () => {
-    stubFetch(() => ok({ execution_id: '7', target_node_id: 'gate', rerun_target: true, reset_count: 2 }, 201))
+  it('rollbackExecution:POST rollback + node_id 体;resume 无体;quiesce 旗标透传', async () => {
+    stubFetch(() => ok({ execution_id: '7', target_node_id: 'gate', rerun_target: true, reset_count: 2, quiesced_count: 0 }, 201))
     await api.rollbackExecution('7', 'gate')
     expect(String(calls[0].input)).toBe('/api/v1/executions/7/rollback')
     expect(calls[0].init?.method).toBe('POST')
@@ -77,6 +77,12 @@ describe('execution domain client', () => {
     expect(String(calls[1].input)).toBe('/api/v1/executions/7/resume')
     expect(calls[1].init?.method).toBe('POST')
     expect(calls[1].init?.body).toBeUndefined()
+
+    // T19.6:quiesce=true 才进体(缺省路径体形状逐字不变)。
+    await api.rollbackExecution('7', 'gate', true)
+    expect(JSON.parse(String(calls[2].init?.body))).toEqual({ node_id: 'gate', quiesce: true })
+    await api.resumeExecution('7', true)
+    expect(JSON.parse(String(calls[3].init?.body))).toEqual({ quiesce: true })
   })
 
   it('getApproval / listAuditEvents:子资源路径', async () => {

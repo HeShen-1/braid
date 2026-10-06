@@ -556,6 +556,18 @@ body,
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+  align-items: center;
+}
+
+/* T19.6 quiesce 旗标:与操作按钮同行的小号复选(语义 = 楔停在飞残留)。 */
+.quiesce-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 12px;
+  color: #555;
+  cursor: pointer;
+  user-select: none;
 }
 
 .exec-graph {
