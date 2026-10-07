@@ -404,7 +404,8 @@ api/worker 启动即验,失败 = 拒启(错误带分量定位,不含密钥材料
   daemon.json `default-address-pools`);一 worker 一网 + 网络不自回收
   ⇒ worker 身份变更(容器 recreate/升级路径)每次泄漏一网,回收原语见
   deploy/RUNBOOK.md §1.1(孤儿容器清扫原语由 t15.3 落位,并节仲裁见
-  RUNBOOK §1.2 注记)。并发容器配额
+  RUNBOOK §1.2 注记;上界组成推导、耗尽症状与扩容 = RUNBOOK §1.3,
+  T20.6)。并发容器配额
   `BRAID_TOOL_SANDBOX_MAX_CONCURRENCY` 是**进程级**语义(键注释见
   deploy/.env.example,单副本口径不变),daemon 维度总额 = Σ 各副本。
 - **保证的适用域(登记,对抗审查收口)**:「结构性拒绝」限 **off-host 方向**、
