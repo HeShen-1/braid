@@ -6,7 +6,8 @@
 ## 1. 沙箱孤儿容器与泄漏 egress 网(T15.3/T15.4,D-t151 决策 5)
 
 worker 沙箱容器与 egress 网都是 docker daemon 持久对象,worker 进程退场
-不自动回收。两类残留同源(进程灭失或身份变更),清扫一节:
+不自动回收。两类残留同源(进程灭失或身份变更),清扫一节;泄漏累积撞
+daemon 地址池上界的耗尽形态(症状/诊断/扩容)另收场景节 §1.3。
 
 ### 1.1 泄漏 egress 网(T15.4)
 
@@ -14,7 +15,8 @@ egress 网名 = 基段 + worker_id 实例段(缺省族
 `braid-sbx-egress-<8 hex>`;自定基段换前缀)。worker 正常重启同名幂等
 复用;**身份变更**(容器 recreate/升级路径——compose 缺省无 `hostname`
 键时 `up -d` 必换容器短 ID)即泄漏一网:旧网无人监听,却占 daemon
-地址池配额(缺省 ≈31 用户网/daemon,k8s host docker.sock 按节点计)。
+地址池配额(缺省 ≈31 用户网/daemon,k8s host docker.sock 按节点计;
+上界组成、耗尽症状与扩容见 §1.3)。
 **误删活网 = 该 worker 全部 http 沙箱出网即断**,rm 前每步都过:
 
 ```sh
@@ -94,6 +96,104 @@ T15.3 升级窗特例**:旧二进制所起的前身容器没有 owner label,② 
 在场为准)、残窗内重启的误跳过一次、复占双签发(T20.1/D-2026-10-06-t201 已收口:复占 bump 代际 + 写事务等值加冕 fence,旧代际进程续期落空即 lost 下线)。
 与 §1.1 泄漏网的耦合:附着容器非零的网一律不回收(§1.1 第 4 步),
 先按本节清容器再回收网。
+
+### 1.3 地址池耗尽:症状、诊断与扩容(T20.6)
+
+§1.1/§1.2 的残留是慢性累积,撞线形态 = daemon 缺省地址池吃满:泄漏
+egress 网与同 daemon 其他项目网(compose 栈每项目 ≥1 张默认网、手工
+网)共同占池。**上界是全 daemon 用户网总额,不止 braid 面**。
+
+**上界注记(default-address-pools)**:缺省池 = 172.17-172.31 十五个
+/16 + 192.168.0.0/16 十六个 /20 = **31 席**(moby 源码口径,
+daemon/libnetwork/ipamutils;此表自池机制诞生起跨版本恒定,新版源码
+把 172 段合并写作 3×/16 + 3×/14,集合不变)。docker0(缺省子网
+172.17.0.0/16)占首席 ⇒ 用户网上界 **30**;宿主真实网段再吃席——
+池子网与宿主路由重叠即被分配器跳过(实测形态:宿主 LAN
+192.168.1.0/24 时 192.168.0.0/20 整席不可用,用户网触顶 29 而非 30)。
+历史口径「≈31 用户网/daemon」(§1.1/README §9)按 bridge 族触顶
+总行数读即 30 用户网 + bridge 本网 = 31 行,±1 由「≈」吸收;容量
+规划按 30 再减宿主重叠席。k8s host docker.sock = 节点级 daemon 共享,
+按节点计(README §9 同口径);host/none 网不占池席。
+
+**症状**:池满后任何不带 `--subnet` 的 `docker network create` 全
+daemon 必红。braid 面最先撞线的是 worker 启动段(egress 网确保失败 =
+拒启,零静默降级),日志词面(slog 默认 handler 对 err 值整体加引号、
+内部引号转义,grep 用无引号针句 `unavailable after create attempt`):
+
+```
+worker: fatal ... err="worker: sandbox egress startup: tools: egress network \"braid-sbx-egress-<8 hex>\" unavailable after create attempt (inspect: exit status 1)"
+```
+
+docker 侧真因被幂等创建路径丢弃(ensureEgressNetwork 不上抛 create 的
+stderr)——手动重放同命令看原始报错;池耗尽的 daemon 词面(docker
+27+;≤26 时代词面为 "could not find an available, non-overlapping IPv4
+address pool among the defaults to assign to the network",检索与告警
+按新串配):
+
+```
+Error response from daemon: all predefined address pools have been fully subnetted
+```
+
+compose 起栈(dev/t13/e2e/drill)同源症状:network create 失败带同
+词面。
+
+**诊断**(只读两步):
+
+```sh
+# 1. 池位盘点:bridge 驱动网全列(含 docker0;host/none 不占池)。
+#    触顶总行数 = 30 用户网 + bridge 本网 = 31(宿主网段重叠再减,
+#    见上界注记);名字即归属面——缺口在 braid egress 还是其他项目,
+#    决定下一步动谁的网。
+docker network ls --filter driver=bridge --format '{{.Name}}'
+
+# 2. braid 泄漏面盘点:egress 族逐网网关 + 附着数(§1.1 步 2/步 4 的
+#    批量只读形态)。attach=0 只是死网必要条件——空闲 worker 的活网
+#    常态零附着,逐网回收前仍须过 §1.1 步 2 探活 + 步 3 owner。
+docker network ls --filter name='^braid-sbx-egress' --format '{{.Name}}' |
+  while read -r n; do
+    docker network inspect -f '{{.Name}} gw={{(index .IPAM.Config 0).Gateway}} attach={{len .Containers}}' "$n"
+  done
+```
+
+**回收**:死网逐网走 §1.1 步 2-5。**禁 `docker network prune`**:它
+按「零附着容器」一刀切且无法定向——egress 网不带 label(裸
+`docker network create --internal` 创建,label 过滤器结构性够不到),
+而空闲 worker 的活 egress 网常态就是零附着,prune 连活网一并删(后果
+同 §1.1 开头红线:该 worker 全部 http 沙箱出网即断),同 daemon 其他
+项目网同遭。
+
+**扩容(daemon.json `default-address-pools`)**:回收治标——泄漏源
+(身份变更每次漏一网)不因回收消失,止漏 = 消身份变更面(自管部署给
+compose 钉 hostname 键,§1.1/§1.2 注记;交付 prod compose 已钉);
+在飞 worker 数 + 常驻栈数长期逼近上界时扩池:
+
+```json
+{
+  "default-address-pools": [
+    {"base": "172.17.0.0/16", "size": 16},
+    {"base": "172.18.0.0/16", "size": 16},
+    {"base": "172.19.0.0/16", "size": 16},
+    {"base": "172.20.0.0/14", "size": 16},
+    {"base": "172.24.0.0/14", "size": 16},
+    {"base": "172.28.0.0/14", "size": 16},
+    {"base": "192.168.0.0/16", "size": 20},
+    {"base": "10.89.0.0/16", "size": 24}
+  ]
+}
+```
+
+- **整组替换**:非空配置直接覆盖缺省池表(moby 源码口径,daemon.go
+  配置装配)——缺省表必须原样重列再追加(上例前七项即缺省表);
+  只写新段 = 新建网只剩新段可用。
+- 只影响**新建**网络;存量网(含泄漏网)子网不变、不重编号——扩容
+  不替代回收。
+- 追加段避开宿主真实网段(物理网/VPN/k8s pod 与 service CIDR):先
+  `ip route` 核对;重叠不只是路由黑洞(容器网抢占真实目的地),还
+  直接吃掉池席(见上界注记实测)。缺省 192.168.0.0/16 段与办公网/
+  家网高重叠,冲突时按换段处理,与扩容独立。
+- daemon 重启生效(缺省配置下 dockerd 重启带走全部容器,已配
+  live-restore 者容器存活);重启窗走变更纪律(UPGRADE.md 同款);
+  k8s 节点级 daemon 逐台改。
 
 ## 2. 调度手工原语(T17.3,T7.4 收口)
 
