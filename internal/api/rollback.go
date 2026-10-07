@@ -88,6 +88,21 @@ func (s *Server) handleRollback(c *gin.Context, allowAutoTarget bool) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "node_id_required"})
 		return
 	}
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,形状闸之后
+	// role 闸之前——审计行携带已验形的 node_id/quiesce 上下文)。拒绝复用
+	// rollback.denied 事件族 reason=scope_denied + Denied 计数器(镜像
+	// role_denied 分支;落行闸同判——跨租户/不存在执行不注入受害者
+	// 证据链)。
+	if !requireScope(c, auth.ScopeExecutionsWrite, func(subject string) {
+		if s.execVisibleInTenant(c, execID) {
+			s.writeRollbackDeniedAudit(c, execID, req.NodeID, subject, "scope_denied", 0, req.Quiesce)
+		}
+		if s.rollbackMetrics != nil {
+			s.rollbackMetrics.Denied.WithLabelValues("scope_denied").Inc()
+		}
+	}) {
+		return
+	}
 	// in-handler 角色闸(author|admin,与触发面同门):拒绝必须落审计
 	// rollback.denied(独立小事务,writeDecisionDeniedAudit 同款纪律)。
 	claims, ok := ClaimsFrom(c)

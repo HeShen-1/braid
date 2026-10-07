@@ -23,6 +23,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"braid/internal/auth"
 	"braid/internal/engine"
 )
 
@@ -123,6 +124,12 @@ func toPendingDTO(p PendingApproval) pendingApprovalDTO {
 // listPendingApprovals:GET /api/v1/approvals/pending?limit&offset。任意
 // 有效 token(名单内过滤即读边界,与 GET 详情收窄面同真相源)。
 func (s *Server) listPendingApprovals(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeExecutionsRead, nil) {
+		return
+	}
 	limit, offset, ok := parsePageParams(c)
 	if !ok {
 		return

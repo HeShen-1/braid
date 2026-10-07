@@ -330,15 +330,18 @@ func TestRequireAnyRole(t *testing.T) {
 	}
 }
 
-// TestRequireScopeMiddleware:REST scp 执法闸(T17.1,D-2026-10-01-t171)
+// TestRequireScopeHelper:REST scp 执法闸(T17.1 立;T20.2/D-2026-10-07
+// -t202-scp-denied-audit 起中间件形态退役,语义原样迁 in-handler helper)
 // 四面钉死——
 //   - scp 缺席(存量/手签形态,claim 不携带)→ 透传:全角色凭证现状
 //     兼容裁定(issue #118 钉死;与 MCP 面 fail-closed 刻意不同面);
 //   - scp 在场且持所需作用域 → 放行;
-//   - scp 在场但不持 → 403 forbidden(与角色闸同响应体,不泄露哪道闸);
-//   - 挂未认证路由 → 401 fail-closed(镜像 RequireAnyRoleWithoutAuth);
+//   - scp 在场但不持 → 403 forbidden(与角色闸同响应体,不泄露哪道闸)
+//   - onDeny 恰被回调一次(拒绝审计半边的接线面;401/500/放行不回调);
+//   - 未认证调用(handler 前无 Authenticate 是接线 bug)→ 401 fail-closed
+//     (镜像 TestRequireAnyRoleWithoutAuth);
 //   - want 词表外 = 接线 bug → 500 响亮不伪造 403。
-func TestRequireScopeMiddleware(t *testing.T) {
+func TestRequireScopeHelper(t *testing.T) {
 	sign := func(t *testing.T, scopes ...auth.Scope) string {
 		t.Helper()
 		s, err := auth.SignTokenScoped(testSecret, time.Hour, "alice", []auth.Role{auth.RoleAdmin}, 0, "", scopes)
@@ -347,10 +350,16 @@ func TestRequireScopeMiddleware(t *testing.T) {
 		}
 		return s
 	}
+	// denied 记录 onDeny 回调(subject 恰一次)。
+	var denied []string
 	newScoped := func(want auth.Scope) *gin.Engine {
+		denied = nil
 		gin.SetMode(gin.TestMode)
 		r := gin.New()
-		r.GET("/x", Authenticate(testSecret, TokenBindingOff), RequireScope(want), func(c *gin.Context) {
+		r.GET("/x", Authenticate(testSecret, TokenBindingOff), func(c *gin.Context) {
+			if !requireScope(c, want, func(subject string) { denied = append(denied, subject) }) {
+				return
+			}
 			c.String(http.StatusOK, "sub=%s", c.MustGet(claimsCtxKey).(auth.Claims).Subject)
 		})
 		return r
@@ -369,32 +378,61 @@ func TestRequireScopeMiddleware(t *testing.T) {
 	if code, body := do(r, sign(t, auth.ScopeWorkflowsWrite)); code != 200 || body != "sub=alice" {
 		t.Fatalf("held scope: code=%d body=%q, want 200 sub=alice", code, body)
 	}
+	if len(denied) != 0 {
+		t.Fatalf("held scope: onDeny called %v, want never", denied)
+	}
 	if code, body := do(r, sign(t, auth.ScopeWorkflowsRead, auth.ScopeExecutionsRead)); code != 403 || !strings.Contains(body, "forbidden") {
 		t.Fatalf("unheld scope: code=%d body=%q, want 403 forbidden", code, body)
 	}
+	if len(denied) != 1 || denied[0] != "alice" {
+		t.Fatalf("unheld scope: onDeny = %v, want [alice] exactly once", denied)
+	}
+	denied = nil
 	if code, body := do(r, sign(t)); code != 200 || body != "sub=alice" {
 		t.Fatalf("absent scp must pass through (现状兼容钉死): code=%d body=%q, want 200", code, body)
 	}
+	if len(denied) != 0 {
+		t.Fatalf("absent scp: onDeny called %v, want never", denied)
+	}
+	denied = nil
 	if code, _ := do(r, ""); code != 401 {
 		t.Fatalf("no token: code=%d, want 401", code)
 	}
+	if len(denied) != 0 {
+		t.Fatalf("401 face: onDeny called %v, want never(接线 bug 无证据语义)", denied)
+	}
 
 	// 接线 bug 面:want 词表外 → 500 响亮(auth.RequireScope 判定核
-	// ErrInvalidInput 透传,不伪装成调用方 403)。
+	// ErrInvalidInput 透传,不伪装成调用方 403;onDeny 不回调——接线
+	// bug 无证据语义)。
 	gin.SetMode(gin.TestMode)
+	denied = nil
 	bad := gin.New()
-	bad.GET("/x", Authenticate(testSecret, TokenBindingOff), RequireScope("audit:read"))
+	bad.GET("/x", Authenticate(testSecret, TokenBindingOff), func(c *gin.Context) {
+		if !requireScope(c, "audit:read", func(subject string) { denied = append(denied, subject) }) {
+			return
+		}
+		c.String(http.StatusOK, "ok")
+	})
 	if code, body := do(bad, sign(t, auth.ScopeWorkflowsRead)); code != 500 || !strings.Contains(body, "internal") {
 		t.Fatalf("vocab-external want: code=%d body=%q, want 500 internal", code, body)
 	}
+	if len(denied) != 0 {
+		t.Fatalf("vocab-external want: onDeny called %v, want never", denied)
+	}
 }
 
-// TestRequireScopeWithoutAuth:scp 闸挂未认证路由恒 401(镜像角色闸
-// 接线错误面)。
+// TestRequireScopeWithoutAuth:scp 闸在未认证上下文调用恒 401(镜像角色闸
+// 接线错误面——handler 挂上未过 Authenticate 的路由是接线 bug)。
 func TestRequireScopeWithoutAuth(t *testing.T) {
 	gin.SetMode(gin.TestMode)
 	r := gin.New()
-	r.GET("/x", RequireScope(auth.ScopeWorkflowsRead))
+	r.GET("/x", func(c *gin.Context) {
+		if !requireScope(c, auth.ScopeWorkflowsRead, nil) {
+			return
+		}
+		c.String(http.StatusOK, "ok")
+	})
 	w := httptest.NewRecorder()
 	r.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/x", nil))
 	if w.Code != 401 {

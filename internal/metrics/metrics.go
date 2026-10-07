@@ -226,7 +226,8 @@ type LoginSet struct {
 // D-2026-09-28-t92 decision 10). Requested counts every authenticated
 // attempt reaching the scheduler seam; Applied counts committed rollbacks;
 // Denied breaks rejections down by reason facet (mirroring the structured
-// error kinds + the role gate). Replayed counts T18.5 replay hits —
+// error kinds + the role gate + the T20.2 scp gate's scope_denied). Replayed
+// counts T18.5 replay hits —
 // duplicate/concurrent-loser requests converged to 200 with the first
 // answer (zero new writes), so they stop inflating Denied. Quiesced counts
 // T19.6 quiesce rollbacks that wedged >=1 in-flight residue row (wedge-
@@ -261,7 +262,7 @@ type FleetGateSet struct {
 type CancelSet struct {
 	Requested prometheus.Counter
 	Applied   prometheus.Counter
-	Denied    *prometheus.CounterVec // by reason (role_denied/not_cancellable/too_large)
+	Denied    *prometheus.CounterVec // by reason (role_denied/scope_denied/not_cancellable/too_large)
 }
 
 // FenceSet covers the T20.1 lease-fence rejection surface (scheduler-side:

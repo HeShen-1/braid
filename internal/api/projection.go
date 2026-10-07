@@ -9,7 +9,8 @@ package api
 //     D-t92 决策 6「跨轮全时间线」的 ListDecisions 同款读面设计);
 //   - GET /executions/:id/nodes/:node_id/attempts/:round —— 按轮:单轮
 //     证据四件套(input/output/error/usage,fat 列)。
-// 纯读面:路由级 RequireScope(executions:read) 零角色闸、零审计写
+// 纯读面:handler 内 requireScope(executions:read,T20.2 起 in-handler)
+// 零角色闸、零审计写
 // (auditquery 先例;rollback.denied 的 in-handler 闸是写面业务拒绝专用,
 // 不搬进读端点)。租户闸 = GetExecution(tenant,id) 前置锚(node 系无
 // 租户列,execstore 钦定;跨租户与不存在同面 404)。缺失语义:节点行
@@ -23,6 +24,8 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+
+	"braid/internal/auth"
 )
 
 // nodeProjectionDTO:按路径响应。output nil = null(无成功轮/未终态,
@@ -143,6 +146,12 @@ func (s *Server) resolveProjectionNode(c *gin.Context, thin bool) (execID, nodeE
 
 // getNodeProjection:GET /executions/:id/nodes/:node_id —— 按路径投影。
 func (s *Server) getNodeProjection(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeExecutionsRead, nil) {
+		return
+	}
 	execID, _, np, ok := s.resolveProjectionNode(c, false)
 	if !ok {
 		return
@@ -169,6 +178,12 @@ func (s *Server) getNodeProjection(c *gin.Context) {
 // listNodeAttempts:GET /executions/:id/nodes/:node_id/attempts —— 按轮
 // 瘦列列表(items 恒非缺席:零台账 = 空数组,不报错不伪造)。
 func (s *Server) listNodeAttempts(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeExecutionsRead, nil) {
+		return
+	}
 	_, nodeExecID, _, ok := s.resolveProjectionNode(c, true)
 	if !ok {
 		return
@@ -188,6 +203,12 @@ func (s *Server) listNodeAttempts(c *gin.Context) {
 // getNodeAttempt:GET /executions/:id/nodes/:node_id/attempts/:round ——
 // 单轮四件套。缺行 404(未物化/已清理/越界同面,不区分成因)。
 func (s *Server) getNodeAttempt(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeExecutionsRead, nil) {
+		return
+	}
 	round, ok := parseRoundParam(c)
 	if !ok {
 		return

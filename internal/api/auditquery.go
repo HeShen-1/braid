@@ -227,6 +227,12 @@ func parseAuditPageParams(c *gin.Context) (limit int, cursor *AuditCursor, ok bo
 // (403)→ 执行维度钉分区(404)→ 查询 → items + next_cursor(keyset 契约,
 // 与 definitions/executions 的 page envelope 有意分叉)。
 func (s *Server) listAuditEvents(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeExecutionsRead, nil) {
+		return
+	}
 	execRaw := c.Query("execution_id")
 	traceRaw := c.Query("trace_id")
 	actorRaw := c.Query("actor_id")

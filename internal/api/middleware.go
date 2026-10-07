@@ -82,10 +82,13 @@ func RequireAnyRole(roles ...auth.Role) gin.HandlerFunc {
 	}
 }
 
-// RequireScope 是路由级 scp 执法闸(T17.1,D-2026-10-01-t171-rest-scp):
-// scp 在场的 token 必须持有所需作用域,不足 403(响应体与角色闸同判
-// "forbidden",不泄露被哪道闸拦——拒绝面零信息增益)。判定核复用
-// auth.RequireScope(MCP 面单点,双面漂移面不存在)。
+// requireScope 是 in-handler scp 执法闸(T20.2,D-2026-10-07-t202-scp-
+// denied-audit:自 T17.1 的路由中间件形态迁移——中间件面短路 403 无审计
+// 半边,闸与 denied 写入器同域后 scoped 拒绝可落既有审计事件族)。判定
+// 核仍是 auth.RequireScope(MCP 面单点,双面漂移面不存在);判定语义与
+// 响应面逐字继承:scp 在场的 token 必须持有所需作用域,不足 403
+// {"error":"forbidden"}(与角色闸同判,不泄露被哪道闸拦——拒绝面零
+// 信息增益)。
 //
 // scp 缺席(claim 不携带;nil/空集在签发原语结构性同判)→ 透传:全角色
 // 凭证现状兼容裁定,issue #118 钉死——与 MCP 面「缺席 = 零权限
@@ -93,31 +96,39 @@ func RequireAnyRole(roles ...auth.Role) gin.HandlerFunc {
 // 兼容(角色闸独挑授权;平台签发口自 T13.1 起已全量携带默认 scp,
 // 缺席形态仅剩手签/遗留)。
 //
+// onDeny 是拒绝半边的旁路钩子(执行锚 action 路由传落审计闭包——
+// writeXDeniedAudit reason="scope_denied" + Denied 计数器,镜像 role_denied
+// 分支;非锚路由 nil,边界登记见 D-t202 决策 5)。401/500 面不回调
+// (接线 bug 无证据语义)。落位纪律:非审计路由 = handler 首行(响应面
+// 与中间件形态逐字等价);审计路由 = 全部形状闸之后、role 闸之前
+// (「形状闸先于审计闸」先例——审计行携带已验形的请求上下文,代价 =
+// 形状非法×scp 不足组合 403→400/413,D-t202 决策 3 登记)。
+//
 // 无 claims(路由未挂 Authenticate)是接线 bug,恒 401 fail-closed;
 // want 词表外同为接线 bug,500 响亮(auth.RequireScope 判定核的
 // ErrInvalidInput 透传成 internal,不伪装成调用方 403)。
-func RequireScope(want auth.Scope) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		claims, ok := ClaimsFrom(c)
-		if !ok {
-			abort(c, 401, "missing_token")
-			return
-		}
-		if len(claims.Scopes) == 0 {
-			// scp 缺席 = 全角色凭证(现状兼容,见上)。
-			c.Next()
-			return
-		}
-		if err := auth.RequireScope(claims, want); err != nil {
-			if errors.Is(err, auth.ErrInvalidInput) {
-				abort(c, 500, "internal")
-				return
-			}
-			abort(c, 403, "forbidden")
-			return
-		}
-		c.Next()
+func requireScope(c *gin.Context, want auth.Scope, onDeny func(subject string)) bool {
+	claims, ok := ClaimsFrom(c)
+	if !ok {
+		abort(c, 401, "missing_token")
+		return false
 	}
+	if len(claims.Scopes) == 0 {
+		// scp 缺席 = 全角色凭证(现状兼容,见上)。
+		return true
+	}
+	if err := auth.RequireScope(claims, want); err != nil {
+		if errors.Is(err, auth.ErrInvalidInput) {
+			abort(c, 500, "internal")
+			return false
+		}
+		if onDeny != nil {
+			onDeny(claims.Subject)
+		}
+		abort(c, 403, "forbidden")
+		return false
+	}
+	return true
 }
 
 // ClaimsFrom 取 Authenticate 放入的 claims;未认证路由返回 ok=false。

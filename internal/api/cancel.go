@@ -36,6 +36,20 @@ func (s *Server) cancelExecution(c *gin.Context) {
 	if !ok {
 		return
 	}
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入;本面无体形状闸,
+	// 落位 = id 解析后、role 闸前)。拒绝复用 cancel.denied 事件族
+	// reason=scope_denied + Denied 计数器(镜像 role_denied 分支;落行闸
+	// 同判——跨租户/不存在执行不注入受害者证据链)。
+	if !requireScope(c, auth.ScopeExecutionsWrite, func(subject string) {
+		if s.execVisibleInTenant(c, execID) {
+			s.writeCancelDeniedAudit(c, execID, subject, "scope_denied")
+		}
+		if s.cancelMetrics != nil {
+			s.cancelMetrics.Denied.WithLabelValues("scope_denied").Inc()
+		}
+	}) {
+		return
+	}
 	// in-handler 角色闸(与回滚/触发同门):拒绝必须落审计 cancel.denied
 	//(独立小事务,writeRollbackDeniedAudit 同款纪律)。
 	claims, ok := ClaimsFrom(c)

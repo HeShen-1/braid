@@ -143,6 +143,19 @@ func (s *Server) decideApproval(c *gin.Context) {
 	}
 	actor := actorFrom(c)
 
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,词面/形状闸
+	// 之后 role 闸之前——审计行携带已验形的 attempted face)。拒绝复用
+	// approval.decision_denied 事件族 reason=scope_denied(镜像 role_denied
+	// 分支;落行闸与防灌水锚同判——writeDecisionDeniedAudit 只对本租户
+	// 可见执行上的真实挂起 approval 节点落行)。
+	if !requireScope(c, auth.ScopeApprovalsWrite, func(subject string) {
+		if s.execVisibleInTenant(c, execID) {
+			s.writeDecisionDeniedAudit(c, execID, nodeID, subject, face, "scope_denied")
+		}
+	}) {
+		return
+	}
+
 	// 角色闸(T5.2 换装①,D-t42 §7):in-handler 而非路由中间件——拒绝
 	// 需落审计 + 分面错误码,中间件面做不到。角色集 approver|admin 与
 	// definitions/trigger 写面的 admin 豁免惯例一致;角色面在名单门之前
@@ -397,6 +410,12 @@ func (s *Server) deciderRaceReadback(ctx context.Context, execID uint64, nodeID,
 // 无事务(与 GET /executions/:id 同语义:钉版契约下并发迁移间的轻微不
 // 一致 P0 可接受)。
 func (s *Server) getApproval(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeExecutionsRead, nil) {
+		return
+	}
 	execID, ok := parseIDParam(c)
 	if !ok {
 		return
@@ -529,7 +548,8 @@ func (s *Server) appendApprovalAudit(ctx context.Context, tx DBTX,
 
 // writeDecisionDeniedAudit 落 approval.decision_denied 审计行(独立小事务;
 // 失败仅 slog,不影响 403 裁决)。reason 区分拒绝面:membership(名单外)
-// / role_denied(名单内缺角色,T5.2 换装①)。
+// / role_denied(名单内缺角色,T5.2 换装①)/ scope_denied(scp 不足,
+// T20.2 审批决定面收编)。
 //
 // 灌水防线(T5.2 sec 评审 MEDIUM + 对抗审计收紧):角色闸在存在性守卫
 // 之前——任意持 token 主体可对任意 (exec, node_id) 组合触发 403。审计行

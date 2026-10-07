@@ -127,7 +127,8 @@ func IntersectScopes(a, b []Scope) []Scope {
 	return out
 }
 
-// RequireScope 作用域判定(MCP 面消费;形态镜像 RequireRole):命中
+// RequireScope 作用域判定(双消费面:MCP 面 requireMCPScope 与 REST 面
+// api.requireScope 共用单源;形态镜像 RequireRole):命中
 // 返回 nil,不足返回 ErrForbidden(附所需作用域与现有集,便于诊断),
 // want 词表外返回 ErrInvalidInput(调用方 bug 前置拒绝)。
 func RequireScope(c Claims, want Scope) error {
