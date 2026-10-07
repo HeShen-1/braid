@@ -251,7 +251,7 @@ tests:
               severity: warning
             exp_annotations:
               summary: "回滚拒绝风暴(45 次/15m)"
-              description: "自动化重试未按分面退避,或权限/目标配置错误(role_denied/bad_node_id 为主)。查 rollback.denied 审计行的 reason 分布与调用方退避实现。"
+              description: "自动化重试未按分面退避,或权限/目标/作用域配置错误(role_denied/scope_denied/bad_node_id 为主)。查 rollback.denied 审计行的 reason 分布与调用方退避实现。"
 
   # T9.3 断链注入:gauge=2 持续 5m → firing;归零(或瞬时抖动)不 fire。
   - interval: 1m

@@ -6,13 +6,14 @@ package api
 import (
 	"encoding/json"
 	"errors"
+	"github.com/gin-gonic/gin"
 	"io"
 	"log/slog"
 	"net/http"
 	"strconv"
 	"time"
 
-	"github.com/gin-gonic/gin"
+	"braid/internal/auth"
 )
 
 // maxDSLBody 是 DSL 请求体上限:DSL 文档的合理上界(description ≤2000、
@@ -138,11 +139,17 @@ func tenantFrom(c *gin.Context) uint64 {
 }
 
 // execVisibleInTenant 报告执行对当前读者租户是否可见(D-t112 拒绝审计
-// 落行闸:role_denied 分支在业务租户闸之前触发,落行必须自带闸——跨
-// 租户/不存在执行上落拒绝审计 = 外方主体注入受害者租户证据链)。任何
+// 落行闸:role_denied/scope_denied 分支在业务租户闸之前触发,落行必须
+// 自带闸——跨租户/不存在执行上落拒绝审计 = 外方主体注入受害者租户
+// 证据链)。谓词 = GetExecution 同款 (id, tenant_id) 点查,但走
+// SELECT 1 轻探针(T20.2 perf 审计 MEDIUM:拒绝路径 best-effort 高频面,
+// 布尔判定免 input blob 全列读;GetExecution 谓词单源语义不变)。任何
 // 失败(含 DB 错)一律不落:拒绝审计是 best-effort(writeLoginAudit 同判)。
 func (s *Server) execVisibleInTenant(c *gin.Context, execID uint64) bool {
-	_, err := s.st.GetExecution(c.Request.Context(), s.dbh, tenantFrom(c), execID)
+	var one int
+	err := s.dbh.QueryRowContext(c.Request.Context(),
+		`SELECT 1 FROM workflow_execution WHERE id=? AND tenant_id=?`,
+		execID, tenantFrom(c)).Scan(&one)
 	return err == nil
 }
 
@@ -153,6 +160,12 @@ func actorFrom(c *gin.Context) string {
 }
 
 func (s *Server) createDefinition(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeWorkflowsWrite, nil) {
+		return
+	}
 	doc, ok := readDSLBody(c)
 	if !ok {
 		return
@@ -171,6 +184,12 @@ func (s *Server) createDefinition(c *gin.Context) {
 }
 
 func (s *Server) updateDraft(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeWorkflowsWrite, nil) {
+		return
+	}
 	id, ok := parseIDParam(c)
 	if !ok {
 		return
@@ -193,6 +212,12 @@ func (s *Server) updateDraft(c *gin.Context) {
 }
 
 func (s *Server) publishDraft(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeWorkflowsWrite, nil) {
+		return
+	}
 	id, ok := parseIDParam(c)
 	if !ok {
 		return
@@ -229,6 +254,12 @@ func (s *Server) publishDraft(c *gin.Context) {
 }
 
 func (s *Server) archiveVersion(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeWorkflowsWrite, nil) {
+		return
+	}
 	version, ok := parseVersionParam(c)
 	if !ok {
 		return
@@ -242,6 +273,12 @@ func (s *Server) archiveVersion(c *gin.Context) {
 }
 
 func (s *Server) getLatestPublished(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeWorkflowsRead, nil) {
+		return
+	}
 	def, err := s.st.LatestPublished(c.Request.Context(), s.dbh, tenantFrom(c), c.Param("name"))
 	if err != nil {
 		mapStoreError(c, err)
@@ -251,6 +288,12 @@ func (s *Server) getLatestPublished(c *gin.Context) {
 }
 
 func (s *Server) getVersion(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeWorkflowsRead, nil) {
+		return
+	}
 	version, ok := parseVersionParam(c)
 	if !ok {
 		return
@@ -264,6 +307,12 @@ func (s *Server) getVersion(c *gin.Context) {
 }
 
 func (s *Server) listVersions(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeWorkflowsRead, nil) {
+		return
+	}
 	items, err := s.st.ListVersions(c.Request.Context(), s.dbh, tenantFrom(c), c.Param("name"))
 	if err != nil {
 		mapStoreError(c, err)
@@ -277,6 +326,12 @@ func (s *Server) listVersions(c *gin.Context) {
 }
 
 func (s *Server) getDraft(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeWorkflowsRead, nil) {
+		return
+	}
 	id, ok := parseIDParam(c)
 	if !ok {
 		return
@@ -315,6 +370,12 @@ func parsePageParams(c *gin.Context) (limit, offset int, ok bool) {
 }
 
 func (s *Server) listDefinitions(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeWorkflowsRead, nil) {
+		return
+	}
 	status := c.Query("status")
 	switch status {
 	case "", statusDraft, statusPublished, statusArchived:

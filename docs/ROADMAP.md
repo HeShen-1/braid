@@ -28,7 +28,7 @@
 ## M20 可靠性收口波(P3-3,与 M18 并行,零 engine 耦合)
 
 - [x] T20.1 租约 fencing token — M-L — D- 立项先行 — zombie 双签发/双执行窗收口(贯穿租约仲裁与任务执行两面;D-t151 决策8①「另议」至今未裁)(T20.1 交付:D-2026-10-06-t201-lease-fencing,等值加冕路线——0015 fencing_epoch 单列,持有变化同语句 +1(复占也 bump,收 D-t204 复占双活面);执法 = 编排层写事务首置同源锁定读,engine 零触;判等统一 utf8mb4_bin;双 metric 族 + LeaseFenceRejections 告警 + drill arm8 废黜臂)
-- [ ] T20.2 scp 拒绝面审计补全 — M — D- 微条先行 — scope 执法语义自路由中间件移入 handler 层(现 scoped 拒绝短路于中间件、不落审计)
+- [x] T20.2 scp 拒绝面审计补全 — M — D- 微条先行 — scope 执法语义自路由中间件移入 handler 层(现 scoped 拒绝短路于中间件、不落审计)(T20.2 交付:D-2026-10-07-t202-scp-denied-audit,RequireScope 中间件退役 → in-helper requireScope 单点[判定核 auth.RequireScope 双面单源不动],22 路由迁移;4 条 action 路由 scoped 拒绝复用既有 denied 事件族 reason=scope_denied[零新事件词/写入器/迁移]+Denied 计数器扩 label;探针合法化两行;非锚/读面/角色半边/MCP 边界登记)
 - [x] T20.3 fleet 闸 TOCTOU 闭合 — S-M — 发布面 DSL 读取移入 Publish 事务(触发面闸钉版快照为最后防线,收前置窗)
 - [x] T20.4 租约活性复核转正 — S-M — sweep 前复核(T15.3 followup 位;活体同 owner 互杀面可选缓解)
 - [x] T20.5 LDAP 时序残差垫平 — S-M — unknown_user/wrong_password 时域差(P1 加固通道;先解服务账号自锁风险)(T20.5 交付:D-2026-10-06-t205-ldap-timing-pad,零命中纯客户端垫平 + 启动实测 rebind 中位 clamp [1ms,1s];自锁结构性消亡 + 对齐/存在锚/结构锚/判定保真四族断言,手搓 BER fake 零栈承载)

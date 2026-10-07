@@ -241,7 +241,7 @@ groups:
           severity: warning
         annotations:
           summary: "回滚拒绝风暴({{ $value }} 次/15m)"
-          description: "自动化重试未按分面退避,或权限/目标配置错误(role_denied/bad_node_id 为主)。查 rollback.denied 审计行的 reason 分布与调用方退避实现。"
+          description: "自动化重试未按分面退避,或权限/目标/作用域配置错误(role_denied/scope_denied/bad_node_id 为主)。查 rollback.denied 审计行的 reason 分布与调用方退避实现。"
 
   # T9.3 审计哈希链(D-2026-09-29-t93):证据完整性执法面。断链闩已
   # fail-closed(该执行 Append/Enqueue 即拒),本告警 = 人工介入的值守线

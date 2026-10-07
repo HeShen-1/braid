@@ -296,6 +296,12 @@ func (s *Server) triggerCore(ctx context.Context, claims auth.Claims, req trigge
 
 // triggerExecution:body 读取(gin 面)→ triggerCore 判定 → HTTP 映射。
 func (s *Server) triggerExecution(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeExecutionsWrite, nil) {
+		return
+	}
 	var req triggerRequest
 	if !readTriggerBody(c, &req) {
 		return
@@ -469,6 +475,12 @@ func toNodeExecutionDTO(n NodeExecution) nodeExecutionDTO {
 // listExecutions:GET /executions —— name(跨版本,按工作流列执行的 DDL
 // 钦定维度)与 status 过滤 + 分页;顺序与 envelope 与 definitions 同构。
 func (s *Server) listExecutions(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeExecutionsRead, nil) {
+		return
+	}
 	status := c.Query("status")
 	switch status {
 	case "", string(engine.WorkflowPending), string(engine.WorkflowRunning),
@@ -501,6 +513,12 @@ func (s *Server) listExecutions(c *gin.Context) {
 // getExecution:GET /executions/:id —— 行视图 + 节点状态 + 审计指针。
 // 两次读无事务包裹(钉版行集在物化时建立;读面轻微不一致 P0 可接受)。
 func (s *Server) getExecution(c *gin.Context) {
+	// scp 执法闸(T20.2,D-2026-10-07-t202:中间件形态迁入,handler 首行——
+	// 响应面与原路由中间件逐字等价;非执行锚/读面无审计半边,D-t202
+	// 决策 5 边界登记)。
+	if !requireScope(c, auth.ScopeExecutionsRead, nil) {
+		return
+	}
 	id, ok := parseIDParam(c)
 	if !ok {
 		return
