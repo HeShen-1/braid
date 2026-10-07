@@ -221,7 +221,7 @@ groups:
 
   # T9.2 回滚/续跑面(D-2026-09-28-t92 决策 10)。回滚是显式修复动作:
   # blocked 持续 = reaper settle 链路故障(自动回退不可达,人工必须介入);
-  # denied 风暴 = 自动化按阻塞清单退避失败或权限配置错误(角色面)。
+  # denied 风暴 = 自动化按阻塞清单退避失败或权限/作用域配置错误(角色/scp 面,T20.2 起 scope_denied 入列)。
   # 「回滚后 stuck RUNNING」的直读 gauge 属停车场(自愈面 = 提交后
   # finishIfDone 失败仅记日志 + reaper ④b FinishIfDone 周期补判)。
   - name: braid-rollback
