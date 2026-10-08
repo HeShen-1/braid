@@ -1,9 +1,9 @@
 # 零密钥 CI(D-2026-09-22-git-native-collab 实施顺序第②步)。
 # 三件套 = go vet + golangci-lint + go test ./...(与本地验收口径一致);
 # 不配置任何 GitHub Secrets,模型调用一律不出本机。
-# T8.1:test job 经 services 起 MySQL/Redis 验证栈(同 t13 契约端口
-# 13306/16379,栈定义与 deploy/migrate-test.docker-compose.yml 双向互指,
-# 改一处必须同步另一处)+ BRAID_TEST_REQUIRE_STACK=1 把 sqltest/redistest
+# T8.1:test job 经 services 起 MySQL/Redis 验证栈(契约端口 13306/16379,
+# sqltest/redistest 缺省指向;本地栈文件已随 D-2026-10-08-prod-oneclick 移除,
+# CI services 即常态栈)+ BRAID_TEST_REQUIRE_STACK=1 把 sqltest/redistest
 # 的静默 skip 翻成响亮失败——「CI 绿」= 集成/故障注入测试真跑过。
 # gitleaks 作业执行铁律「密钥不进 git 历史」的 PR 级增量扫描。
 name: ci

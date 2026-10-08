@@ -42,7 +42,7 @@ import (
 const ldapE2EImage = "osixia/openldap:1.5.0"
 
 // ldapE2EDomain 与种子 LDIF、服务账号 DN 同源;admin 密码 = 一次性本地
-// 容器占位值,非任何真实系统凭证(t13/migrate-test 同纪律)。服务账号
+// 容器占位值,非任何真实系统凭证(sqltest/redistest 同纪律)。服务账号
 // 以 admin 充任:osixia 默认 ACL = `{2}to * by self read by cn=admin
 // write by * none`(1.5.0 实证)——目录树对非 self/admin 主体零读权,
 // 专用服务账号的读授权是目录侧运维动作(braid 不碰目录 ACL),生产

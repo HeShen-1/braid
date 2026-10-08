@@ -1,6 +1,8 @@
-// Package sqltest 提供 braid 引擎层测试基建:指向 deploy/migrate-test.docker-compose.yml
-// 起的验证容器(docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d),
-// 容器不可达时调用方自动 skip。凭证是该一次性本地容器的占位值,非任何真实系统凭证。
+// Package sqltest 提供 braid 引擎层测试基建:验证 MySQL 由 CI services 提供
+// (契约端口 127.0.0.1:13306;本地复跑经 BRAID_TEST_MYSQL_DSN 指自备栈,或自
+// git 历史取回已移除的 deploy/migrate-test.docker-compose.yml 单文件还原,
+// D-2026-10-08-prod-oneclick),栈不可达时调用方自动 skip。
+// 凭证是测试占位值,非任何真实系统凭证。
 //
 // 与 internal/db 自身测试的关键差异:引擎测试用**独立 schema**(base 名 +
 // worktree 后缀,env 口见 internal/db/testenv.go),避免 go test ./... 并发
@@ -46,9 +48,9 @@ func MustOpenAt(t TB, schema string) *sql.DB {
 	d, err := OpenAt(schema)
 	if err != nil {
 		if os.Getenv("BRAID_TEST_REQUIRE_STACK") == "1" {
-			t.Fatalf("braid-t13-mysql 不可达(REQUIRE_STACK=1,栈必达断言): %v", err)
+			t.Fatalf("验证 MySQL 不可达(REQUIRE_STACK=1,栈必达断言): %v", err)
 		}
-		t.Skipf("braid-t13-mysql 不可达,先起验证容器: %v", err)
+		t.Skipf("验证 MySQL 不可达(自备栈或 BRAID_TEST_MYSQL_DSN): %v", err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	return d

@@ -10,7 +10,8 @@
 
 - 机型:Intel i5-12400(12 逻辑核)/ 30GiB RAM(测量时可用 ≈7.8GiB)/ MySQL
   8.0.46 默认 innodb(**buffer_pool=128MB 默认**,大行集档位部分走 tmpfs 内存页)
-- 栈:t13(`deploy/migrate-test.docker-compose.yml`)——MySQL 8.0(默认 innodb 配置,
+- 栈:本地验证栈(文件 deploy/migrate-test.docker-compose.yml 已移除,
+  D-2026-10-08-prod-oneclick;重测自备等价栈)——MySQL 8.0(默认 innodb 配置,
   **datadir 在 tmpfs**:写路径无落盘成本,数字 = 存储乐观包络,生产盘速下写侧打折)、
   Redis 7.4(noeviction、无持久化,队列语义真源在 MySQL)。
 - 系统负载:**测量窗 load average ≈ 52(1/5/15min 全程)**,运行间方差实测 ±2×
