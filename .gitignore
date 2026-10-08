@@ -18,3 +18,6 @@ web/canvas/playwright-report/
 web/canvas/test-results/
 # release.sh save output (T16.5 image export tars + checksums)
 dist/
+
+# 交付栈配置(prod-up.sh 管理态;与 dev 的 .env 物理分离)
+deploy/prod.env
