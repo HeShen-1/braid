@@ -304,6 +304,28 @@ deploy/release.sh k3s-import <tar>      # k3s 面导入 containerd
 `--provenance=false`、GOPROXY 解析链、脏树守卫)见
 [deploy/README.md §12](deploy/README.md)。
 
+### 2.5 开发与验证命令速查
+
+日常开发常用命令一览(全部在仓库根执行;集成类命令依赖对应栈,栈不在时测试自动
+skip,CI 侧以 `BRAID_TEST_REQUIRE_STACK=1` 升级为硬失败防假绿。任务完成口径 =
+全量测试绿 + lint 零告警):
+
+| 用途 | 命令 | 前置 |
+|------|------|------|
+| 起/停测试栈(MySQL 13306 / Redis 16379) | `docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d`(收栈换 `down`) | Docker |
+| 全量测试 | `go test ./...` | t13 栈(不在自动 skip) |
+| 静态检查三件套 | `go vet ./... && golangci-lint run` | golangci-lint |
+| 沙箱 e2e(真 docker 全链路,镜像测试内自建) | `go test ./internal/tools/ -run TestSandboxE2E` | Docker |
+| 浏览器 e2e(回滚-重跑旅程) | `deploy/e2e-up.sh` → `BRAID_E2E_BASE_URL=http://127.0.0.1:18081 npm --prefix web/canvas run test:e2e` → `deploy/e2e-down.sh` | Docker;首次 `npx --prefix web/canvas playwright install chromium` |
+| 多副本故障演练(五臂注入) | `BRAID_TEST_REQUIRE_DRILL=1 go test ./internal/drill/ -run TestMultiReplicaDrill` | Docker(显式 opt-in,不进 CI 常规回归) |
+| 告警规则校验 | `promtool check rules deploy/prometheus/alerts.yml && promtool test rules deploy/prometheus/alerts_test.yml` | promtool |
+| 前端测试 / 构建 | `npm --prefix web/canvas test` / `npm --prefix web/canvas run build` | Node(首次 `npm --prefix web/canvas ci`) |
+
+> 注:git worktree 并行开发时,集成类命令须显式带 `BRAID_TEST_REDIS_DB=<槽位>`
+> 与 schema 后缀(自动拼 worktree 名),缺省落槽位 0 与主仓互踩;主仓裸跑无需。
+> 改前端源码后必须 `npm --prefix web/canvas run build` 重建 dist 并同 commit 提交,
+> 否则 CI web 作业漂移门红。
+
 ## 3. 性能基线(T15.5 实测)
 
 数字真源 = [docs/CAPACITY.md](docs/CAPACITY.md)(本章逐字引用;测量环境
