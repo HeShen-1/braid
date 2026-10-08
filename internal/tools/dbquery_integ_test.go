@@ -23,8 +23,8 @@ import (
 	"braid/internal/db"
 )
 
-// dbqStackGate:t13 MySQL 可达性门(deploy/migrate-test.docker-compose.yml,
-// 127.0.0.1:13306;BRAID_TEST_MYSQL_DSN 覆盖时由 TestServerDSN 归一)。
+// dbqStackGate:验证 MySQL 可达性门(契约端口 127.0.0.1:13306;
+// BRAID_TEST_MYSQL_DSN 覆盖时由 TestServerDSN 归一)。
 func dbqStackGate(t *testing.T) string {
 	t.Helper()
 	dsn := db.TestServerDSN()
@@ -39,9 +39,9 @@ func dbqStackGate(t *testing.T) string {
 	conn, err := net.DialTimeout("tcp", addr, time.Second)
 	if err != nil {
 		if os.Getenv("BRAID_TEST_REQUIRE_STACK") == "1" {
-			t.Fatalf("t13 stack unreachable and BRAID_TEST_REQUIRE_STACK=1: %v", err)
+			t.Fatalf("verify MySQL unreachable and BRAID_TEST_REQUIRE_STACK=1: %v", err)
 		}
-		t.Skipf("t13 stack unreachable (docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d): %v", err)
+		t.Skipf("verify MySQL unreachable (self-provided stack or BRAID_TEST_MYSQL_DSN): %v", err)
 	}
 	_ = conn.Close()
 	return dsn

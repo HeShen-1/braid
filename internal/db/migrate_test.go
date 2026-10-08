@@ -12,9 +12,9 @@ import (
 	"github.com/golang-migrate/migrate/v4/source/iofs"
 )
 
-// testBaseDSN 指向 deploy/migrate-test.docker-compose.yml 起的验证容器
-// (docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d)。
-// 凭证是该一次性本地容器的占位值,非任何真实系统凭证。schema 经
+// testBaseDSN 指向验证栈 CI services(契约端口 127.0.0.1:13306;server 级
+// DSN 经 BRAID_TEST_MYSQL_DSN 可指自备栈)。凭证是测试占位值,非任何真实
+// 系统凭证。schema 经
 // TestSchema("braid") 拼 worktree 后缀(T2.7):脱离旧固定库名,并行
 // worktree 互不互踩;server 级 DSN 与 sqltest 共用 BRAID_TEST_MYSQL_DSN 口。
 var testBaseDSN = TestServerDSN() + TestSchema("braid")
@@ -42,7 +42,7 @@ func ensureTestSchema(t *testing.T) {
 	}
 	defer func() { _ = admin.Close() }()
 	if err := admin.Ping(); err != nil {
-		skipOrFatalStack(t, "braid-t13-mysql", err)
+		skipOrFatalStack(t, "验证 MySQL", err)
 	}
 	if _, err := admin.Exec(
 		`CREATE DATABASE IF NOT EXISTS ` + TestSchema("braid") +
@@ -59,7 +59,7 @@ func mustSQL(t *testing.T) *sql.DB {
 		t.Skipf("mysql driver: %v", err)
 	}
 	if err := d.Ping(); err != nil {
-		skipOrFatalStack(t, "braid-t13-mysql", err)
+		skipOrFatalStack(t, "验证 MySQL", err)
 	}
 	t.Cleanup(func() { _ = d.Close() })
 	return d

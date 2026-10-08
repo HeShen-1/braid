@@ -68,43 +68,48 @@ worker;审批决定经同一 outbox 通道触发续跑任务(`resume:<execution_
 
 ## 2. 快速上手
 
-两条路径:**L0** 用测试栈 10 分钟零外部依赖跑通端到端示例(引擎、审批、审计、trace 全链,
-LLM 用桩供应商);**L1** 起 dev 栈接真实 LLM 端点走完整业务链(含 Web 审批页)。
+两条路径:**一键部署**(§2.1,prod 栈一条命令起完整交付形态——引擎、审批、审计、
+trace 全链,需 LLM 端点)或 **dev 栈**(§2.2,标准端口起基础设施、四进程本机跑,
+交互式调试 / 开发联调)。
 耗时按 Go 依赖与 Docker 镜像已缓存口径;首次运行另加 5–15 分钟(拉模块/镜像 + 首次编译)。
 以下所有命令的执行目录 = **仓库根**(相对路径 `deploy/...`、`docs/...`、`internal/...` 均由此起)。
 
-### 2.1 L0 —— 10 分钟跑通端到端示例(零密钥)
+### 2.1 一键部署 —— prod 栈(生产交付形态)
 
-前置:Go ≥ 1.27、Docker(能起 MySQL 8.0 / Redis 7.4 容器)。
+前置:Docker(compose 插件)。业务侧需要一个 OpenAI 兼容 LLM 端点(密钥仅经
+env 注入,不进代码/日志/审计)。
 
 ```bash
-# ① 起测试栈(MySQL 127.0.0.1:13306 / Redis 16379,仅绑回环;测试自举 schema 与迁移)
-docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d
-
-# ② 跑端到端示例(文档合规审查:file_read → LLM 解析 → 合规审查 → 分支 → 摘要 → 人工审批 → 报告)
-go test ./internal/nodes -run 'TestE2EDocExample' -v -count=1
-
-# ③ (可选)故障注入五臂 —— 见 §4
-# ④ 收栈(数据全在 tmpfs,down 即清;栈不在时上面的测试自动 skip)
-docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 down
+deploy/prod-up.sh
 ```
 
-② 的三个用例各走一条业务真相(全部对真 MySQL/真 Redis,API 触发、页面同源序列审批):
+脚本职责(幂等,重跑安全):
 
-| 用例 | 断言主线 |
-|------|----------|
-| `TestE2EDocExampleApproveProducesReport` | 批准 → SUCCEEDED,`outputs.report` 有值;审计链全序逐行断言 + trace 全链一致 + 文件内容真实流到 LLM |
-| `TestE2EDocExampleComplianceFailRoutesToRevision` | 合约不过 → 改道 `outputs.revision`,主线级联 SKIPPED |
-| `TestE2EDocExampleApprovalRejectFailsFast` | 驳回 → `approval_rejected` 终败,fail-fast 下游不推进 |
+1. 播种 `deploy/prod.env`(git-ignored,与 dev 的 `deploy/.env` 物理分离,
+   root 密码互不波及):`MYSQL_ROOT_PASSWORD`(git 占位值 `braid_dev_root`
+   命中即轮换)、四组件 DB 密码、JWT 密钥缺失即 `openssl rand` 生成;
+   已有值一律不覆写;
+2. LLM 三键(`BRAID_LLM_BASE_URL/API_KEY/PRICE_TABLE`)从 `deploy/.env`
+   继承,继承不到则回显待补退出(worker 启动即败项,脚本替不了);
+3. `compose build`(根 Dockerfile 多阶段,四二进制一镜像 `braid:prod`)→
+   `up -d`;
+4. 等 reaper `audit-ready` 健康闸(T20.7 安装口径:janitor 首刷补当日分区
+   过闸,api/worker 才放行;超时 300s 报错指路 `compose ps`)。
 
-示例 DSL、样例输入与语义解读见 [docs/examples/doc-compliance-review.md](docs/examples/doc-compliance-review.md)。
+栈形态:`braid-prod-{api,worker,relay,reaper}` + mysql + redis-queue 六常驻
+(+ migrate / grants 两个 one-shot,迁移完成后退场);组件 DB 账号按
+[deploy/README.md §5](deploy/README.md) 矩阵最小授权。**零宿主端口**:API 与
+Web 审批页(`/ui/`)经反代指向 compose 内网 `api:8081`;运维面见
+[deploy/RUNBOOK.md](deploy/RUNBOOK.md),升级/改密/dirty 恢复见
+[deploy/UPGRADE.md](deploy/UPGRADE.md)。停栈 =
+`docker compose -f deploy/prod.docker-compose.yml down`(加 `-v` 连卷清场);
+镜像离线导出(air-gap)见 §2.4。端到端示例 DSL 与走链文档见
+[docs/examples/](docs/examples/)(引擎级 e2e 测试同源,CI 真跑)。
 
-> 栈不在时测试**自动 skip**(不是失败);本仓 CI 同一套测试加 `BRAID_TEST_REQUIRE_STACK=1`
-> 把 skip 升级为硬失败,防假绿。
+### 2.2 dev 栈 + 真实 LLM 完整链路(开发联调)
 
-### 2.2 L1 —— dev 栈 + 真实 LLM 完整链路
-
-前置:L0 之外,一个 OpenAI 兼容 LLM 端点(如智谱 GLM、DeepSeek 或本地 vLLM)。
+前置:Docker 之外另需 Go ≥ 1.27 与一个 OpenAI 兼容 LLM 端点(如智谱 GLM、
+DeepSeek 或本地 vLLM)。
 
 ```bash
 # ① 配置(全部 env 旋钮与逐键注释以 deploy/.env.example 为单源,此处只列必填)
@@ -312,8 +317,8 @@ skip,CI 侧以 `BRAID_TEST_REQUIRE_STACK=1` 升级为硬失败防假绿。任务
 
 | 用途 | 命令 | 前置 |
 |------|------|------|
-| 起/停测试栈(MySQL 13306 / Redis 16379) | `docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d`(收栈换 `down`) | Docker |
-| 全量测试 | `go test ./...` | t13 栈(不在自动 skip) |
+| 生产一键部署 | `deploy/prod-up.sh`(§2.1) | Docker + LLM 键 |
+| 全量测试 | `go test ./...` | 集成面 = CI services 真跑;本地无栈自动 skip(`BRAID_TEST_MYSQL_DSN` / `BRAID_TEST_REDIS_ADDR` 可指自备栈) |
 | 静态检查三件套 | `go vet ./... && golangci-lint run` | golangci-lint |
 | 沙箱 e2e(真 docker 全链路,镜像测试内自建) | `go test ./internal/tools/ -run TestSandboxE2E` | Docker |
 | 浏览器 e2e(回滚-重跑旅程) | `deploy/e2e-up.sh` → `BRAID_E2E_BASE_URL=http://127.0.0.1:18081 npm --prefix web/canvas run test:e2e` → `deploy/e2e-down.sh` | Docker;首次 `npx --prefix web/canvas playwright install chromium` |
@@ -335,7 +340,7 @@ skip,CI 侧以 `BRAID_TEST_REQUIRE_STACK=1` 升级为硬失败防假绿。任务
   运行间方差实测 ±2×(300 行档 fixture 1.78s vs 真路径 0.42s)——本章
   全部数字是负载竞争下的**保守下界**,独占窗口下 CPU 侧只会更好;DB
   行锁/事务形状类指标的斜率结论对 CPU 竞争相对不敏感,但绝对墙时仍偏保守。
-- **存储乐观包络**:t13 测试栈(MySQL 8.0.46 默认 innodb,buffer_pool=128MB
+- **存储乐观包络**:测量验证栈(MySQL 8.0.46 默认 innodb,buffer_pool=128MB
   默认),datadir 在 tmpfs——写路径无落盘成本,生产盘速下写侧打折;
   Redis 7.4 noeviction(队列语义真源在 MySQL)。
 - **负载模型**:即回执行器(echo,零外部调用)× 线性 llm 链 / fan-out
@@ -421,7 +426,11 @@ env `BRAID_ROLLBACK_MAX_ROWS` 覆盖,`0` 关闭;超限 409 `rollback_too_large`,
 执行在扫描间隔×3 内收敛到终态,不丢、不重、trace 不换段**。原理 = outbox at-least-once +
 目标侧 CAS/确定性 TaskID 幂等 + reaper 对账。
 
-前置 = L0 的 ①(测试栈已起),然后按臂跑:
+前置:集成栈可达——CI = test 作业 services 起同契约 MySQL/Redis(13306/16379)+
+`BRAID_TEST_REQUIRE_STACK=1` 硬闸真跑;本地复跑经 `BRAID_TEST_MYSQL_DSN` /
+`BRAID_TEST_REDIS_ADDR` 指自备栈,或自 git 历史取回已移除的
+`deploy/migrate-test.docker-compose.yml` 单文件一键还原(D-2026-10-08-prod-oneclick)。
+然后按臂跑:
 
 ```bash
 # 五臂一次全跑(也可按 -run 单选)

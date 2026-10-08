@@ -1,6 +1,7 @@
-// Package redistest 提供 relay 层测试的 Redis 基建:指向 deploy/migrate-test.docker-compose.yml
-// 起的 braid-t13-redis-queue(docker compose -f deploy/migrate-test.docker-compose.yml -p braid-t13 up -d),
-// 容器不可达时调用方自动 skip。与 sqltest 同模式(仅回环、占位凭证、down 即清)。
+// Package redistest 提供 relay 层测试的 Redis 基建:验证 Redis 由 CI services
+// 提供(契约端口 127.0.0.1:16379;本地复跑经 BRAID_TEST_REDIS_ADDR 指自备栈,
+// 或自 git 历史取回已移除的 deploy/migrate-test.docker-compose.yml 单文件还原,
+// D-2026-10-08-prod-oneclick)。与 sqltest 同模式(仅回环、占位凭证)。
 //
 // 隔离策略(两层):
 //  1. DB 号:RedisClientOpt 的 DB 取 env BRAID_TEST_REDIS_DB(默认 0)。该 env
@@ -63,9 +64,9 @@ func MustOpt(t TB) asynq.RedisClientOpt {
 	if _, err := insp.Queues(); err != nil { // Queues 即 ping(一次真实往返)
 		_ = insp.Close()
 		if os.Getenv("BRAID_TEST_REQUIRE_STACK") == "1" {
-			t.Fatalf("braid-t13-redis-queue 不可达(REQUIRE_STACK=1,栈必达断言): %v", err)
+			t.Fatalf("验证 Redis 不可达(REQUIRE_STACK=1,栈必达断言): %v", err)
 		}
-		t.Skipf("braid-t13-redis-queue 不可达,先起验证容器: %v", err)
+		t.Skipf("验证 Redis 不可达(自备栈或 BRAID_TEST_REDIS_ADDR): %v", err)
 	}
 	_ = insp.Close()
 	flushOnce.Do(func() { FlushDB(t) })

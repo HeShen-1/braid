@@ -71,9 +71,9 @@ func TestCheckRedisQueueT13RedPath(t *testing.T) {
 		// REQUIRE_STACK=1(CI)时栈不可达 = Fatalf 而非 Skipf(redistest.
 		// MustOpt 同口径,T8.1 审计 MEDIUM 修)。
 		if os.Getenv("BRAID_TEST_REQUIRE_STACK") == "1" {
-			t.Fatalf("braid-t13-redis-queue 不可达(REQUIRE_STACK=1,栈必达断言): %v", err)
+			t.Fatalf("验证 Redis 不可达(REQUIRE_STACK=1,栈必达断言): %v", err)
 		}
-		t.Skipf("braid-t13-redis-queue 不可达,先起验证容器: %v", err)
+		t.Skipf("验证 Redis 不可达(自备栈或 BRAID_TEST_REDIS_ADDR): %v", err)
 	}
 	_ = c.Close()
 	err := CheckRedisQueue(context.Background(), addr)

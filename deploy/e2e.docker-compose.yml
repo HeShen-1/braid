@@ -6,7 +6,7 @@
 # services 传不了 CMD 尾参的替代解)。tmpfs 两挂:down 即清,每次全新库,
 # e2e 可重复。
 # 用法:docker compose -f deploy/e2e.docker-compose.yml -p braid-e2e up -d
-# (服务命名/healthcheck/回环绑定姿势与 migrate-test.docker-compose.yml 同款)
+# (服务命名/healthcheck/回环绑定姿势与 dev 栈约定同款:回环绑定 + healthcheck)
 services:
   mysql:
     image: mysql:8.0

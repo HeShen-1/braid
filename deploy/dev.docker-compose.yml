@@ -2,8 +2,8 @@
 # 用法:
 #   首次:cp deploy/.env.example deploy/.env   # 根 .gitignore 的 `.env` 模式匹配任意层级,不会入库
 #   起栈:docker compose -f deploy/dev.docker-compose.yml up -d
-# 姿势对齐 migrate-test.docker-compose.yml:仅绑回环、healthcheck、凭证走 env 文件。
-# 端口:开发常用标准端口且全部仅绑回环;与迁移验证栈 braid-t13(127.0.0.1:13306)不冲突,两栈可并行。
+# 姿势:仅绑回环、healthcheck、凭证走 env 文件。
+# 端口:开发常用标准端口且全部仅绑回环。
 name: braid-dev
 
 services:
