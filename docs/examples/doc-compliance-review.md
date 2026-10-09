@@ -92,7 +92,7 @@ EXEC=<上一步 id>
 curl -s $API/executions/$EXEC -H "Authorization: Bearer $TOKEN"
 curl -s $API/approvals/pending -H "Authorization: Bearer <approver token>"
 
-# ⑥ 审批:浏览器开 http://127.0.0.1:8081/ui/(登录 → 待办 → 详情 → 决定),
+# ⑥ 审批:浏览器开 http://127.0.0.1:8081/approvals/(登录 → 待办 → 详情 → 决定),
 #    或直接走页面同源 API:
 curl -s -X POST $API/executions/$EXEC/approvals/human_review/decision \
   -H "Authorization: Bearer <approver token>" \

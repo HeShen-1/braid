@@ -265,7 +265,10 @@ func TestSeedRESTStageFlow(t *testing.T) {
 		"③ 定义:agent-council 已发布(v1)",
 		"④ 触发:执行 exec-7 已创建",
 		"⑤ 执行 exec-7:WAITING_APPROVAL",
-		"/ui/",
+		// T21.2 路由硬切:审批台入口 = /approvals/(旧前缀已 404),
+		// 画布 = /workflows/;seed 引导文案必须指向活路由。
+		"/approvals/",
+		"/workflows/",
 		"Asynqmon",
 	} {
 		if !strings.Contains(out.String(), want) {

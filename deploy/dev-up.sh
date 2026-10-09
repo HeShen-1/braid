@@ -102,6 +102,6 @@ if [ "${BRAID_DEV_SEED:-1}" != "0" ]; then
 	echo "demo 就绪:审批页见上方 seed ⑤ 行;重跑本脚本 = 幂等 no-op(既有执行幂等键命中)"
 fi
 
-echo "四进程已起:api http://127.0.0.1:8081(/ui/ 审批页) Asynqmon http://127.0.0.1:8080"
+echo "四进程已起:api http://127.0.0.1:8081(控制台 /workflows/,审批台 /approvals/) Asynqmon http://127.0.0.1:8080"
 echo "日志:$LOGDIR(log/latest 软链;历史全部保留,手动清理)"
 echo "跟踪:tail -f log/latest/worker.log    停止:deploy/dev-down.sh"

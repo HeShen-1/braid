@@ -113,7 +113,9 @@ func TestSCPPolicyEnumeratesAllAuthedRoutes(t *testing.T) {
 	got := map[string]bool{}
 	for _, ri := range r.Routes() {
 		if !strings.HasPrefix(ri.Path, "/api/v1") {
-			continue // /healthz、/ui/*、/mcp 各自凭证域
+			// SPA 静态面(T21.2 硬切:/、/login、/workflows|/executions|
+			// /approvals 与 /assets)、/healthz、/mcp 各自凭证域。
+			continue
 		}
 		key := ri.Method + " " + ri.Path
 		if scpUnauthedAPIRoutes[key] {

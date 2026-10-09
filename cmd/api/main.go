@@ -206,8 +206,11 @@ func run(ctx context.Context) error {
 	}
 	router := apiSrv.Router()
 	// /metrics 与 /healthz 同端口同回环绑定(BRAID_API_ADDR 部署约定)。
-	// 公开面部署注记:反向代理只应转发 /api/v1 与 /ui/,/metrics 与
-	// /healthz 留在内网(review advisory)。
+	// 公开面部署注记(T21.2 路由硬切):反向代理只应转发 /api/v1、/mcp
+	// 与 SPA 面(/ 下的 /login、/workflows、/executions、/approvals 与
+	// /assets;客户端深链要落到同一入口,勿只转精确路径),/metrics 与
+	// /healthz 留在内网(review advisory)。旧审批台前缀已硬切 404,
+	// 不应再转发。
 	router.GET("/metrics", gin.WrapH(metrics.Handler(mreg)))
 	srv := buildHTTPServer(cfg, router)
 	errCh := make(chan error, 1)

@@ -220,7 +220,9 @@ UPDATE 语句;权限跟随锁的写意图。² 回滚缝重派节点的 node.sta
 
 api 的 `/metrics` 恒挂 `BRAID_API_ADDR`(与 /healthz 同回环绑定);worker/
 relay/reaper 经 `BRAID_METRICS_ADDR`(空 = 不启)。无认证 exposition,
-只绑回环或留内网(反代只转发 /api/v1 与 /ui/——审批台 /ui/、控制台 /ui/canvas/)。
+只绑回环或留内网(反代除 `/api/v1`、`/metrics` 外还须转发 SPA 面:根路径 `/`、
+`/login`、`/workflows/*`、`/executions/*`、`/approvals/*` 与 `/assets/*`;
+旧审批台/画布前缀已下线,硬切 404)。
 
 ## 7. 工具沙箱镜像(T10.1)
 

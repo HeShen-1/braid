@@ -137,6 +137,6 @@ for comp in api relay worker reaper; do
   fi
 done
 
-echo "e2e 栈已起:api http://$E2E_API_ADDR(/ui/canvas/ 画布,/ui/ 审批台)"
+echo "e2e 栈已起:api http://$E2E_API_ADDR(控制台 /workflows/,执行面 /executions/,审批台 /approvals/)"
 echo "跑测试:BRAID_E2E_BASE_URL=http://$E2E_API_ADDR npm --prefix web/canvas run test:e2e"
 echo "日志:$LOGDIR    停止:deploy/e2e-down.sh"

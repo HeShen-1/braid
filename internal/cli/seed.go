@@ -231,14 +231,14 @@ func seedREST(ctx context.Context, env func(string) string, p seedParams, stdout
 	status := seedWaitLanding(ctx, hc, base, token, exec.ID, exec.Status, p.wait, stderr)
 	switch {
 	case status == "WAITING_APPROVAL":
-		sayln(stdout, "seed ⑤ 执行 %s:WAITING_APPROVAL(等待人工审批)—— 打开 %s/ui/ 用 %s 或 %s 登录后批准(%s);队列现场 Asynqmon http://127.0.0.1:8080",
-			exec.ID, base, seedAuthorUser, seedApproverUser, seedCredHint(env))
+		sayln(stdout, "seed ⑤ 执行 %s:WAITING_APPROVAL(等待人工审批)—— 打开 %s/approvals/ 用 %s 或 %s 登录后批准(%s);工作流画布 %s/workflows/;队列现场 Asynqmon http://127.0.0.1:8080",
+			exec.ID, base, seedAuthorUser, seedApproverUser, seedCredHint(env), base)
 	case seedSettled(status):
 		sayln(stdout, "seed ⑤ 执行 %s:%s(终态;详情 GET %s/api/v1/executions/%s)", exec.ID, status, base, exec.ID)
 	case p.wait == 0:
 		sayln(stdout, "seed ⑤ 执行 %s:%s(-wait=0,未等待落点)", exec.ID, status)
 	default:
-		sayln(stdout, "seed ⑤ 等待 %s 预算耗尽:执行 %s 当前 %s(非失败,可在 /ui/ 或 Asynqmon 继续跟踪)", p.wait, exec.ID, status)
+		sayln(stdout, "seed ⑤ 等待 %s 预算耗尽:执行 %s 当前 %s(非失败,可在 %s/approvals/ 或 Asynqmon 继续跟踪)", p.wait, exec.ID, status, base)
 	}
 	return ExitOK
 }
