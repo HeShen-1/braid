@@ -9,7 +9,9 @@
 
 .appr-view {
   display: grid;
-  grid-template-columns: minmax(22rem, 30rem) minmax(0, 1fr);
+  /* 左列要给得下队列表的必要宽度:上限收到 30rem 时「处理」动作列会被挤出
+     可视区,落在一个没有提示的横向滚动里(收尾评审 fix 2)。 */
+  grid-template-columns: minmax(22rem, 34rem) minmax(0, 1fr);
   flex: 1 1 auto;
   min-height: 0;
 }

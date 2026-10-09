@@ -16,6 +16,8 @@ braid 的护城河不在「有审批、有审计」(2026 年这已是标配),而
 
 ![控制台 · 工作流面:画布编排 + 右侧属性面板 + 底部 DSL 预览](docs/images/console-workflows.png)
 
+![控制台 · 审批面:待办队列 + 决定详情;`j/k` 移动、`Enter` 打开、`a` 批准、`r` 驳回、`Esc` 返回](docs/images/console-approvals.png)
+
 截图取自本仓 `deploy/dev-up.sh` 的演示种子数据,由 [.impeccable/shot.mjs](.impeccable/shot.mjs) 生成
 (`node .impeccable/shot.mjs docs/images --readme`)。
 

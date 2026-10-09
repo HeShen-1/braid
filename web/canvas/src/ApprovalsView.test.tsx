@@ -306,6 +306,32 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     expect(await screen.findByTestId(TID.approvalFlash)).toHaveTextContent('已记录:驳回 · arjk')
   })
 
+  it('⑤‴ 长按 r 不得定局:auto-repeat 事件一律不生效(评审 fix 1,安全面)', async () => {
+    const posts: unknown[] = []
+    approvalStub({ onDecision: (b) => (posts.push(b), ok(decisionRow({ decision: 'reject' }))) })
+    render(<ApprovalsView selected={{ executionId: '7', nodeId: 'n1' }} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await screen.findByTestId(TID.approvalComment)
+
+    // 首次 keydown 只布防
+    fireEvent.keyDown(document.body, { key: 'r' })
+    expect(screen.getByRole('group', { name: '确认驳回' })).toBeInTheDocument()
+    expect(posts).toHaveLength(0)
+
+    // 操作系统的 auto-repeat 事件必须被整段忽略 —— 否则长按 = 布防 + 确认
+    // 一气呵成,而驳回落库不可改判
+    fireEvent.keyDown(document.body, { key: 'r', repeat: true })
+    fireEvent.keyDown(document.body, { key: 'r', repeat: true })
+    fireEvent.keyDown(document.body, { key: 'a', repeat: true })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(posts).toHaveLength(0)
+    expect(screen.getByRole('group', { name: '确认驳回' })).toBeInTheDocument()
+
+    // 松开后再按一次(非 repeat)才允许提交
+    fireEvent.keyDown(document.body, { key: 'r' })
+    await waitFor(() => expect(posts).toHaveLength(1))
+    expect(posts[0]).toMatchObject({ decision: 'reject' })
+  })
+
   it('⑤″ a 直达提交;Esc 先收确认层、无确认层时回队列', async () => {
     const onSelect = vi.fn()
     const posts: unknown[] = []

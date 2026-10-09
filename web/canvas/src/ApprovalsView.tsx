@@ -257,7 +257,10 @@ export function ApprovalsView({
   useEffect(() => {
     const onKey = (ev: KeyboardEvent) => {
       // 带修饰键的组合留给浏览器/系统;已被行级/确认层处理的事件不再抢。
-      if (ev.defaultPrevented || ev.metaKey || ev.ctrlKey || ev.altKey) return
+      // ev.repeat 必须挡:按住 r 时第二次 keydown 落在「确认层已布防」的
+      // 新闭包上,等于**长按即定局**——驳回落库不可改判,这是安全面
+      // (T21.2 收尾评审 fix 1)。
+      if (ev.defaultPrevented || ev.metaKey || ev.ctrlKey || ev.altKey || ev.repeat) return
       if (isTypingTarget(ev.target)) return
 
       if (ev.key === 'j' || ev.key === 'k') {

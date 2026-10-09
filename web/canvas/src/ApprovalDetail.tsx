@@ -10,6 +10,7 @@
 // 他人自由文本 —— 一律走 React 文本节点(禁 innerHTML 家族)。
 // 决定表单只在 node_status === 'WAITING_APPROVAL' 时在场(收口节点只读,
 // 前置免无效提交;后端同样 409)。备注上限在提交前就近拦下。
+import { useEffect, useRef } from 'react'
 import { ArrowLeft, Ban, Check, TriangleAlert } from 'lucide-react'
 import type { ApprovalDetail as ApprovalDetailData } from './api.ts'
 import { TextArea } from './ui/field.tsx'
@@ -58,6 +59,13 @@ export function ApprovalDetail({
   onCancelReject,
   onBack,
 }: ApprovalDetailProps) {
+  // 确认层是一次性浮起层:布防即把焦点移进去(与执行面「取消执行」确认条
+  // 同契约 —— 否则按 r 只产生视觉变化,读屏用户不会被通知)。
+  const confirmRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    if (confirmReject) confirmRef.current?.focus()
+  }, [confirmReject])
+
   if (detail === null) {
     return (
       <main className="appr-detail" data-testid={TID.approvalDetail}>
@@ -200,9 +208,14 @@ export function ApprovalDetail({
               <span className="text-xs text-ink-2">{busy ? '提交中…' : 'a 批准 · r 驳回'}</span>
             </div>
             {/* 驳回 = 一次布防 + 一次确认(会签驳回即判死,与服务端不可改判
-                同构);批准是主操作,单击直达。Esc / 放弃 收起确认层。 */}
+                同构);批准是主操作,单击直达。Esc / 放弃 收起确认层。
+                确认层是一次性浮起层:布防即把焦点移进来,与执行面的「取消
+                执行」确认条同契约(收尾评审 fix 3:否则按 r 只产生视觉变化,
+                读屏用户不会被通知)。 */}
             {confirmReject ? (
               <div
+                ref={confirmRef}
+                tabIndex={-1}
                 className="appr-confirm"
                 role="group"
                 aria-label="确认驳回"

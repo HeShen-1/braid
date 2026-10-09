@@ -54,6 +54,16 @@ if (readme) {
     await p.waitForTimeout(1500)
     await shot(p, 'console-executions')
   }
+
+  // 审批面也要一张:README 的三块工作区各自可见
+  await p.getByTestId('nav-approvals').click()
+  await p.waitForTimeout(1200)
+  const appr = p.locator('[data-testid^="approval-row-"]').first()
+  if ((await appr.count()) > 0) {
+    await appr.click()
+    await p.waitForTimeout(1200)
+  }
+  await shot(p, 'console-approvals')
   await browser.close()
   process.exit(0)
 }
