@@ -93,8 +93,8 @@ func spaEntry(index []byte) http.Handler {
 
 // noDirListing:目录请求且该目录无 index.html 时 404(fail-closed)。
 // http.FileServer 对无 index 的目录渲染自动列表——assets/ 是 embed 面
-// 唯一子目录资产面(哈希产物),不为浏览开面;未来构建产物加目录
-// (sourcemap 等)无需逐个登记即默认拒绝。
+// 唯一子目录资产面(哈希产物 + T21.3 首绘前主题启动脚本 theme-boot.js),
+// 不为浏览开面;未来构建产物加目录(sourcemap 等)无需逐个登记即默认拒绝。
 func noDirListing(assets fs.FS) http.Handler {
 	file := http.FileServer(http.FS(assets))
 	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {

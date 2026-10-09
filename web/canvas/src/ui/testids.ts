@@ -7,6 +7,11 @@ export const TID = {
   navApprovals: 'nav-approvals',
   logout: 'logout',
   whoami: 'whoami',
+  /** 主题三态控件(auto/light/dark)。 */
+  themeControl: 'theme-control',
+  /** 工作流面两栏折叠。 */
+  panelLeftToggle: 'panel-left-toggle',
+  panelRightToggle: 'panel-right-toggle',
 
   // 登录
   loginForm: 'login-form',
@@ -65,9 +70,10 @@ export const TID = {
   approvalNext: 'approval-next',
 } as const
 
-/** 动态 testid:节点行、草稿项、执行行、调色板按钮。 */
+/** 动态 testid:节点行、草稿项、执行行、调色板按钮、主题档位。 */
 export const tid = {
   draftItem: (id: string) => `draft-item-${id}`,
+  themeOption: (theme: string) => `theme-option-${theme}`,
   execRow: (id: string) => `exec-row-${id}`,
   nodeRow: (nodeId: string, instanceNo: number) => `node-row-${nodeId}-${instanceNo}`,
   paletteBtn: (type: string) => `palette-${type}`,

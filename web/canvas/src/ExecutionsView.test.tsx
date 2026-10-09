@@ -3,11 +3,17 @@
 // 重置 offset)、翻页、筛选专属空态与清除出口、触发面板(定义下拉 + JSON
 // 输入 + 幂等键头 + 就地校验)、401 上抛。fetch 全 stub 按 URL 路由。
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ExecutionsView } from './ExecutionsView.tsx'
 import { tokenStore } from './api.ts'
 import { TID, tid } from './ui/testids.ts'
+
+/** 决策 3 收敛后 Select 不再是原生控件:两步交互 = 点触发器 → 点选项。 */
+async function chooseOption(user: UserEvent, trigger: HTMLElement, option: string) {
+  await user.click(trigger)
+  await user.click(await screen.findByRole('option', { name: option }))
+}
 
 function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -130,7 +136,7 @@ describe('ExecutionsView(执行面)', () => {
     await screen.findByTestId(tid.execRow('7'))
     expect(queryOf(listUrls()[0]).has('status')).toBe(false)
 
-    await user.selectOptions(screen.getByLabelText('按状态'), 'FAILED')
+    await chooseOption(user, screen.getByLabelText('按状态'), '已失败')
     expect(await screen.findByTestId(tid.execRow('3'))).toBeInTheDocument()
     expect(screen.queryByTestId(tid.execRow('7'))).not.toBeInTheDocument()
     const last = queryOf(listUrls().at(-1) as string)
@@ -171,7 +177,7 @@ describe('ExecutionsView(执行面)', () => {
     await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('offset')).toBe('20'))
     expect(await screen.findByTestId(tid.execRow('20'))).toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('按状态'), 'SUCCEEDED')
+    await chooseOption(user, screen.getByLabelText('按状态'), '已成功')
     await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('status')).toBe('SUCCEEDED'))
     expect(queryOf(listUrls().at(-1) as string).get('offset')).toBe('0')
   })
@@ -186,14 +192,14 @@ describe('ExecutionsView(执行面)', () => {
     render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.execRow('7'))
 
-    await user.selectOptions(screen.getByLabelText('按状态'), 'FAILED')
+    await chooseOption(user, screen.getByLabelText('按状态'), '已失败')
     const empty = await screen.findByTestId(TID.execEmpty)
     expect(empty).toHaveTextContent('当前筛选下没有执行')
     expect(empty).not.toHaveTextContent('暂无执行')
 
     await user.click(within(empty).getByRole('button', { name: '清除筛选' }))
     expect(await screen.findByTestId(tid.execRow('7'))).toBeInTheDocument()
-    expect((screen.getByLabelText('按状态') as HTMLSelectElement).value).toBe('')
+    expect(screen.getByLabelText('按状态')).toHaveTextContent('全部状态')
   })
 
   it('触发:选定义 + 填输入 → POST executions(Idempotency-Key 在场)→ 列表刷新 + 选中新执行', async () => {
@@ -221,7 +227,7 @@ describe('ExecutionsView(执行面)', () => {
     })
     render(<ExecutionsView selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
     await screen.findByTestId(TID.triggerDefinition)
-    await user.selectOptions(screen.getByTestId(TID.triggerDefinition), 'wf')
+    await chooseOption(user, screen.getByTestId(TID.triggerDefinition), 'wf v3')
     // JSON 文本含 {/[ (user-event 键描述符元字符),直改值免转义
     fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: '{"docs":["a"]}' } })
     await user.click(screen.getByTestId(TID.triggerSubmit))
@@ -243,7 +249,7 @@ describe('ExecutionsView(执行面)', () => {
     })
     render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(TID.triggerDefinition)
-    await user.selectOptions(screen.getByTestId(TID.triggerDefinition), 'wf')
+    await chooseOption(user, screen.getByTestId(TID.triggerDefinition), 'wf v3')
     fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: 'not-json' } })
     await user.click(screen.getByTestId(TID.triggerSubmit))
     expect(await screen.findByRole('alert')).toHaveTextContent('输入不是合法 JSON')
@@ -255,7 +261,7 @@ describe('ExecutionsView(执行面)', () => {
     listStub(() => ok({ items: [], page: { limit: 20, offset: 0, total: 0 } }))
     render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(TID.triggerDefinition)
-    await user.selectOptions(screen.getByTestId(TID.triggerDefinition), 'wf')
+    await chooseOption(user, screen.getByTestId(TID.triggerDefinition), 'wf v3')
     fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: '[]' } })
     await user.click(screen.getByTestId(TID.triggerSubmit))
     expect(await screen.findByRole('alert')).toHaveTextContent('顶层必须是 JSON 对象')

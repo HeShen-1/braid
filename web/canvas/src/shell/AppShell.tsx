@@ -9,6 +9,7 @@ import { useAuth } from '../auth.tsx'
 import { I } from '../ui/I.tsx'
 import { TID } from '../ui/testids.ts'
 import { Wordmark } from './BrandMark.tsx'
+import { ThemeControl } from './ThemeControl.tsx'
 
 interface Pulse {
   running: number
@@ -99,6 +100,7 @@ export function AppShell({ children }: { children: ReactNode }) {
           ) : null}
 
           <div className="flex items-center gap-2">
+            <ThemeControl className="mr-1" />
             <span className="mono text-xs text-ink-1" data-testid={TID.whoami} title="当前账号">
               {user}
             </span>

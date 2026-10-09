@@ -5,6 +5,7 @@ import { CanvasEditor } from './CanvasEditor.tsx'
 import { blankDoc } from './defaults.ts'
 import type { WorkflowDoc } from './model/dsl.ts'
 import { loadBase } from './model/testdata.ts'
+import { PANEL_RIGHT_KEY } from './prefs.ts'
 import { TID, tid } from './ui/testids.ts'
 
 describe('CanvasEditor(画布 UI)', () => {
@@ -85,5 +86,35 @@ describe('CanvasEditor(画布 UI)', () => {
     expect(screen.getByText('空白画布')).toBeInTheDocument()
     expect(screen.getByText('未选中节点')).toBeInTheDocument()
     expect(screen.getByTestId(TID.editor)).toBeInTheDocument()
+  })
+
+  it('属性面板可收起(七条反馈 ②):开关在顶栏,收起后整列让给画布且留痕', async () => {
+    localStorage.clear()
+    const user = userEvent.setup()
+    render(<CanvasEditor initialDoc={loadBase('minimal-llm')} />)
+    expect(screen.getByLabelText('属性面板')).toBeInTheDocument()
+    expect(screen.getByLabelText('收起属性面板')).toHaveAttribute('aria-pressed', 'true')
+
+    await user.click(screen.getByTestId(TID.panelRightToggle))
+    expect(screen.queryByLabelText('属性面板')).not.toBeInTheDocument()
+    // 收起后画布仍在,开关换成展开语义(不靠悬浮按钮找回)。
+    expect(screen.getByLabelText('展开属性面板')).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByTestId(TID.editor)).toBeInTheDocument()
+    // 折叠态是跨会话偏好,不是一次性状态。
+    expect(localStorage.getItem(PANEL_RIGHT_KEY)).toBe('1')
+
+    await user.click(screen.getByTestId(TID.panelRightToggle))
+    expect(screen.getByLabelText('属性面板')).toBeInTheDocument()
+  })
+
+  it('面板收起时点「工作流设置」先把面板放回来(否则像没反应)', async () => {
+    localStorage.clear()
+    localStorage.setItem(PANEL_RIGHT_KEY, '1')
+    const user = userEvent.setup()
+    render(<CanvasEditor initialDoc={loadBase('minimal-llm')} />)
+    expect(screen.queryByLabelText('属性面板')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '工作流设置' }))
+    expect(screen.getByLabelText('属性面板')).toBeInTheDocument()
+    expect(screen.getByText('身份')).toBeInTheDocument()
   })
 })

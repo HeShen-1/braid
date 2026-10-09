@@ -5,9 +5,13 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="dark">
   <title>braid 控制台</title>
-  <script type="module" crossorigin src="/assets/index-Dh8M-f0d.js"></script>
-  <link rel="modulepreload" crossorigin href="/assets/testids-B6wcGg4k.js">
-  <link rel="stylesheet" crossorigin href="/assets/index-ClJ6d7Ai.css">
+  <!-- 主题在首次绘制前落定(D-2026-10-09-console-v2 决策 1)。必须是同源外部
+       脚本:静态面 CSP 是 `script-src 'self'`,内联脚本在生产不可执行;也必须
+       落在 /assets/ 下——静态面只有资产前缀服务文件,其余路径走 SPA 入口。
+       阻塞式经典脚本 = 同步执行,不依赖 defer/module 的执行时机。 -->
+  <script src="/assets/theme-boot.js"></script>
+  <script type="module" crossorigin src="/assets/index-sP8ayJSl.js"></script>
+  <link rel="stylesheet" crossorigin href="/assets/index-i0WAseD3.css">
 </head>
 <body>
   <div id="root"></div>

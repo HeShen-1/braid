@@ -258,7 +258,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
               label="静默在飞"
               hint="勾选后回滚/续跑把在飞残留同事务楔停;不勾等后台收敛(409)"
               checked={quiesce}
-              onChange={(e) => setQuiesce(e.target.checked)}
+              onCheckedChange={setQuiesce}
             />
             <Button
               icon={Undo2}

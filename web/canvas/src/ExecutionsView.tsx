@@ -159,7 +159,7 @@ export function ExecutionsView({
               label="已发布工作流"
               value={defName}
               data-testid={TID.triggerDefinition}
-              onChange={(e) => setDefName(e.target.value)}
+              onChange={setDefName}
             >
               <option value="">选择已发布工作流…</option>
               {defs.map((d) => (
@@ -222,7 +222,7 @@ export function ExecutionsView({
               <Select
                 label="按状态"
                 value={status}
-                onChange={(e) => changeFilter(() => setStatus(e.target.value))}
+                onChange={(next) => changeFilter(() => setStatus(next))}
               >
                 <option value="">全部状态</option>
                 {STATUS_OPTIONS.map((o) => (

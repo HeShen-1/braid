@@ -1,6 +1,18 @@
 // 表单原语：标签永远在控件上方（控制台是纵向扫读），错误就近呈现，
 // 帮助文本不与错误抢位。所有控件原生可聚焦、可键盘操作。
-import { useId, type InputHTMLAttributes, type ReactNode, type SelectHTMLAttributes, type TextareaHTMLAttributes } from 'react'
+//
+// T21.3 决策 3（单点收敛）：Select / Checkbox 的**外壳**（标签/hint/error 布局、
+// id 绑定、调用点 API）仍是自研；**内部控制与键盘行为**换成 shadcn 底层原语
+// （Base UI，见 src/components/ui/）。全仓只有这一处实现，不存在第二套。
+import { Children, isValidElement, useId, type InputHTMLAttributes, type ReactNode, type TextareaHTMLAttributes } from 'react'
+import {
+  Select as SelectPrimitive,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select'
+import { Checkbox as CheckboxPrimitive } from '@/components/ui/checkbox'
 import { cx } from './cx.ts'
 
 export function Field({
@@ -75,47 +87,93 @@ export function TextArea({
   )
 }
 
-export function Select({
-  label,
-  hint,
-  error,
-  className,
-  children,
-  ...rest
-}: { label?: ReactNode; hint?: ReactNode; error?: ReactNode } & SelectHTMLAttributes<HTMLSelectElement>) {
+/**
+ * `<option>` 列表 → shadcn Select 的 item 表(App Router 侧调用点因此零改动)。
+ * 只认原生 `option`;条件渲染产生的 false/null 由 Children.toArray 清掉。
+ */
+function optionItems(children: ReactNode) {
+  const items: { value: string; label: ReactNode; disabled?: boolean }[] = []
+  for (const child of Children.toArray(children)) {
+    if (!isValidElement(child) || child.type !== 'option') continue
+    const props = child.props as { value?: string | number; disabled?: boolean; children?: ReactNode }
+    items.push({ value: String(props.value ?? ''), label: props.children, disabled: props.disabled })
+  }
+  return items
+}
+
+export interface SelectProps {
+  label?: ReactNode
+  hint?: ReactNode
+  error?: ReactNode
+  className?: string
+  id?: string
+  value?: string
+  disabled?: boolean
+  'aria-label'?: string
+  'data-testid'?: string
+  /** 底层不再是原生 select ⇒ 直接回传值,不再有 DOM ChangeEvent。 */
+  onChange?: (value: string) => void
+  /** 原生 `<option>` 列表(外壳负责翻译成 shadcn item)。 */
+  children: ReactNode
+}
+
+export function Select({ label, hint, error, className, children, id, value, disabled, onChange, ...rest }: SelectProps) {
   const auto = useId()
-  const id = rest.id ?? auto
+  const cid = id ?? auto
+  const items = optionItems(children)
   const control = (
-    <select id={id} className={cx('select', className)} {...rest}>
-      {children}
-    </select>
+    <SelectPrimitive
+      value={value ?? ''}
+      disabled={disabled}
+      // items 让触发器在弹层未挂载时也能显示选中项的标签(Base UI 契约)。
+      items={items.map((it) => ({ value: it.value, label: it.label }))}
+      onValueChange={(next) => onChange?.(String(next ?? ''))}
+    >
+      <SelectTrigger id={cid} className={cx('select', className)} {...rest}>
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {items.map((it) => (
+          <SelectItem key={it.value} value={it.value} disabled={it.disabled}>
+            {it.label}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </SelectPrimitive>
   )
   if (label === undefined) return control
   return (
-    <Field label={label} hint={hint} error={error} htmlFor={id}>
+    <Field label={label} hint={hint} error={error} htmlFor={cid}>
       {control}
     </Field>
   )
 }
 
-export function Checkbox({
-  label,
-  hint,
-  className,
-  ...rest
-}: { label: ReactNode; hint?: ReactNode } & InputHTMLAttributes<HTMLInputElement>) {
+export interface CheckboxProps {
+  label: ReactNode
+  hint?: ReactNode
+  className?: string
+  id?: string
+  checked?: boolean
+  disabled?: boolean
+  /** 同 Select:底层是 Base UI checkbox,回传布尔值而不是 DOM ChangeEvent。 */
+  onCheckedChange?: (checked: boolean) => void
+}
+
+export function Checkbox({ label, hint, className, id, checked, disabled, onCheckedChange }: CheckboxProps) {
   const auto = useId()
-  const id = rest.id ?? auto
+  const cid = id ?? auto
   return (
     <div className={cx('flex items-start gap-2', className)}>
-      <input
-        id={id}
-        type="checkbox"
-        className="mt-0.5 size-3.5 shrink-0 rounded-[4px] border border-line-2 bg-ground-2 accent-accent"
-        {...rest}
+      <CheckboxPrimitive
+        id={cid}
+        checked={checked}
+        disabled={disabled}
+        onCheckedChange={(next) => onCheckedChange?.(next)}
+        className="mt-0.5"
       />
       <div className="min-w-0">
-        <label htmlFor={id} className="field-label cursor-pointer">
+        <label htmlFor={cid} className="field-label cursor-pointer">
           {label}
         </label>
         {hint !== undefined ? <p className="field-hint">{hint}</p> : null}
