@@ -80,10 +80,26 @@ export const TRIGGER_LABEL: Record<string, string> = {
   SCHEDULE: '定时触发',
 }
 
-/** 审批决定词表（approval_decision.decision）。 */
+/** 审批决定词表。
+ *  读面回显走**请求面词表** approve|reject(internal/api/approval.go 的
+ *  decisionFace:DB ENUM APPROVED|REJECTED → 请求词)。两套都留着兜底,
+ *  未知值原样透传——回显即对账信号,不吞。 */
 export const DECISION_LABEL: Record<string, string> = {
+  approve: '批准',
+  reject: '驳回',
   APPROVED: '批准',
   REJECTED: '驳回',
+}
+
+export function decisionLabel(v: string): string {
+  return DECISION_LABEL[v] ?? v
+}
+
+/** 审批模式词表(approval.mode 缺省 = any,approvalmode.go)。 */
+export function approvalModeLabel(mode: string | undefined): string {
+  if (mode === 'all') return '会签(全部批准才过,任一驳回即败)'
+  if (mode === 'any' || mode === undefined || mode === '') return '或签(任一票定局)'
+  return mode
 }
 
 /** 超时策略词表（approval.on_timeout）。 */

@@ -3,7 +3,7 @@
 // 其中"等待审批"是 braid 的核心运营数字(挂起不占 worker,但人在等)。
 import { useEffect, useState, type ReactNode } from 'react'
 import { NavLink } from 'react-router'
-import { Activity, LogOut, Workflow } from 'lucide-react'
+import { Activity, LogOut, Stamp, Workflow } from 'lucide-react'
 import { ApiError, api } from '../api.ts'
 import { useAuth } from '../auth.tsx'
 import { I } from '../ui/I.tsx'
@@ -82,6 +82,10 @@ export function AppShell({ children }: { children: ReactNode }) {
           <NavLink to="/executions" className={navClass} data-testid={TID.navExecutions}>
             <I glyph={Activity} />
             执行
+          </NavLink>
+          <NavLink to="/approvals" className={navClass} data-testid={TID.navApprovals}>
+            <I glyph={Stamp} />
+            审批
           </NavLink>
         </nav>
 

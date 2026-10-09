@@ -8,12 +8,15 @@ import { LoginView } from './LoginView.tsx'
 import { AppLayout } from './shell/AppLayout.tsx'
 import { Skeleton } from './ui/primitives.tsx'
 
-// 路由级代码分割:画布(xyflow)是最重的一块,不该让只看执行面的人先下载它。
+// 路由级代码分割:画布(xyflow)是最重的一块,不该让只看审批或执行面的人先下载它。
 const WorkflowsRoute = lazy(() =>
   import('./routes/WorkflowsRoute.tsx').then((m) => ({ default: m.WorkflowsRoute })),
 )
 const ExecutionsRoute = lazy(() =>
   import('./routes/ExecutionsRoute.tsx').then((m) => ({ default: m.ExecutionsRoute })),
+)
+const ApprovalsRoute = lazy(() =>
+  import('./routes/ApprovalsRoute.tsx').then((m) => ({ default: m.ApprovalsRoute })),
 )
 
 function RouteFallback() {
@@ -26,10 +29,9 @@ function RouteFallback() {
   )
 }
 
-// basename 取自 vite base:PR1 = /ui/canvas,PR2 硬切到根只改一处 base。
-// 路由路径本身从 PR1 起就是最终形态(/workflows、/executions)。
-const base = import.meta.env.BASE_URL.replace(/\/$/, '')
-
+// T21.2:路由硬切到根。vite base 已是 '/',basename 不再需要偏移;
+// 三条深链(/workflows|/executions|/approvals 及各自子路径)由 web.go
+// 的 SPA 回退承接,旧 /ui/* 一律 404。
 const router = createBrowserRouter(
   [
     { path: '/login', element: <LoginView /> },
@@ -73,11 +75,26 @@ const router = createBrowserRouter(
             </Suspense>
           ),
         },
+        {
+          path: 'approvals',
+          element: (
+            <Suspense fallback={<RouteFallback />}>
+              <ApprovalsRoute />
+            </Suspense>
+          ),
+        },
+        {
+          path: 'approvals/:executionId/:nodeId',
+          element: (
+            <Suspense fallback={<RouteFallback />}>
+              <ApprovalsRoute />
+            </Suspense>
+          ),
+        },
         { path: '*', element: <Navigate to="/workflows" replace /> },
       ],
     },
   ],
-  { basename: base === '' ? '/' : base },
 )
 
 createRoot(document.getElementById('root')!).render(

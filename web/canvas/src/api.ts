@@ -208,6 +208,16 @@ export interface ApprovalDetail {
   decisions: ApprovalDecisionRow[]
 }
 
+/** 待办审批行(GET /approvals/pending;execution_id 字符串化契约同 definitionDTO)。 */
+export interface PendingApproval {
+  execution_id: string
+  node_id: string
+  definition_name: string
+  definition_version: number
+  execution_status: string
+  deadline_at: string
+}
+
 export interface AuditEvent {
   id: string
   exec_date: string
@@ -299,6 +309,30 @@ export const api = {
   },
   getApproval(executionId: string, nodeId: string): Promise<ApprovalDetail> {
     return call('GET', `/api/v1/executions/${executionId}/approvals/${nodeId}`)
+  },
+  // ---- 审批待办面(T21.2:旧审批台三件套的端点,零新增)----
+  listPendingApprovals(query?: { limit?: number; offset?: number }): Promise<{
+    items: PendingApproval[]
+    page: Page
+  }> {
+    const params = new URLSearchParams()
+    if (query?.limit !== undefined) params.set('limit', String(query.limit))
+    if (query?.offset !== undefined) params.set('offset', String(query.offset))
+    const qs = params.toString()
+    return call('GET', `/api/v1/approvals/pending${qs === '' ? '' : `?${qs}`}`)
+  },
+  /** decision 走请求面词表 approve|reject(服务端 decisionFace 反向映射)。 */
+  decideApproval(
+    executionId: string,
+    nodeId: string,
+    decision: 'approve' | 'reject',
+    comment: string,
+  ): Promise<ApprovalDecisionRow> {
+    return call(
+      'POST',
+      `/api/v1/executions/${executionId}/approvals/${nodeId}/decision`,
+      JSON.stringify({ decision, comment }),
+    )
   },
   listAuditEvents(executionId: string, limit?: number): Promise<{ items: AuditEvent[]; next_cursor: string }> {
     const l = limit === undefined ? '' : `&limit=${limit}`
