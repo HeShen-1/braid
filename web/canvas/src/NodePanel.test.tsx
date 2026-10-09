@@ -48,7 +48,7 @@ describe('NodePanel', () => {
     const user = userEvent.setup()
     const spec = nodeFrom('all-node-types', 'parse')
     render(<NodeProbe initial={spec} />)
-    await user.click(screen.getAllByRole('button', { name: '+ 添加' })[0]) // user_data 区
+    await user.click(screen.getAllByRole('button', { name: '添加' })[0]) // user_data 区
     const rows = screen.getAllByPlaceholderText('标签名')
     expect(rows).toHaveLength(2) // 原 1 行 + 新 1 行
     await user.type(screen.getByLabelText('提示词模板'), '!')
@@ -75,7 +75,7 @@ describe('NodePanel', () => {
   it('branch:加分支行 + 默认去向', async () => {
     const user = userEvent.setup()
     render(<NodeProbe initial={nodeFrom('all-node-types', 'verdict')} />)
-    await user.click(screen.getAllByRole('button', { name: '+ 添加' })[0])
+    await user.click(screen.getAllByRole('button', { name: '添加' })[0])
     if (latestNode!.type !== 'branch') throw new Error('unreachable')
     expect(latestNode!.cases).toHaveLength(2)
     await user.clear(screen.getByLabelText('默认去向'))
@@ -141,6 +141,27 @@ describe('NodePanel', () => {
     const op = screen.getAllByRole('combobox').find((s) => (s as HTMLSelectElement).value === 'eq') as HTMLSelectElement
     expect([...op.options].map((o) => o.value)).toEqual(['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains', 'exists'])
   })
+
+  it('就近错误:审批人重复当场指出(schema approvers uniqueItems)', async () => {
+    const user = userEvent.setup()
+    render(<NodeProbe initial={nodeFrom('all-node-types', 'review')} />)
+    const approvers = screen.getByLabelText('审批人(逗号分隔)')
+    await user.clear(approvers)
+    await user.type(approvers, 'alice, alice')
+    if (latestNode!.type !== 'approval') throw new Error('unreachable')
+    expect(latestNode!.approvers).toEqual(['alice', 'alice']) // 值如实回写,面板只报警不静默改数
+    expect(screen.getByRole('alert')).toHaveTextContent('重复的审批人：alice')
+    expect(approvers).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('就近错误:数值越界就地报(schema 1–10)', async () => {
+    const user = userEvent.setup()
+    render(<NodeProbe initial={nodeFrom('all-node-types', 'parse')} />)
+    const retry = screen.getByLabelText('重试次数')
+    await user.type(retry, '99')
+    expect(screen.getByRole('alert')).toHaveTextContent('超出 schema 允许范围（1–10）')
+    expect(retry).toHaveAttribute('aria-invalid', 'true')
+  })
 })
 
 describe('WorkflowPanel', () => {
@@ -150,7 +171,7 @@ describe('WorkflowPanel', () => {
     await user.clear(screen.getByLabelText('名称'))
     await user.type(screen.getByLabelText('名称'), 'renamed-wf')
     expect(latestDoc!.name).toBe('renamed-wf')
-    await user.click(screen.getAllByRole('button', { name: '+ 添加' })[0]) // inputs 区
+    await user.click(screen.getAllByRole('button', { name: '添加' })[0]) // inputs 区
     expect(latestDoc!.inputs).toHaveLength(3)
   })
 })

@@ -1,0 +1,327 @@
+/* 画布编辑器面专属样式(T21.1 Lane A)。共享 token 与类词汇见 index.css;
+   能就地用 Tailwind 工具类表达的不要写到这里。
+
+   本文件只承载三类东西:
+   1) 编辑器骨架(palette 工具条 / 画布 / 属性面板 / DSL 抽屉)的几何;
+   2) 节点卡片的 data-* 变体——类型形状、状态色相、未配置态;
+   3) 深色地面上的 xyflow 内建件落色。 */
+
+/* ---------------- 骨架 ---------------- */
+
+.editor {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--color-ground-0);
+}
+
+/* 顶栏:身份(工作流名 + 建档号)、状态文案(flash)、动作。
+   动作靠亮度分级:保存 = 亮底深字(主操作),发布 = 描边。 */
+.editor-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  height: 3rem;
+  padding: 0 0.75rem;
+  border-bottom: 1px solid var(--color-line-1);
+  background: var(--color-ground-1);
+}
+
+.editor-mid {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+
+/* 工具条:窄栏。类型靠图标形状 + 微标签辨认,交互靠亮度(不占状态色相)。 */
+.editor-rail {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 0.25rem;
+  width: 4.5rem;
+  padding: 0.5rem 0.375rem;
+  border-right: 1px solid var(--color-line-1);
+  background: var(--color-ground-1);
+}
+
+.palette-btn {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.4rem 0.25rem;
+  border: 1px solid transparent;
+  border-radius: var(--radius-control);
+  background: transparent;
+  color: var(--color-ink-1);
+  cursor: pointer;
+  transition:
+    background-color 120ms var(--ease-in-out-quiet),
+    border-color 120ms var(--ease-in-out-quiet),
+    color 120ms var(--ease-in-out-quiet);
+}
+
+.palette-btn:hover {
+  background: var(--color-ground-3);
+  border-color: var(--color-line-1);
+  color: var(--color-ink-0);
+}
+
+.palette-btn:active {
+  background: var(--color-ground-4);
+}
+
+.editor-canvas {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 属性面板:常驻右列——画布宽度不随选中态跳动(控制台不该边看边晃)。 */
+.editor-side {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  width: 22.5rem;
+  min-height: 0;
+  overflow-y: auto;
+  border-left: 1px solid var(--color-line-1);
+  background: var(--color-ground-1);
+}
+
+/* DSL 预览抽屉:折叠 = 2rem 横档,展开 = 等宽只读文本(导出产物)。 */
+.editor-json {
+  border-top: 1px solid var(--color-line-1);
+  background: var(--color-ground-1);
+}
+
+.editor-json > summary {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  height: 2rem;
+  padding: 0 0.75rem;
+  color: var(--color-ink-1);
+  font-size: var(--text-xs);
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+  transition: background-color 120ms var(--ease-in-out-quiet);
+}
+
+.editor-json > summary::-webkit-details-marker {
+  display: none;
+}
+
+.editor-json > summary:hover {
+  background: var(--color-ground-2);
+  color: var(--color-ink-0);
+}
+
+.editor-json[open] > summary {
+  border-bottom: 1px solid var(--color-line-0);
+}
+
+.editor-json-caret {
+  color: var(--color-ink-2);
+  transition: transform 120ms var(--ease-in-out-quiet);
+}
+
+.editor-json[open] .editor-json-caret {
+  transform: rotate(90deg);
+}
+
+.editor-json pre {
+  margin: 0;
+  max-height: 18rem;
+  overflow: auto;
+  padding: 0.75rem;
+  background: var(--color-ground-0);
+  color: var(--color-ink-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+  white-space: pre;
+  tab-size: 2;
+}
+
+/* ---------------- 节点卡片 ----------------
+   编码分工(与执行面共用同一套语法):
+   - 类型 = 形状:head 里的类型图标 + 微标签;branch 另给折角轮廓。
+   - 状态 = 色相 + 形状:仅当执行面注入 status 时出现(StatusChip 自带
+     状态图标,1px 边框取状态色相);编辑器不虚构执行状态。
+   - 未配置 = 亮度/发丝线:虚线边框 + 待填占位文案,不占状态色相。 */
+
+.bn {
+  position: relative;
+  min-width: 12.5rem;
+  max-width: 17.5rem;
+  border: 1px solid var(--color-line-2);
+  border-radius: var(--radius-panel);
+  background: var(--color-ground-1);
+  color: var(--color-ink-0);
+  font-size: var(--text-sm);
+  transition:
+    background-color 120ms var(--ease-in-out-quiet),
+    border-color 120ms var(--ease-in-out-quiet);
+}
+
+.bn:hover {
+  background: var(--color-ground-2);
+  border-color: var(--color-ink-3);
+}
+
+/* 决策节点:右上折角(唯一为类型引入的轮廓差异——分叉有几何语义)。 */
+.bn[data-type='branch'] {
+  border-top-right-radius: 1.5rem;
+}
+
+/* 未配置:dashed 发丝线,扫一眼找出还没填的节点。 */
+.bn[data-blank='true'] {
+  border-style: dashed;
+  border-color: var(--color-line-1);
+}
+
+.bn-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.4rem 0.5rem;
+  border-bottom: 1px solid var(--color-line-0);
+}
+
+.bn-type {
+  color: var(--color-ink-2);
+  font-size: var(--text-micro);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.bn-title {
+  padding: 0.35rem 0.5rem 0;
+  font-weight: 600;
+  line-height: 1.3;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bn-id {
+  padding-top: 0.1rem;
+  padding-inline: 0.5rem;
+  color: var(--color-ink-3);
+  font-family: var(--font-mono);
+  font-size: var(--text-micro);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bn-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.35rem 0.5rem 0.5rem;
+}
+
+.bn-line {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.bn-dim {
+  color: var(--color-ink-2);
+}
+
+/* 待填占位:与节点自身的虚线边框同一套语言(虚线 = 还没填)。
+   收尾评审 R1:ink-2/ink-3 抬到过线后档距收窄,"已填 vs 待填"不能再
+   只靠一个微弱的亮度差承担 —— 改由**形态**通道承担,亮度只作辅助。 */
+.bn-todo {
+  color: var(--color-ink-3);
+  text-decoration: underline dashed;
+  text-decoration-color: color-mix(in oklab, var(--color-ink-3) 70%, transparent);
+  text-underline-offset: 3px;
+}
+
+/* 状态色相:只上 1px 边框,零发光、零投影。 */
+.bn[data-state='EXECUTING'],
+.bn[data-state='RUNNING'] {
+  border-color: color-mix(in oklab, var(--color-sig-run) 60%, transparent);
+}
+
+.bn[data-state='SUCCEEDED'] {
+  border-color: color-mix(in oklab, var(--color-sig-ok) 60%, transparent);
+}
+
+.bn[data-state='FAILED'],
+.bn[data-state='ROLLED_BACK'] {
+  border-color: color-mix(in oklab, var(--color-sig-fail) 60%, transparent);
+}
+
+.bn[data-state='CANCELLED'],
+.bn[data-state='SKIPPED'] {
+  border-color: color-mix(in oklab, var(--color-sig-stop) 55%, transparent);
+}
+
+.bn[data-state='WAITING_APPROVAL'] {
+  border-color: color-mix(in oklab, var(--color-sig-wait) 65%, transparent);
+}
+
+/* 挂起 = 135° 斜纹,与执行时间带同一约定:时间在走,资源没被占用。 */
+.bn[data-state='WAITING_APPROVAL']::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  height: 3px;
+  border-radius: var(--radius-panel) var(--radius-panel) 0 0;
+  background-image: repeating-linear-gradient(
+    135deg,
+    var(--color-sig-wait) 0 3px,
+    transparent 3px 7px
+  );
+  pointer-events: none;
+}
+
+/* 选中 = 亮度台阶 + 1px 偏移环;accent 只留给焦点环,不与状态色相抢。 */
+.react-flow__node.selected .bn {
+  background: var(--color-ground-2);
+  outline: 1px solid var(--color-ink-2);
+  outline-offset: 2px;
+}
+
+/* ---------------- 属性面板分节 ----------------
+   分节 = 发丝线 + 微标题,不做描边小卡片(禁卡片套卡片)。 */
+
+.panel-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  padding: 0.875rem 1rem;
+  border-top: 1px solid var(--color-line-0);
+}
+
+.panel-section-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
+/* ---------------- 深色地面上的 xyflow ---------------- */
+
+/* 缩略图:节点用发丝线色,不引入新色相。 */
+.react-flow__minimap-node {
+  fill: var(--color-line-2);
+  stroke: none;
+}
+
+.react-flow__minimap {
+  overflow: hidden;
+}

@@ -5,13 +5,15 @@ package api
 // registry/trig/idp,dbh 是运行期依赖;idp 用零值 BuiltinProvider——
 // 本文件不触登录路由,零值 DB 即无害),CI 无 t13 栈也全量覆盖。
 //
-// 锚两件事:①安全头契约(CSP 无 unsafe-inline、nosniff、no-referrer);
-// ②端点锚——页面脚本必须引用真实 API 面(login/pending/decision),
-// 前端与后端契约漂移在此红。
+// 锚三件事:①安全头契约(CSP 无 unsafe-inline、nosniff、no-referrer,
+// CSP 全串逐字锚:只允许 font-src 'self' 一条新增);②端点锚——页面脚本
+// 必须引用真实 API 面(login/pending/decision),前端与后端契约漂移在此红;
+// ③SPA 回退边界(非资源路径 200 入口 / 资源与目录 404,见 canvas_spa_fallback)。
 //
 // 变异自查:CSP 删任一指令(含 frame-ancestors/base-uri/form-action
-// 三个不回退指令)→ 头断言红;X-Frame-Options 删 DENY → 头断言红;
-// app.js 改用 innerHTML 渲染 → XSS-sink 锚红;端点改路径 → 锚断言红。
+// 三个不回退指令)或增删/改序 → 头断言红;X-Frame-Options 删 DENY →
+// 头断言红;app.js 改用 innerHTML 渲染 → XSS-sink 锚红;端点改路径 →
+// 锚断言红;SPA 回退把资源后缀也吐 HTML 或改成 301 → 回退边界断言红。
 
 import (
 	"net/http"
@@ -61,17 +63,27 @@ func TestWebAssetsServed(t *testing.T) {
 			t.Fatalf("content-type = %q", ct)
 		}
 		csp := w.Header().Get("Content-Security-Policy")
-		// 全 8 指令逐词锚(对抗审计:base-uri/frame-ancestors/form-action
+		// 全 9 指令逐词锚(对抗审计:base-uri/frame-ancestors/form-action
 		// 是 CSP 规范不回退到 default-src 的三个指令,frame-ancestors 更是
 		// 本页唯一点击劫持防线——删任何一个都必须红)。
 		for _, want := range []string{
 			"default-src 'none'", "script-src 'self'", "style-src 'self'",
-			"connect-src 'self'", "img-src 'self'", "base-uri 'none'",
-			"frame-ancestors 'none'", "form-action 'self'",
+			"connect-src 'self'", "img-src 'self'", "font-src 'self'",
+			"base-uri 'none'", "frame-ancestors 'none'", "form-action 'self'",
 		} {
 			if !strings.Contains(csp, want) {
 				t.Fatalf("CSP 缺 %q: %q", want, csp)
 			}
+		}
+		// 全串逐字锚(D-2026-10-09-ui-console 决策 5):CSP 唯一允许的改动
+		// 是新增 font-src 'self'(自托管 woff2,default-src 'none' 下
+		// @font-face 必被拒载)。逐词锚挡不住「多塞一条指令」与改序,
+		// 逐字锚把口径收成一条:任何增删/改序/放宽在此红。
+		const wantCSP = "default-src 'none'; script-src 'self'; style-src 'self'; " +
+			"connect-src 'self'; img-src 'self'; font-src 'self'; base-uri 'none'; " +
+			"frame-ancestors 'none'; form-action 'self'"
+		if csp != wantCSP {
+			t.Fatalf("CSP 逐字漂移(D-ui-console 决策 5 只允许 font-src 'self' 一条新增):\n got %q\nwant %q", csp, wantCSP)
 		}
 		if strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "unsafe-eval") {
 			t.Fatalf("CSP 含 unsafe-*: %q", csp)
@@ -140,6 +152,62 @@ func TestWebAssetsServed(t *testing.T) {
 	t.Run("missing_asset_404", func(t *testing.T) {
 		if w := webGet(t, r, "/ui/nope.js"); w.Code != http.StatusNotFound {
 			t.Fatalf("code = %d, want 404", w.Code)
+		}
+	})
+
+	// T21.1(D-2026-10-09-ui-console 决策 6):画布换 react-router 后
+	// 客户端深链在 embed 面无文件,Go 侧为 /ui/canvas/* 补 SPA 回退。
+	// 锚三条判定边界:①非资源路径(末段不含 '.')→ 200 入口 HTML,
+	// 且必须是 200 而非 301——FileServer 对 index.html 结尾路径做
+	// ./ 归一化跳转,深链被跳成首页即回退失效;②资源后缀与目录请求
+	// 维持 404(noDirListing 禁目录列表契约不破);③回退只在 canvas 面
+	// (/ui/ 审批台 T21.2 前是旧三件套,非 canvas 路径不回退)。
+	t.Run("canvas_spa_fallback", func(t *testing.T) {
+		index := webGet(t, r, "/ui/canvas/")
+		if index.Code != http.StatusOK {
+			t.Fatalf("/ui/canvas/ = %d", index.Code)
+		}
+		page := index.Body.String()
+		for _, p := range []string{
+			"/ui/canvas/workflows",
+			"/ui/canvas/workflows/d-7",
+			"/ui/canvas/executions",
+			"/ui/canvas/executions/1234",
+			"/ui/canvas/executions/1234/", // 尾斜杠:目标不存在,末段仍非资源
+			"/ui/canvas/login",
+		} {
+			w := webGet(t, r, p)
+			if w.Code != http.StatusOK {
+				t.Fatalf("%s = %d, want 200(SPA 回退)", p, w.Code)
+			}
+			if loc := w.Header().Get("Location"); loc != "" {
+				t.Fatalf("%s 回退成跳转 %q,深链必须 200", p, loc)
+			}
+			if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+				t.Fatalf("%s content-type = %q, want text/html", p, ct)
+			}
+			if w.Body.String() != page {
+				t.Fatalf("%s 回退体与 /ui/canvas/ 入口不一致(回退必须吐入口字节)", p)
+			}
+			if w.Header().Get("Content-Security-Policy") != webCSP {
+				t.Fatalf("%s 回退响应未叠同套安全头", p)
+			}
+		}
+	})
+
+	t.Run("canvas_fallback_not_for_assets_or_dirs", func(t *testing.T) {
+		for _, tc := range []struct{ path, why string }{
+			{"/ui/canvas/nope.js", "资源后缀:缺失必须 404 响亮"},
+			{"/ui/canvas/assets/nope.js", "资源后缀"},
+			{"/ui/canvas/nope.css", "资源后缀"},
+			{"/ui/canvas/assets/", "目录请求:禁目录列表(noDirListing)"},
+			{"/ui/canvas/assets", "目录请求(无尾斜杠)同上"},
+			{"/ui/nope", "非 canvas 面不回退(审批台仍旧三件套)"},
+			{"/ui/executions", "非 canvas 面不回退"},
+		} {
+			if w := webGet(t, r, tc.path); w.Code != http.StatusNotFound {
+				t.Fatalf("%s = %d, want 404(%s)", tc.path, w.Code, tc.why)
+			}
 		}
 	})
 

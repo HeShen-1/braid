@@ -1,46 +1,62 @@
-// 执行详情(T16.6):节点状态表(并行实例行)+ 审批中间态(会签待投
-// 名单,仅名单内审批人可见——403 静默收起)+ 回滚/续跑操作面 + 审计
-// 事件区 + 钉版 DSL 只读图(节点状态着色,点击选回滚目标)。
-// 轮询:非终态每 2.5s 刷新(执行推进是 outbox→relay→worker 异步链,UI
-// 不订阅只轮询——与审批台同形态);终态停表。
-import { useCallback, useEffect, useState } from 'react'
-import { ReactFlow } from '@xyflow/react'
+// 执行详情(T21.1 Lane B 重做)—— 纵向分层,眼睛从上到下一次读完:
+//   ① 身份:状态芯片(色相 + 形状)+ 裸 ID/定义版本(与日志/审计同语言)
+//   ② 执行级错误:就近,不埋进表格
+//   ③ 处置条:回滚目标(在时间带上选点)/ 静默在飞 / 回滚 · 续跑 · 取消(行内确认)
+//   ④ 执行时间带(signature move):节点状态与"等了多久"的唯一真源
+//   ④′ 定义版本图(可折叠,展开才拉取):"当时声明的形状"——DAG 拓扑不可替代
+//   ⑤ 会签中间态:待投名单 + 决定时间线(名单外 403 静默收起)
+//   ⑥ 终态输出 → 审计链(append-only,逐行可数)
+//
+// 轮询:非终态 2.5s;FAILED 保持 10s 慢速(可被本页回滚/续跑、他人操作、
+// reaper 兜底翻活,恒停会冻结在过期帧);SUCCEEDED/CANCELLED 停表。
+// 零后端新端点:全部字段来自既有 executionDetailDTO / approvalDetailDTO / auditEventDTO。
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Ban, Play, RefreshCw, ScrollText, TriangleAlert, Undo2 } from 'lucide-react'
 import {
   ApiError,
   api,
   type ApprovalDetail,
   type AuditEvent,
   type ExecutionDetail as ExecutionDetailData,
+  type NodeExecution,
 } from './api.ts'
-import { toCanvas } from './model/convert.ts'
-import type { WorkflowDoc } from './model/dsl.ts'
-import { nodeTypes } from './nodes/NodeViews.tsx'
+import { DefinitionGraph } from './DefinitionGraph.tsx'
+import { ExecutionRibbon } from './ExecutionRibbon.tsx'
+import { Checkbox } from './ui/field.tsx'
+import { Alert, Badge, Button, KV, Panel, PanelHead, StatusChip } from './ui/primitives.tsx'
+import { DECISION_LABEL, ON_TIMEOUT_LABEL, TRIGGER_LABEL } from './ui/status.ts'
+import { TID, tid } from './ui/testids.ts'
+import { Duration, Timestamp } from './ui/time.tsx'
 
 const POLL_MS = 2500
+const FAILED_POLL_MS = 10_000
 
-/** 节点级状态聚合(并行多实例行 → 单节点一色;失败优先)。 */
-function nodeStatusOf(rows: { node_id: string; status: string }[], nodeId: string): string | null {
-  const ss = rows.filter((r) => r.node_id === nodeId).map((r) => r.status)
-  if (ss.length === 0) return null
-  for (const s of ['FAILED', 'EXECUTING', 'WAITING_APPROVAL', 'PENDING', 'SUCCEEDED', 'SKIPPED', 'CANCELLED']) {
-    if (ss.includes(s)) return s
-  }
-  return ss[0]
+/** 可处置(回滚/续跑)的终态;取消面 = 仍在推进的活执行。 */
+const TERMINAL_ACTIONABLE = ['FAILED', 'SUCCEEDED', 'CANCELLED']
+const CANCELLABLE = ['RUNNING', 'WAITING_APPROVAL']
+/** 执行仍可能推进 → 时间带右边界跟着 now 走。 */
+const LIVE = ['PENDING', 'RUNNING', 'WAITING_APPROVAL']
+
+/** 节点级聚合的优先级(失败优先):并行多实例行 → 单节点一色,给定义版本图注入。 */
+const STATUS_RANK = ['FAILED', 'EXECUTING', 'WAITING_APPROVAL', 'PENDING', 'SUCCEEDED', 'SKIPPED', 'CANCELLED']
+
+function rank(status: string): number {
+  const i = STATUS_RANK.indexOf(status)
+  return i === -1 ? STATUS_RANK.length : i
 }
 
-const STATUS_COLOR: Record<string, { border: string; bg: string }> = {
-  FAILED: { border: '#b91c1c', bg: '#fef2f2' },
-  EXECUTING: { border: '#1d4ed8', bg: '#eff6ff' },
-  WAITING_APPROVAL: { border: '#b45309', bg: '#fffbeb' },
-  PENDING: { border: '#6b7280', bg: '#f9fafb' },
-  SUCCEEDED: { border: '#15803d', bg: '#f0fdf4' },
-  SKIPPED: { border: '#9ca3af', bg: '#f3f4f6' },
-  CANCELLED: { border: '#9ca3af', bg: '#f3f4f6' },
+/** 节点 id → 当前执行的聚合状态(缺省 = 该节点这次没有执行行)。 */
+function nodeStatusIndex(rows: NodeExecution[]): Record<string, string> {
+  const out: Record<string, string> = {}
+  for (const r of rows) {
+    const cur = out[r.node_id]
+    if (cur === undefined || rank(r.status) < rank(cur)) out[r.node_id] = r.status
+  }
+  return out
 }
 
 export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onAuthExpired: () => void }) {
   const [detail, setDetail] = useState<ExecutionDetailData | null>(null)
-  const [doc, setDoc] = useState<WorkflowDoc | null>(null)
   const [approvals, setApprovals] = useState<Record<string, ApprovalDetail | null>>({})
   const [audit, setAudit] = useState<AuditEvent[]>([])
   const [target, setTarget] = useState<string | null>(null)
@@ -50,6 +66,8 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
   const [flash, setFlash] = useState('')
   const [error, setError] = useState<{ text: string; blocked?: string[] } | null>(null)
   const [busy, setBusy] = useState(false)
+  const [confirmCancel, setConfirmCancel] = useState(false)
+  const confirmRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
     let d: ExecutionDetailData | null = null
@@ -61,8 +79,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
       return // 瞬态读失败:保留上一帧,下个轮询窗自愈
     }
     // 审批子资源:仅 WAITING_APPROVAL 的 approval 行;名单外 403 = 静默收起。
-    // 已离开挂起态的行同步剪枝(对抗审计 MEDIUM:只写不删会让面板在节点
-    // 完成后残留「待投」幽灵帧)。
+    // 已离开挂起态的行同步剪枝(否则节点完成后残留「待投」幽灵帧)。
     const waiting = (d.nodes ?? []).filter((n) => n.type === 'approval' && n.status === 'WAITING_APPROVAL')
     const waitingIds = new Set(waiting.map((n) => n.node_id))
     setApprovals((prev) => {
@@ -98,35 +115,18 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     void load()
   }, [load])
 
-  // 轮询停表仅 SUCCEEDED/CANCELLED;FAILED 保持慢速轮询——失败态可被
-  // 外部翻活(本页回滚/续跑、他人操作、reaper 兜底),恒停会冻结在过期
-  // 帧上;慢速档也自愈「操作成功后单次 load 瞬态失败」的冻结窗(AI review LOW)。
   const stopPolling = detail !== null && ['SUCCEEDED', 'CANCELLED'].includes(detail.status)
-  const pollMs = detail !== null && detail.status === 'FAILED' ? 10_000 : POLL_MS
+  const pollMs = detail !== null && detail.status === 'FAILED' ? FAILED_POLL_MS : POLL_MS
   useEffect(() => {
     if (stopPolling) return
     const t = setInterval(() => void load(), pollMs)
     return () => clearInterval(t)
   }, [load, stopPolling, pollMs])
 
-  // 钉版 DSL 只读图:按 detail 的 name+version 取定义(一次性,失败隐藏)。
-  const defName = detail?.definition_name
-  const defVersion = detail?.definition_version
+  // 确认条是一次性的浮起层:焦点移进去,Esc 收起(浮层契约)。
   useEffect(() => {
-    if (defName === undefined || defVersion === undefined) return
-    let cancelled = false
-    api
-      .getVersion(defName, defVersion)
-      .then((d) => {
-        if (!cancelled && d.dsl !== undefined && d.dsl !== null) setDoc(d.dsl)
-      })
-      .catch(() => {
-        /* 图缺失不阻断表格式详情 */
-      })
-    return () => {
-      cancelled = true
-    }
-  }, [defName, defVersion])
+    if (confirmCancel) confirmRef.current?.focus()
+  }, [confirmCancel])
 
   const faceError = useCallback((err: unknown) => {
     if (err instanceof ApiError) {
@@ -136,10 +136,10 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     }
   }, [])
 
-  // T19.3 取消动作:与 runAction 同形,flash 回显楔停行数。
   const runCancel = useCallback(async () => {
     setBusy(true)
     setError(null)
+    setFlash('')
     try {
       const ack = await api.cancelExecution(execId)
       setFlash(`已取消(楔停 ${ack.cancelled_count} 行)`)
@@ -152,6 +152,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
       faceError(err)
     } finally {
       setBusy(false)
+      setConfirmCancel(false)
     }
   }, [execId, load, onAuthExpired, faceError])
 
@@ -159,6 +160,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     async (fn: () => Promise<{ target_node_id: string; reset_count: number; rerun_target: boolean; quiesced_count: number }>) => {
       setBusy(true)
       setError(null)
+      setFlash('')
       try {
         const ack = await fn()
         setFlash(
@@ -182,93 +184,141 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
 
   if (detail === null) {
     return (
-      <main className="canvas-main" data-testid="exec-detail">
-        <p>加载执行 #{execId}…</p>
+      <main className="exec-detail" data-testid={TID.execDetail}>
+        <p className="text-sm text-ink-2">
+          加载执行 <code className="mono">#{execId}</code>…
+        </p>
       </main>
     )
   }
 
-  // T19.3:回滚面放开到三终态(FAILED/SUCCEEDED/CANCELLED);取消面 = 非终态
-  // 活执行(RUNNING/WA)。SUCCEEDED 续跑无自动定位点(服务端 no_resume_target
-  // 分面报错),显式选节点走回滚。
-  const canAct = ['FAILED', 'SUCCEEDED', 'CANCELLED'].includes(detail.status) && !busy
-  const canCancel = ['RUNNING', 'WAITING_APPROVAL'].includes(detail.status) && !busy
+  const canAct = TERMINAL_ACTIONABLE.includes(detail.status) && !busy
+  const canCancel = CANCELLABLE.includes(detail.status) && !busy
   const statusRows = detail.nodes ?? []
-  const graph = doc !== null ? toCanvas(doc) : null
+  const approvalRows = statusRows.filter((n) => n.type === 'approval' && n.status === 'WAITING_APPROVAL' && approvals[n.node_id] != null)
 
-  // 刻意不用 .canvas-main(其 flex 居中 + 本容器 overflow 滚动 = 经典
-  // 「居中截断」:滚动起点越过内容顶,顶部控件永远够不着)。
   return (
-    <main className="exec-detail" data-testid="exec-detail">
-      <div className="panel-head">
-        <span className={`bn-badge exec-status st-${detail.status}`} data-testid="exec-status">
-          {detail.status}
-        </span>
-        <code className="panel-id">
-          #{detail.id} · {detail.definition_name} v{detail.definition_version}
-        </code>
-      </div>
-      <div className="exec-meta mono">
-        <span>触发 {detail.trigger_type} / {detail.triggered_by}</span>
-        <span>创建 {detail.created_at}</span>
-        {detail.error_code !== null ? <span className="error">{detail.error_code}</span> : null}
-      </div>
+    <main className="exec-detail" data-testid={TID.execDetail}>
+      {/* ① 身份 */}
+      <header className="exec-head">
+        <div className="exec-head-title">
+          <StatusChip status={detail.status} testId={TID.execStatus} />
+          <code className="panel-id">
+            #{detail.id} · {detail.definition_name} v{detail.definition_version}
+          </code>
+          <span className="ml-auto flex items-center gap-2">
+            <Button variant="quiet" size="sm" icon={RefreshCw} disabled={busy} onClick={() => void load()}>
+              刷新
+            </Button>
+          </span>
+        </div>
+        <dl className="exec-head-meta">
+          <Meta k="触发">
+            {TRIGGER_LABEL[detail.trigger_type] ?? detail.trigger_type}
+            <span className="mono text-ink-2"> · {detail.triggered_by}</span>
+          </Meta>
+          <Meta k="创建">
+            <Timestamp iso={detail.created_at} />
+          </Meta>
+          <Meta k="运行">
+            <Duration from={detail.started_at} to={detail.finished_at} />
+          </Meta>
+          {detail.audit.trace_id !== null ? (
+            <Meta k="trace_id">
+              <code className="mono">{detail.audit.trace_id}</code>
+            </Meta>
+          ) : null}
+        </dl>
+      </header>
 
-      <div className="rollback-bar">
-        <label
-          className="quiesce-toggle"
-          title="勾选后回滚/续跑把在飞(EXECUTING/等待审批)残留节点同事务楔停;不勾保持 409 等后台收敛"
-        >
-          <input
-            type="checkbox"
-            data-testid="quiesce-toggle"
-            checked={quiesce}
-            onChange={(e) => setQuiesce(e.target.checked)}
-          />
-          静默在飞
-        </label>
-        <button
-          type="button"
-          className="f-add"
-          data-testid="rollback-submit"
-          disabled={!canAct || target === null}
-          onClick={() => void runAction(() => api.rollbackExecution(execId, target as string, quiesce))}
-        >
-          回滚{target !== null ? `到 ${target}` : '(先选节点)'}
-        </button>
-        <button
-          type="button"
-          className="f-add"
-          data-testid="resume-submit"
-          disabled={!canAct}
-          onClick={() => void runAction(() => api.resumeExecution(execId, quiesce))}
-        >
-          续跑(自动定位失败/取消点)
-        </button>
-        <button
-          type="button"
-          className="f-add"
-          data-testid="cancel-submit"
-          disabled={!canCancel}
-          onClick={() => void runCancel()}
-        >
-          取消执行
-        </button>
-        <button type="button" className="f-add" data-testid="detail-refresh" onClick={() => void load()}>
-          刷新
-        </button>
-      </div>
+      {/* ② 执行级错误:就近呈现 */}
+      {detail.error_code !== null ? (
+        <Alert tone="error" icon={TriangleAlert}>
+          <strong>执行错误</strong>
+          <code className="mono ml-2">{detail.error_code}</code>
+          {detail.error_message !== null && detail.error_message !== '' ? (
+            <span className="ml-2 text-ink-1">{detail.error_message}</span>
+          ) : null}
+        </Alert>
+      ) : null}
+
+      {/* ③ 处置条 */}
+      <section className="panel exec-actions">
+        <div className="panel-body exec-actions-body">
+          <div className="exec-target">
+            <span className="micro">回滚目标</span>
+            {target !== null ? (
+              <code className="mono text-ink-0">{target}</code>
+            ) : (
+              <span className="text-xs text-ink-2">点击时间带中的节点行选择</span>
+            )}
+          </div>
+          <div className="exec-actions-right">
+            <Checkbox
+              label="静默在飞"
+              hint="勾选后回滚/续跑把在飞残留同事务楔停;不勾等后台收敛(409)"
+              checked={quiesce}
+              onChange={(e) => setQuiesce(e.target.checked)}
+            />
+            <Button
+              icon={Undo2}
+              data-testid={TID.rollbackSubmit}
+              disabled={!canAct || target === null}
+              onClick={() => void runAction(() => api.rollbackExecution(execId, target as string, quiesce))}
+            >
+              回滚{target !== null ? `到 ${target}` : '(先选节点)'}
+            </Button>
+            <Button
+              icon={Play}
+              data-testid={TID.resumeSubmit}
+              disabled={!canAct}
+              title="自动定位失败/取消点继续跑"
+              onClick={() => void runAction(() => api.resumeExecution(execId, quiesce))}
+            >
+              续跑
+            </Button>
+            {confirmCancel ? (
+              <div
+                className="exec-confirm"
+                ref={confirmRef}
+                tabIndex={-1}
+                role="group"
+                aria-label="确认取消执行"
+                onKeyDown={(e) => {
+                  if (e.key === 'Escape') {
+                    e.stopPropagation()
+                    setConfirmCancel(false)
+                  }
+                }}
+              >
+                <span className="text-xs text-ink-1">取消会楔停全部在飞节点,不可撤销。</span>
+                <Button variant="danger" size="sm" data-testid={TID.cancelSubmit} disabled={busy} onClick={() => void runCancel()}>
+                  确认取消
+                </Button>
+                <Button variant="quiet" size="sm" disabled={busy} onClick={() => setConfirmCancel(false)}>
+                  放弃
+                </Button>
+              </div>
+            ) : (
+              <Button variant="danger" icon={Ban} disabled={!canCancel} onClick={() => setConfirmCancel(true)}>
+                取消执行
+              </Button>
+            )}
+          </div>
+        </div>
+      </section>
+
       {flash !== '' ? (
-        <p className="header-flash" role="status" data-testid="exec-flash">
+        <p className="exec-flash" role="status" data-testid={TID.execFlash}>
           {flash}
         </p>
       ) : null}
       {error !== null ? (
-        <div className="issues" role="alert" data-testid="exec-error">
+        <Alert tone="error" icon={TriangleAlert}>
           <strong>操作未完成</strong>
-          <p>{error.text}</p>
+          <code className="mono ml-2">{error.text}</code>
           {error.blocked !== undefined && error.blocked.length > 0 ? (
-            <ul>
+            <ul className="exec-blocked">
               {error.blocked.map((b) => (
                 <li key={b}>
                   <code>{b}</code>
@@ -276,151 +326,161 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
               ))}
             </ul>
           ) : null}
-        </div>
+        </Alert>
       ) : null}
 
-      {graph !== null ? (
-        <div className="exec-graph" data-testid="exec-graph">
-          <ReactFlow
-            nodes={graph.nodes.map((n) => {
-              const st = nodeStatusOf(statusRows, n.id)
-              const c = st !== null ? STATUS_COLOR[st] : undefined
-              return {
-                ...n,
-                selected: n.id === target,
-                draggable: false,
-                style: c === undefined ? undefined : { borderColor: c.border, backgroundColor: c.bg },
-              }
-            })}
-            edges={graph.edges.map((e) => ({ ...e, selectable: false }))}
-            nodeTypes={nodeTypes}
-            fitView
-            nodesDraggable={false}
-            nodesConnectable={false}
-            onNodeClick={(_, n) => setTarget(n.id)}
-          >
-          </ReactFlow>
-        </div>
-      ) : null}
+      {/* ④ 时间带 */}
+      <ExecutionRibbon
+        nodes={statusRows}
+        startedAt={detail.started_at}
+        finishedAt={detail.finished_at}
+        live={LIVE.includes(detail.status)}
+        selectedNodeId={target}
+        onSelectNode={setTarget}
+      />
 
-      <table className="exec-table" data-testid="node-table">
-        <thead>
-          <tr>
-            <th>节点</th>
-            <th>实例</th>
-            <th>类型</th>
-            <th>状态</th>
-            <th>尝试</th>
-            <th>错误</th>
-            <th>结束于</th>
-          </tr>
-        </thead>
-        <tbody>
-          {statusRows.map((n) => (
-            <NodeRow key={n.id} n={n} selected={target === n.node_id} onSelect={() => setTarget(n.node_id)} />
-          ))}
-        </tbody>
-      </table>
+      {/* ④′ 当时声明的形状(可折叠:默认收起 = 零请求) */}
+      <DefinitionGraph
+        name={detail.definition_name}
+        version={detail.definition_version}
+        statuses={nodeStatusIndex(statusRows)}
+        onAuthExpired={onAuthExpired}
+      />
 
-      {statusRows
-        .filter((n) => n.type === 'approval' && n.status === 'WAITING_APPROVAL' && approvals[n.node_id] != null)
-        .map((n) => {
-          const ap = approvals[n.node_id]
-          if (ap === null || ap === undefined) return null
-          return <ApprovalState key={n.node_id} ap={ap} />
-        })}
+      {/* ⑤ 会签中间态 */}
+      {approvalRows.map((n) => {
+        const ap = approvals[n.node_id]
+        return ap === undefined || ap === null ? null : <ApprovalPanel key={n.node_id} ap={ap} />
+      })}
 
+      {/* ⑥ 输出 */}
       {detail.outputs !== null && detail.outputs !== undefined ? (
-        <section className="panel">
-          <div className="panel-head">
-            <span className="bn-badge">输出</span>
-          </div>
-          <pre className="editor-json" data-testid="exec-outputs">
+        <Panel>
+          <PanelHead title="输出" sub="终态快照" />
+          <pre className="exec-json" data-testid={TID.execOutputs}>
             {JSON.stringify(detail.outputs, null, 2)}
           </pre>
-        </section>
+        </Panel>
       ) : null}
 
-      <section className="panel">
-        <div className="panel-head">
-          <span className="bn-badge">审计事件(近 {audit.length} 条)</span>
-          <code className="panel-id">{detail.audit.exec_date}</code>
-        </div>
-        <table className="exec-table audit-table" data-testid="audit-table">
-          <thead>
-            <tr>
-              <th>事件</th>
-              <th>节点</th>
-              <th>主体</th>
-              <th>时间</th>
-            </tr>
-          </thead>
-          <tbody>
-            {audit.map((ev, i) => (
-              <tr key={ev.id} data-testid={`audit-row-${ev.event_type}`}>
-                <td>
-                  <code>{ev.event_type}</code>
-                </td>
-                <td className="mono">{ev.node_id ?? '—'}</td>
-                <td className="mono">
-                  {ev.actor_type}:{ev.actor_id}
-                </td>
-                <td className="mono">{i === -1 ? '' : ev.event_at}</td>
+      {/* ⑥ 审计链 */}
+      <Panel>
+        <PanelHead
+          title="审计事件"
+          sub={`${audit.length} 条 · 分区 ${detail.audit.exec_date}`}
+          actions={<Badge icon={ScrollText}>append-only</Badge>}
+        />
+        <div className="exec-table-wrap">
+          <table className="table" data-testid={TID.auditList}>
+            <thead>
+              <tr>
+                <th>事件</th>
+                <th>节点</th>
+                <th>主体</th>
+                <th>链</th>
+                <th>时间</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </section>
+            </thead>
+            <tbody>
+              {audit.length === 0 ? (
+                <tr>
+                  <td colSpan={5} className="text-ink-2">
+                    暂无审计事件
+                  </td>
+                </tr>
+              ) : (
+                audit.map((ev) => (
+                  <tr key={ev.id} data-testid={tid.auditRow(ev.event_type)}>
+                    <td>
+                      <code>{ev.event_type}</code>
+                    </td>
+                    <td className="num">{ev.node_id ?? '—'}</td>
+                    <td className="num">
+                      {ev.actor_type}:{ev.actor_id}
+                    </td>
+                    <td>
+                      <code
+                        className="mono"
+                        title={ev.row_hash !== null ? `row ${ev.row_hash}\nprev ${ev.prev_hash}` : undefined}
+                      >
+                        {shortHash(ev.row_hash)}
+                      </code>
+                    </td>
+                    <td>
+                      <Timestamp iso={ev.event_at} />
+                    </td>
+                  </tr>
+                ))
+              )}
+            </tbody>
+          </table>
+        </div>
+      </Panel>
     </main>
   )
 }
 
-function NodeRow({ n, selected, onSelect }: { n: ExecutionDetailData['nodes'][number]; selected: boolean; onSelect: () => void }) {
+/** 头部元信息:micro 标签 + 值(等宽数字)。dl > div > dt/dd 是合法分组。 */
+function Meta({ k, children }: { k: string; children: ReactNode }) {
   return (
-    <tr
-      className={`node-row${selected ? ' selected' : ''}`}
-      data-testid={`node-row-${n.node_id}-${n.instance_no}`}
-      onClick={onSelect}
-    >
-      <td className="mono">{n.node_id}</td>
-      <td className="mono">{n.instance_no}</td>
-      <td>{n.type}</td>
-      <td>
-        <span className={`exec-status st-${n.status}`}>{n.status}</span>
-      </td>
-      <td className="mono">
-        {n.attempts}/{n.max_attempts}
-      </td>
-      <td>{n.error_code ?? (n.error_message !== null ? n.error_message : '—')}</td>
-      <td className="mono">{n.finished_at ?? '—'}</td>
-    </tr>
+    <div>
+      <dt className="micro">{k}</dt>
+      <dd>{children}</dd>
+    </div>
   )
 }
 
-/** 审批中间态:会签待投名单 + 决定时间线(数据面 = approvalDetailDTO)。 */
-function ApprovalState({ ap }: { ap: ApprovalDetail }) {
+function shortHash(h: string | null): string {
+  return h === null || h === '' ? '—' : h.slice(0, 8)
+}
+
+/** 会签中间态:待投名单 + 决定时间线(数据面 = approvalDetailDTO)。 */
+function ApprovalPanel({ ap }: { ap: ApprovalDetail }) {
+  const timeout = ap.on_timeout !== undefined ? (ON_TIMEOUT_LABEL[ap.on_timeout] ?? ap.on_timeout) : null
   return (
-    <section className="panel approval-box" data-testid={`approval-${ap.node_id}`}>
-      <div className="panel-head">
-        <span className="bn-badge bn-approval">审批 · {ap.mode === 'all' ? '会签' : '或签'}</span>
-        <code className="panel-id">{ap.node_id}</code>
+    <section className="panel" data-testid={tid.approvalEntry(ap.node_id)}>
+      <PanelHead
+        title={`审批 · ${ap.mode === 'all' ? '会签' : '或签'}`}
+        sub={ap.node_id}
+        actions={<StatusChip status={ap.node_status} kind="node" />}
+      />
+      <div className="panel-body">
+        <dl className="exec-kv">
+          <KV k="审批人">
+            {ap.approvers !== undefined && ap.approvers.length > 0 ? ap.approvers.join('、') : '—'}
+          </KV>
+          <KV k="待投">
+            <span data-testid={TID.pendingApprovers}>{ap.pending_approvers.join(', ')}</span>
+          </KV>
+          <KV k="时限">
+            {ap.deadline_at !== null ? <Timestamp iso={ap.deadline_at} relative={false} /> : '—'}
+            {timeout !== null && ap.timeout_hours !== undefined ? (
+              <span className="ml-2 text-xs text-ink-2">
+                超时 {timeout} · {ap.timeout_hours}h
+              </span>
+            ) : null}
+          </KV>
+        </dl>
+        {ap.instructions !== undefined && ap.instructions !== '' ? (
+          <p className="exec-instructions measure">{ap.instructions}</p>
+        ) : null}
+        {ap.decisions.length > 0 ? (
+          <ol className="exec-decisions">
+            {ap.decisions.map((d) => (
+              <li key={d.id}>
+                <span className="num text-ink-2">第 {d.round} 轮</span>
+                <span className="mono text-ink-0">{d.decided_by}</span>
+                <span>{DECISION_LABEL[d.decision] ?? d.decision}</span>
+                <Timestamp iso={d.decided_at} />
+                {d.comment !== null && d.comment !== '' ? <span className="text-ink-1">{d.comment}</span> : null}
+                {d.final === true ? <Badge>终票</Badge> : null}
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p className="text-xs text-ink-2">暂无投票。</p>
+        )}
       </div>
-      <p className="exec-meta">
-        审批人:{ap.approvers?.join(', ') ?? '—'} · 待投:<span data-testid="pending-approvers">{ap.pending_approvers.join(', ') || '—'}</span>
-      </p>
-      {ap.decisions.length > 0 ? (
-        <ul className="decisions">
-          {ap.decisions.map((d) => (
-            <li key={d.id} className="mono">
-              {d.decided_at} · {d.decided_by} · {d.decision === 'approve' ? '批准' : '驳回'}
-              {d.comment !== null && d.comment !== '' ? ` · ${d.comment}` : ''}
-              {d.final === true ? ' · 终票' : ''}
-            </li>
-          ))}
-        </ul>
-      ) : (
-        <p className="draft-empty">暂无投票</p>
-      )}
     </section>
   )
 }

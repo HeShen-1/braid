@@ -1,0 +1,393 @@
+/* 执行面专属样式(T21.1 Lane B),含执行时间带(signature move)。
+   共享 token 与类词汇见 index.css;能就地用 Tailwind 工具类表达的不写到这里。
+
+   注意:本文件的内容不在任何 @layer 内 —— 无层级规则优先于 index.css 的
+   @layer components,因此可以在 .exec- 前缀作用域内覆写共享骨架类(.ribbon 族);
+   覆写只做"几何与盒子"的改动,配色一律沿用 index.css 的 [data-state] 定义
+   (状态色相只有那一处真源)。 */
+
+/* ---------- 工作区:左栏(触发 + 执行表) + 右栏(详情) ---------- */
+
+.exec-view {
+  display: grid;
+  grid-template-columns: minmax(20rem, 26rem) minmax(0, 1fr);
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+.exec-rail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.75rem;
+  border-right: 1px solid var(--color-line-1);
+}
+
+.exec-empty-main {
+  display: grid;
+  place-items: center;
+  min-height: 0;
+  overflow: auto;
+  padding: 1rem;
+}
+
+.exec-trigger {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.exec-table-wrap {
+  overflow-x: auto;
+}
+
+.exec-row-name {
+  display: flex;
+  align-items: baseline;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+/* ---------- 执行列表:筛选栏 / 翻页 ----------
+   筛选走服务端(既有 status/name/limit/offset 参数);控件用平台标准件,
+   标签在上、控件在下(与控制台纵向扫读一致)。 */
+
+.exec-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.5rem 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--color-line-0);
+}
+
+.exec-filters > .field {
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+
+/* 行首微标签与输入框文字同一水平线(end 对齐会把标签压到控件底边) */
+.exec-filters > .micro {
+  padding-bottom: 0.4rem;
+}
+
+.exec-filters > .btn {
+  margin-bottom: 0.1rem;
+}
+
+.exec-pager {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  border-top: 1px solid var(--color-line-0);
+  font-size: var(--text-xs);
+}
+
+.exec-pager > .num {
+  margin-right: auto;
+}
+
+/* ---------- 详情:纵向分层,超长内容滚动而不是被压扁 ---------- */
+
+.exec-detail {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0.75rem 1rem 2rem;
+}
+
+.exec-detail > * {
+  flex: 0 0 auto;
+}
+
+/* ---------- ① 身份 ---------- */
+
+.exec-head {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--color-ground-1);
+  border: 1px solid var(--color-line-1);
+  border-radius: var(--radius-panel);
+}
+
+.exec-head-title {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+}
+
+/* e2e 与运维都靠这行读执行 id/定义版本(与面板头部同语言) */
+.panel-id {
+  font-family: var(--font-mono);
+  font-size: var(--text-sm);
+  color: var(--color-ink-0);
+  letter-spacing: -0.01em;
+}
+
+.exec-head-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 1.5rem;
+  margin: 0;
+}
+
+.exec-head-meta > div {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.exec-head-meta dd {
+  margin: 0;
+  font-size: var(--text-sm);
+  color: var(--color-ink-1);
+}
+
+/* ---------- ③ 处置条 ---------- */
+
+.exec-actions-body {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+}
+
+.exec-target {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  min-width: 11rem;
+}
+
+.exec-actions-right {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 0.75rem;
+  margin-left: auto;
+}
+
+/* 取消确认:唯一的一次性浮起层(危险动作才需要第二下),Esc 收起 */
+.exec-confirm {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.4rem;
+  border: 1px solid color-mix(in oklab, var(--color-sig-fail) 45%, transparent);
+  border-radius: var(--radius-control);
+  background: color-mix(in oklab, var(--color-sig-fail) 8%, transparent);
+}
+
+.exec-flash {
+  margin: 0;
+  padding: 0.4rem 0.75rem;
+  border: 1px solid var(--color-line-1);
+  border-radius: var(--radius-control);
+  background: var(--color-ground-2);
+  color: var(--color-ink-0);
+  font-size: var(--text-sm);
+}
+
+.exec-blocked {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem 1rem;
+  margin: 0.35rem 0 0;
+  padding-left: 1.1rem;
+}
+
+/* ---------- ④′ 定义版本图(可折叠只读概览) ----------
+   卡片与边完全复用画布编辑器的节点视图与 index.css 的 .react-flow 主题
+   (--xy-edge-stroke = --color-line-2);这里只给"地面 + 高度"。
+   画布地面 = ground-0,与编辑器一致:图上没有第二条地面。 */
+
+.exec-graph-body {
+  padding: 0.5rem 0.75rem 0.75rem;
+}
+
+.exec-graph-canvas {
+  height: 22rem;
+  overflow: hidden;
+  background: var(--color-ground-0);
+  border: 1px solid var(--color-line-0);
+  border-radius: var(--radius-control);
+}
+
+/* ---------- ⑤ 会签中间态 ---------- */
+
+.exec-kv {
+  margin: 0;
+}
+
+.exec-instructions {
+  margin: 0.4rem 0 0;
+  color: var(--color-ink-1);
+  font-size: var(--text-sm);
+}
+
+.exec-decisions {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  margin: 0.6rem 0 0;
+  padding: 0;
+  list-style: none;
+  font-size: var(--text-xs);
+}
+
+.exec-decisions li {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 0.6rem;
+  padding: 0.2rem 0;
+  border-top: 1px solid var(--color-line-0);
+}
+
+/* ---------- ⑥ 输出 / 审计 ---------- */
+
+.exec-json {
+  max-height: 24rem;
+  margin: 0;
+  padding: 0.75rem 1rem;
+  overflow: auto;
+  background: var(--color-ground-0);
+  border-radius: 0 0 calc(var(--radius-panel) - 1px) calc(var(--radius-panel) - 1px);
+  color: var(--color-ink-1);
+  font-family: var(--font-mono);
+  font-size: var(--text-xs);
+  line-height: 1.55;
+}
+
+/* ---------- ④ 执行时间带(signature move) ----------
+   共享骨架 .ribbon / .ribbon-label / .ribbon-track / .ribbon-seg[data-state]
+   / .ribbon-now / .ribbon-axis 提供配色与斜纹;这里只改几何:
+   ① 每行自持两列网格(行元素必须保有盒子 —— display:contents 下浏览器/
+      Playwright 取不到可点区域,回滚选点与 e2e 都靠它);
+   ② 行分隔线由行元素整条承担(共享骨架把线画在标签单元格上,只到列边界);
+   ③ 轨道给高度,亚像素段保底 2px。 */
+
+.exec-ribbon .ribbon {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.exec-ribbon .exec-ribbon-row,
+.exec-ribbon .exec-axis-row {
+  display: grid;
+  grid-template-columns: minmax(12rem, 18rem) minmax(0, 1fr);
+}
+
+.exec-ribbon .ribbon-label,
+.exec-ribbon .ribbon-track {
+  border-bottom: 0;
+}
+
+.exec-ribbon .exec-ribbon-row {
+  border-bottom: 1px solid var(--color-line-0);
+  cursor: pointer;
+}
+
+.exec-ribbon .exec-ribbon-row:hover {
+  background: color-mix(in oklab, var(--color-ground-2) 70%, transparent);
+}
+
+.exec-ribbon .exec-ribbon-row[data-selected='true'] {
+  background: color-mix(in oklab, var(--color-accent-soft) 55%, transparent);
+}
+
+/* 标签列 = 选择回滚目标的按钮(键盘可达;点击行任意位置等效) */
+.exec-ribbon button.ribbon-label {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0.32rem 0.75rem 0.32rem 0;
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.exec-ribbon .ribbon-track {
+  min-height: 1.75rem;
+}
+
+.exec-ribbon .ribbon-seg {
+  min-width: 2px;
+}
+
+.exec-grid-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in oklab, var(--color-line-0) 75%, transparent);
+}
+
+/* 轴自带 border-top,而行分隔线已经画在最后一行上 —— 去掉双重发丝线 */
+.exec-ribbon .exec-axis-row .ribbon-axis {
+  border-top: 0;
+}
+
+.exec-node-error {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+  margin: 0;
+  padding: 0.25rem 0.75rem 0.3rem 0;
+  background: color-mix(in oklab, var(--color-sig-fail) 7%, transparent);
+  color: var(--color-ink-1);
+  font-size: var(--text-xs);
+}
+
+.exec-node-error code {
+  color: var(--color-sig-fail);
+  font-family: var(--font-mono);
+}
+
+.exec-ribbon-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.2rem 0.7rem;
+  color: var(--color-ink-2);
+  font-size: var(--text-micro);
+}
+
+.exec-ribbon-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+
+/* 图例色块复用 .ribbon-seg 的 [data-state] 配色,只是不再是绝对定位的段 */
+.exec-ribbon-key {
+  position: static;
+  display: inline-block;
+  width: 0.875rem;
+  height: 0.5rem;
+  border-radius: 2px;
+  animation: none;
+}
+
+.exec-ribbon-wait {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  color: var(--color-sig-wait);
+}

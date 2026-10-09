@@ -1,10 +1,18 @@
-# braid 路线图(P3)
+# braid 路线图(P3 已收官 → P4 立项)
 
 > 任务定义与依赖真源 = 本文件;执行状态真源 = GitHub issues(认领/进行中/闭环,`gh issue list`)。勾选仅作历史镜像;勾选提交随任务 PR、merge 即生效,PR 描述带 `Closes #N`(远端 Closes 偶发不触发,合并后 `gh issue close` 人工补)。
 > 规模:S = 半天内,M = 1-2 天,L = 3+ 天(全职当量)。
 > 里程碑依赖:M18(清账)∥ M20(收口)先行,M19(引擎纵深)随后串行(engine 包单 worktree 公约);任务级依赖单独标注,冲突时以任务级为准。
 > 方向拍板(2026-10-05 用户):**三轨全开**(P3-1 清账波 + P3-2 引擎纵深主轴 + P3-3 可靠性收口);**SSRF 扩禁 = 全五段**;多租户重契约族/动态 DAG 评估/自由文本面**维持触发器休眠**。46 条线索扫描与处置全录见会话档;P3 各任务的语义级拍板(min_success 三件/fencing 立项/scp 审计 D-/回滚族②③④⑤裁剪)在其 GATE 1 逐项裁。
-> P0 冻结记录 = docs/ROADMAP-P0.md;P1 = docs/ROADMAP-P1.md + docs/P1-DELIVERY.md;P2 = docs/ROADMAP-P2.md + docs/P2-DELIVERY.md;P3 = 本文件 + docs/P3-DELIVERY.md(**2026-10-07 收官,21/21**;P4 未立项,本文件保持 P3 完结态,轮转待 P4 立项)。
+> P0 冻结记录 = docs/ROADMAP-P0.md;P1 = docs/ROADMAP-P1.md + docs/P1-DELIVERY.md;P2 = docs/ROADMAP-P2.md + docs/P2-DELIVERY.md;P3 = 本文件 + docs/P3-DELIVERY.md(**2026-10-07 收官,21/21**);**P4 = 本文件 M21 节(2026-10-09 立项,控制台重建波)**。
+
+## M21 控制台重建波(P4-1,UI 重做 + 路由正名)
+
+> 方向拍板(2026-10-09 用户两轮问答,D-2026-10-09-ui-console):**统一单 SPA**(部分推翻 D-t44「审批页零构建链」的构建链约定,保留其安全姿态条款);**深色仪器盘**单一世界(用户拍板);Tailwind v4 + Lucide + react-router 8,全部 exact pin;自托管 Geist/Geist Mono(OFL,入库);**路由硬切** `/ui/*` → `/workflows/` `/executions/` `/approvals/`,旧路径 404 不留重定向;桌面优先,不做移动端;零后端新端点。
+> signature move = **执行时间带**:审批挂起段斜纹填充,把「挂起不占 worker」画成有物理长度的东西。
+
+- [x] T21.1 设计系统基座 + 画布面 UI 重做 — L — issue #196 — **已交付**(统一单 SPA 基座:Tailwind v4 CSS-first token 层 + 自托管 Geist/Geist Mono(OFL 入库)+ 组件原语 + 应用壳 + react-router 8(路由路径即最终形态);画布/节点/属性面板/执行面全量重做,含签名动作**执行时间带**(审批挂起段 135° 斜纹);执行详情恢复可折叠按需加载的定义版本图;Go 侧 `/ui/canvas/*` SPA 回退 + CSP 新增 `font-src 'self'`;删孤儿 `canvas.css`/`App.tsx`。验证:`go test ./...` + `go vet` + `golangci-lint run` 零告警、vitest 85 例全绿、build + dist 漂移门干净、playwright e2e 2 例(全旅程 30.2s + SPA 回退)全绿)
+- [ ] T21.2 审批台并入统一 SPA + 路由硬切 — L — issue #197 — 依赖 T21.1 — 验收:审批台 React 化并入同壳同设计系统(登录/待办/详情/批准驳回 + 键盘快捷键/筛选/状态徽标);`/ui/*` 与 `/ui/canvas/` 返 404(web_test 锚);vite base 改 `/`、dist 直出 `internal/api/web/`、删旧三件套;全仓 `/ui/` 引用 16 文件 46 处清零;README 截图可对外;零后端新端点
 
 ## M18 停车场清账波(P3-1,可唤醒面清零)
 

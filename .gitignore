@@ -21,3 +21,9 @@ dist/
 
 # 交付栈配置(prod-up.sh 管理态;与 dev 的 .env 物理分离)
 deploy/prod.env
+# impeccable 过程产物(评审截图/回归对比/临时 mock):设计真源是
+# PRODUCT.md + DESIGN.md,过程档不入库
+.impeccable/review/
+.impeccable/build/
+.impeccable/mocks/
+.impeccable/config.local.json

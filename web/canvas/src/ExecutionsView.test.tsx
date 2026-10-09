@@ -1,27 +1,74 @@
-// ExecutionsView 组件测试(T16.6):列表渲染/选中、触发面板(定义下拉 +
-// 输入 JSON + 幂等键头)、视图切换后详情加载。fetch 全 stub 按 URL 路由。
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+// ExecutionsView 测试(T21.1 Lane B):执行表(状态芯片 + 工作流 + 时长 +
+// 创建)受控选中(onSelect 由路由承载)、服务端筛选(状态 + 工作流名,换筛选
+// 重置 offset)、翻页、筛选专属空态与清除出口、触发面板(定义下拉 + JSON
+// 输入 + 幂等键头 + 就地校验)、401 上抛。fetch 全 stub 按 URL 路由。
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ExecutionsView } from './ExecutionsView.tsx'
 import { tokenStore } from './api.ts'
+import { TID, tid } from './ui/testids.ts'
 
 function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
 function stubRoute(responder: (url: string, init?: RequestInit) => Response) {
-  vi.stubGlobal(
-    'fetch',
-    vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => responder(String(input), init)),
-  )
+  const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => responder(String(input), init))
+  vi.stubGlobal('fetch', fn)
+  return fn
+}
+
+/** 列表请求恒带 limit/offset:断言与路由都按 path + query 拆开读。 */
+function pathOf(url: string): string {
+  return url.split('?')[0]
+}
+
+function queryOf(url: string): URLSearchParams {
+  return new URLSearchParams(url.split('?')[1] ?? '')
 }
 
 const emptyDetail = {
-  id: '7', definition_id: '1', definition_name: 'wf', definition_version: 1, status: 'RUNNING',
-  trigger_type: 'API', triggered_by: 'author', error_code: null, error_message: null,
-  created_at: '2026-10-04T06:00:00Z', started_at: null, finished_at: null,
-  definition_hash: 'h', input: {}, outputs: null, nodes: [], audit: { exec_date: '2026-10-04', trace_id: null },
+  id: '7',
+  definition_id: '1',
+  definition_name: 'wf',
+  definition_version: 1,
+  status: 'RUNNING',
+  trigger_type: 'API',
+  triggered_by: 'author',
+  error_code: null,
+  error_message: null,
+  created_at: '2026-10-04T06:00:00Z',
+  started_at: null,
+  finished_at: null,
+  definition_hash: 'h',
+  input: {},
+  outputs: null,
+  nodes: [],
+  audit: { exec_date: '2026-10-04', trace_id: null },
+}
+
+function exec(id: string, status: string, name = 'wf') {
+  return { ...emptyDetail, id, status, definition_name: name }
+}
+
+const published = [{ id: '1', name: 'wf', version: 3, status: 'PUBLISHED', description: '', updated_at: '2026-10-04T05:00:00Z' }]
+
+/** 最小路由:列表 + 已发布定义;并交出「列表请求 URL」序列供筛选断言。 */
+function listStub(onList: (q: URLSearchParams) => Response) {
+  const fn = stubRoute((url, init) => {
+    const path = pathOf(url)
+    if (path === '/api/v1/executions') {
+      if (init?.method === 'POST') {
+        return ok({ id: '8', definition_name: 'wf', definition_version: 3, status: 'PENDING', trigger_type: 'API', triggered_by: 'author' }, 201)
+      }
+      return onList(queryOf(url))
+    }
+    if (path === '/api/v1/definitions') return ok({ items: published })
+    return ok({ items: [], next_cursor: '' })
+  })
+  const listUrls = () => fn.mock.calls.map(([u]) => String(u)).filter((u) => pathOf(u) === '/api/v1/executions')
+  return { fn, listUrls }
 }
 
 afterEach(() => {
@@ -29,87 +76,227 @@ afterEach(() => {
   tokenStore.clear()
 })
 
-describe('ExecutionsView(执行视图)', () => {
-  it('列表渲染 + 点行选中加载详情', async () => {
+describe('ExecutionsView(执行面)', () => {
+  it('执行表格化:状态芯片 + 工作流版本 + 时长/创建;点行把 id 交给路由', async () => {
     const user = userEvent.setup()
+    const onSelect = vi.fn()
     stubRoute((url) => {
-      if (url === '/api/v1/executions') {
-        return ok({
-          items: [
-            { ...emptyDetail, id: '7' },
-            { ...emptyDetail, id: '6', definition_name: 'other', status: 'SUCCEEDED' },
-          ],
-          page: { limit: 20, offset: 0, total: 2 },
-        })
+      const path = pathOf(url)
+      if (path === '/api/v1/executions') {
+        return ok({ items: [exec('7', 'RUNNING'), exec('6', 'SUCCEEDED', 'other')], page: { limit: 20, offset: 0, total: 2 } })
       }
-      if (url === '/api/v1/executions/7') return ok({ ...emptyDetail, nodes: [] })
-      if (url.includes('/audit')) return ok({ items: [], next_cursor: '' })
-      if (/\/versions\/\d+$/.test(url)) return ok({ id: '1', dsl: { dsl: '1.0', name: 'wf', nodes: [], edges: [] } })
-      if (url === '/api/v1/definitions?status=PUBLISHED') return ok({ items: [] })
-      return ok({ error: 'unexpected', url })
+      if (path === '/api/v1/executions/6') return ok(exec('6', 'SUCCEEDED', 'other'))
+      if (path === '/api/v1/definitions') return ok({ items: [] })
+      return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionsView onAuthExpired={() => {}} />)
-    expect(await screen.findByTestId('exec-row-7')).toBeInTheDocument()
-    expect(screen.getByTestId('exec-row-6')).toHaveTextContent('other')
-    await user.click(screen.getByTestId('exec-row-7'))
-    await waitFor(() => expect(screen.getByTestId('exec-detail')).toBeInTheDocument())
+    render(<ExecutionsView selectedId="6" onSelect={onSelect} onAuthExpired={() => {}} />)
+
+    const table = await screen.findByTestId(TID.execTable)
+    const row7 = screen.getByTestId(tid.execRow('7'))
+    expect(row7).toHaveTextContent('执行中')
+    expect(row7).toHaveTextContent('wf')
+    expect(row7).toHaveTextContent('v1')
+    expect(screen.getByTestId(tid.execRow('6'))).toHaveAttribute('data-state', 'SUCCEEDED')
+    // 选中态由 selectedId 受控(共享 .table 的 data-selected 样式)
+    expect(screen.getByTestId(tid.execRow('6'))).toHaveAttribute('data-selected', 'true')
+    expect(row7).toHaveAttribute('data-selected', 'false')
+    expect(table).toBeInTheDocument()
+
+    await user.click(row7)
+    expect(onSelect).toHaveBeenCalledWith('7')
   })
 
-  it('触发面板:选定义 + 填输入 → POST executions(Idempotency-Key 在场)→ 选中新执行', async () => {
+  it('selectedId 非空 → 右栏挂载详情(芯片 data-state = 原始 ENUM)', async () => {
+    stubRoute((url) => {
+      const path = pathOf(url)
+      if (path === '/api/v1/executions') return ok({ items: [exec('7', 'RUNNING')], page: { limit: 20, offset: 0, total: 1 } })
+      if (path === '/api/v1/executions/7') return ok(emptyDetail)
+      if (path === '/api/v1/definitions') return ok({ items: [] })
+      return ok({ items: [], next_cursor: '' })
+    })
+    render(<ExecutionsView selectedId="7" onSelect={() => {}} onAuthExpired={() => {}} />)
+    expect(await screen.findByTestId(TID.execDetail)).toBeInTheDocument()
+    expect(await screen.findByTestId(TID.execStatus)).toHaveAttribute('data-state', 'RUNNING')
+  })
+
+  it('状态筛选:选中即请求带 status(未筛选 = 不带该参数)', async () => {
     const user = userEvent.setup()
+    const { listUrls } = listStub((q) =>
+      q.get('status') === 'FAILED'
+        ? ok({ items: [exec('3', 'FAILED')], page: { limit: 20, offset: 0, total: 1 } })
+        : ok({ items: [exec('7', 'RUNNING'), exec('6', 'SUCCEEDED')], page: { limit: 20, offset: 0, total: 2 } }),
+    )
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await screen.findByTestId(tid.execRow('7'))
+    expect(queryOf(listUrls()[0]).has('status')).toBe(false)
+
+    await user.selectOptions(screen.getByLabelText('按状态'), 'FAILED')
+    expect(await screen.findByTestId(tid.execRow('3'))).toBeInTheDocument()
+    expect(screen.queryByTestId(tid.execRow('7'))).not.toBeInTheDocument()
+    const last = queryOf(listUrls().at(-1) as string)
+    expect(last.get('status')).toBe('FAILED')
+    expect(last.get('offset')).toBe('0')
+  })
+
+  it('工作流名筛选:防抖后请求带 name', async () => {
+    const { listUrls } = listStub((q) =>
+      q.get('name') === 'other'
+        ? ok({ items: [exec('6', 'SUCCEEDED', 'other')], page: { limit: 20, offset: 0, total: 1 } })
+        : ok({ items: [exec('7', 'RUNNING')], page: { limit: 20, offset: 0, total: 1 } }),
+    )
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await screen.findByTestId(tid.execRow('7'))
+    fireEvent.change(screen.getByLabelText('按名称'), { target: { value: 'other' } })
+    await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('name')).toBe('other'))
+    expect(await screen.findByTestId(tid.execRow('6'))).toBeInTheDocument()
+  })
+
+  it('换筛选重置 offset:第 2 页上切状态 → 下一次请求回第 1 页', async () => {
+    const user = userEvent.setup()
+    const { listUrls } = listStub((q) => {
+      const off = Number(q.get('offset') ?? '0')
+      if (q.get('status') === 'SUCCEEDED') {
+        return ok({ items: [exec('99', 'SUCCEEDED')], page: { limit: 20, offset: 0, total: 1 } })
+      }
+      return ok({
+        items: Array.from({ length: 20 }, (_, i) => exec(String(off + i), 'RUNNING')),
+        page: { limit: 20, offset: off, total: 45 },
+      })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await screen.findByTestId(tid.execRow('0'))
+    expect(screen.getByText(/1–20 \/ 45/)).toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '下一页' }))
+    await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('offset')).toBe('20'))
+    expect(await screen.findByTestId(tid.execRow('20'))).toBeInTheDocument()
+
+    await user.selectOptions(screen.getByLabelText('按状态'), 'SUCCEEDED')
+    await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('status')).toBe('SUCCEEDED'))
+    expect(queryOf(listUrls().at(-1) as string).get('offset')).toBe('0')
+  })
+
+  it('筛选无结果:专属空态(与「暂无执行」区分)+ 清除筛选出口', async () => {
+    const user = userEvent.setup()
+    listStub((q) =>
+      q.get('status') === 'FAILED'
+        ? ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
+        : ok({ items: [exec('7', 'RUNNING')], page: { limit: 20, offset: 0, total: 1 } }),
+    )
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await screen.findByTestId(tid.execRow('7'))
+
+    await user.selectOptions(screen.getByLabelText('按状态'), 'FAILED')
+    const empty = await screen.findByTestId(TID.execEmpty)
+    expect(empty).toHaveTextContent('当前筛选下没有执行')
+    expect(empty).not.toHaveTextContent('暂无执行')
+
+    await user.click(within(empty).getByRole('button', { name: '清除筛选' }))
+    expect(await screen.findByTestId(tid.execRow('7'))).toBeInTheDocument()
+    expect((screen.getByLabelText('按状态') as HTMLSelectElement).value).toBe('')
+  })
+
+  it('触发:选定义 + 填输入 → POST executions(Idempotency-Key 在场)→ 列表刷新 + 选中新执行', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
     let triggered = false
     let sawKey = false
     stubRoute((url, init) => {
-      if (url === '/api/v1/definitions?status=PUBLISHED') {
-        return ok({ items: [{ id: '1', name: 'wf', version: 3, status: 'PUBLISHED', description: '', updated_at: '2026-10-04T05:00:00Z' }] })
-      }
-      if (url === '/api/v1/executions' && init?.method === 'POST') {
+      const path = pathOf(url)
+      if (path === '/api/v1/definitions') return ok({ items: published })
+      if (path === '/api/v1/executions' && init?.method === 'POST') {
         triggered = true
         const headers = init.headers as Record<string, string>
         sawKey = typeof headers['Idempotency-Key'] === 'string' && headers['Idempotency-Key'] !== ''
         expect(JSON.parse(String(init.body))).toEqual({ definition_name: 'wf', input: { docs: ['a'] } })
         return ok({ id: '8', definition_name: 'wf', definition_version: 3, status: 'PENDING', trigger_type: 'API', triggered_by: 'author' }, 201)
       }
-      if (url === '/api/v1/executions') {
+      if (path === '/api/v1/executions') {
         return ok({
-          items: triggered
-            ? [{ ...emptyDetail, id: '8', status: 'PENDING' }]
-            : [{ ...emptyDetail, id: '7' }],
+          items: triggered ? [exec('8', 'PENDING')] : [exec('7', 'RUNNING')],
           page: { limit: 20, offset: 0, total: 1 },
         })
       }
-      if (url === '/api/v1/executions/8') return ok({ ...emptyDetail, id: '8', status: 'PENDING', nodes: [] })
-      if (url.includes('/audit')) return ok({ items: [], next_cursor: '' })
-      if (/\/versions\/\d+$/.test(url)) return ok({ id: '1', dsl: { dsl: '1.0', name: 'wf', nodes: [], edges: [] } })
-      return ok({ error: 'unexpected', url })
+      return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionsView onAuthExpired={() => {}} />)
-    await screen.findByTestId('trigger-definition')
-    await user.selectOptions(screen.getByTestId('trigger-definition'), 'wf')
+    render(<ExecutionsView selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
+    await screen.findByTestId(TID.triggerDefinition)
+    await user.selectOptions(screen.getByTestId(TID.triggerDefinition), 'wf')
     // JSON 文本含 {/[ (user-event 键描述符元字符),直改值免转义
-    fireEvent.change(screen.getByTestId('trigger-input'), { target: { value: '{"docs":["a"]}' } })
-    await user.click(screen.getByTestId('trigger-submit'))
-    await waitFor(() => expect(screen.getByTestId('exec-detail')).toBeInTheDocument())
+    fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: '{"docs":["a"]}' } })
+    await user.click(screen.getByTestId(TID.triggerSubmit))
+
+    await waitFor(() => expect(onSelect).toHaveBeenCalledWith('8'))
     expect(sawKey).toBe(true)
+    expect(await screen.findByTestId(tid.execRow('8'))).toBeInTheDocument()
   })
 
   it('触发输入非法 JSON:原地报错不发请求', async () => {
     const user = userEvent.setup()
     let posted = 0
     stubRoute((url, init) => {
-      if (url === '/api/v1/executions' && init?.method === 'POST') posted += 1
-      if (url === '/api/v1/executions') return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
-      if (url === '/api/v1/definitions?status=PUBLISHED') {
-        return ok({ items: [{ id: '1', name: 'wf', version: 1, status: 'PUBLISHED', description: '', updated_at: '2026-10-04T05:00:00Z' }] })
-      }
+      const path = pathOf(url)
+      if (path === '/api/v1/executions' && init?.method === 'POST') posted += 1
+      if (path === '/api/v1/executions') return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
+      if (path === '/api/v1/definitions') return ok({ items: published })
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionsView onAuthExpired={() => {}} />)
-    await screen.findByTestId('trigger-definition')
-    await user.selectOptions(screen.getByTestId('trigger-definition'), 'wf')
-    fireEvent.change(screen.getByTestId('trigger-input'), { target: { value: 'not-json' } })
-    await user.click(screen.getByTestId('trigger-submit'))
-    expect(await screen.findByTestId('trigger-error')).toBeInTheDocument()
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await screen.findByTestId(TID.triggerDefinition)
+    await user.selectOptions(screen.getByTestId(TID.triggerDefinition), 'wf')
+    fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: 'not-json' } })
+    await user.click(screen.getByTestId(TID.triggerSubmit))
+    expect(await screen.findByRole('alert')).toHaveTextContent('输入不是合法 JSON')
     expect(posted).toBe(0)
+  })
+
+  it('触发输入顶层是数组:同样就地拦下', async () => {
+    const user = userEvent.setup()
+    listStub(() => ok({ items: [], page: { limit: 20, offset: 0, total: 0 } }))
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await screen.findByTestId(TID.triggerDefinition)
+    await user.selectOptions(screen.getByTestId(TID.triggerDefinition), 'wf')
+    fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: '[]' } })
+    await user.click(screen.getByTestId(TID.triggerSubmit))
+    expect(await screen.findByRole('alert')).toHaveTextContent('顶层必须是 JSON 对象')
+  })
+
+  it('无已发布工作流:触发禁用并给出下一步', async () => {
+    stubRoute((url) => {
+      const path = pathOf(url)
+      if (path === '/api/v1/executions') return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
+      if (path === '/api/v1/definitions') return ok({ items: [] })
+      return ok({ items: [], next_cursor: '' })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await screen.findByTestId(TID.triggerDefinition)
+    expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
+    expect(screen.getByText(/尚无已发布工作流/)).toBeInTheDocument()
+    // 无筛选且无数据:走「暂无执行」而不是筛选空态,筛选栏也不占位
+    const empty = await screen.findByTestId(TID.execEmpty)
+    expect(empty).toHaveTextContent('暂无执行')
+    expect(screen.queryByText('筛选')).not.toBeInTheDocument()
+  })
+
+  it('无选中:右栏是引导空态(不猜数据)', async () => {
+    listStub(() => ok({ items: [], page: { limit: 20, offset: 0, total: 0 } }))
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    expect(await screen.findByText('未选择执行')).toBeInTheDocument()
+    expect(screen.queryByTestId(TID.execDetail)).not.toBeInTheDocument()
+  })
+
+  it('列表 401 → onAuthExpired(统一登出)', async () => {
+    const onAuthExpired = vi.fn()
+    stubRoute((url) => {
+      if (pathOf(url) === '/api/v1/executions') {
+        return new Response(JSON.stringify({ error: 'unauthorized' }), {
+          status: 401,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
+      return ok({ items: [] })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={onAuthExpired} />)
+    await waitFor(() => expect(onAuthExpired).toHaveBeenCalled())
   })
 })
