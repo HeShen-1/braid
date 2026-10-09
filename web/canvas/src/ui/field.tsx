@@ -90,6 +90,8 @@ export function TextArea({
 /**
  * `<option>` 列表 → shadcn Select 的 item 表(App Router 侧调用点因此零改动)。
  * 只认原生 `option`;条件渲染产生的 false/null 由 Children.toArray 清掉。
+ * **不支持 `<optgroup>`**(会被静默丢成顶层 option 之外的空白):当前无调用点,
+ * 需要时显式扩展,别指望它透明工作。
  *
  * 已知残余(实测,非猜测):打开弹层时 Base UI 会插一个 `<style>` 元素,而静态面
  * CSP 逐字钉死 `style-src 'self'`,该元素被拦(控制台一条 style-src-elem 违规)。
@@ -138,8 +140,10 @@ export function Select({ label, hint, error, className, children, id, value, dis
         <SelectValue />
       </SelectTrigger>
       <SelectContent>
-        {items.map((it) => (
-          <SelectItem key={it.value} value={it.value} disabled={it.disabled}>
+        {items.map((it, i) => (
+          // key 用下标:值可能重复(同名多版本的历史数据),值做 key 会打 React
+          // 重复键告警。显示项由调用点保证唯一(见 ExecutionsView 的按名收敛)。
+          <SelectItem key={`${i}-${it.value}`} value={it.value} disabled={it.disabled}>
             {it.label}
           </SelectItem>
         ))}

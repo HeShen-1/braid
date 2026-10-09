@@ -45,7 +45,14 @@ function ratio(a, b) {
   return (x + 0.05) / (y + 0.05)
 }
 
-/** 成对清单 = DESIGN.md 定档规则里逐条列出的那些对(正文 ≥4.5,图形 ≥3)。 */
+/**
+ * 成对清单 = DESIGN.md 定档规则里逐条列出的那些对(正文 ≥4.5,图形 ≥3)。
+ * 第 5 列 = 登记豁免:该对是**禁用态**(DESIGN.md 明确写了禁用态不参与定档),
+ * 照实打印但不计入退出码 —— 否则「全过」与 exit 0 不等义,脚本自己打自己的脸
+ * (对抗审计 H1)。
+ * 描边对三行都测:交互控件描边同时邻接页面地面(外)与控件自身填充(内),
+ * WCAG 1.4.11 的「相邻色」两面都算(对抗审计 M1)。
+ */
 const PAIRS = [
   ['正文 ink-0 / 地面 ground-0', 'ink-0', 'ground-0', 4.5],
   ['正文 ink-0 / 面板 ground-1', 'ink-0', 'ground-1', 4.5],
@@ -54,9 +61,10 @@ const PAIRS = [
   ['三级 ink-2 / ground-2', 'ink-2', 'ground-2', 4.5],
   ['三级 ink-2 / ground-3', 'ink-2', 'ground-3', 4.5],
   ['占位 ink-3 / ground-2', 'ink-3', 'ground-2', 4.5],
-  ['占位 ink-3 / ground-3', 'ink-3', 'ground-3', 4.5],
-  ['描边 line-2 / ground-1(非文本)', 'line-2', 'ground-1', 3],
-  ['描边 line-2 / ground-2(非文本)', 'line-2', 'ground-2', 3],
+  ['占位 ink-3 / ground-3(禁用态)', 'ink-3', 'ground-3', 4.5, 'exempt'],
+  ['描边 line-2 / ground-0(非文本·外)', 'line-2', 'ground-0', 3],
+  ['描边 line-2 / ground-1(非文本·外)', 'line-2', 'ground-1', 3],
+  ['描边 line-2 / ground-2(非文本·控件自身填充)', 'line-2', 'ground-2', 3],
   ['焦点 accent / ground-0', 'accent', 'ground-0', 4.5],
   ['焦点 accent / ground-1', 'accent', 'ground-1', 4.5],
   ['主操作 primary-ink / primary-action', 'primary-ink', 'primary-action', 4.5],
@@ -72,22 +80,38 @@ for (const [world, toks] of [
 ]) {
   console.log(`\n== ${world} ==`)
   let worst = { text: Infinity, graphic: Infinity }
-  for (const [label, fg, bg, min] of PAIRS) {
+  let failed = 0
+  let exempt = 0
+  for (const [label, fg, bg, min, kind] of PAIRS) {
     if (!toks[fg] || !toks[bg]) {
-      console.log(`  ${pad(label, 34)} ${fg}=${toks[fg] ?? '?'} ${bg}=${toks[bg] ?? '?'} 解析失败`)
+      console.log(`  ${pad(label, 40)} ${fg}=${toks[fg] ?? '?'} ${bg}=${toks[bg] ?? '?'} 解析失败`)
       process.exitCode = 1
+      failed++
       continue
     }
     const r = ratio(toks[fg], toks[bg])
     const ok = r >= min
-    if (!ok) process.exitCode = 1
+    if (kind === 'exempt') {
+      exempt++
+      console.log(
+        `  --   ${pad(label, 40)} ${toks[fg]} on ${toks[bg]} = ${r.toFixed(2)}:1 (线 ${min}:1,登记豁免)`,
+      )
+      continue
+    }
+    if (!ok) {
+      failed++
+      process.exitCode = 1
+    }
     if (min >= 4.5) worst.text = Math.min(worst.text, r)
     else worst.graphic = Math.min(worst.graphic, r)
     console.log(
-      `  ${ok ? 'OK  ' : 'FAIL'} ${pad(label, 34)} ${toks[fg]} on ${toks[bg]} = ${r.toFixed(2)}:1 (线 ${min}:1)`,
+      `  ${ok ? 'OK  ' : 'FAIL'} ${pad(label, 40)} ${toks[fg]} on ${toks[bg]} = ${r.toFixed(2)}:1 (线 ${min}:1)`,
     )
   }
-  console.log(`  最紧:正文 ${worst.text.toFixed(2)}:1 / 图形 ${worst.graphic.toFixed(2)}:1`)
+  console.log(
+    `  在册 ${PAIRS.length - exempt} 对:${failed === 0 ? '全过' : `${failed} 对未过`};登记豁免 ${exempt} 对(禁用态)。` +
+      `最紧:正文 ${worst.text.toFixed(2)}:1 / 图形 ${worst.graphic.toFixed(2)}:1`,
+  )
 }
 
 // 六态芯片标签:标签色落「自色 tint(不透明)盖 ground-1」上 —— 芯片底色在

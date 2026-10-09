@@ -77,16 +77,26 @@ describe('样式表结构锚(styles/index.css)', () => {
     expect(css).toContain("@media (prefers-color-scheme: light)")
   })
 
-  it('浅色档声明的每个 token 都在 @theme(默认世界)有默认值', () => {
+  it('浅色档声明的每个 token 都在 @theme(默认世界)有具体值', () => {
     // 血泪锚:primary-action / primary-ink / sig-fail-hi 曾只存在于「深色覆盖块」,
     // 默认世界改成 @theme 后它们无处落脚 —— 深色下主操作背景直接落空(透明)。
-    const themeKeys = new Set(
-      [...css.match(/@theme \{([\s\S]*?)\n\}/)![1].matchAll(/--color-([a-z0-9-]+):/g)].map((m) => m[1]),
+    // 只查「键在不在」不够:`--color-x: var(--nope);` 也照样绿(对抗审计 LOW#2),
+    // 故连值一起查 —— 必须是字面量(#hex)或指向本表里存在的 token。
+    const theme = css.match(/@theme \{([\s\S]*?)\n\}/)![1]
+    const declared = new Map(
+      [...theme.matchAll(/--color-([a-z0-9-]+):\s*([^;]+);/g)].map((m) => [m[1], m[2].trim()]),
     )
-    const lightKeys = [
-      ...css.match(/\/\* light-world:start \*\/([\s\S]*?)\/\* light-world:end \*\//)![1].matchAll(/--color-([a-z0-9-]+):/g),
-    ].map((m) => m[1])
-    expect(lightKeys.filter((k) => !themeKeys.has(k))).toEqual([])
+    const lightBlock = css.match(/\/\* light-world:start \*\/([\s\S]*?)\/\* light-world:end \*\//)![1]
+    const unresolved = [...lightBlock.matchAll(/--color-([a-z0-9-]+):/g)]
+      .map((m) => m[1])
+      .filter((key) => {
+        const value = declared.get(key)
+        if (value === undefined) return true
+        if (/^#[0-9a-fA-F]{3,8}$/.test(value)) return false
+        const ref = value.match(/^var\(--color-([a-z0-9-]+)\)$/)
+        return ref === null || !declared.has(ref[1])
+      })
+    expect(unresolved).toEqual([])
   })
 })
 
@@ -98,6 +108,9 @@ describe('启动脚本与 theme.ts 同源(public/assets/theme-boot.js)', () => {
     expect(boot).toContain(`'${THEME_KEY}'`)
     expect(boot).toContain(`'${DEFAULT_THEME}'`)
     expect(boot).toContain('document.documentElement.dataset.theme')
+    // 三态口径也要钉:只留 light/dark(丢了 auto)会让首绘闪一下深色,
+    // 而上面三行仍然绿 —— 对抗审计 LOW#1 就是这么绕过去的。
+    expect(boot).toContain("t === 'light' || t === 'auto' ? t : 'dark'")
   })
 
   it('index.html 引它,且不引入内联脚本(CSP 是 script-src self,内联在生产不执行)', () => {

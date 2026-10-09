@@ -80,7 +80,12 @@ const IN_PAGE = () => {
     if (text) texts.push({ text: text.slice(0, 20), fg: solid(cs.color), bg: bgOf(el), disabled })
     const bw = parseFloat(cs.borderTopWidth) || parseFloat(cs.borderLeftWidth)
     if (bw > 0 && cs.borderTopColor !== 'rgba(0, 0, 0, 0)')
-      borders.push({ border: solid(cs.borderTopColor), bg: bgOf(el.parentElement ?? el) })
+      borders.push({
+        border: solid(cs.borderTopColor),
+        bg: bgOf(el.parentElement ?? el),
+        // 内邻接 = 控件自身填充(WCAG 1.4.11 的「相邻色」包含这一面)
+        inner: bgOf(el),
+      })
   }
   const line2 = solid(getComputedStyle(document.documentElement).getPropertyValue('--color-line-2').trim() || '#000')
   return { texts, borders, line2 }
@@ -125,22 +130,33 @@ for (const theme of ['dark', 'light']) {
     for (const w of weak.slice(0, 4)) console.log(`     ! ${w.r.toFixed(2)}:1 "${w.text}" ${hex(w.fg)} on ${hex(w.bg)}`)
 
     // line-2 = 交互控件描边与连线(唯一纳入非文本 3:1 的描边);其余是结构发丝线,
-    // 分隔性图形不适用 1.4.11,单列不计。
+    // 分隔性图形不适用 1.4.11,单列不计。内/外邻接分开报:控件描边的两面都算。
     const groups = {}
     for (const b of borders) {
-      const key = `${isLine2(b.border, line2) ? 'line-2' : 'hairline'} on ${hex(b.bg)}`
-      groups[key] ??= { n: 0, r: ratio(b.border, b.bg) }
-      groups[key].n += 1
+      if (!isLine2(b.border, line2)) continue
+      for (const [side, color] of [
+        ['外', b.bg],
+        ['内', b.inner],
+      ]) {
+        const key = `${side}${hex(color)}`
+        groups[key] ??= { n: 0, r: ratio(b.border, color) }
+        groups[key].n += 1
+      }
     }
-    const inScope = Object.entries(groups).filter(([k]) => k.startsWith('line-2'))
-    const structural = Object.entries(groups).filter(([k]) => k.startsWith('hairline'))
+    const structural = borders.filter((b) => !isLine2(b.border, line2)).length
+    const inScope = Object.entries(groups)
     const worst = inScope.length ? Math.min(...inScope.map(([, v]) => v.r)) : NaN
+    const under = inScope.filter(([, v]) => v.r < GRAPHIC)
+    if (weak.length > 0 || under.length > 0) process.exitCode = 1
     console.log(
-      `   交互描边 line-2 邻接 ${inScope.length} 种,最紧 ${worst.toFixed(2)}:1` +
-        (worst < GRAPHIC ? ' ← 欠档' : '') +
-        `;结构发丝线 ${structural.length} 种(分隔性图形,不计)`,
+      `   交互描边 line-2 ${inScope.length ? inScope.map(([k, v]) => `${k}×${v.n}=${v.r.toFixed(2)}`).join(' ') : '无样本'}` +
+        (Number.isFinite(worst) ? ` → 最紧 ${worst.toFixed(2)}:1` : '') +
+        (under.length ? ' ← 欠档' : '') +
+        `;结构发丝线 ${structural} 处(分隔性图形,不计)`,
     )
   }
 }
 
 await browser.close()
+if (process.exitCode === 1) console.error('\n欠档存在:见上面 ! 行(退出码 1)')
+else console.log('\n两套世界:正文无欠档,交互描边内外邻接均 ≥3:1')

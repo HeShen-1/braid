@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-09T10:21:18+08:00",
+  "generatedAt": "2026-10-09T18:36:40+08:00",
   "title": "Design System: braid 控制台",
   "extensions": {
     "colorMeta": {
@@ -252,8 +252,8 @@
       "line-2": {
         "role": "neutral",
         "displayName": "可辨描边 Discernible Stroke",
-        "canonical": "#556a7e",
-        "purpose": "交互控件描边与 DAG 连线的唯一来源(ground-0 上 3.46:1、ground-1 上 3.22:1)。",
+        "canonical": "#5b7185",
+        "purpose": "交互控件描边与 DAG 连线的唯一来源；T21.3 由 #556a7e 提到 #5b7185（旧值对控件自身填充只有 2.94:1，内外邻接都要 ≥3:1）。",
         "tonalRamp": [
           "#1b2530",
           "#26333f",
@@ -317,6 +317,33 @@
         ],
         "rampKind": "project-ladder",
         "lightCanonical": "#5f6a71"
+      },
+      "sig-fail-hi": {
+        "role": "secondary",
+        "displayName": "sig-fail-hi",
+        "canonical": "#ff8a8f",
+        "purpose": "破坏性动作 hover 的字色（浅色档 #a03339）",
+        "tonalRamp": [],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#a03339"
+      },
+      "primary-action": {
+        "role": "primary",
+        "displayName": "primary-action",
+        "canonical": "#e8eff6",
+        "purpose": "主操作实体：亮主题取最暗实体、暗主题取最亮实体（浅色档 #d8dfe7）",
+        "tonalRamp": [],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#d8dfe7"
+      },
+      "primary-ink": {
+        "role": "primary",
+        "displayName": "primary-ink",
+        "canonical": "#0a0e13",
+        "purpose": "主操作文字（浅色档 #0d1319）",
+        "tonalRamp": [],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#0d1319"
       }
     },
     "typographyMeta": {
@@ -534,7 +561,7 @@
       },
       {
         "name": "The Measured-Grade Rule / 定档规则",
-        "body": "每档都按它真正落地的**最不利地面**定档(正文 ≥4.5:1、非文本图形 ≥3:1),不留\"看起来更安静\"的欠对比档。T21.3 起两套世界各跑一遍:契约面 = `.impeccable/contrast.mjs`(token 对),渲染面 = `.impeccable/contrast-render.mjs`(浏览器实测,背景按真实合成)。实测最紧:深色 4.52:1(占位 ink-3/ground-2)、浅色 4.54:1(占位 ink-3/ground-3);渲染面最紧 4.85 / 5.49,欠档 0。禁用态不参与定档(深色 ink-3/ground-3 = 4.00:1,恰是禁用主操作)。",
+        "body": "每档都按它真正落地的**最不利地面**定档(正文 ≥4.5:1、非文本图形 ≥3:1)，不留\"看起来更安静\"的欠对比档。T21.3 起两套世界各跑一遍，且两个脚本都是门(欠档即 exit 1)：契约面 .impeccable/contrast.mjs(15 对在册全过 + 1 对禁用态登记豁免)、渲染面 .impeccable/contrast-render.mjs(浏览器实测，背景按 1×1 canvas 真实合成；描边的内、外邻接都入样)。实测最紧：正文 深色 4.85:1 / 浅色 5.49:1，欠档 0；交互描边 line-2 内外最紧 深色 3.25 / 浅色 3.01。",
         "section": "colors"
       },
       {
