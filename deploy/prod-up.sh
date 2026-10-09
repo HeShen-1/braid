@@ -125,7 +125,8 @@ echo " 过闸"
 
 cat <<'EOF'
 == 就绪。braid-prod = {api,worker,relay,reaper} + mysql + redis-queue 六常驻
-   (+ migrate/grants one-shot 已退场)。零宿主端口:API 与 Web 审批页(/ui/)
+   (+ migrate/grants one-shot 已退场)。零宿主端口:API 与 Web 面(/workflows/
+   控制台、/executions/ 执行面、/approvals/ 审批台;旧审批台/画布前缀硬切 404)
    经反代指向 compose 内网 api:8081;运维面 deploy/RUNBOOK.md,升级/改密
    deploy/UPGRADE.md,验收:docker compose -f deploy/prod.docker-compose.yml ps
 EOF

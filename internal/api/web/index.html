@@ -3,80 +3,13 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>braid 审批台</title>
-  <link rel="stylesheet" href="/ui/style.css">
-  <script src="/ui/app.js" defer></script>
+  <meta name="color-scheme" content="dark">
+  <title>braid 控制台</title>
+  <script type="module" crossorigin src="/assets/index-CpeolKX2.js"></script>
+  <link rel="modulepreload" crossorigin href="/assets/testids-B6wcGg4k.js">
+  <link rel="stylesheet" crossorigin href="/assets/index-C41qFbud.css">
 </head>
 <body>
-  <header>
-    <h1>braid 审批台</h1>
-    <div id="session">
-      <span id="who" class="mono"></span>
-      <button id="logout" type="button" hidden>退出</button>
-    </div>
-  </header>
-  <main>
-    <!-- 登录 -->
-    <section id="login-view" class="card" hidden>
-      <h2>登录</h2>
-      <form id="login-form">
-        <label>用户名 <input id="username" name="username" autocomplete="username" required></label>
-        <label>密码 <input id="password" name="password" type="password" autocomplete="current-password" required></label>
-        <button type="submit">登录</button>
-        <p id="login-error" class="error" role="alert"></p>
-      </form>
-    </section>
-
-    <!-- 待办列表 -->
-    <section id="list-view" hidden>
-      <div class="bar">
-        <h2>待办审批</h2>
-        <div>
-          <button id="prev-page" type="button">上一页</button>
-          <button id="next-page" type="button">下一页</button>
-          <button id="refresh" type="button">刷新</button>
-        </div>
-      </div>
-      <table>
-        <thead>
-          <tr>
-            <th>工作流</th>
-            <th>执行 ID</th>
-            <th>节点</th>
-            <th>截止时间</th>
-            <th></th>
-          </tr>
-        </thead>
-        <tbody id="todo-body"></tbody>
-      </table>
-      <p id="todo-empty" hidden>当前没有待办审批。</p>
-      <p id="list-error" class="error" role="alert"></p>
-    </section>
-
-    <!-- 详情 + 批准/驳回 -->
-    <section id="detail-view" hidden>
-      <div class="bar">
-        <h2 id="detail-title"></h2>
-        <button id="back-to-list" type="button">返回列表</button>
-      </div>
-      <div class="card">
-        <dl id="detail-meta"></dl>
-        <h3>审批说明</h3>
-        <p id="detail-instructions"></p>
-        <h3>决定时间线</h3>
-        <ul id="detail-decisions"></ul>
-        <form id="decision-form">
-          <label>备注(可选,≤2000 字)
-            <textarea id="comment" rows="3"></textarea>
-          </label>
-          <div class="actions">
-            <button id="approve" type="button" class="primary">批准</button>
-            <button id="reject" type="button" class="danger">驳回</button>
-          </div>
-        </form>
-        <p id="detail-error" class="error" role="alert"></p>
-      </div>
-    </section>
-  </main>
+  <div id="root"></div>
 </body>
 </html>

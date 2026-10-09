@@ -7,10 +7,12 @@
 // 断言全部走 UI(浏览器版口径,webjourney Go 面的浏览器回收);失败注入
 // = 审批驳回(确定性,零 mock server);栈 = deploy/e2e-up.sh 四进程。
 //
-// T21.1(D-2026-10-09-ui-console):
+// T21.2(D-2026-10-09-ui-console 决策 6,路由硬切):
 //   - 选择器单一真源 = src/ui/testids.ts(直接 import TID/tid,禁字面量);
-//   - 本 PR 路由仍在 /ui/canvas/(控制台,react-router basename)与 /ui/
-//     (审批台旧三件套,T21.2 才并入),goto 路径不提前切 /workflows;
+//   - 路径:控制台/执行面 = 根路径 `/`(→ /workflows/)与 /executions/;
+//     审批台 = /approvals/——原审批台原生三件套已并入同一 SPA,旧审批台/
+//     画布前缀硬切 404(本文件单独一测钉死,无 302);
+//   - 登录面统一:控制台与审批台共用 login-username/login-password/login-submit;
 //   - 执行 id 从触发 POST 响应回读(TriggerAck.id),不依赖详情头部 DOM;
 //   - SPA 回退(非资源路径 → index.html)在浏览器面单独一测兜底。
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
@@ -43,44 +45,52 @@ async function publishFixture(req: APIRequestContext): Promise<void> {
   expect(published.ok(), 'publish draft').toBeTruthy()
 }
 
-/** 控制台登录(SPA 单一登录面;表单 testid 见 testids.ts)。 */
+/** 控制台/执行面登录(SPA 单一登录面;表单 testid 见 testids.ts)。 */
 async function canvasLogin(page: Page, creds: { username: string; password: string }): Promise<void> {
-  await page.goto('/ui/canvas/')
+  await page.goto('/')
   await page.getByTestId(TID.loginUsername).fill(creds.username)
   await page.getByTestId(TID.loginPassword).fill(creds.password)
   await page.getByTestId(TID.loginSubmit).click()
   await expect(page.getByTestId(TID.navExecutions)).toBeVisible()
 }
 
-/** 审批台登录(/ui/ 旧三件套,T21.2 前形态;选择器属该面自身契约)。 */
-async function consoleLogin(page: Page, creds: { username: string; password: string }): Promise<void> {
-  await page.goto('/ui/')
-  await page.locator('#username').fill(creds.username)
-  await page.locator('#password').fill(creds.password)
-  await page.locator('#login-form button[type=submit]').click()
-  // 空待办时 #todo-body 是 hidden 空表——断列表视图本体。
-  await expect(page.locator('#list-view')).toBeVisible()
+/** 审批台登录(/approvals/,与画布同一 SPA 同一登录面)。 */
+async function approvalLogin(page: Page, creds: { username: string; password: string }): Promise<void> {
+  await page.goto('/approvals/')
+  await page.getByTestId(TID.loginUsername).fill(creds.username)
+  await page.getByTestId(TID.loginPassword).fill(creds.password)
+  await page.getByTestId(TID.loginSubmit).click()
+  await expect(page.getByTestId(TID.approvalQueue)).toBeVisible({ timeout: 15_000 })
 }
 
-/** 审批台决定:回到待办列表(token 已在 sessionStorage)→ 行内「处理」→ 批准/驳回。 */
-async function consoleDecide(
+/** 审批台决定:回待办队列(token 已在 sessionStorage)→ 行 → 详情 → 批准/驳回。
+ *  驳回是行内确认层(会签驳回即判死):approvalReject 单击只布防,「确认驳回」
+ *  才落 POST。决定成功 = 回队列 + approvalFlash(原原生三件套的 alert 已退役)。 */
+async function approvalDecide(
   page: Page,
   nodeId: string,
   execId: string,
   decision: 'approve' | 'reject',
 ): Promise<void> {
-  await page.goto('/ui/')
-  const row = page
-    .locator('#todo-body tr')
-    .filter({ hasText: execId })
-    .filter({ hasText: nodeId })
-  await expect(row.first()).toBeVisible({ timeout: 30_000 })
-  await row.first().locator('button').click()
-  await expect(page.locator('#decision-form')).toBeVisible()
-  await page.locator(decision === 'approve' ? '#approve' : '#reject').click()
-  // 决定成功 = alert + 回待办列表(alert 由 dialog 监听收掉);唯一的待办
-  // 被消化后列表为空(空表 hidden),断视图本体不断表体。
-  await expect(page.locator('#list-view')).toBeVisible({ timeout: 15_000 })
+  await page.goto('/approvals')
+  const row = page.getByTestId(tid.approvalRow(execId, nodeId))
+  await expect(row).toBeVisible({ timeout: 30_000 })
+  await row.click()
+  // 审批面状态同走 data-state 原始 ENUM(详情根 main 带 node_status,与执行面
+  // node 行同语言;不读中文可见文本——T21.1 收尾口径)。
+  const detail = page.getByTestId(TID.approvalDetail)
+  await expect(detail).toBeVisible()
+  await expect(detail).toHaveAttribute('data-state', 'WAITING_APPROVAL')
+  // 决定表单在场 = 可操作(收口节点整块不在 DOM,不是 disabled)。
+  await expect(page.getByTestId(TID.approvalComment)).toBeVisible()
+  if (decision === 'approve') {
+    await page.getByTestId(TID.approvalApprove).click()
+  } else {
+    await page.getByTestId(TID.approvalReject).click()
+    await page.getByRole('button', { name: '确认驳回' }).click()
+  }
+  await expect(page.getByTestId(TID.approvalFlash)).toBeVisible({ timeout: 30_000 })
+  await expect(page.getByTestId(TID.approvalQueue)).toBeVisible()
 }
 
 /** 触发面板提交一次执行,并从 TriggerAck 回读执行 id(幂等键由 UI 生成)。 */
@@ -100,18 +110,34 @@ async function triggerFromConsole(page: Page): Promise<string> {
   return ack.id
 }
 
-// T21.1 Go 面契约的浏览器兑现(决策 6):客户端深链由 index.html 启动
-// (SPA 回退 200 + react-router 接管),资源缺失不被回退吞成 HTML。
-test('SPA 回退:控制台深链直达可启动,资源缺失仍 404', async ({ page, request }) => {
-  // 深链未登录 → 应用启动后由 RequireAuth 收编到登录页(Go 必须 200 而非 404)。
-  for (const deepLink of ['/ui/canvas/executions', '/ui/canvas/workflows']) {
+// T21.2 Go 面契约的浏览器兑现(决策 6):客户端深链由 index.html 启动
+// (SPA 回退 200 + react-router 接管),旧审批台/画布前缀无重定向一律 404,
+// 资源缺失不被回退吞成 HTML。
+test('SPA 回退与硬切:根路径/三条深链直达可启动,旧前缀与资源缺失 404', async ({
+  page,
+  request,
+}) => {
+  // 深链未登录 → 应用启动后由 RequireAuth 收编到登录页(Go 必须 200 而非 404,
+  // 且零 Location 头——FileServer 的 /index.html 301 归一化不得回流到深链)。
+  for (const deepLink of ['/', '/workflows', '/executions', '/approvals']) {
     const res = await page.goto(deepLink)
     expect(res?.status(), `${deepLink} 状态`).toBe(200)
+    expect(res?.headers()['location'], `${deepLink} 不应重定向`).toBeUndefined()
     await expect(page.getByTestId(TID.loginUsername)).toBeVisible()
   }
+  // 路由硬切:旧面不注册任何路由 = 404,不留 302(maxRedirects:0 让任何
+  // 3xx 都落进断言,而非被跟随成 200)。
+  for (const dead of ['/ui', '/ui/', '/ui/canvas/', '/ui/app.js']) {
+    const res = await request.get(dead, { maxRedirects: 0 })
+    expect(res.status(), `${dead} 必须 404`).toBe(404)
+  }
+  // 浏览器面同样不启动 SPA:旧路径 404,不吐 index.html。
+  const deadNav = await page.goto('/ui/')
+  expect(deadNav?.status(), '/ui/ 浏览器导航').toBe(404)
+  await expect(page.getByTestId(TID.loginUsername)).toHaveCount(0)
   // 资源后缀与禁目录列表不回退(noDirListing 契约)。
-  expect((await request.get('/ui/canvas/nope.js')).status()).toBe(404)
-  expect((await request.get('/ui/canvas/assets/')).status()).toBe(404)
+  expect((await request.get('/assets/nope.js')).status()).toBe(404)
+  expect((await request.get('/assets/')).status()).toBe(404)
 })
 
 test('回滚-重跑全旅程:驳回翻活 → 并行实例 → 会签中间态 → 终态 + 审计链', async ({
@@ -127,7 +153,8 @@ test('回滚-重跑全旅程:驳回翻活 → 并行实例 → 会签中间态 �
   const author = await authorCtx.newPage()
   const alice = await aliceCtx.newPage()
   const bob = await bobCtx.newPage()
-  for (const p of [alice, bob]) p.on('dialog', (d) => void d.accept())
+  // 刻意不注册 dialog 监听:新 SPA 的决定确认是应用内行内层,任何原生
+  // dialog 都是契约违反——Playwright 默认自动 dismiss,旅程会在下一步响亮红。
 
   // ① 作者触发(控制台:定义下拉 + 输入 JSON,幂等键由 UI 生成)。
   await canvasLogin(author, AUTHOR)
@@ -142,9 +169,9 @@ test('回滚-重跑全旅程:驳回翻活 → 并行实例 → 会签中间态 �
   await expect(author.getByTestId(tid.nodeRow('gate1', 0))).toHaveAttribute('data-state', 'WAITING_APPROVAL', { timeout: 30_000 })
   await expect(author.getByTestId(tid.approvalEntry('gate1'))).toHaveCount(0)
 
-  // ③ alice 驳回门一 → 执行 FAILED(approval_rejected,fail-fast)。
-  await consoleLogin(alice, ALICE)
-  await consoleDecide(alice, 'gate1', execId, 'reject')
+  // ③ alice 审批台驳回门一 → 执行 FAILED(approval_rejected,fail-fast)。
+  await approvalLogin(alice, ALICE)
+  await approvalDecide(alice, 'gate1', execId, 'reject')
   await expect(author.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'FAILED', { timeout: 30_000 })
   await expect(author.getByTestId(tid.nodeRow('gate1', 0))).toContainText('approval_rejected')
 
@@ -155,17 +182,17 @@ test('回滚-重跑全旅程:驳回翻活 → 并行实例 → 会签中间态 �
   await expect(author.getByTestId(tid.nodeRow('gate1', 0))).toHaveAttribute('data-state', 'WAITING_APPROVAL', { timeout: 30_000 })
 
   // ⑤ alice 二轮批准 → 门二挂起 → bob 驳回(第二次 FAILED)。
-  await consoleDecide(alice, 'gate1', execId, 'approve')
+  await approvalDecide(alice, 'gate1', execId, 'approve')
   await expect(author.getByTestId(tid.nodeRow('gate2', 0))).toHaveAttribute('data-state', 'WAITING_APPROVAL', { timeout: 30_000 })
-  await consoleLogin(bob, BOB)
-  await consoleDecide(bob, 'gate2', execId, 'reject')
+  await approvalLogin(bob, BOB)
+  await approvalDecide(bob, 'gate2', execId, 'reject')
 
   // ⑥ 控制台续跑(无选点,自动定位首个 FAILED)→ 门二重挂起 → bob 批准。
   await expect(author.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'FAILED', { timeout: 30_000 })
   await author.getByTestId(TID.resumeSubmit).click()
   await expect(author.getByTestId(TID.execFlash)).toBeVisible()
   await expect(author.getByTestId(tid.nodeRow('gate2', 0))).toHaveAttribute('data-state', 'WAITING_APPROVAL', { timeout: 30_000 })
-  await consoleDecide(bob, 'gate2', execId, 'approve')
+  await approvalDecide(bob, 'gate2', execId, 'approve')
 
   // ⑦ 并行扇出:file_read 实例行 1..2 各自 SUCCEEDED(t14.2 字段契约渲染)。
   await expect(author.getByTestId(tid.nodeRow('fan', 1))).toHaveAttribute('data-state', 'SUCCEEDED', { timeout: 30_000 })
@@ -182,11 +209,11 @@ test('回滚-重跑全旅程:驳回翻活 → 并行实例 → 会签中间态 �
   await expect(aliceCanvas.getByTestId(tid.approvalEntry('sign'))).toBeVisible({ timeout: 15_000 })
   await expect(aliceCanvas.getByTestId(tid.approvalEntry('sign'))).toContainText('会签')
   await expect(aliceCanvas.getByTestId(TID.pendingApprovers)).toHaveText('alice, bob')
-  await consoleDecide(alice, 'sign', execId, 'approve')
+  await approvalDecide(alice, 'sign', execId, 'approve')
   await expect(aliceCanvas.getByTestId(TID.pendingApprovers)).toHaveText('bob', { timeout: 20_000 })
 
   // ⑨ bob 终票 → 终态 + 输出 + 审计链(reaper flush 后 node 级事件到场)。
-  await consoleDecide(bob, 'sign', execId, 'approve')
+  await approvalDecide(bob, 'sign', execId, 'approve')
   await expect(author.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'SUCCEEDED', { timeout: 30_000 })
   await expect(author.getByTestId(TID.execOutputs)).toContainText('approved')
 

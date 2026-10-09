@@ -54,6 +54,15 @@ export const TID = {
   approvalApprove: 'approval-approve',
   approvalReject: 'approval-reject',
   approvalComment: 'approval-comment',
+  approvalRefresh: 'approval-refresh',
+  approvalEmpty: 'approval-empty',
+  approvalFlash: 'approval-flash',
+  approvalMeta: 'approval-meta',
+  approvalTimeline: 'approval-timeline',
+  approvalInstructions: 'approval-instructions',
+  approvalDeadline: 'approval-deadline',
+  approvalPrev: 'approval-prev',
+  approvalNext: 'approval-next',
 } as const
 
 /** 动态 testid:节点行、草稿项、执行行、调色板按钮。 */
@@ -64,6 +73,8 @@ export const tid = {
   paletteBtn: (type: string) => `palette-${type}`,
   nodeCard: (nodeId: string) => `node-card-${nodeId}`,
   approvalEntry: (nodeId: string) => `approval-${nodeId}`,
+  /** 待办行:执行 × 节点是队列行的天然主键。 */
+  approvalRow: (executionId: string, nodeId: string) => `approval-row-${executionId}-${nodeId}`,
   /** 审计链按事件词计数锚(rolled_back / approval.decided / node.state_changed)。 */
   auditRow: (eventType: string) => `audit-row-${eventType}`,
 } as const

@@ -7,6 +7,20 @@ braid 的护城河不在「有审批、有审计」(2026 年这已是标配),而
 **工具调用的 SSRF/沙箱隔离、append-only 审计链、合规交付形态**(设计依据与竞品对照见
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md))。
 
+## 0. 控制台
+
+一个 SPA、一套设计系统、三块工作区:**工作流**(画布编排)、**执行**(观察与处置)、**审批**(待办与决定)。
+深色仪器盘世界的设计真源见 [DESIGN.md](DESIGN.md);界面语言为中文。
+
+![控制台 · 执行面:执行时间带把「等待审批」画成有长度的斜纹段(资源没被占用,但时间在走)](docs/images/console-executions.png)
+
+![控制台 · 工作流面:画布编排 + 右侧属性面板 + 底部 DSL 预览](docs/images/console-workflows.png)
+
+![控制台 · 审批面:待办队列 + 决定详情;`j/k` 移动、`Enter` 打开、`a` 批准、`r` 驳回、`Esc` 返回](docs/images/console-approvals.png)
+
+截图取自本仓 `deploy/dev-up.sh` 的演示种子数据,由 [.impeccable/shot.mjs](.impeccable/shot.mjs) 生成
+(`node .impeccable/shot.mjs docs/images --readme`)。
+
 ## 1. 架构总览
 
 ### 1.1 引擎主线
@@ -99,8 +113,10 @@ deploy/prod-up.sh
 栈形态:`braid-prod-{api,worker,relay,reaper}` + mysql + redis-queue 六常驻
 (+ migrate / grants 两个 one-shot,迁移完成后退场);组件 DB 账号按
 [deploy/README.md §5](deploy/README.md) 矩阵最小授权。**零宿主端口**:API 与
-Web 面(`/ui/` 审批台、`/ui/canvas/` 控制台)经反代指向 compose 内网 `api:8081`;
-运维面见
+Web 面(`/workflows/` 控制台、`/executions/` 执行面、`/approvals/` 审批台)经反代
+指向 compose 内网 `api:8081`;**界面入口 = 根路径 `/`(重定向 `/workflows/`),
+旧审批台/画布前缀已随路由硬切下线(404,无重定向)**(D-2026-10-09-ui-console
+决策 6);运维面见
 [deploy/RUNBOOK.md](deploy/RUNBOOK.md),升级/改密/dirty 恢复见
 [deploy/UPGRADE.md](deploy/UPGRADE.md)。停栈 =
 `docker compose -f deploy/prod.docker-compose.yml down`(加 `-v` 连卷清场);
@@ -143,7 +159,7 @@ deploy/dev-up.sh
 # 触发一次评审 + 等待落点)。
 # 全程幂等,重跑安全(迁移 no-op / 已建号跳过 / 定义按名判存 / 触发幂等
 # 键命中回显);BRAID_DEV_SEED=0 跳过 seed 只起进程。
-# seed ⑤ 行即落点:WAITING_APPROVAL → 开 /ui/ 用 alice 或 bob 登录批准
+# seed ⑤ 行即落点:WAITING_APPROVAL → 开 /approvals/ 用 alice 或 bob 登录批准
 # (dev 默认口令 dev-author-1 / dev-approver-1;经 BRAID_SEED_*_PASSWORD
 # 覆盖,覆盖后不回显)。触发幂等键含输入摘要:改 seed 内置演示方案文案
 # → 下次重跑触发新执行。跳过 demo seed 独立重跑:`go run ./cmd/braid seed`
@@ -194,8 +210,8 @@ BRAID_CLI_PASSWORD='dev-approver-1' \
 #    每个终端:set -a; source deploy/.env; set +a
 #    (值含 () {} " , : 等——如 DSN、JSON 单价表/白名单——必须整体加单引号,
 #     否则 source 解析中断、后续键静默失效;详见 deploy/.env.example 文件头)
-go run ./cmd/api      # 终端 1:127.0.0.1:8081,REST + Web 面(/ui/ 审批台、
-                      #         /ui/canvas/ 控制台)+ /healthz + /metrics
+go run ./cmd/api      # 终端 1:127.0.0.1:8081,REST + Web 面(/workflows/ 控制台、
+                      #         /executions/ 执行面、/approvals/ 审批台)+ /healthz + /metrics
 go run ./cmd/relay    # 终端 2:outbox → Asynq 投递
 go run ./cmd/worker   # 终端 3:节点执行(连 LLM 端点)
 go run ./cmd/reaper   # 终端 4(必启):审计搬运 + 判死重派 + 审批超时扫描
@@ -226,9 +242,9 @@ curl -s -X POST $API/executions -H "Authorization: Bearer $TOKEN" \
        "input":{"doc_path":"<仓库绝对路径>/docs/examples/sample-doc.txt"}}'
 EXEC=<响应的 id 字段>
 
-# ④ 浏览器开 http://127.0.0.1:8081/ui/(bob 登录 → 待办 → 详情 → 批准);
-#    控制台 http://127.0.0.1:8081/ui/canvas/ 是同一套登录:工作流编辑/发布、
-#    触发执行、执行详情(节点时间带)、回滚/续跑/取消、审计链;
+# ④ 浏览器开 http://127.0.0.1:8081/approvals/(bob 登录 → 待办 → 详情 → 批准,
+#    与下面 API 面同源);控制台 http://127.0.0.1:8081/workflows/ 是同一套登录:
+#    工作流编辑/发布、触发执行、执行详情(节点时间带)、回滚/续跑/取消、审计链;
 #    或页面同源 API(bob 的 token:重复 ①,用户名 bob / 密码 dev-approver-1):
 curl -s -X POST $API/executions/$EXEC/approvals/human_review/decision \
   -H "Authorization: Bearer <bob 的 token>" \
@@ -277,8 +293,8 @@ curl -s -X POST $API/executions -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d '{
     "definition_name": "agent-council",
     "input": {"proposal": "<待评审的技术方案文本,数百字>"} }'
-# 挂起 WAITING_APPROVAL 后在 /ui/ 审批(控制台 /ui/canvas/ 同源可见该执行的
-# 节点时间带与审计链);批准 → 按仲裁结论出 decision_report 或 revision_plan
+# 挂起 WAITING_APPROVAL 后在 /approvals/ 审批(/workflows/ 控制台与 /executions/
+# 执行详情同源可见该执行的节点时间带与审计链);批准 → 按仲裁结论出 decision_report 或 revision_plan
 ```
 
 **真模型(思考型)注意事项**——桩测试发现不了,真 key 首跑即踩(2026-09-28 智谱
