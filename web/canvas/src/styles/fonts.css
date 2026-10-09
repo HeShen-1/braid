@@ -1,0 +1,19 @@
+/* 自托管字体（OFL 1.1，见同目录 OFL.txt）——CSP 只允许同源字体，
+   杜绝任何 CDN。拉丁/数字面用 Geist 可变字体；CJK 不在字体文件里，
+   由字体栈自动回落到系统中文面（PingFang SC / 微软雅黑 / Noto Sans CJK）。 */
+
+@font-face {
+  font-family: 'Geist';
+  src: url('../fonts/Geist[wght].woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Geist Mono';
+  src: url('../fonts/GeistMono[wght].woff2') format('woff2');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
