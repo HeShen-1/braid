@@ -1,7 +1,7 @@
 // 截图核验脚本(设计过程产物,不入库)。用法:
 //   node .impeccable/shot.mjs <out-dir> [--before]
 // 依赖 web/canvas/node_modules 里的 playwright。
-import { chromium } from '/home/river/work/Golang/braid/web/canvas/node_modules/playwright-core/index.mjs'
+import { chromium } from '../web/canvas/node_modules/playwright-core/index.mjs'
 import { mkdir } from 'node:fs/promises'
 import path from 'node:path'
 
@@ -77,16 +77,31 @@ if ((await firstRow.count()) > 0) {
   await shot(page, 'desktop-back-to-workflows')
 }
 
-// 窄窗(只验不横向溢出)
+// 窄窗(只验不横向溢出)——先回执行面并选中执行,让时间带在同宽度下真的渲染
 await page.setViewportSize({ width: 1180, height: 900 })
+await page.getByTestId('nav-executions').click()
+await page.waitForTimeout(1200)
+const narrowRow = page.locator('[data-testid^="exec-row-"]').first()
+if ((await narrowRow.count()) > 0) {
+  await narrowRow.click()
+  await page.waitForTimeout(1200)
+}
 await shot(page, 'narrow-executions')
 await page.getByTestId('nav-workflows').click()
 await page.waitForTimeout(900)
 await shot(page, 'narrow-workflows')
 
-// 审批台(T21.2 前仍是原生页)
+// 审批台(T21.2 前仍是原生页,只作对照)
 const p2 = await ctx.newPage()
 await p2.goto(APPROVAL, { waitUntil: 'networkidle' })
 await shot(p2, 'desktop-approval')
+await p2.close()
+
+// 重做后的登录面(独立上下文,不带 session)
+const fresh = await browser.newContext({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 2 })
+const p3 = await fresh.newPage()
+await p3.goto(CANVAS, { waitUntil: 'networkidle' })
+await shot(p3, 'desktop-login')
+await fresh.close()
 
 await browser.close()

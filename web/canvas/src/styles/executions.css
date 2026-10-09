@@ -50,6 +50,46 @@
   min-width: 0;
 }
 
+/* ---------- 执行列表:筛选栏 / 翻页 ----------
+   筛选走服务端(既有 status/name/limit/offset 参数);控件用平台标准件,
+   标签在上、控件在下(与控制台纵向扫读一致)。 */
+
+.exec-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 0.5rem 0.6rem;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--color-line-0);
+}
+
+.exec-filters > .field {
+  flex: 1 1 8rem;
+  min-width: 0;
+}
+
+/* 行首微标签与输入框文字同一水平线(end 对齐会把标签压到控件底边) */
+.exec-filters > .micro {
+  padding-bottom: 0.4rem;
+}
+
+.exec-filters > .btn {
+  margin-bottom: 0.1rem;
+}
+
+.exec-pager {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  border-top: 1px solid var(--color-line-0);
+  font-size: var(--text-xs);
+}
+
+.exec-pager > .num {
+  margin-right: auto;
+}
+
 /* ---------- 详情:纵向分层,超长内容滚动而不是被压扁 ---------- */
 
 .exec-detail {

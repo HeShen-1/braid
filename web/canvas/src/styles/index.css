@@ -17,16 +17,23 @@
   --color-ground-3: #1e2a37; /* 悬停 */
   --color-ground-4: #273543; /* 选中、按下 */
 
-  /* ---- 发丝线 ---- */
+  /* ---- 发丝线 ----
+     line-2 是交互控件描边与 DAG 连线的唯一来源;对比度按 WCAG 非文本
+     图形 ≥3:1 定档(收尾评审:旧值 #37485a 在 ground-0 上仅 2.06:1,
+     而连线是读懂 DAG 结构的必要图形)。 */
   --color-line-0: #1b2530; /* 结构分割 */
   --color-line-1: #26333f; /* 可见分隔 */
-  --color-line-2: #37485a; /* 交互控件描边 */
+  --color-line-2: #556a7e; /* 交互控件描边、连线:ground-0 上 3.46:1 */
 
-  /* ---- 墨色 ---- */
+  /* ---- 墨色 ----
+     每一档都按它真正落地的地面定档,不留"看起来更安静"的欠对比档:
+     ink-2 最亮落在 ground-2(表头)/ground-3(悬停行)上 → 5.5:1 / 4.9:1;
+     ink-3 最亮落在 ground-2(输入框占位符)上 → 4.5:1。
+     禁用态仍用 ink-3 的视觉位置,靠背景与 cursor 区分。 */
   --color-ink-0: #e8eff6; /* 主文本 */
   --color-ink-1: #a7b7c6; /* 次文本 */
-  --color-ink-2: #74869a; /* 三级：单位、时间戳 */
-  --color-ink-3: #4e5f70; /* 禁用 */
+  --color-ink-2: #8497ab; /* 三级:表头、微标签、提示 */
+  --color-ink-3: #76889b; /* 四级:占位符、时间戳、待填 */
 
   /* ---- 状态语义（色相 + 形状双编码） ---- */
   --color-sig-idle: #3a4a5a; /* 未开始 */
@@ -233,15 +240,6 @@
 
   .panel-body {
     padding: 1rem;
-  }
-
-  .floating {
-    background: var(--color-ground-1);
-    border: 1px solid var(--color-line-1);
-    border-radius: var(--radius-panel);
-    box-shadow:
-      0 18px 44px -16px rgb(0 0 0 / 0.75),
-      0 2px 8px -4px rgb(0 0 0 / 0.6);
   }
 
   /* ---------- 按钮 ---------- */
@@ -764,14 +762,6 @@
   }
 
   /* 重试 / 尝试分段的细缝 */
-  .ribbon-gap {
-    position: absolute;
-    top: 0.15rem;
-    bottom: 0.15rem;
-    width: 2px;
-    background: var(--color-ground-0);
-  }
-
   .ribbon-now {
     position: absolute;
     top: 0;
@@ -788,45 +778,6 @@
     color: var(--color-ink-2);
     font-size: var(--text-micro);
     font-variant-numeric: tabular-nums;
-  }
-
-  /* 状态迁移的签名瞬间：一次扫描线掠过，一次性、不铺满全屏 */
-  .scanline::after {
-    content: '';
-    position: absolute;
-    inset: 0;
-    background: linear-gradient(
-      90deg,
-      transparent,
-      color-mix(in oklab, var(--color-ink-0) 55%, transparent),
-      transparent
-    );
-    animation: braid-scan 520ms var(--ease-out-expo) 1 both;
-    pointer-events: none;
-  }
-
-  @keyframes braid-scan {
-    from {
-      transform: translateX(-100%);
-    }
-    to {
-      transform: translateX(100%);
-    }
-  }
-
-  /* 新审批到达：琥珀脉冲一次 */
-  .pulse-wait {
-    animation: braid-pulse-wait 900ms var(--ease-out-expo) 2;
-  }
-
-  @keyframes braid-pulse-wait {
-    0%,
-    100% {
-      box-shadow: 0 0 0 0 color-mix(in oklab, var(--color-sig-wait) 0%, transparent);
-    }
-    40% {
-      box-shadow: 0 0 0 3px color-mix(in oklab, var(--color-sig-wait) 28%, transparent);
-    }
   }
 
   /* ---------- 时间轴工具条 ---------- */
