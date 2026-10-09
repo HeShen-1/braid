@@ -843,86 +843,117 @@
     background: var(--color-ground-0);
   }
 
-  /* ---------- xyflow 主题化 ---------- */
-
-  .react-flow {
-    --xy-background-color: var(--color-ground-0);
-    --xy-edge-stroke: var(--color-line-2);
-    --xy-edge-stroke-selected: var(--color-accent);
-    --xy-connectionline-stroke: var(--color-accent);
-    --xy-attribution-background-color: transparent;
-  }
-
-  .react-flow__attribution {
-    display: none;
-  }
-
-  .react-flow__edge-path {
-    stroke-width: 1.5;
-  }
-
-  .react-flow__edge.selected .react-flow__edge-path,
-  .react-flow__edge:focus .react-flow__edge-path {
-    stroke: var(--color-accent);
-    stroke-width: 2;
-  }
-
-  .react-flow__handle {
-    width: 9px;
-    height: 9px;
-    background: var(--color-ground-2);
-    border: 1.5px solid var(--color-line-2);
-    transition:
-      background-color 120ms var(--ease-in-out-quiet),
-      border-color 120ms var(--ease-in-out-quiet);
-  }
-
-  .react-flow__handle:hover,
-  .react-flow__handle.connecting,
-  .react-flow__handle.valid {
-    background: var(--color-accent);
-    border-color: var(--color-accent);
-  }
-
-  .react-flow__controls {
-    box-shadow: none;
-    border: 1px solid var(--color-line-1);
-    border-radius: var(--radius-control);
-    overflow: hidden;
-  }
-
-  .react-flow__controls-button {
-    width: 26px;
-    height: 26px;
-    background: var(--color-ground-1);
-    border-bottom: 1px solid var(--color-line-0);
-    color: var(--color-ink-1);
-    fill: currentcolor;
-  }
-
-  .react-flow__controls-button:hover {
-    background: var(--color-ground-3);
-    color: var(--color-ink-0);
-  }
-
-  .react-flow__minimap {
-    background: var(--color-ground-1);
-    border: 1px solid var(--color-line-1);
-    border-radius: var(--radius-control);
-  }
-
-  .react-flow__minimap-mask {
-    fill: color-mix(in oklab, var(--color-ground-0) 72%, transparent);
-  }
-
-  .react-flow__node {
-    font-family: var(--font-sans);
-  }
-
-  .react-flow__node.selectable:focus,
-  .react-flow__node.selectable:focus-visible {
-    outline: 2px solid color-mix(in oklab, var(--color-accent) 80%, transparent);
-    outline-offset: 2px;
-    border-radius: var(--radius-panel);
-  }
+  /* xyflow 主题化见文件末尾的**无层**小节(层内会被 xyflow 自带无层
+     样式吃掉,不能放这里)。 */
 }
+
+/* ============================================================
+   xyflow 主题化(故意留在 @layer 之外)
+
+   xyflow 自带的 dist/style.css 是**无层**样式,而无层规则在层叠里
+   压过任何 @layer —— 写在 @layer components 里的同名属性会被它直接
+   吃掉(实测:缩略图仍是 #fff、控件仍是浅色)。所以这一节必须无层,
+   且 index.css 在 main.tsx 里晚于 xyflow 的样式表导入,同权重下按
+   源序取胜。变量优先(xyflow 的官方主题接口),直接属性只补齐它没
+   暴露成变量的部分。
+   ============================================================ */
+
+.react-flow {
+  --xy-background-color: var(--color-ground-0);
+  --xy-edge-stroke: var(--color-line-2);
+  --xy-edge-stroke-selected: var(--color-accent);
+  --xy-connectionline-stroke: var(--color-accent);
+  --xy-attribution-background-color: transparent;
+  --xy-handle-background-color: var(--color-ground-2);
+  --xy-handle-border-color: var(--color-line-2);
+  --xy-node-boxshadow-hover: none;
+  --xy-node-boxshadow-selected: none;
+  /* 缩略图:未主题化时是纯白块,深色面上最刺眼的一处 */
+  --xy-minimap-background-color: var(--color-ground-1);
+  --xy-minimap-mask-background-color: color-mix(in oklab, var(--color-ground-0) 74%, transparent);
+  --xy-minimap-node-background-color: var(--color-line-2);
+  /* 控件条 */
+  --xy-controls-button-background-color: var(--color-ground-1);
+  --xy-controls-button-background-color-hover: var(--color-ground-3);
+  --xy-controls-button-color: var(--color-ink-1);
+  --xy-controls-button-color-hover: var(--color-ink-0);
+  --xy-controls-button-border-color: var(--color-line-0);
+  --xy-controls-box-shadow: none;
+  /* 框选 */
+  --xy-selection-background-color: color-mix(in oklab, var(--color-accent) 14%, transparent);
+  --xy-selection-border: 1px dashed var(--color-accent);
+  font-family: var(--font-sans);
+}
+
+.react-flow__attribution {
+  display: none;
+}
+
+.react-flow__edge-path {
+  stroke-width: 1.5;
+}
+
+.react-flow__edge.selected .react-flow__edge-path,
+.react-flow__edge:focus .react-flow__edge-path {
+  stroke: var(--color-accent);
+  stroke-width: 2;
+}
+
+.react-flow__handle {
+  width: 9px;
+  height: 9px;
+  background: var(--color-ground-2);
+  border: 1.5px solid var(--color-line-2);
+  transition:
+    background-color 120ms var(--ease-in-out-quiet),
+    border-color 120ms var(--ease-in-out-quiet);
+}
+
+.react-flow__handle:hover,
+.react-flow__handle.connecting,
+.react-flow__handle.valid {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+.react-flow__controls {
+  box-shadow: none;
+  border: 1px solid var(--color-line-1);
+  border-radius: var(--radius-control);
+  overflow: hidden;
+}
+
+.react-flow__controls-button {
+  width: 26px;
+  height: 26px;
+  background: var(--color-ground-1);
+  border-bottom: 1px solid var(--color-line-0);
+  color: var(--color-ink-1);
+  fill: currentcolor;
+}
+
+.react-flow__controls-button:hover {
+  background: var(--color-ground-3);
+  color: var(--color-ink-0);
+}
+
+.react-flow__controls-button svg {
+  fill: currentcolor;
+  max-width: 12px;
+  max-height: 12px;
+}
+
+.react-flow__minimap {
+  background: var(--color-ground-1);
+  border: 1px solid var(--color-line-1);
+  border-radius: var(--radius-control);
+}
+
+.react-flow__minimap-mask {
+  fill: color-mix(in oklab, var(--color-ground-0) 74%, transparent);
+}
+
+.react-flow__node {
+  font-family: var(--font-sans);
+}
+

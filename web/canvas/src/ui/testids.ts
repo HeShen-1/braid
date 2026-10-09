@@ -43,6 +43,10 @@ export const TID = {
   resumeSubmit: 'resume-submit',
   cancelSubmit: 'cancel-submit',
   auditList: 'audit-list',
+  /** 会签中间态:待决审批人名单(e2e 旅程核心断言)。 */
+  pendingApprovers: 'pending-approvers',
+  /** 执行终态输出快照。 */
+  execOutputs: 'exec-outputs',
 
   // 审批面(T21.2)
   approvalQueue: 'approval-queue',
@@ -60,4 +64,6 @@ export const tid = {
   paletteBtn: (type: string) => `palette-${type}`,
   nodeCard: (nodeId: string) => `node-card-${nodeId}`,
   approvalEntry: (nodeId: string) => `approval-${nodeId}`,
+  /** 审计链按事件词计数锚(rolled_back / approval.decided / node.state_changed)。 */
+  auditRow: (eventType: string) => `audit-row-${eventType}`,
 } as const

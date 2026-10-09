@@ -1,61 +1,141 @@
 // 面板字段组件:受控小件,值回写一律走 immutable patch(上层 updateSpec)。
+// 布局纪律 = 控制台的纵向扫读:标签永远在控件上方(ui/field 原语负责
+// htmlFor 绑定与 aria-invalid),错误紧贴控件下方且优先于 hint 出现。
+// 多控件行用 Group —— 它不是 <label>,不会把可及名错误地绑到行内第一个控件。
 import type { ReactNode } from 'react'
+import { Plus, X } from 'lucide-react'
+import { Select, TextArea, TextInput } from './ui/field.tsx'
+import { Button } from './ui/primitives.tsx'
 
-export function Row({ label, children }: { label: string; children: ReactNode }) {
+/** 字段分组标题(多控件行 / 数组行组):视觉上是 field-label,语义上不是 label。 */
+export function Group({ label, hint, children }: { label: ReactNode; hint?: ReactNode; children: ReactNode }) {
   return (
-    <label className="f-row">
-      <span className="f-label">{label}</span>
-      <span className="f-input">{children}</span>
-    </label>
+    <div className="field">
+      <span className="field-label">{label}</span>
+      {children}
+      {hint !== undefined && hint !== '' ? <p className="field-hint">{hint}</p> : null}
+    </div>
+  )
+}
+
+/** 面板分节:发丝线分隔,微标签做节标题(层级只靠亮度与线,不靠盒子)。 */
+export function Section({ title, hint, children }: { title: string; hint?: string; children: ReactNode }) {
+  return (
+    <section className="panel-section">
+      <header className="panel-section-head">
+        <h3 className="micro">{title}</h3>
+        {hint !== undefined ? <span className="text-micro text-ink-3">{hint}</span> : null}
+      </header>
+      {children}
+    </section>
   )
 }
 
 export function TextField({
+  label,
+  hint,
+  error,
   value,
   onChange,
   placeholder,
+  readOnly,
+  ariaLabel,
+  className,
 }: {
+  label?: ReactNode
+  hint?: ReactNode
+  error?: ReactNode
   value: string
   onChange: (v: string) => void
   placeholder?: string
+  readOnly?: boolean
+  /** 无可见标签时给可及名(数组行的键/值列)。 */
+  ariaLabel?: string
+  className?: string
 }) {
-  return <input className="f-text" type="text" value={value} placeholder={placeholder} onChange={(e) => onChange(e.target.value)} />
+  return (
+    <TextInput
+      label={label}
+      hint={hint}
+      error={error}
+      className={className}
+      type="text"
+      value={value}
+      placeholder={placeholder}
+      readOnly={readOnly}
+      aria-label={ariaLabel}
+      onChange={(e) => onChange(e.target.value)}
+    />
+  )
 }
 
+/** 数值字段:min/max 是 schema 边界的镜像(与 BRANCH_OPS 同性质),越界就地报错。 */
 export function NumField({
+  label,
+  hint,
   value,
   onChange,
   step = 1,
+  min,
+  max,
 }: {
+  label?: ReactNode
+  hint?: ReactNode
   value: number | undefined
   onChange: (v: number | undefined) => void
   step?: number
+  min?: number
+  max?: number
 }) {
+  const outOfRange =
+    value !== undefined && ((min !== undefined && value < min) || (max !== undefined && value > max))
   return (
-    <input
-      className="f-text"
+    <TextInput
+      label={label}
+      hint={hint}
+      error={outOfRange ? `超出 schema 允许范围（${min ?? '−∞'}–${max ?? '∞'}）` : undefined}
+      className="num"
       type="number"
       step={step}
+      min={min}
+      max={max}
       value={value ?? ''}
-      onChange={(e) => onChange(e.target.value === '' ? undefined : Number(e.target.value))}
+      onChange={(e) => {
+        if (e.target.value === '') {
+          onChange(undefined)
+          return
+        }
+        const n = Number(e.target.value)
+        // 输入中途(如 "1e")会得到 NaN:NaN 会被 JSON.stringify 编成 null
+        // 违 schema,按"未填"处理比留一个非法中间值干净。
+        onChange(Number.isNaN(n) ? undefined : n)
+      }}
     />
   )
 }
 
 export function AreaField({
+  label,
+  hint,
+  error,
   value,
   onChange,
   rows = 3,
   placeholder,
 }: {
+  label?: ReactNode
+  hint?: ReactNode
+  error?: ReactNode
   value: string
   onChange: (v: string) => void
   rows?: number
   placeholder?: string
 }) {
   return (
-    <textarea
-      className="f-area"
+    <TextArea
+      label={label}
+      hint={hint}
+      error={error}
       rows={rows}
       value={value}
       placeholder={placeholder}
@@ -65,22 +145,38 @@ export function AreaField({
 }
 
 export function SelectField({
+  label,
+  hint,
+  error,
   value,
   onChange,
   options,
+  ariaLabel,
 }: {
+  label?: ReactNode
+  hint?: ReactNode
+  error?: ReactNode
   value: string
   onChange: (v: string) => void
   options: { value: string; label: string; disabled?: boolean }[]
+  /** 无可见标签时给可及名(数组行内的运算符列)。 */
+  ariaLabel?: string
 }) {
   return (
-    <select className="f-select" value={value} onChange={(e) => onChange(e.target.value)}>
+    <Select
+      label={label}
+      hint={hint}
+      error={error}
+      value={value}
+      aria-label={ariaLabel}
+      onChange={(e) => onChange(e.target.value)}
+    >
       {options.map((o) => (
         <option key={o.value} value={o.value} disabled={o.disabled}>
           {o.label}
         </option>
       ))}
-    </select>
+    </Select>
   )
 }
 
@@ -127,47 +223,48 @@ export function KVRows({
     onChange(next)
   }
   return (
-    <div className="f-kv">
+    <div className="flex flex-col gap-1.5">
       {entries.map(([k, v], i) => (
-        <div className="f-kv-row" key={i}>
-          <input
-            className="f-text"
-            type="text"
-            aria-label={`${keyLabel} ${i + 1}`}
+        <div className="flex items-center gap-1.5" key={i}>
+          <span className="num w-3 shrink-0 text-right text-micro text-ink-3">{i + 1}</span>
+          <TextField
+            className="min-w-0 flex-1"
+            ariaLabel={`${keyLabel} ${i + 1}`}
             value={k}
-            onChange={(e) => set(i, e.target.value, v)}
+            onChange={(nv) => set(i, nv, v)}
           />
-          <input
-            className="f-text"
-            type="text"
-            aria-label={`${valLabel} ${i + 1}`}
+          <TextField
+            className="min-w-0 flex-1"
+            ariaLabel={`${valLabel} ${i + 1}`}
             value={v}
-            onChange={(e) => set(i, k, e.target.value)}
+            onChange={(nv) => set(i, k, nv)}
           />
-          <button
-            type="button"
-            className="f-x"
+          <Button
+            size="sm"
+            variant="quiet"
+            iconOnly
+            icon={X}
             aria-label={`删除 ${keyLabel} ${i + 1}`}
             onClick={() => {
               const next = { ...rows }
               delete next[k]
               onChange(next)
             }}
-          >
-            ×
-          </button>
+          />
         </div>
       ))}
       {/* 空键行在场时 no-op:spread 覆写会清掉该行已输入的值(对抗审查)。 */}
-      <button
-        type="button"
-        className="f-add"
+      <Button
+        size="sm"
+        variant="quiet"
+        icon={Plus}
+        className="self-start"
         onClick={() => {
           if (!('' in rows)) onChange({ ...rows, '': '' })
         }}
       >
-        + 添加
-      </button>
+        添加
+      </Button>
     </div>
   )
 }
@@ -190,23 +287,24 @@ export function ListRows<T>({
     onChange(items.map((it, j) => (j === i ? { ...it, ...p } : it)))
   }
   return (
-    <div className="f-kv">
+    <div className="flex flex-col gap-2">
       {items.map((item, i) => (
-        <div className="f-list-row" key={i}>
-          {renderRow(item, (p) => patchAt(i, p), i)}
-          <button
-            type="button"
-            className="f-x"
+        <div className="flex items-start gap-1.5" key={i}>
+          <span className="num mt-1.5 w-3 shrink-0 text-right text-micro text-ink-3">{i + 1}</span>
+          <div className="flex min-w-0 flex-1 flex-col gap-1.5">{renderRow(item, (p) => patchAt(i, p), i)}</div>
+          <Button
+            size="sm"
+            variant="quiet"
+            iconOnly
+            icon={X}
             aria-label={`删除 ${rowLabel} ${i + 1}`}
             onClick={() => onChange(items.filter((_, j) => j !== i))}
-          >
-            ×
-          </button>
+          />
         </div>
       ))}
-      <button type="button" className="f-add" onClick={() => onChange([...items, make()])}>
-        + 添加
-      </button>
+      <Button size="sm" variant="quiet" icon={Plus} className="self-start" onClick={() => onChange([...items, make()])}>
+        添加
+      </Button>
     </div>
   )
 }

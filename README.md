@@ -21,7 +21,7 @@ flowchart TB
     U["author<br/>POST /api/v1/executions"] --> API
 
     subgraph processes["四个常驻进程(host 或容器)"]
-        API["api<br/>REST + Web 审批页"]
+        API["api<br/>REST + Web 面(审批台/控制台)"]
         RELAY["relay<br/>轮询投递"]
         WORKER["worker<br/>Asynq 消费者"]
         REAPER["reaper<br/>对账兜底(必启)"]
@@ -99,7 +99,8 @@ deploy/prod-up.sh
 栈形态:`braid-prod-{api,worker,relay,reaper}` + mysql + redis-queue 六常驻
 (+ migrate / grants 两个 one-shot,迁移完成后退场);组件 DB 账号按
 [deploy/README.md §5](deploy/README.md) 矩阵最小授权。**零宿主端口**:API 与
-Web 审批页(`/ui/`)经反代指向 compose 内网 `api:8081`;运维面见
+Web 面(`/ui/` 审批台、`/ui/canvas/` 控制台)经反代指向 compose 内网 `api:8081`;
+运维面见
 [deploy/RUNBOOK.md](deploy/RUNBOOK.md),升级/改密/dirty 恢复见
 [deploy/UPGRADE.md](deploy/UPGRADE.md)。停栈 =
 `docker compose -f deploy/prod.docker-compose.yml down`(加 `-v` 连卷清场);
@@ -193,7 +194,8 @@ BRAID_CLI_PASSWORD='dev-approver-1' \
 #    每个终端:set -a; source deploy/.env; set +a
 #    (值含 () {} " , : 等——如 DSN、JSON 单价表/白名单——必须整体加单引号,
 #     否则 source 解析中断、后续键静默失效;详见 deploy/.env.example 文件头)
-go run ./cmd/api      # 终端 1:127.0.0.1:8081,REST + Web 审批页(/ui/)+ /healthz + /metrics
+go run ./cmd/api      # 终端 1:127.0.0.1:8081,REST + Web 面(/ui/ 审批台、
+                      #         /ui/canvas/ 控制台)+ /healthz + /metrics
 go run ./cmd/relay    # 终端 2:outbox → Asynq 投递
 go run ./cmd/worker   # 终端 3:节点执行(连 LLM 端点)
 go run ./cmd/reaper   # 终端 4(必启):审计搬运 + 判死重派 + 审批超时扫描
@@ -225,6 +227,8 @@ curl -s -X POST $API/executions -H "Authorization: Bearer $TOKEN" \
 EXEC=<响应的 id 字段>
 
 # ④ 浏览器开 http://127.0.0.1:8081/ui/(bob 登录 → 待办 → 详情 → 批准);
+#    控制台 http://127.0.0.1:8081/ui/canvas/ 是同一套登录:工作流编辑/发布、
+#    触发执行、执行详情(节点时间带)、回滚/续跑/取消、审计链;
 #    或页面同源 API(bob 的 token:重复 ①,用户名 bob / 密码 dev-approver-1):
 curl -s -X POST $API/executions/$EXEC/approvals/human_review/decision \
   -H "Authorization: Bearer <bob 的 token>" \
@@ -273,7 +277,8 @@ curl -s -X POST $API/executions -H "Authorization: Bearer $TOKEN" \
   -H "Content-Type: application/json" -d '{
     "definition_name": "agent-council",
     "input": {"proposal": "<待评审的技术方案文本,数百字>"} }'
-# 挂起 WAITING_APPROVAL 后在 /ui/ 审批;批准 → 按仲裁结论出 decision_report 或 revision_plan
+# 挂起 WAITING_APPROVAL 后在 /ui/ 审批(控制台 /ui/canvas/ 同源可见该执行的
+# 节点时间带与审计链);批准 → 按仲裁结论出 decision_report 或 revision_plan
 ```
 
 **真模型(思考型)注意事项**——桩测试发现不了,真 key 首跑即踩(2026-09-28 智谱
@@ -321,7 +326,7 @@ skip,CI 侧以 `BRAID_TEST_REQUIRE_STACK=1` 升级为硬失败防假绿。任务
 | 全量测试 | `go test ./...` | 集成面 = CI services 真跑;本地无栈自动 skip(`BRAID_TEST_MYSQL_DSN` / `BRAID_TEST_REDIS_ADDR` 可指自备栈) |
 | 静态检查三件套 | `go vet ./... && golangci-lint run` | golangci-lint |
 | 沙箱 e2e(真 docker 全链路,镜像测试内自建) | `go test ./internal/tools/ -run TestSandboxE2E` | Docker |
-| 浏览器 e2e(回滚-重跑旅程) | `deploy/e2e-up.sh` → `BRAID_E2E_BASE_URL=http://127.0.0.1:18081 npm --prefix web/canvas run test:e2e` → `deploy/e2e-down.sh` | Docker;首次 `npx --prefix web/canvas playwright install chromium` |
+| 浏览器 e2e(回滚-重跑旅程 + SPA 回退) | `deploy/e2e-up.sh` → `BRAID_E2E_BASE_URL=http://127.0.0.1:18081 npm --prefix web/canvas run test:e2e` → `deploy/e2e-down.sh` | Docker;首次 `npx --prefix web/canvas playwright install chromium` |
 | 多副本故障演练(五臂注入) | `BRAID_TEST_REQUIRE_DRILL=1 go test ./internal/drill/ -run TestMultiReplicaDrill` | Docker(显式 opt-in,不进 CI 常规回归) |
 | 告警规则校验 | `promtool check rules deploy/prometheus/alerts.yml && promtool test rules deploy/prometheus/alerts_test.yml` | promtool |
 | 前端测试 / 构建 | `npm --prefix web/canvas test` / `npm --prefix web/canvas run build` | Node(首次 `npm --prefix web/canvas ci`) |

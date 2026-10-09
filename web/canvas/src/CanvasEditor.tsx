@@ -1,10 +1,14 @@
 // 画布编辑器:DSL → React Flow 双向接线。
+// 结构 = 顶栏(身份 / flash 状态文案 / 动作)+ 三栏(工具条 · 画布 · 属性
+// 面板)+ 底部 DSL 预览抽屉;画布、面板与预览读的是同一份派生文档。
 // 状态面:base(文档级字段,工作流面板可改)+ RF 节点/边(spec 引用即
 // 文档节点,透传契约见 model/convert)+ viewport(onMoveEnd 采集)。
-// 导出 = fromCanvas 随时可算(纯派生),任务 6 接 PUT/publish。
-import { useCallback, useMemo, useState } from 'react'
+// 导出 = fromCanvas 随时可算(纯派生);每次变更经 onDocChange 上报壳层,
+// 切路由不丢未保存的编辑。
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
+  BackgroundVariant,
   Controls,
   MiniMap,
   ReactFlow,
@@ -17,6 +21,7 @@ import {
   type NodeTypes,
   type Viewport,
 } from '@xyflow/react'
+import { ChevronRight, Info, MousePointerClick, Rocket, Save, Settings2, Workflow } from 'lucide-react'
 import { clampViewport, fromCanvas, nextNodeId, serializeDoc, toCanvas } from './model/convert.ts'
 import type { FlowNode, FlowEdge } from './model/convert.ts'
 import type { DslNode, NodeType, WorkflowDoc } from './model/dsl.ts'
@@ -25,17 +30,24 @@ import { Palette } from './Palette.tsx'
 import { NodePanel } from './NodePanel.tsx'
 import { WorkflowPanel } from './WorkflowPanel.tsx'
 import { defaultSpec } from './defaults.ts'
+import { Button, EmptyState } from './ui/primitives.tsx'
+import { I } from './ui/I.tsx'
+import { TID } from './ui/testids.ts'
 
 const flowNodeTypes = nodeTypes as unknown as NodeTypes
 
 function Editor({
   initialDoc,
   draftId,
+  flash,
+  onDocChange,
   onSave,
   onPublish,
 }: {
   initialDoc: WorkflowDoc
   draftId: string | null
+  flash?: string
+  onDocChange?: (doc: WorkflowDoc) => void
   onSave?: (doc: WorkflowDoc) => void | Promise<void>
   onPublish?: () => void | Promise<void>
 }) {
@@ -82,6 +94,18 @@ function Editor({
 
   const doc = useMemo(() => fromCanvas({ nodes, edges, viewport }, base), [nodes, edges, viewport, base])
   const selected = nodes.find((n) => n.id === selectedId)
+
+  // 文档变更上报:挂载那一次不算变更(壳层打开草稿时已持有同一份文档),
+  // 之后每次编辑都上报 —— 壳层据此在切路由/切执行面时保住未保存的编辑。
+  const reportedRef = useRef(doc)
+  const onDocChangeRef = useRef(onDocChange)
+  onDocChangeRef.current = onDocChange
+  useEffect(() => {
+    if (reportedRef.current === doc) return
+    reportedRef.current = doc
+    onDocChangeRef.current?.(doc)
+  }, [doc])
+
   const [busy, setBusy] = useState(false)
   const run = useCallback(
     (fn: () => Promise<void> | void) => async () => {
@@ -95,35 +119,56 @@ function Editor({
     [],
   )
 
+  const toggleWorkflow = useCallback(() => {
+    setShowWorkflowPanel((v) => !v)
+    setSelectedId(null)
+  }, [])
+
   return (
-    <div className="editor">
-      <div className="editor-bar">
-        <Palette onAdd={addNode} />
-        <button
-          type="button"
-          className="palette-btn"
-          data-testid="toggle-workflow"
-          onClick={() => {
-            setShowWorkflowPanel((v) => !v)
-            setSelectedId(null)
-          }}
-        >
-          工作流设置
-        </button>
-        <span className="bar-spacer" />
-        {onSave !== undefined ? (
-          <button type="button" className="palette-btn primary" data-testid="save-draft" disabled={busy} onClick={run(() => onSave(doc))}>
-            保存草稿
-          </button>
+    <div className="editor" data-testid={TID.editor}>
+      <header className="editor-bar">
+        <I glyph={Workflow} size={13} className="shrink-0 text-ink-2" />
+        <span className="mono min-w-0 truncate text-xs text-ink-0" title={base.name}>
+          {base.name}
+        </span>
+        <span className="num shrink-0 text-micro text-ink-3">{draftId === null ? '未建档' : `#${draftId}`}</span>
+        {flash !== undefined && flash !== '' ? (
+          <span
+            className="flex min-w-0 items-center gap-1.5 border-l border-line-0 pl-3 text-xs text-ink-1"
+            role="status"
+            data-testid={TID.editorFlash}
+          >
+            <I glyph={Info} size={12} className="shrink-0 text-ink-2" />
+            <span className="truncate">{flash}</span>
+          </span>
         ) : null}
-        {onPublish !== undefined && draftId !== null ? (
-          <button type="button" className="palette-btn" data-testid="publish" disabled={busy} onClick={run(onPublish)}>
-            发布
-          </button>
-        ) : null}
-      </div>
+        <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Button
+            size="sm"
+            variant={showWorkflowPanel ? 'default' : 'quiet'}
+            icon={Settings2}
+            aria-pressed={showWorkflowPanel}
+            onClick={toggleWorkflow}
+          >
+            工作流设置
+          </Button>
+          {onSave !== undefined ? (
+            <Button size="sm" variant="primary" icon={Save} data-testid={TID.editorSave} disabled={busy} onClick={run(() => onSave(doc))}>
+              保存草稿
+            </Button>
+          ) : null}
+          {onPublish !== undefined && draftId !== null ? (
+            <Button size="sm" icon={Rocket} data-testid={TID.editorPublish} disabled={busy} onClick={run(onPublish)}>
+              发布
+            </Button>
+          ) : null}
+        </div>
+      </header>
+
       <div className="editor-mid">
-        <div className="editor-canvas" data-testid="canvas">
+        <Palette onAdd={addNode} />
+
+        <div className="editor-canvas">
           <ReactFlow
             nodes={nodes}
             edges={edges}
@@ -139,31 +184,53 @@ function Editor({
             defaultViewport={hadStoredViewport ? initial.viewport : undefined}
             fitView={!hadStoredViewport}
           >
-            <Background />
+            {/* 地面 = 近黑 + 发丝线网格(未点亮的荧光屏),不铺点阵噪点。 */}
+            <Background variant={BackgroundVariant.Lines} gap={28} lineWidth={1} color="var(--color-line-0)" />
             <Controls />
-            <MiniMap pannable zoomable />
+            <MiniMap pannable zoomable nodeColor="var(--color-line-2)" ariaLabel="画布缩略图" />
           </ReactFlow>
+          {nodes.length === 0 ? (
+            <div className="pointer-events-none absolute inset-0 grid place-items-center">
+              <EmptyState
+                icon={MousePointerClick}
+                title="空白画布"
+                hint="用左侧工具条添加第一个节点，再拖动节点边缘的圆点连线。"
+              />
+            </div>
+          ) : null}
         </div>
-        {selected ? (
-          <aside className="editor-side">
-            {/* key = 节点 id:切换节点必须重建面板本地态(如 ApproversInput
-                的 raw 暂存),否则残留上一节点的输入并覆盖下一节点(对抗审计 HIGH)。 */}
+
+        {/* 属性面板常驻:画布宽度不随选中态跳动。 */}
+        <aside className="editor-side" aria-label="属性面板">
+          {selected !== undefined ? (
+            /* key = 节点 id:切换节点必须重建面板本地态(如 ApproversInput
+               的 raw 暂存),否则残留上一节点的输入并覆盖下一节点(对抗审计 HIGH)。 */
             <NodePanel key={selected.id} spec={selected.data.spec} update={(patch) => updateSpec(selected.id, patch)} />
-          </aside>
-        ) : showWorkflowPanel ? (
-          <aside className="editor-side">
+          ) : showWorkflowPanel ? (
             <WorkflowPanel
               key={draftId ?? 'local'}
               doc={base}
               update={(patch) => setBase((b) => patch(b))}
               nameLocked={draftId !== null}
             />
-          </aside>
-        ) : null}
+          ) : (
+            <EmptyState
+              icon={MousePointerClick}
+              title="未选中节点"
+              hint="在画布上点选一个节点编辑它的属性；顶栏「工作流设置」切换文档级字段。"
+            />
+          )}
+        </aside>
       </div>
+
+      {/* DSL 预览抽屉:导出产物,只读;折叠时只是一条横档。 */}
       <details className="editor-json">
-        <summary>DSL 预览(导出产物)</summary>
-        <pre aria-label="dsl-preview">{serializeDoc(doc)}</pre>
+        <summary>
+          <I glyph={ChevronRight} size={12} className="editor-json-caret" />
+          <span className="micro">DSL 预览</span>
+          <span className="text-micro text-ink-3">导出产物 · 只读</span>
+        </summary>
+        <pre data-testid={TID.editorJson}>{serializeDoc(doc)}</pre>
       </details>
     </div>
   )
@@ -172,12 +239,23 @@ function Editor({
 export function CanvasEditor(props: {
   initialDoc: WorkflowDoc
   draftId?: string | null
+  /** 顶栏状态文案(保存/发布的结果由壳层给)。 */
+  flash?: string
+  /** 每次文档变更上报(挂载不算),供壳层保态。 */
+  onDocChange?: (doc: WorkflowDoc) => void
   onSave?: (doc: WorkflowDoc) => void | Promise<void>
   onPublish?: () => void | Promise<void>
 }) {
   return (
     <ReactFlowProvider>
-      <Editor initialDoc={props.initialDoc} draftId={props.draftId ?? null} onSave={props.onSave} onPublish={props.onPublish} />
+      <Editor
+        initialDoc={props.initialDoc}
+        draftId={props.draftId ?? null}
+        flash={props.flash}
+        onDocChange={props.onDocChange}
+        onSave={props.onSave}
+        onPublish={props.onPublish}
+      />
     </ReactFlowProvider>
   )
 }

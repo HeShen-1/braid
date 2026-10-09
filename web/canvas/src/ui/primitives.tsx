@@ -79,15 +79,17 @@ export function StatusChip({
   kind = 'exec',
   className,
   showIcon = true,
+  testId,
 }: {
   status: string
   kind?: 'exec' | 'node'
   className?: string
   showIcon?: boolean
+  testId?: string
 }) {
   const meta = kind === 'node' ? nodeStatus(status) : execStatus(status)
   return (
-    <span className={cx('chip', className)} data-state={status} title={status}>
+    <span className={cx('chip', className)} data-state={status} data-testid={testId} title={status}>
       {showIcon ? <I glyph={meta.glyph} size={11} /> : null}
       {meta.label}
     </span>

@@ -2,7 +2,7 @@
 // 顶部固定动作,列表滚动,底部计数。
 import { FilePlus2, Workflow } from 'lucide-react'
 import type { DraftSummary } from './api.ts'
-import { Badge, Button, EmptyState } from './ui/primitives.tsx'
+import { Badge, Button } from './ui/primitives.tsx'
 import { I } from './ui/I.tsx'
 import { Timestamp } from './ui/time.tsx'
 import { TID, tid } from './ui/testids.ts'
@@ -43,18 +43,9 @@ export function DraftList({
 
       <div className="min-h-0 flex-1 overflow-y-auto">
         {drafts.length === 0 ? (
-          <div data-testid={TID.draftEmpty}>
-            <EmptyState
-              icon={Workflow}
-              title="还没有工作流"
-              hint="新建一个草稿，用画布把节点连成 DAG，发布后即可触发执行。"
-              action={
-                <Button size="sm" icon={FilePlus2} onClick={onNew}>
-                  新建工作流
-                </Button>
-              }
-            />
-          </div>
+          <p className="px-3 py-4 text-xs text-ink-2" data-testid={TID.draftEmpty}>
+            暂无工作流，右侧新建。
+          </p>
         ) : (
           <ul className="flex flex-col">
             {drafts.map((d) => {

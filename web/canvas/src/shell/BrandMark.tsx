@@ -1,19 +1,22 @@
 /**
  * braid 标识:三股交织的线——产品名的字面形状,不是通用图标块。
  * 几何在模块加载时算一次(确定性),不依赖任何素材文件。
+ * 周期取 1.5:1 周期在 17px 下三股两两相切,外廓读成「8」;
+ * 1.5 周期把相切变成真正的交叉,小尺寸下才读得出是辫子(逐版渲染选定)。
  */
 const X0 = 9
 const AMP = 4.6
 const TOP = 1.6
 const HEIGHT = 14.8
+const PERIODS = 1.5
 
 function strand(phase: number): string {
-  const steps = 28
+  const steps = 30
   let d = ''
   for (let i = 0; i <= steps; i++) {
     const t = i / steps
     const y = TOP + t * HEIGHT
-    const x = X0 + AMP * Math.sin(t * Math.PI * 2 + phase)
+    const x = X0 + AMP * Math.sin(t * Math.PI * 2 * PERIODS + phase)
     d += `${i === 0 ? 'M' : 'L'}${x.toFixed(2)} ${y.toFixed(2)}`
   }
   return d

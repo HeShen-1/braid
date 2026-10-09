@@ -5,8 +5,8 @@ import { useNavigate, useParams } from 'react-router'
 import { CanvasEditor } from '../CanvasEditor.tsx'
 import { DraftList } from '../DraftList.tsx'
 import { IssuesPanel } from '../ui/IssuesPanel.tsx'
-import { EmptyState, Skeleton } from '../ui/primitives.tsx'
-import { Workflow } from 'lucide-react'
+import { EmptyState, Skeleton, Button } from '../ui/primitives.tsx'
+import { FilePlus2, Workflow } from 'lucide-react'
 import { useWorkflow } from '../workflow/WorkflowProvider.tsx'
 
 export function WorkflowsRoute() {
@@ -40,9 +40,9 @@ export function WorkflowsRoute() {
       />
 
       {ws === null ? (
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-h-0 flex-1 flex-col justify-center">
           {loading ? (
-            <div className="flex flex-col gap-3 p-6">
+            <div className="flex flex-col items-center gap-3 p-6">
               <Skeleton width={220} height={16} />
               <Skeleton width={420} height={12} />
               <Skeleton width={360} height={12} />
@@ -52,6 +52,11 @@ export function WorkflowsRoute() {
               icon={Workflow}
               title={drafts.length === 0 ? '新建你的第一条工作流' : '从左侧打开一条工作流'}
               hint="画布上编排节点与连线，服务端按 JSON DSL 校验；发布后即可在执行面触发。"
+              action={
+                <Button icon={FilePlus2} onClick={newLocal}>
+                  新建工作流
+                </Button>
+              }
             />
           )}
         </div>
