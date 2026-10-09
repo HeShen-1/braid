@@ -90,6 +90,11 @@ export function TextArea({
 /**
  * `<option>` 列表 → shadcn Select 的 item 表(App Router 侧调用点因此零改动)。
  * 只认原生 `option`;条件渲染产生的 false/null 由 Children.toArray 清掉。
+ *
+ * 已知残余(实测,非猜测):打开弹层时 Base UI 会插一个 `<style>` 元素,而静态面
+ * CSP 逐字钉死 `style-src 'self'`,该元素被拦(控制台一条 style-src-elem 违规)。
+ * 影响为零:定位走 CSSOM(内联 position/--anchor-* 已生效,弹层落点实测正确),
+ * 被拦的是组件自带的滚动锁样式。消掉它只能给 CSP 加 hash —— 那要新 D- 条目。
  */
 function optionItems(children: ReactNode) {
   const items: { value: string; label: ReactNode; disabled?: boolean }[] = []
