@@ -1,8 +1,24 @@
 @import 'tailwindcss';
 @import './fonts.css';
+@import './shadcn-variants.css';
 @import './canvas-editor.css';
 @import './executions.css';
 @import './approvals.css';
+@import 'tw-animate-css';
+
+/* 主题选择器 → Tailwind `dark:` 变体(D-2026-10-09-console-v2 决策 1)。
+   shadcn 生成的组件用 `dark:...` 前缀,必须让 `dark` 变体认 data-theme,
+   而不是 shadcn 默认的 `.dark` 类。三态口径见文件末「默认世界」一节。 */
+@custom-variant dark {
+  &:where([data-theme='dark'], [data-theme='dark'] *) {
+    @slot;
+  }
+  &:where([data-theme='auto'], [data-theme='auto'] *) {
+    @media (prefers-color-scheme: dark) {
+      @slot;
+    }
+  }
+}
 
 /* ============================================================
    braid 控制台 —— 世界「控制室夜班」
@@ -24,7 +40,7 @@
      而连线是读懂 DAG 结构的必要图形)。 */
   --color-line-0: #1b2530; /* 结构分割 */
   --color-line-1: #26333f; /* 可见分隔 */
-  --color-line-2: #556a7e; /* 交互控件描边、连线:ground-0 上 3.46:1 */
+  --color-line-2: #5b7185; /* 交互控件描边、连线:内外邻接都过 3:1(ground-0 3.82 / g1 3.56 / 控件自身填充 g2 3.25) */
 
   /* ---- 墨色 ----
      每一档都按它真正落地的地面定档,不留"看起来更安静"的欠对比档:
@@ -42,11 +58,18 @@
   --color-sig-ok: #57d06a; /* 成功 */
   --color-sig-wait: #f0b429; /* 等待审批（braid 招牌状态） */
   --color-sig-fail: #f4575e; /* 失败 */
+  --color-sig-fail-hi: #ff8a8f; /* 破坏性动作 hover(浅色档覆盖) */
   --color-sig-stop: #8296ab; /* 取消 / 跳过 */
 
   /* ---- 交互焦点（唯一非状态色相，永不用于状态） ---- */
   --color-accent: #6e9bf5;
   --color-accent-soft: #1b2a44;
+
+  /* ---- 主操作实体(深色形态;浅色档在文件末覆盖)----
+     决策 2「交互靠亮度」的可移植写法:主操作 = 该世界里亮度对比最大的实体,
+     亮主题取最暗实体、暗主题取最亮实体,同一句规则两态成立。 */
+  --color-primary-action: #e8eff6;
+  --color-primary-ink: #0a0e13;
 
   /* ---- 字体 ---- */
   --font-sans:
@@ -85,8 +108,17 @@
 }
 
 @layer base {
+  /* 原生表面(滚动条、表单控件、光标)跟随主题:auto 交给系统二选一。 */
   :root {
     color-scheme: dark;
+  }
+
+  :root[data-theme='light'] {
+    color-scheme: light;
+  }
+
+  :root[data-theme='auto'] {
+    color-scheme: light dark;
   }
 
   html,
@@ -285,21 +317,26 @@
 
   /* 主操作 = 亮度最高的实体，永不与状态色相混淆 */
   .btn-primary {
-    background: var(--color-ink-0);
-    border-color: var(--color-ink-0);
-    color: var(--color-ground-0);
+    --btn-action: var(--color-primary-action);
+    background: var(--btn-action);
+    border-color: var(--btn-action);
+    color: var(--color-primary-ink);
     font-weight: 600;
   }
 
+  /* 悬停 = 主操作实体向该世界的墨色方向压一档(浅色变暗、深色变亮),
+     不再硬编码 #fff —— 那是只在深色下成立的写法。 */
   .btn-primary:hover:not(:disabled) {
-    background: #fff;
-    border-color: #fff;
+    --btn-action: color-mix(in oklab, var(--color-primary-action) 88%, var(--color-ink-0));
+    background: var(--btn-action);
+    border-color: var(--btn-action);
   }
 
   .btn-primary:active:not(:disabled) {
-    background: var(--color-ink-1);
-    border-color: var(--color-ink-1);
-    color: var(--color-ground-0);
+    --btn-action: color-mix(in oklab, var(--color-primary-action) 76%, var(--color-ink-0));
+    background: var(--btn-action);
+    border-color: var(--btn-action);
+    color: var(--color-primary-ink);
   }
 
   .btn-primary:disabled {
@@ -329,7 +366,7 @@
   .btn-danger:hover:not(:disabled) {
     background: color-mix(in oklab, var(--color-sig-fail) 14%, transparent);
     border-color: var(--color-sig-fail);
-    color: #ff8a8f;
+    color: var(--color-sig-fail-hi);
   }
 
   .btn-sm {
@@ -390,6 +427,52 @@
     height: 2px;
     background: var(--color-accent);
     border-radius: 2px 2px 0 0;
+  }
+
+  /* ---------- 分段控件(主题三态)----------
+     选中态走 ground-4(两套世界里都是「选中/按下」那一档),不引入新色相;
+     三颗按钮等宽,切换时右侧不位移。 */
+
+  .seg {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding: 2px;
+    background: var(--color-ground-2);
+    border: 1px solid var(--color-line-0);
+    border-radius: var(--radius-control);
+  }
+
+  .seg-item {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.5rem;
+    height: 1.375rem;
+    padding: 0;
+    border: 0;
+    border-radius: calc(var(--radius-control) * 0.6);
+    background: transparent;
+    color: var(--color-ink-2);
+    cursor: pointer;
+    transition:
+      color 120ms var(--ease-in-out-quiet),
+      background-color 120ms var(--ease-in-out-quiet);
+  }
+
+  .seg-item:hover {
+    color: var(--color-ink-0);
+    background: var(--color-ground-3);
+  }
+
+  .seg-item[aria-pressed='true'] {
+    background: var(--color-ground-4);
+    color: var(--color-ink-0);
+  }
+
+  .seg-item:focus-visible {
+    outline: 2px solid color-mix(in oklab, var(--color-accent) 70%, transparent);
+    outline-offset: 1px;
   }
 
   /* ---------- 表单 ---------- */
@@ -536,7 +619,11 @@
     border-bottom: 0;
   }
 
-  /* ---------- 状态芯片：色相 + 形状双编码 ---------- */
+  /* ---------- 状态芯片：色相 + 形状双编码 ----------
+     底色**不透明**:色相 tint 盖 ground-1,而不是半透明落在所在行上 ——
+     标签的对比度不能随行状态变化。T21.3 实测:半透明版本在选中行(ground-3)
+     上把标签压到线以下(浅色 3.2–4.0:1、深色 FAILED 3.88:1);改不透明后
+     标签背景确定,深浅两套世界的实测值见 DESIGN.md 定档表。 */
 
   .chip {
     display: inline-flex;
@@ -558,40 +645,40 @@
   .chip[data-state='PENDING'] {
     color: var(--color-ink-2);
     border-color: var(--color-line-2);
-    background: color-mix(in oklab, var(--color-sig-idle) 22%, transparent);
+    background: color-mix(in oklab, var(--color-sig-idle) 22%, var(--color-ground-1));
   }
 
   .chip[data-state='RUNNING'],
   .chip[data-state='EXECUTING'] {
     color: var(--color-sig-run);
     border-color: color-mix(in oklab, var(--color-sig-run) 45%, transparent);
-    background: color-mix(in oklab, var(--color-sig-run) 12%, transparent);
+    background: color-mix(in oklab, var(--color-sig-run) 12%, var(--color-ground-1));
   }
 
   .chip[data-state='SUCCEEDED'] {
     color: var(--color-sig-ok);
     border-color: color-mix(in oklab, var(--color-sig-ok) 45%, transparent);
-    background: color-mix(in oklab, var(--color-sig-ok) 12%, transparent);
+    background: color-mix(in oklab, var(--color-sig-ok) 12%, var(--color-ground-1));
   }
 
   .chip[data-state='WAITING_APPROVAL'] {
     color: var(--color-sig-wait);
     border-color: color-mix(in oklab, var(--color-sig-wait) 50%, transparent);
-    background: color-mix(in oklab, var(--color-sig-wait) 14%, transparent);
+    background: color-mix(in oklab, var(--color-sig-wait) 14%, var(--color-ground-1));
   }
 
   .chip[data-state='FAILED'],
   .chip[data-state='ROLLED_BACK'] {
     color: var(--color-sig-fail);
     border-color: color-mix(in oklab, var(--color-sig-fail) 45%, transparent);
-    background: color-mix(in oklab, var(--color-sig-fail) 12%, transparent);
+    background: color-mix(in oklab, var(--color-sig-fail) 12%, var(--color-ground-1));
   }
 
   .chip[data-state='CANCELLED'],
   .chip[data-state='SKIPPED'] {
     color: var(--color-sig-stop);
     border-color: color-mix(in oklab, var(--color-sig-stop) 40%, transparent);
-    background: color-mix(in oklab, var(--color-sig-stop) 10%, transparent);
+    background: color-mix(in oklab, var(--color-sig-stop) 10%, var(--color-ground-1));
   }
 
   /* 中性元数据芯片（节点类型、作用域等） */
@@ -909,3 +996,227 @@
   font-family: var(--font-sans);
 }
 
+@theme inline {
+  --color-background: var(--color-ground-0);
+  --color-foreground: var(--color-ink-0);
+  --color-card: var(--color-ground-1);
+  --color-card-foreground: var(--color-ink-0);
+  --color-popover: var(--color-ground-1);
+  --color-popover-foreground: var(--color-ink-0);
+  --color-primary: var(--color-primary-action);
+  --color-primary-foreground: var(--color-primary-ink);
+  --color-secondary: var(--color-ground-3);
+  --color-secondary-foreground: var(--color-ink-0);
+  --color-muted: var(--color-ground-2);
+  --color-muted-foreground: var(--color-ink-2);
+  --color-accent: var(--color-ground-3);
+  --color-accent-foreground: var(--color-ink-0);
+  --color-destructive: var(--color-sig-fail);
+  --color-border: var(--color-line-1);
+  --color-input: var(--color-line-2);
+  --color-ring: var(--color-accent);
+
+  /* radius 阶梯围绕自研 --radius-control(8px)重排,不用 shadcn 的 10px 基 */
+  --radius: var(--radius-control);
+  --radius-sm: calc(var(--radius-control) * 0.6);
+  --radius-md: calc(var(--radius-control) * 0.8);
+  --radius-lg: var(--radius-control);
+  --radius-xl: calc(var(--radius-control) * 1.4);
+  --radius-2xl: calc(var(--radius-control) * 1.8);
+  --radius-3xl: calc(var(--radius-control) * 2.2);
+  --radius-4xl: calc(var(--radius-control) * 2.6);
+}
+/* ---------- 浅色世界(D-2026-10-09-console-v2 决策 1)----------
+   日间形态:近白偏冷地面(同一世界的无光屏幕,只是没关灯)。
+   每一档按它真正落地的地面实测定档,与深色同一条验收线:
+     正文 ≥4.5:1(ink-0 17.7 / ink-1 8.0–9.1 / ink-2 5.8–6.2 / ink-3 4.5–4.9,
+       均取最不利地面);非文本图形 ≥3:1(line-2 在最亮 ground-1 上 3.41:1)。
+   六态色相为浅色地面**重新配值**(不是沿用深色):深色原值在近白地面上
+   只有 1.87–3.30:1(五态全部低于 4.5:1 线;idle 不做文字色故不计),搬过来会糊。T21.3 起定档口径收紧为**最不利地面**:标签
+   还要落在选中行(ground-3)与其自色 tint 上,不只是对白 —— 旧值(对白
+   ≥4.5)在那一面上只有 3.2–4.0:1,故逐态再压亮度到最紧 4.60:1。
+   accent 由 #6e9bf5 → #3b68c4 → #3764bf:焦点环/链接同样按最不利地面定档。
+   深浅两套的实测表见 DESIGN.md「定档规则」。 */
+:root[data-theme='light'] {
+  /* light-world:start */
+  --color-ground-0: #f7f9fb;
+  --color-ground-1: #ffffff;
+  --color-ground-2: #eef1f5;
+  --color-ground-3: #e4e9ef;
+  --color-ground-4: #d8dfe7;
+
+  --color-line-0: #dde3ea;
+  --color-line-1: #c9d2db;
+  --color-line-2: #808d95;
+
+  --color-ink-0: #0d1319;
+  --color-ink-1: #3d4a57;
+  --color-ink-2: #4e5a68;
+  --color-ink-3: #5f6a71;
+
+  --color-sig-idle: #5a6675;
+  --color-sig-run: #006961;
+  --color-sig-ok: #186b2a;
+  --color-sig-wait: #795400;
+  --color-sig-fail: #ac2834;
+  --color-sig-fail-hi: #a03339;
+  --color-sig-stop: #516171;
+
+  --color-accent: #3764bf;
+  --color-accent-soft: #dbe5f7;
+
+  /* 主操作实体(D-2026-10-09-ui-console 决策 2「交互靠亮度」的浅色形态)。
+     .btn-primary 原来直接用 ink-0:深色下 ink-0 最亮 = 正确,浅色下 ink-0
+     最暗,背景/文字互换后主操作会变成近白块 —— 与禁用态(ground-3)无法区分。
+     所以主操作实体单独取一档:亮主题取最暗实体,暗主题取最亮实体,同一句
+     「主操作是该世界里亮度对比最大的实体」两态都成立。
+     实测:light primary-ink/primary-action = 13.90:1;dark = 16.69:1。 */
+  --color-primary-action: #d8dfe7;
+  --color-primary-ink: #0d1319;
+  /* light-world:end */
+}
+
+/* auto + 系统浅色 = 与上面**逐字节同一份**浅色档。CSS 没有声明集复用机制,
+   所以这里物理上重写一遍;`src/theme.test.ts` 钉住两块逐字节相同 ——
+   只改一份、忘了另一份会红。 */
+:root[data-theme='auto'] {
+  @media (prefers-color-scheme: light) {
+    /* light-world:start */
+    --color-ground-0: #f7f9fb;
+    --color-ground-1: #ffffff;
+    --color-ground-2: #eef1f5;
+    --color-ground-3: #e4e9ef;
+    --color-ground-4: #d8dfe7;
+
+    --color-line-0: #dde3ea;
+    --color-line-1: #c9d2db;
+    --color-line-2: #808d95;
+
+    --color-ink-0: #0d1319;
+    --color-ink-1: #3d4a57;
+    --color-ink-2: #4e5a68;
+    --color-ink-3: #5f6a71;
+
+    --color-sig-idle: #5a6675;
+    --color-sig-run: #006961;
+    --color-sig-ok: #186b2a;
+    --color-sig-wait: #795400;
+    --color-sig-fail: #ac2834;
+    --color-sig-fail-hi: #a03339;
+    --color-sig-stop: #516171;
+
+    --color-accent: #3764bf;
+    --color-accent-soft: #dbe5f7;
+
+    /* 主操作实体(同 light 档,理由见上)。 */
+    --color-primary-action: #d8dfe7;
+    --color-primary-ink: #0d1319;
+    /* light-world:end */
+  }
+}
+
+/* ---------- 深色世界(默认世界)----------
+   深色档的唯一定义处是上方的 `@theme`(T21.1 定档值一字未改):
+   无属性 / `data-theme='dark'` / `auto` + 系统深色,三种情形都直接落在那里,
+   故此处不再复制一份 —— T21.3 之前这里有一份重复的深色块,已删。
+   深色 = 默认世界(D-2026-10-09-console-v2 决策 1),零闪烁靠的正是这一点。 */
+
+/* ============================================================
+   shadcn 复合组件 ↔ 自研词汇适配(T21.3 决策 3)
+
+   行为归 shadcn(焦点陷阱、键盘、Portal),**外观仍归自研 token**:
+   registry 组件自带的 utility 默认值(unlayered 之下永远赢不了 @layer utilities)
+   在这里被收回,让 Select 触发器与 .select 同形、弹层与面板同形。
+   未分层声明 = 取回优先级,是刻意为之,不是遗漏。
+   ============================================================ */
+
+/* ---- Select 触发器:与 .input/.select 同一副身子 ---- */
+[data-slot='select-trigger'].select {
+  width: 100%;
+  height: auto;
+  gap: 0.4rem;
+  padding: 0.3rem 0.4rem 0.3rem 0.5rem;
+  background: var(--color-ground-2);
+  background-image: none;
+  border: 1px solid var(--color-line-2);
+  border-radius: var(--radius-control);
+  color: var(--color-ink-0);
+  font-size: var(--text-sm);
+}
+
+[data-slot='select-trigger'].select:hover:not(:disabled) {
+  border-color: var(--color-ink-3);
+}
+
+[data-slot='select-trigger'].select:focus,
+[data-slot='select-trigger'].select:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-accent) 70%, transparent);
+  outline-offset: 1px;
+  border-color: var(--color-accent);
+  background: var(--color-ground-1);
+  box-shadow: none;
+}
+
+[data-slot='select-trigger'].select:disabled {
+  color: var(--color-ink-3);
+  background: var(--color-ground-1);
+  border-color: var(--color-line-0);
+  opacity: 1;
+  cursor: not-allowed;
+}
+
+/* 占位态也走 ink-0:自研 .select 从不把「未选」画成灰字 */
+[data-slot='select-trigger'].select[data-placeholder] {
+  color: var(--color-ink-0);
+}
+
+/* ---- 弹层:亮度台阶 + 发丝线,不靠投影(与 .panel 同一条规则) ---- */
+[data-slot='select-content'],
+[data-slot='popover-content'],
+[data-slot='dropdown-menu-content'],
+[data-slot='dropdown-menu-sub-content'],
+[data-slot='tooltip-content'],
+[data-slot='dialog-content'] {
+  background: var(--color-ground-1);
+  color: var(--color-ink-0);
+  border: 1px solid var(--color-line-1);
+  border-radius: calc(var(--radius-control) * 0.8);
+  box-shadow: none;
+  outline: none;
+}
+
+[data-slot='select-item'],
+[data-slot='dropdown-menu-item'] {
+  border-radius: calc(var(--radius-control) * 0.6);
+  color: var(--color-ink-0);
+  font-size: var(--text-sm);
+}
+
+/* ---- Checkbox:未选 = ground-2 + line-2(与输入框同),选中 = accent 实体 ---- */
+[data-slot='checkbox'] {
+  width: 0.875rem;
+  height: 0.875rem;
+  background: var(--color-ground-2);
+  border: 1px solid var(--color-line-2);
+  border-radius: 4px;
+}
+
+[data-slot='checkbox']:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-accent) 70%, transparent);
+  outline-offset: 1px;
+  border-color: var(--color-accent);
+  box-shadow: none;
+}
+
+/* 选中态反差靠实体填充:check 用对侧地面色,两套世界都过 4.5:1 */
+[data-slot='checkbox'][data-checked] {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-ground-1);
+}
+
+[data-slot='checkbox'][data-disabled] {
+  opacity: 1;
+  background: var(--color-ground-1);
+  border-color: var(--color-line-0);
+}

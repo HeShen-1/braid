@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-09T09:36:04+08:00",
+  "generatedAt": "2026-10-09T18:36:40+08:00",
   "title": "Design System: braid 控制台",
   "extensions": {
     "colorMeta": {
@@ -9,172 +9,380 @@
         "displayName": "焦点蓝 Interaction Blue",
         "canonical": "#6e9bf5",
         "purpose": "唯一的非状态色相:焦点环、当前页签下划线、链接、DAG 连线/把手选中、框选、选区、caret。永不表达状态。",
-        "tonalRamp": ["#00052c", "#001965", "#163b8c", "#345cb1", "#547fd7", "#75a3fd", "#adcaff", "#e6efff"],
-        "rampKind": "synthesized-oklch"
+        "tonalRamp": [
+          "#00052c",
+          "#001965",
+          "#163b8c",
+          "#345cb1",
+          "#547fd7",
+          "#75a3fd",
+          "#adcaff",
+          "#e6efff"
+        ],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#3764bf"
       },
       "accent-soft": {
         "role": "primary",
         "displayName": "焦点蓝暗底 Focus Blue, Sunken",
         "canonical": "#1b2a44",
         "purpose": "执行时间带选中行的底色(55% 混透明落在地面上)。",
-        "tonalRamp": ["#010a21", "#16253e", "#32425e", "#50627f", "#7183a2", "#93a6c6", "#b6caec", "#e5efff"],
-        "rampKind": "synthesized-oklch"
+        "tonalRamp": [
+          "#010a21",
+          "#16253e",
+          "#32425e",
+          "#50627f",
+          "#7183a2",
+          "#93a6c6",
+          "#b6caec",
+          "#e5efff"
+        ],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#dbe5f7"
       },
       "sig-idle": {
         "role": "secondary",
         "displayName": "未开始暗板 Idle Slate",
         "canonical": "#3a4a5a",
         "purpose": "IDLE / PENDING 的底与边;六态里最暗的一档,永不做文字色(在自身 tint 上 1.9:1)。",
-        "tonalRamp": ["#020c19", "#182635", "#344453", "#526374", "#738496", "#95a7ba", "#b9ccdf", "#e2f0ff"],
-        "rampKind": "synthesized-oklch"
+        "tonalRamp": [
+          "#020c19",
+          "#182635",
+          "#344453",
+          "#526374",
+          "#738496",
+          "#95a7ba",
+          "#b9ccdf",
+          "#e2f0ff"
+        ],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#5a6675"
       },
       "sig-run": {
         "role": "secondary",
         "displayName": "执行青 Running Teal",
         "canonical": "#2ed3c6",
         "purpose": "RUNNING / EXECUTING:芯片、时间带段、节点卡描边、脉冲圆点。",
-        "tonalRamp": ["#000f0d", "#002c29", "#004d48", "#007169", "#00968d", "#00beb2", "#48e4d7", "#b5fff6"],
-        "rampKind": "synthesized-oklch"
+        "tonalRamp": [
+          "#000f0d",
+          "#002c29",
+          "#004d48",
+          "#007169",
+          "#00968d",
+          "#00beb2",
+          "#48e4d7",
+          "#b5fff6"
+        ],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#006961"
       },
       "sig-ok": {
         "role": "secondary",
         "displayName": "成功绿 Succeeded Green",
         "canonical": "#57d06a",
         "purpose": "SUCCEEDED。",
-        "tonalRamp": ["#001002", "#002f0a", "#005117", "#007626", "#0f9d38", "#47c25c", "#70e780", "#c8ffcc"],
-        "rampKind": "synthesized-oklch"
+        "tonalRamp": [
+          "#001002",
+          "#002f0a",
+          "#005117",
+          "#007626",
+          "#0f9d38",
+          "#47c25c",
+          "#70e780",
+          "#c8ffcc"
+        ],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#186b2a"
       },
       "sig-wait": {
         "role": "secondary",
         "displayName": "等待琥珀 Waiting Amber",
         "canonical": "#f0b429",
         "purpose": "WAITING_APPROVAL——braid 的招牌状态,整屏唯一暖色;135° 斜纹即由它派生。",
-        "tonalRamp": ["#120a00", "#322200", "#563d00", "#7d5b00", "#a77a00", "#d29a00", "#fbbe38", "#ffecc9"],
-        "rampKind": "synthesized-oklch"
+        "tonalRamp": [
+          "#120a00",
+          "#322200",
+          "#563d00",
+          "#7d5b00",
+          "#a77a00",
+          "#d29a00",
+          "#fbbe38",
+          "#ffecc9"
+        ],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#795400"
       },
       "sig-fail": {
         "role": "secondary",
         "displayName": "失败红 Failed Red",
         "canonical": "#f4575e",
         "purpose": "FAILED / ROLLED_BACK,兼作破坏性动作与错误文案。",
-        "tonalRamp": ["#1f0002", "#4d000b", "#80001a", "#b50e2b", "#de424c", "#ff7173", "#ffb2af", "#ffe8e7"],
-        "rampKind": "synthesized-oklch"
+        "tonalRamp": [
+          "#1f0002",
+          "#4d000b",
+          "#80001a",
+          "#b50e2b",
+          "#de424c",
+          "#ff7173",
+          "#ffb2af",
+          "#ffe8e7"
+        ],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#ac2834"
       },
       "sig-stop": {
         "role": "secondary",
         "displayName": "取消灰蓝 Stopped Slate",
         "canonical": "#8296ab",
         "purpose": "CANCELLED / SKIPPED。",
-        "tonalRamp": ["#010c1b", "#162637", "#324456", "#516377", "#718599", "#93a8bd", "#b7cce2", "#e2f0ff"],
-        "rampKind": "synthesized-oklch"
+        "tonalRamp": [
+          "#010c1b",
+          "#162637",
+          "#324456",
+          "#516377",
+          "#718599",
+          "#93a8bd",
+          "#b7cce2",
+          "#e2f0ff"
+        ],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#516171"
       },
       "ground-0": {
         "role": "neutral",
         "displayName": "无光地面 Unlit Ground",
         "canonical": "#0a0e13",
         "purpose": "应用底、画布地面、JSON/DSL 只读底。",
-        "tonalRamp": ["#0a0e13", "#101720", "#16202b", "#1e2a37", "#273543"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#0a0e13",
+          "#101720",
+          "#16202b",
+          "#1e2a37",
+          "#273543"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#f7f9fb"
       },
       "ground-1": {
         "role": "neutral",
         "displayName": "面板 Panel",
         "canonical": "#101720",
         "purpose": "面板、顶栏、左列、粘顶层底色(不透明贴边,不靠投影)。",
-        "tonalRamp": ["#0a0e13", "#101720", "#16202b", "#1e2a37", "#273543"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#0a0e13",
+          "#101720",
+          "#16202b",
+          "#1e2a37",
+          "#273543"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#ffffff"
       },
       "ground-2": {
         "role": "neutral",
         "displayName": "抬升 Raised",
         "canonical": "#16202b",
         "purpose": "输入框、表头、次级按钮、中性芯片底。",
-        "tonalRamp": ["#0a0e13", "#101720", "#16202b", "#1e2a37", "#273543"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#0a0e13",
+          "#101720",
+          "#16202b",
+          "#1e2a37",
+          "#273543"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#eef1f5"
       },
       "ground-3": {
         "role": "neutral",
         "displayName": "悬停 Hover",
         "canonical": "#1e2a37",
         "purpose": "悬停底、选中行、禁用主按钮底。",
-        "tonalRamp": ["#0a0e13", "#101720", "#16202b", "#1e2a37", "#273543"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#0a0e13",
+          "#101720",
+          "#16202b",
+          "#1e2a37",
+          "#273543"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#e4e9ef"
       },
       "ground-4": {
         "role": "neutral",
         "displayName": "选中·按下 Pressed",
         "canonical": "#273543",
         "purpose": "按下底、滚动条拇指。",
-        "tonalRamp": ["#0a0e13", "#101720", "#16202b", "#1e2a37", "#273543"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#0a0e13",
+          "#101720",
+          "#16202b",
+          "#1e2a37",
+          "#273543"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#d8dfe7"
       },
       "line-0": {
         "role": "neutral",
         "displayName": "结构分割 Structural Hairline",
         "canonical": "#1b2530",
         "purpose": "1px 结构分割:表格行、面板头、分节上边线、画布网格。",
-        "tonalRamp": ["#1b2530", "#26333f", "#556a7e"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#1b2530",
+          "#26333f",
+          "#556a7e"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#dde3ea"
       },
       "line-1": {
         "role": "neutral",
         "displayName": "可见分隔 Visible Divider",
         "canonical": "#26333f",
         "purpose": "1px 可见分隔与面板边框:列分隔、面板外框、表头下边。",
-        "tonalRamp": ["#1b2530", "#26333f", "#556a7e"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#1b2530",
+          "#26333f",
+          "#556a7e"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#c9d2db"
       },
       "line-2": {
         "role": "neutral",
         "displayName": "可辨描边 Discernible Stroke",
-        "canonical": "#556a7e",
-        "purpose": "交互控件描边与 DAG 连线的唯一来源(ground-0 上 3.46:1、ground-1 上 3.22:1)。",
-        "tonalRamp": ["#1b2530", "#26333f", "#556a7e"],
-        "rampKind": "project-ladder"
+        "canonical": "#5b7185",
+        "purpose": "交互控件描边与 DAG 连线的唯一来源；T21.3 由 #556a7e 提到 #5b7185（旧值对控件自身填充只有 2.94:1，内外邻接都要 ≥3:1）。",
+        "tonalRamp": [
+          "#1b2530",
+          "#26333f",
+          "#556a7e"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#808d95"
       },
       "ink-0": {
         "role": "neutral",
         "displayName": "主读数 Primary Reading",
         "canonical": "#e8eff6",
         "purpose": "主文本;主操作按钮的底色(亮底深字)。",
-        "tonalRamp": ["#76889b", "#8497ab", "#a7b7c6", "#e8eff6"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#76889b",
+          "#8497ab",
+          "#a7b7c6",
+          "#e8eff6"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#0d1319"
       },
       "ink-1": {
         "role": "neutral",
         "displayName": "次读数 Secondary",
         "canonical": "#a7b7c6",
         "purpose": "次文本:表格内容、字段标签、幽灵按钮。",
-        "tonalRamp": ["#76889b", "#8497ab", "#a7b7c6", "#e8eff6"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#76889b",
+          "#8497ab",
+          "#a7b7c6",
+          "#e8eff6"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#3d4a57"
       },
       "ink-2": {
         "role": "neutral",
         "displayName": "三级标签 Tertiary",
         "canonical": "#8497ab",
         "purpose": "表头、微标签、图例、选中节点的 1px 偏移环(ground-2 上 5.48:1)。",
-        "tonalRamp": ["#76889b", "#8497ab", "#a7b7c6", "#e8eff6"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#76889b",
+          "#8497ab",
+          "#a7b7c6",
+          "#e8eff6"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#4e5a68"
       },
       "ink-3": {
         "role": "neutral",
         "displayName": "待填 Quaternary",
         "canonical": "#76889b",
         "purpose": "占位符、未填占位、时间戳缺口、禁用字(ground-2 上 4.52:1)。",
-        "tonalRamp": ["#76889b", "#8497ab", "#a7b7c6", "#e8eff6"],
-        "rampKind": "project-ladder"
+        "tonalRamp": [
+          "#76889b",
+          "#8497ab",
+          "#a7b7c6",
+          "#e8eff6"
+        ],
+        "rampKind": "project-ladder",
+        "lightCanonical": "#5f6a71"
+      },
+      "sig-fail-hi": {
+        "role": "secondary",
+        "displayName": "sig-fail-hi",
+        "canonical": "#ff8a8f",
+        "purpose": "破坏性动作 hover 的字色（浅色档 #a03339）",
+        "tonalRamp": [],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#a03339"
+      },
+      "primary-action": {
+        "role": "primary",
+        "displayName": "primary-action",
+        "canonical": "#e8eff6",
+        "purpose": "主操作实体：亮主题取最暗实体、暗主题取最亮实体（浅色档 #d8dfe7）",
+        "tonalRamp": [],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#d8dfe7"
+      },
+      "primary-ink": {
+        "role": "primary",
+        "displayName": "primary-ink",
+        "canonical": "#0a0e13",
+        "purpose": "主操作文字（浅色档 #0d1319）",
+        "tonalRamp": [],
+        "rampKind": "synthesized-oklch",
+        "lightCanonical": "#0d1319"
       }
     },
     "typographyMeta": {
-      "micro": { "displayName": "micro 微标签", "purpose": "表头、字段名、分节标题、图例、芯片文字;大写 + 600。字距随场景 0.06–0.09em。" },
-      "xs": { "displayName": "xs 元信息", "purpose": "时间带节点标签与时间轴、审计行、字段提示。" },
-      "sm": { "displayName": "sm 密集正文", "purpose": "表格、按钮、输入框、面板正文;按钮 500,主操作 600。" },
-      "base": { "displayName": "base 默认 UI", "purpose": "body 默认字号 13.5px;body 行高 1.5,工具类落钉死行高 20px。" },
-      "md": { "displayName": "md 面板标题", "purpose": "面板头标题 15px/600。" },
-      "lg": { "displayName": "lg 页面标题", "purpose": "路由页 h1 18px/600,字距 −0.02em。" },
-      "xl": { "displayName": "xl 产品名", "purpose": "登录页 braid 字标 22px/600,字距 −0.03em。" },
-      "2xl": { "displayName": "2xl 尺度端点", "purpose": "28px/34px;当前没有落地用法(T21.1 无 28px 用例)。" },
-      "mono": { "displayName": "Geist Mono 机读", "purpose": "代码、JSON/DSL、node_id/trace_id;0.94em 相对缩放、tabular numerals。" }
+      "micro": {
+        "displayName": "micro 微标签",
+        "purpose": "表头、字段名、分节标题、图例、芯片文字;大写 + 600。字距随场景 0.06–0.09em。"
+      },
+      "xs": {
+        "displayName": "xs 元信息",
+        "purpose": "时间带节点标签与时间轴、审计行、字段提示。"
+      },
+      "sm": {
+        "displayName": "sm 密集正文",
+        "purpose": "表格、按钮、输入框、面板正文;按钮 500,主操作 600。"
+      },
+      "base": {
+        "displayName": "base 默认 UI",
+        "purpose": "body 默认字号 13.5px;body 行高 1.5,工具类落钉死行高 20px。"
+      },
+      "md": {
+        "displayName": "md 面板标题",
+        "purpose": "面板头标题 15px/600。"
+      },
+      "lg": {
+        "displayName": "lg 页面标题",
+        "purpose": "路由页 h1 18px/600,字距 −0.02em。"
+      },
+      "xl": {
+        "displayName": "xl 产品名",
+        "purpose": "登录页 braid 字标 22px/600,字距 −0.03em。"
+      },
+      "2xl": {
+        "displayName": "2xl 尺度端点",
+        "purpose": "28px/34px;当前没有落地用法(T21.1 无 28px 用例)。"
+      },
+      "mono": {
+        "displayName": "Geist Mono 机读",
+        "purpose": "代码、JSON/DSL、node_id/trace_id;0.94em 相对缩放、tabular numerals。"
+      }
     },
     "elevation": {
       "strategy": "亮度台阶(material: ground-0 → ground-4)+ 1px 发丝线(line-0/1/2);无阴影、无发光。",
@@ -190,17 +398,53 @@
     },
     "shadows": [],
     "motion": [
-      { "name": "ease-in-out-quiet", "value": "cubic-bezier(0.4, 0, 0.2, 1)", "purpose": "状态过渡:背景色、边框色、文字色、骨架扫掠。来源 --ease-in-out-quiet。" },
-      { "name": "ease-out-expo", "value": "cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "唯一被编排的入场:时间带段展开(scaleX 0.35→1 + 透明度)。来源 --ease-out-expo。" },
-      { "name": "dur-state", "value": "120ms", "purpose": "悬停/按下/选中/焦点过渡。实现中是字面量,尚未抽成 CSS token。" },
-      { "name": "dur-enter", "value": "320ms", "purpose": "时间带段入场。实现中是字面量。" },
-      { "name": "dur-skeleton", "value": "1400ms", "purpose": "骨架扫掠循环(ground-2 ↔ ground-3)。实现中是字面量。" },
-      { "name": "reduce-motion", "value": "0.01ms", "purpose": "prefers-reduced-motion: reduce 下把全站动画与过渡压到 0.01ms。" }
+      {
+        "name": "ease-in-out-quiet",
+        "value": "cubic-bezier(0.4, 0, 0.2, 1)",
+        "purpose": "状态过渡:背景色、边框色、文字色、骨架扫掠。来源 --ease-in-out-quiet。"
+      },
+      {
+        "name": "ease-out-expo",
+        "value": "cubic-bezier(0.16, 1, 0.3, 1)",
+        "purpose": "唯一被编排的入场:时间带段展开(scaleX 0.35→1 + 透明度)。来源 --ease-out-expo。"
+      },
+      {
+        "name": "dur-state",
+        "value": "120ms",
+        "purpose": "悬停/按下/选中/焦点过渡。实现中是字面量,尚未抽成 CSS token。"
+      },
+      {
+        "name": "dur-enter",
+        "value": "320ms",
+        "purpose": "时间带段入场。实现中是字面量。"
+      },
+      {
+        "name": "dur-skeleton",
+        "value": "1400ms",
+        "purpose": "骨架扫掠循环(ground-2 ↔ ground-3)。实现中是字面量。"
+      },
+      {
+        "name": "reduce-motion",
+        "value": "0.01ms",
+        "purpose": "prefers-reduced-motion: reduce 下把全站动画与过渡压到 0.01ms。"
+      }
     ],
     "breakpoints": [
-      { "name": "lg", "value": "1024px", "purpose": "字标副题「Agent 工作流编排平台」显示;全站仅此一处。" },
-      { "name": "xl", "value": "1280px", "purpose": "顶栏运行脉冲(执行中/待审批/失败)显示;全站仅此一处。" },
-      { "name": "desktop-only", "value": "无移动端断点", "purpose": "桌面优先;窄窗只保证不横向溢出(仅收尾截图复核)。" }
+      {
+        "name": "lg",
+        "value": "1024px",
+        "purpose": "字标副题「Agent 工作流编排平台」显示;全站仅此一处。"
+      },
+      {
+        "name": "xl",
+        "value": "1280px",
+        "purpose": "顶栏运行脉冲(执行中/待审批/失败)显示;全站仅此一处。"
+      },
+      {
+        "name": "desktop-only",
+        "value": "无移动端断点",
+        "purpose": "桌面优先;窄窗只保证不横向溢出(仅收尾截图复核)。"
+      }
     ]
   },
   "components": [
@@ -274,6 +518,22 @@
       "description": "签名动作:每节点一行,横向按真实时间铺开;审批挂起段 135° 斜纹 = 时间在走、资源没占;段长度在共享时间轴上可比。",
       "html": "<div class=\"ds-ribbon\"><div class=\"ds-ribbon-row\"><div class=\"ds-ribbon-label\"><span class=\"ds-chip\" data-state=\"SUCCEEDED\">已成功</span><code class=\"ds-mono\">arch_reviewer</code><span class=\"ds-badge\">LLM</span><span class=\"ds-num\">28s</span></div><div class=\"ds-ribbon-track\"><span class=\"ds-seg\" data-state=\"SUCCEEDED\" style=\"left:0%;width:8%\"></span></div></div><div class=\"ds-ribbon-row\" data-selected=\"true\"><div class=\"ds-ribbon-label\"><span class=\"ds-chip\" data-state=\"WAITING_APPROVAL\">等待审批</span><code class=\"ds-mono\">human_review</code><span class=\"ds-badge\">审批</span><span class=\"ds-num\">15h41m</span></div><div class=\"ds-ribbon-track\"><span class=\"ds-seg\" data-state=\"WAITING_APPROVAL\" style=\"left:8%;width:92%\"></span></div></div><div class=\"ds-ribbon-row\"><div class=\"ds-ribbon-label\"><span class=\"ds-chip\" data-state=\"RUNNING\">执行中</span><code class=\"ds-mono\">judge</code><span class=\"ds-badge\">LLM</span><span class=\"ds-num\">15s</span></div><div class=\"ds-ribbon-track\"><span class=\"ds-seg\" data-state=\"RUNNING\" style=\"left:74%;width:6%\"></span></div></div><div class=\"ds-ribbon-axis\"><time>10-08 17:46:41</time><time>10-09 01:38:10</time><time>10-09 09:29:39</time></div></div>",
       "css": ".ds-ribbon{display:grid;grid-template-columns:minmax(0,1fr);font-family:var(--font-sans);font-size:.719rem;line-height:1rem;color:var(--color-ink-1)}.ds-ribbon-row{display:grid;grid-template-columns:minmax(12rem,18rem) minmax(0,1fr);border-bottom:1px solid var(--color-line-0)}.ds-ribbon-row:hover{background:color-mix(in oklab,var(--color-ground-2) 70%,transparent)}.ds-ribbon-row[data-selected='true']{background:color-mix(in oklab,var(--color-accent-soft) 55%,transparent)}.ds-ribbon-label{display:flex;align-items:center;gap:.4rem;min-width:0;padding:.32rem .75rem .32rem 0}.ds-ribbon-track{position:relative;min-height:1.75rem}.ds-seg{position:absolute;top:.3rem;bottom:.3rem;min-width:2px;border-radius:3px}.ds-seg[data-state='RUNNING']{background:var(--color-sig-run)}.ds-seg[data-state='SUCCEEDED']{background:var(--color-sig-ok)}.ds-seg[data-state='FAILED']{background:var(--color-sig-fail)}.ds-seg[data-state='CANCELLED']{background:var(--color-sig-stop)}.ds-seg[data-state='WAITING_APPROVAL']{background-image:repeating-linear-gradient(135deg,var(--color-sig-wait) 0 3px,color-mix(in oklab,var(--color-sig-wait) 22%,var(--color-ground-1)) 3px 7px)}.ds-ribbon-axis{display:flex;justify-content:space-between;padding-top:.3rem;border-top:1px solid var(--color-line-1);color:var(--color-ink-2);font-size:.656rem;line-height:.875rem;font-variant-numeric:tabular-nums}.ds-chip{display:inline-flex;align-items:center;gap:.3rem;height:1.375rem;padding:0 .45rem;border:1px solid;border-radius:999px;font-size:.656rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}.ds-chip[data-state='SUCCEEDED']{color:var(--color-sig-ok);border-color:color-mix(in oklab,var(--color-sig-ok) 45%,transparent);background:color-mix(in oklab,var(--color-sig-ok) 12%,transparent)}.ds-chip[data-state='WAITING_APPROVAL']{color:var(--color-sig-wait);border-color:color-mix(in oklab,var(--color-sig-wait) 50%,transparent);background:color-mix(in oklab,var(--color-sig-wait) 14%,transparent)}.ds-chip[data-state='RUNNING']{color:var(--color-sig-run);border-color:color-mix(in oklab,var(--color-sig-run) 45%,transparent);background:color-mix(in oklab,var(--color-sig-run) 12%,transparent)}.ds-badge{display:inline-flex;align-items:center;gap:.3rem;height:1.375rem;padding:0 .45rem;border:1px solid var(--color-line-1);border-radius:999px;background:var(--color-ground-2);color:var(--color-ink-1);font-size:.656rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}.ds-mono{font-family:var(--font-mono);font-size:.94em;letter-spacing:-.01em;color:var(--color-ink-0)}.ds-num{margin-left:auto;color:var(--color-ink-2);font-variant-numeric:tabular-nums;font-feature-settings:'tnum' 1,'zero' 1}"
+    },
+    {
+      "name": "Theme Segment",
+      "kind": "segmented-control",
+      "refersTo": "theme-control",
+      "description": "主题三态偏好(auto/light/dark):三颗等宽图标按钮,选中走 ground-4;落点只有 <html data-theme>,偏好存 localStorage。",
+      "html": "<div class=\"seg\" role=\"group\" aria-label=\"主题\"><button class=\"seg-item\" aria-pressed=\"false\">auto</button><button class=\"seg-item\" aria-pressed=\"true\">dark</button></div>",
+      "css": ".seg{display:inline-flex;gap:2px;padding:2px;background:var(--color-ground-2);border:1px solid var(--color-line-0);border-radius:var(--radius-control)}.seg-item{width:1.5rem;height:1.375rem;border:0;border-radius:calc(var(--radius-control)*.6);background:transparent;color:var(--color-ink-2)}.seg-item:hover{background:var(--color-ground-3);color:var(--color-ink-0)}.seg-item[aria-pressed='true']{background:var(--color-ground-4);color:var(--color-ink-0)}"
+    },
+    {
+      "name": "Collapsed Panel Rail",
+      "kind": "panel",
+      "refersTo": "side-rail",
+      "description": "折叠后的面板窄栏(工作流面左栏):2rem 宽 + 展开键,画布不贴边;折叠态存 localStorage。",
+      "html": "<div class=\"side-rail\"><button class=\"btn btn-quiet btn-sm btn-icon\" aria-label=\"展开工作流列表\">▸</button></div>",
+      "css": ".side-rail{display:flex;flex:none;align-items:flex-start;justify-content:center;width:2rem;padding-top:.5rem;border-right:1px solid var(--color-line-1);background:var(--color-ground-1)}"
     }
   ],
   "narrative": {
@@ -284,23 +544,96 @@
       "六态状态色相只做状态,每个状态同时有图标形状与中文标签。",
       "自托管 Geist / Geist Mono 承担拉丁与数字面;CJK 由系统字体栈回落(用户拍板的有意取舍)。",
       "一切 ID、计数、时长、时间戳走 tabular numerals;时间同时给相对与绝对两面。",
-      "签名动作 = 执行时间带:审批挂起段用 135° 斜纹——等待是有长度、有纹理的时刻,不是转圈。"
+      "签名动作 = 执行时间带:审批挂起段用 135° 斜纹——等待是有长度、有纹理的时刻,不是转圈。",
+      "两套世界、一条验收线:深色(默认)/浅色(日间形态)各持一套 token 值,正文 ≥4.5:1、非文本图形 ≥3:1 按**最不利地面**实测;切主题 = 换一套值,组件层零分支( `<html data-theme>` 承载 auto/light/dark)。",
+      "组件层只有一套语言:14 个基础原语自研;shadcn/ui 只进 8 个复合交互组件,Select/Checkbox 是「自研外壳 + shadcn 底层」的单点收敛,registry 自带外观由适配 CSS 收回自研词汇。"
     ],
     "rules": [
-      { "name": "The Hue-Is-State Rule / 色相即状态", "body": "六态色相只允许出现在状态本身与由状态派生的图形上(状态芯片、时间带段、节点卡描边、告警边框、脉冲圆点)。悬停、按下、选中、禁用一律走亮度台阶与发丝线,永不借状态色相。", "section": "colors" },
-      { "name": "The Focus-Hue Rule / 焦点色独占", "body": "accent 蓝只做\"焦点、当前所在、可交互线索\";它一旦出现在状态芯片或时间带段上就是错误,反之状态色相也不得用来画焦点环。", "section": "colors" },
-      { "name": "The Measured-Grade Rule / 定档规则", "body": "每档墨色与发丝线都按它真正落地的地面定档,不留\"看起来更安静\"的欠对比档。实测:ink-2 在 ground-2 上 5.48:1;ink-3 在 ground-2 上 4.52:1;line-2 在 ground-0 上 3.46:1、在 ground-1 上 3.22:1;状态芯片标签在自色 tint 上 4.8–7.7:1。改任一 ground/ink/line 的值必须用同一方法重算这四个对,不得凭观感放行。", "section": "colors" },
-      { "name": "The Two-Face Rule / 两面分工", "body": "展示声音永远是自托管的 Geist;系统面只承担自托管文件里没有的 CJK 字形。CJK 不嵌字体是用户 2026-10-09 的拍板,不是遗漏:中文字体动辄 3–10MB 不进包,font-src 'self' 是 CSP 的唯一放宽项。代价是中文灰度由操作系统决定,这是接受的取舍——不要用\"补一个中文字体\"来\"修复\"它。", "section": "typography" },
-      { "name": "The Tabular Rule / 数字必等宽", "body": "ID、计数、时长、时间戳、表格数字一律 font-variant-numeric: tabular-nums + font-feature-settings: 'tnum' 1, 'zero' 1。时间是一等公民:相对时长与绝对时刻同时在位。", "section": "typography" },
-      { "name": "The Mono-Is-Machine-Readable Rule / 等宽只给机读", "body": "Geist Mono 只给代码、JSON/DSL、node_id/trace_id 这类机读标识。数字对齐用 tabular numerals,不用等宽字体假扮\"技术感\"。", "section": "typography" },
-      { "name": "The No-Layout-Jump Rule / 布局不动", "body": "悬停、选中、加载、错误都不改变主要列宽与面板位置;控制台不该边看边晃。", "section": "layout" },
-      { "name": "The Axis-Only-When-There-Is-Time Rule / 无时间不画轴", "body": "执行还没开始(没有任何 started_at)时,时间带只给空轨与状态芯片,不画坐标轴、不编时间;PENDING 节点不画段。", "section": "layout" },
-      { "name": "The Zero-Glow Rule / 零发光零投影", "body": "表面上不出现 box-shadow,也不出现发光(halo/glow/模糊光晕)。层级不够就调亮度台阶,分隔不够就加发丝线。", "section": "elevation" },
-      { "name": "The Sticky-Without-Shadow Rule / 贴边不投影", "body": "粘顶层靠不透明地面色遮挡滚动内容,不靠投影暗示层级。", "section": "elevation" },
-      { "name": "The One-Boundary Rule / 一处边界", "body": "面板、卡片、输入框只声明一次边界(边框或亮度台阶,二选一);\"1px 边框 + 宽投影\"的幽灵卡片在本世界不存在。", "section": "shapes" },
-      { "name": "The Hatch-Means-Waiting Rule / 斜纹只有一个含义", "body": "135° 斜纹 = 等待在走、资源没占。它只允许出现在时间/度量图形里(执行时间带、节点卡顶边),不许当面板或空态的装饰背景。", "section": "components" },
-      { "name": "The No-Invented-State Rule / 不发明状态", "body": "状态色相只在有真实状态注入时出现;编辑面在没有 status 时不显示任何状态色,状态词表只认与 DDL ENUM 对应的那些值。", "section": "components" },
-      { "name": "The One-Authored-Moment Rule / 只编排一次入场", "body": "全站唯一被编排过的入场是时间带段的展开(320ms cubic-bezier(0.16, 1, 0.3, 1),scaleX 0.35→1 + 透明度);其余动效只有 120ms 的状态过渡与 1.4s 的骨架扫掠。不做逐区块入场。时长目前是实现里的字面量,尚未抽成 token。", "section": "components" }
+      {
+        "name": "The Hue-Is-State Rule / 色相即状态",
+        "body": "六态色相只允许出现在状态本身与由状态派生的图形上(状态芯片、时间带段、节点卡描边、告警边框、脉冲圆点)。悬停、按下、选中、禁用一律走亮度台阶与发丝线,永不借状态色相。",
+        "section": "colors"
+      },
+      {
+        "name": "The Focus-Hue Rule / 焦点色独占",
+        "body": "accent 蓝只做\"焦点、当前所在、可交互线索\";它一旦出现在状态芯片或时间带段上就是错误,反之状态色相也不得用来画焦点环。",
+        "section": "colors"
+      },
+      {
+        "name": "The Measured-Grade Rule / 定档规则",
+        "body": "每档都按它真正落地的**最不利地面**定档(正文 ≥4.5:1、非文本图形 ≥3:1)，不留\"看起来更安静\"的欠对比档。T21.3 起两套世界各跑一遍，且两个脚本都是门(欠档即 exit 1)：契约面 .impeccable/contrast.mjs(15 对在册全过 + 1 对禁用态登记豁免)、渲染面 .impeccable/contrast-render.mjs(浏览器实测，背景按 1×1 canvas 真实合成；描边的内、外邻接都入样)。实测最紧：正文 深色 4.85:1 / 浅色 5.49:1，欠档 0；交互描边 line-2 内外最紧 深色 3.25 / 浅色 3.01。",
+        "section": "colors"
+      },
+      {
+        "name": "The Two-Face Rule / 两面分工",
+        "body": "展示声音永远是自托管的 Geist;系统面只承担自托管文件里没有的 CJK 字形。CJK 不嵌字体是用户 2026-10-09 的拍板,不是遗漏:中文字体动辄 3–10MB 不进包,font-src 'self' 是 CSP 的唯一放宽项。代价是中文灰度由操作系统决定,这是接受的取舍——不要用\"补一个中文字体\"来\"修复\"它。",
+        "section": "typography"
+      },
+      {
+        "name": "The Tabular Rule / 数字必等宽",
+        "body": "ID、计数、时长、时间戳、表格数字一律 font-variant-numeric: tabular-nums + font-feature-settings: 'tnum' 1, 'zero' 1。时间是一等公民:相对时长与绝对时刻同时在位。",
+        "section": "typography"
+      },
+      {
+        "name": "The Mono-Is-Machine-Readable Rule / 等宽只给机读",
+        "body": "Geist Mono 只给代码、JSON/DSL、node_id/trace_id 这类机读标识。数字对齐用 tabular numerals,不用等宽字体假扮\"技术感\"。",
+        "section": "typography"
+      },
+      {
+        "name": "The No-Layout-Jump Rule / 布局不动",
+        "body": "悬停、选中、加载、错误都不改变主要列宽与面板位置;控制台不该边看边晃。",
+        "section": "layout"
+      },
+      {
+        "name": "The Axis-Only-When-There-Is-Time Rule / 无时间不画轴",
+        "body": "执行还没开始(没有任何 started_at)时,时间带只给空轨与状态芯片,不画坐标轴、不编时间;PENDING 节点不画段。",
+        "section": "layout"
+      },
+      {
+        "name": "The Zero-Glow Rule / 零发光零投影",
+        "body": "表面上不出现 box-shadow,也不出现发光(halo/glow/模糊光晕)。层级不够就调亮度台阶,分隔不够就加发丝线。",
+        "section": "elevation"
+      },
+      {
+        "name": "The Sticky-Without-Shadow Rule / 贴边不投影",
+        "body": "粘顶层靠不透明地面色遮挡滚动内容,不靠投影暗示层级。",
+        "section": "elevation"
+      },
+      {
+        "name": "The One-Boundary Rule / 一处边界",
+        "body": "面板、卡片、输入框只声明一次边界(边框或亮度台阶,二选一);\"1px 边框 + 宽投影\"的幽灵卡片在本世界不存在。",
+        "section": "shapes"
+      },
+      {
+        "name": "The Hatch-Means-Waiting Rule / 斜纹只有一个含义",
+        "body": "135° 斜纹 = 等待在走、资源没占。它只允许出现在时间/度量图形里(执行时间带、节点卡顶边),不许当面板或空态的装饰背景。",
+        "section": "components"
+      },
+      {
+        "name": "The No-Invented-State Rule / 不发明状态",
+        "body": "状态色相只在有真实状态注入时出现;编辑面在没有 status 时不显示任何状态色,状态词表只认与 DDL ENUM 对应的那些值。",
+        "section": "components"
+      },
+      {
+        "name": "The One-Authored-Moment Rule / 只编排一次入场",
+        "body": "全站唯一被编排过的入场是时间带段的展开(320ms cubic-bezier(0.16, 1, 0.3, 1),scaleX 0.35→1 + 透明度);其余动效只有 120ms 的状态过渡与 1.4s 的骨架扫掠。不做逐区块入场。时长目前是实现里的字面量,尚未抽成 token。",
+        "section": "components"
+      },
+      {
+        "name": "The One-Line-Two-Worlds Rule / 一套线两套世界",
+        "body": "任何颜色 token 必须先在默认(深色)`@theme` 有值,浅色档只做覆盖;只活在浅色档的 token = 默认世界直接落空(T21.3 真踩过:primary-action / primary-ink / sig-fail-hi)。src/theme.test.ts 有锚。",
+        "section": "colors"
+      },
+      {
+        "name": "The Chip-Background-Is-Opaque Rule / 芯片底色不透明",
+        "body": "状态芯片底 = 同色相 10–14% 不透明盖 ground-1,不是半透明落在所在行上:半透明会让标签对比度随行状态漂移(实测选中行上浅色 3.2–4.0:1、深色 FAILED 3.88:1);改不透明后最紧 4.80 / 5.48。",
+        "section": "components"
+      },
+      {
+        "name": "The Theme-Is-Attribute Rule / 主题只落一个属性",
+        "body": "主题三态(auto/light/dark)只写 `<html data-theme>`,auto 由 CSS 媒体查询解析;组件不读主题、不分支。偏好走 localStorage(braid.theme),首绘前由同源外部启动脚本 assets/theme-boot.js 落定(内联脚本被 CSP script-src self 拦)。",
+        "section": "components"
+      }
     ],
     "dos": [
       "Do 先问\"现在是什么状态、卡了多久、下一步谁动\",再决定画什么。",
@@ -312,7 +645,9 @@
       "Do 把浏览器自带表面主题化:选区、caret、滚动条、焦点环、下划线偏移、color-scheme: dark。",
       "Do 用发丝线分组(结构 line-0 / 分隔 line-1 / 交互描边 line-2),分节用\"发丝线 + 微标题\"。",
       "Do 图标统一 1.75 笔画、默认 14px、aria-hidden,语义交给相邻文字或 aria-label。",
-      "Do 尊重 prefers-reduced-motion,并且贴边层用不透明地面色而不是投影。"
+      "Do 尊重 prefers-reduced-motion,并且贴边层用不透明地面色而不是投影。",
+      "Do 主题只落 data-theme 一个属性:组件不读主题,切主题 = 换一套 token 值;偏好 localStorage 与认证 token 的 sessionStorage 分离。",
+      "Do 状态芯片底色不透明:标签对比度不能随所在行变化。"
     ],
     "donts": [
       "Don't 用投影或发光。本世界零 box-shadow;投影只留给真正浮起的层,而 T21.1 没有任何一层用到。",
@@ -328,7 +663,9 @@
       "Don't 在时间数据不存在时画时间:无 started_at 不画坐标轴,PENDING 节点不画段。",
       "Don't 用进度条、进度环或 sparkline 表达执行进度——DSL 里没有\"完成百分比\",时间带的长度就是进度信息。",
       "Don't 给标题加 kicker/eyebrow;微标签只做字段名、列名、分节名,不许出现在标题上方。",
-      "Don't 做移动端布局或第二主题(浅色主题不做):桌面优先、单世界,窄窗只保证不横向溢出。"
+      "Don't 把浅色做成第二套视觉语言:浅色是同一世界的日间形态(同一批 token 键、同一套类词汇、同一批色相),深色仍是默认世界。",
+      "Don't 在组件层引第二套语言:shadcn 只到 8 个复合交互组件;基础原语与 Select/Checkbox 外壳保持自研,registry 自带外观 utility 必须被适配 CSS 收回。",
+      "Don't 用半透明底承载状态标签:对比度会随所在行漂移。"
     ]
   }
 }

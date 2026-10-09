@@ -169,7 +169,7 @@ export function SelectField({
       error={error}
       value={value}
       aria-label={ariaLabel}
-      onChange={(e) => onChange(e.target.value)}
+      onChange={onChange}
     >
       {options.map((o) => (
         <option key={o.value} value={o.value} disabled={o.disabled}>

@@ -8,7 +8,7 @@
 // 刷新与深链天然一致,组件不持有第二份选中真源。筛选是**服务端**过滤
 // (api.listExecutions 既有 status/name/limit/offset 参数,零新端点),
 // 换筛选 = 重置 offset 重拉。401 统一上抛 App 登出。
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Activity, FilterX, Inbox, Play, RefreshCw, TriangleAlert, X } from 'lucide-react'
 import { ApiError, api, type DraftSummary, type ExecutionSummary } from './api.ts'
 import { ExecutionDetail } from './ExecutionDetail.tsx'
@@ -52,6 +52,18 @@ export function ExecutionsView({
 }) {
   const [execs, setExecs] = useState<ExecutionSummary[]>([])
   const [defs, setDefs] = useState<DraftSummary[]>([])
+  // 同名多版本:发布保留旧 PUBLISHED 行(store 不去重),于是「按 name 取值」的
+  // 控件会拿到重复值 —— 触发器按 value 找标签只会显示第一版,点第二版像没生效
+  // (对抗审计 M3,原生 select 时代同样如此)。触发本来就走服务端最新版,故这里
+  // 按 name 收敛到最高版本:一个工作流一行,值唯一。
+  const defOptions = useMemo(() => {
+    const latest = new Map<string, DraftSummary>()
+    for (const d of defs) {
+      const seen = latest.get(d.name)
+      if (seen === undefined || (d.version ?? 0) > (seen.version ?? 0)) latest.set(d.name, d)
+    }
+    return [...latest.values()]
+  }, [defs])
   const [defName, setDefName] = useState('')
   const [inputRaw, setInputRaw] = useState('{}')
   // 两个错误面分开:输入错误就近贴控件,接口错误贴按钮(不互相顶位)。
@@ -153,16 +165,16 @@ export function ExecutionsView({
     <div className="exec-view">
       <aside className="exec-rail" aria-label="执行列表与触发">
         <section className="panel" data-testid={TID.triggerPanel}>
-          <PanelHead title="触发执行" sub={defs.length > 0 ? `${defs.length} 个已发布` : undefined} />
+          <PanelHead title="触发执行" sub={defOptions.length > 0 ? `${defOptions.length} 个已发布` : undefined} />
           <div className="panel-body exec-trigger">
             <Select
               label="已发布工作流"
               value={defName}
               data-testid={TID.triggerDefinition}
-              onChange={(e) => setDefName(e.target.value)}
+              onChange={setDefName}
             >
               <option value="">选择已发布工作流…</option>
-              {defs.map((d) => (
+              {defOptions.map((d) => (
                 <option key={d.id} value={d.name}>
                   {d.version !== null ? `${d.name} v${d.version}` : d.name}
                 </option>
@@ -222,7 +234,7 @@ export function ExecutionsView({
               <Select
                 label="按状态"
                 value={status}
-                onChange={(e) => changeFilter(() => setStatus(e.target.value))}
+                onChange={(next) => changeFilter(() => setStatus(next))}
               >
                 <option value="">全部状态</option>
                 {STATUS_OPTIONS.map((o) => (

@@ -1,7 +1,8 @@
 ---
 name: braid 控制台
-description: "深色仪器盘「控制室夜班」——近黑偏蓝绿的无光地面，层级只由亮度台阶与 1px 发丝线承担，色相只做状态"
+description: "「控制室夜班」双世界——深色(默认)近黑偏蓝绿 / 浅色日间形态；层级只由亮度台阶与 1px 发丝线承担，色相只做状态"
 colors:
+  # 以下为深色(默认)世界的值；浅色档见 Colors 节(同一批键，另一套值)
   ground-0: "#0a0e13"
   ground-1: "#101720"
   ground-2: "#16202b"
@@ -9,7 +10,7 @@ colors:
   ground-4: "#273543"
   line-0: "#1b2530"
   line-1: "#26333f"
-  line-2: "#556a7e"
+  line-2: "#5b7185"
   ink-0: "#e8eff6"
   ink-1: "#a7b7c6"
   ink-2: "#8497ab"
@@ -19,9 +20,12 @@ colors:
   sig-ok: "#57d06a"
   sig-wait: "#f0b429"
   sig-fail: "#f4575e"
+  sig-fail-hi: "#ff8a8f"
   sig-stop: "#8296ab"
   accent: "#6e9bf5"
   accent-soft: "#1b2a44"
+  primary-action: "#e8eff6"
+  primary-ink: "#0a0e13"
 typography:
   micro:
     fontSize: "0.656rem"
@@ -169,40 +173,59 @@ components:
 
 两条法则把色板的自由度收窄,反而让密集控制台可读:**色相只承担状态语义**(idle / run / ok / wait / fail / stop 六态),**交互一律靠亮度**(主操作 = 亮底深字,永不与状态色相竞争)。焦点蓝 `accent` 是唯一非状态色相,只做焦点与"当前所在",永不表达状态。状态一律色相 + 形状双编码,色盲可达。
 
-本档记录的是 T21.1 已建成并经收尾截图复核的实现(`.impeccable/review/desktop-*.png` 与前端源码 token);构建路径为 code-led,**没有 approved comp、没有像素级 comp-diff**。不含 benchmark 数字、客户案例、定价或第三方 logo——产品真源 `PRODUCT.md` 已明确这些不存在,界面不得编造。
+T21.3 起这个世界有**两套形态、一条验收线**:深色(默认)是夜班形态,浅色是同一世界的日间形态——不是第二套视觉语言。两套的每一档都按它真正落地的**最不利地面**重新定档(正文 ≥4.5:1、非文本图形 ≥3:1),六态色相在浅色地面重配(深色原值在近白地面上只有 1.87–3.30:1,五态全部低于线)。切主题 = 换一套 token 值,组件层零分支:`<html data-theme>` 承载 auto / light / dark 三态,auto 由 CSS 媒体查询解析,偏好存 localStorage(与认证 token 的 sessionStorage 载体分离)。
+
+本档记录的是 T21.1 建成、T21.3 扩展为双世界后的实现。证据 = 两轮截图(`.impeccable/shot.mjs` 的设计评审图 + `.impeccable/shot-theme.mjs` 的深浅/窄窗图)+ 源码 token + 两套对比度实测脚本(`.impeccable/contrast.mjs` 契约面 token 对、`.impeccable/contrast-render.mjs` 浏览器渲染面);构建路径为 code-led,**没有 approved comp、没有像素级 comp-diff**。不含 benchmark 数字、客户案例、定价或第三方 logo——产品真源 `PRODUCT.md` 已明确这些不存在,界面不得编造。
 
 **Key Characteristics:**
 
-- 四段亮度台阶(`ground-0`…`ground-4`)+ 三档发丝线(`line-0/1/2`)承担全部层级;**零发光、零投影**。
+- 四段亮度台阶(`ground-0`…`ground-4`)+ 三档发丝线(`line-0/1/2`)承担全部层级;**零发光、零投影**。两套世界各持一套值,同一条定档线。
 - 六态状态色相只做状态,每个状态同时有图标形状与中文标签。
 - 自托管 Geist / Geist Mono 承担拉丁与数字面;CJK 由系统字体栈回落(用户拍板的有意取舍)。
 - 一切 ID、计数、时长、时间戳走 tabular numerals;时间同时给相对与绝对两面。
 - 签名动作 = **执行时间带**:审批挂起段用 135° 斜纹——等待是有长度、有纹理的时刻,不是转圈。
+- 组件层只有一套语言:14 个基础原语自研,shadcn/ui 只进 8 个复合交互组件(`dialog`/`select`/`dropdown-menu`/`tabs`/`tooltip`/`popover`/`checkbox`/`switch`),其中 Select/Checkbox 是**自研外壳 + shadcn 底层**的单点收敛;registry 自带的外观 utility 由一层适配 CSS 收回自研词汇(行为归 shadcn,外观归 token)。
 
 ## Colors
 
 无彩的地面 + 被严格看管的色相:一块尚未点亮的荧光屏上,只有状态被点亮,蓝色只表示"焦点在这里"。颜色键 = CSS 变量去掉 `--color-` 前缀(`ground-2` ↔ `var(--color-ground-2)`)。
 
-### Primary
+### Primary(焦点蓝)
 
-- **焦点蓝 Interaction Blue**(#6e9bf5):唯一的非状态色相。落点:焦点环(`:focus-visible` 2px outline、85% 混透明、offset 1px)、当前页签 2px 下划线、链接文字与 3px 下划线偏移、DAG 连线/把手选中态、框选边框、文本选区、caret 与 `accent-color`。
-- **焦点蓝暗底 Focus Blue, Sunken**(#1b2a44):时间带选中行的底色(55% 混透明落在地面上)。
+| 键 | 深色(默认) | 浅色 | 落点 |
+|---|---|---|---|
+| `accent` | `#6e9bf5` | `#3764bf` | 焦点环(`:focus-visible` 2px outline、70% 混透明、offset 1px)、当前页签 2px 下划线、链接文字与 3px 下划线偏移、DAG 连线/把手选中态、框选边框、文本选区、caret 与 `accent-color` |
+| `accent-soft` | `#1b2a44` | `#dbe5f7` | 时间带选中行底色(55% 混透明落在地面上) |
+| `primary-action` | `#e8eff6` | `#d8dfe7` | 主操作实体:亮主题取最暗实体、暗主题取最亮实体,同一句规则两态成立 |
+| `primary-ink` | `#0a0e13` | `#0d1319` | 主操作文字 |
+
+浅色 accent 走到 `#3764bf` 是两次收紧的结果:`#6e9bf5` → `#3b68c4`(对白 ≥4.5)→ `#3764bf`(T21.3 把口径从「对白」改成「最不利地面」:选中行 `ground-3` 上 4.34 → 4.60)。
 
 ### Secondary(状态色相六态)
 
-- **等待琥珀 Waiting Amber**(#f0b429):`WAITING_APPROVAL`。braid 的招牌状态,也是整屏唯一暖色——它必须在一屏冷色里被一眼找到。
-- **执行青 Running Teal**(#2ed3c6):`RUNNING` / `EXECUTING`。
-- **成功绿 Succeeded Green**(#57d06a):`SUCCEEDED`。
-- **失败红 Failed Red**(#f4575e):`FAILED` / `ROLLED_BACK`,兼作破坏性动作与错误文案。
-- **取消灰蓝 Stopped Slate**(#8296ab):`CANCELLED` / `SKIPPED`。
-- **未开始暗板 Idle Slate**(#3a4a5a):六态里最暗的一档,只做底色与边框基;**永不做文字色**——它落在自身 tint 上只有 1.9:1,`IDLE`/`PENDING` 芯片的文字改用 `ink-2`。
+| 词表 | 深色(默认) | 浅色 | 说明 |
+|---|---|---|---|
+| `sig-run` 执行中 | `#2ed3c6` | `#006961` | `RUNNING` / `EXECUTING` |
+| `sig-ok` 成功 | `#57d06a` | `#186b2a` | `SUCCEEDED` |
+| `sig-wait` 等待 | `#f0b429` | `#795400` | `WAITING_APPROVAL`——braid 的招牌状态,也是整屏唯一暖色 |
+| `sig-fail` 失败 | `#f4575e` | `#ac2834` | `FAILED` / `ROLLED_BACK`,兼作破坏性动作与错误文案 |
+| `sig-fail-hi` 失败提亮 | `#ff8a8f` | `#a03339` | 破坏性动作悬停时的字色 |
+| `sig-stop` 取消 | `#8296ab` | `#516171` | `CANCELLED` / `SKIPPED` |
+| `sig-idle` 未开始 | `#3a4a5a` | `#5a6675` | 六态里最暗的一档,只做底色与边框基;**两套世界都永不做文字色**——深色下它落在自身 tint 上只有 1.9:1,`IDLE`/`PENDING` 芯片的文字改用 `ink-2` |
+
+浅色六态在 T21.3 被**重配过两次**:阶段 2 按「对白 ≥4.5」定档,阶段 3 实测发现标签还会落在选中行(`ground-3`)与其自色 tint 上,那一面只有 3.2–4.0:1,故逐态再压亮度,自色 tint 上最紧 **5.48:1**(同一口径下 `accent` 落在 `ground-3` 上走到 4.60:1)。深色档原值未动 —— 唯一例外是 `line-2`(见下)。
 
 ### Neutral
 
-- **无光地面 Unlit Ground**(#0a0e13):应用底、画布地面、JSON/DSL 只读底。
-- **面板 Panel**(#101720)/ **抬升 Raised**(#16202b)/ **悬停 Hover**(#1e2a37)/ **选中·按下 Pressed**(#273543):四段亮度台阶,逐级抬升。ground-2 承载输入框、表头、次级按钮;ground-3 承载悬停与选中行;ground-4 承载按下与滚动条拇指。
-- **结构分割 Structural Hairline**(#1b2530)/ **可见分隔 Visible Divider**(#26333f)/ **可辨描边 Discernible Stroke**(#556a7e):一律 1px。`line-2` 是交互控件描边与 DAG 连线的唯一来源。
-- **主读数 Primary Reading**(#e8eff6)/ **次读数 Secondary**(#a7b7c6)/ **三级标签 Tertiary**(#8497ab)/ **待填 Quaternary**(#76889b):四级墨色,每一级按它真正落地的地面定档。
+| 键 | 深色(默认) | 浅色 | 说明 |
+|---|---|---|---|
+| `ground-0` 应用底 | `#0a0e13` | `#f7f9fb` | 应用底、画布地面、JSON/DSL 只读底 |
+| `ground-1` 面板 | `#101720` | `#ffffff` | 面板、弹层、芯片底色基 |
+| `ground-2` 抬升 | `#16202b` | `#eef1f5` | 输入框、表头、次级按钮 |
+| `ground-3` 悬停/选中行 | `#1e2a37` | `#e4e9ef` | 行悬停、行选中、幽灵按钮悬停 |
+| `ground-4` 按下/选中 | `#273543` | `#d8dfe7` | 按下、分段控件选中、滚动条拇指 |
+| `line-0` / `line-1` / `line-2` | `#1b2530` / `#26333f` / `#5b7185` | `#dde3ea` / `#c9d2db` / `#808d95` | 结构分割 / 可见分隔 / 可辨描边;一律 1px,`line-2` 是交互控件描边与 DAG 连线的唯一来源。深色 `line-2` 由 `#556a7e` 提到 `#5b7185`(T21.3):旧值对控件**自身填充**只有 2.94:1 |
+| `ink-0`…`ink-3` | `#e8eff6` / `#a7b7c6` / `#8497ab` / `#76889b` | `#0d1319` / `#3d4a57` / `#4e5a68` / `#5f6a71` | 主读数 / 次读数 / 三级标签 / 待填,每一级按它真正落地的最不利地面定档 |
 
 ### Named Rules
 
@@ -210,14 +233,29 @@ components:
 
 **The Focus-Hue Rule / 焦点色独占.** `accent` 蓝只做"焦点、当前所在、可交互线索";它一旦出现在状态芯片或时间带段上就是错误,反之状态色相也不得用来画焦点环。
 
-**The Measured-Grade Rule / 定档规则.** 每档墨色与发丝线都按它真正落地的地面定档,不留"看起来更安静"的欠对比档。以下为收尾评审实测值;改任一 `ground`/`ink`/`line` 的值必须用同一方法重算这四个对,不得凭观感放行:
+**The One-Line-Two-Worlds Rule / 一套线两套世界.** 任何颜色 token 都必须先在默认(深色)`@theme` 里有值,浅色档只做覆盖;只活在浅色档的 token = 默认世界直接落空(T21.3 真踩过:`primary-action`/`primary-ink`/`sig-fail-hi` 曾只存在于深色覆盖块,默认世界改成 `@theme` 后主操作背景变透明)。`src/theme.test.ts` 有锚:浅色档声明的键必须全部在 `@theme` 里。改任一 `ground`/`ink`/`line`/`accent`/`sig-*` 必须用 `.impeccable/contrast.mjs`(契约面)与 `.impeccable/contrast-render.mjs`(渲染面)重跑两套世界,数值抄进下表。
 
-- `--color-ink-2` #8497ab → 表头文字落在地面 `ground-2` 上:**5.48:1**。
-- `--color-ink-3` #76889b → 输入框占位符落在地面 `ground-2` 上:**4.52:1**。
-- `--color-line-2` #556a7e → DAG 连线落在 `ground-0` 上:**3.46:1**;交互控件描边落在 `ground-1` 上:**3.22:1**(非文本图形 ≥3:1)。
-- 状态芯片标签落在其自色 tint 上:**4.8–7.7:1**(最紧的一档是 FAILED;tint = 状态色 10–14% 的 `color-mix(in oklab)` 落在地面上)。
+**The Measured-Grade Rule / 定档规则.** 每档都按它真正落地的**最不利地面**定档,不留"看起来更安静"的欠对比档。口径:不透明对按 WCAG 2.x 相对亮度公式;正文与占位文本 ≥4.5:1,非文本图形 ≥3:1。禁用态不参与定档(靠背景与 `cursor: not-allowed` 区分;深色 `ink-3`/`ground-3` 恰是禁用主操作,4.00:1,在此登记)。
 
-口径:不透明对按 WCAG 2.x 相对亮度公式(正文与占位文本 ≥4.5:1,非文本图形 ≥3:1);芯片 tint 是实际渲染色,故给区间不给单值。禁用态不参与定档,靠背景与 `cursor: not-allowed` 区分。
+契约面(token 对,`.impeccable/contrast.mjs`,两套世界各 **15 对在册全过 + 1 对登记豁免**;脚本退出码即判据,欠档就 exit 1):
+
+| 对 | 深色 | 浅色 | 线 |
+|---|---|---|---|
+| 正文 `ink-0` / `ground-0` | 16.69 | 17.70 | 4.5 |
+| 正文 `ink-0` / `ground-1` | 15.54 | 18.68 | 4.5 |
+| 次文本 `ink-1` / `ground-1` · `ground-2` | 8.78 · 8.02 | 9.07 · 8.01 | 4.5 |
+| 三级 `ink-2` / `ground-2` · `ground-3` | 5.48 · 4.85 | 6.21 · 5.76 | 4.5 |
+| 占位 `ink-3` / `ground-2` · `ground-3` | 4.52 · 4.00(禁用态,登记豁免) | 4.90 · 4.54 | 4.5 |
+| 交互描边 `line-2` / `ground-0` · `ground-1` · `ground-2`(控件自身填充) | 3.82 · 3.56 · 3.25 | 3.23 · 3.41 · 3.01 | 3 |
+| 焦点 `accent` / `ground-0` · `ground-1` | 7.07 · 6.58 | 5.32 · 5.62 | 4.5 |
+| 主操作 `primary-ink` / `primary-action` | 16.69 | 13.90 | 4.5 |
+| 分段控件选中 `ink-0` / `ground-4` | 10.80 | 13.90 | 4.5 |
+| 勾选框勾 `ground-1` / `accent` | 6.58 | 5.62 | 3 |
+| 六态芯片标签 / 自色 tint(不透明,盖 `ground-1`) | 4.80–7.65 | 5.48–5.56 | 4.5 |
+
+渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contrast-render.mjs`,背景按真实合成取 1×1 canvas 像素,欠档即 exit 1):最紧正文比 = 深色 **4.85:1**(工作流面的三级时间戳)/ 浅色 **5.49:1**(等待审批芯片),**欠档 0 条**。交互描边 `line-2` 的内、外邻接都入样(外 = 页面地面,内 = 控件自身填充):深色实测 外 `ground-1` 3.56 / 内 `ground-2` 3.25、外 `ground-0` 3.82 / 内 `ground-1` 3.56;浅色 外 3.41 / 内 3.01 —— 两面均过 3:1。结构发丝线(`line-0/1`)是分隔性图形,不适用 1.4.11,不计。
+
+**The Chip-Background-Is-Opaque Rule / 芯片底色不透明.** 状态芯片的底 = 同色相 10–14% **不透明**盖 `ground-1`,不是半透明落在所在行上:半透明让标签对比度随行状态漂移(T21.3 实测:选中行 `ground-3` 上浅色 3.2–4.0:1、深色 `FAILED` 3.88:1);改不透明后两套世界的最紧值 4.80 / 5.48。
 
 ## Typography
 
@@ -304,16 +342,16 @@ components:
 ### Buttons
 
 - **Shape**:高 32px(`2rem`);小号 26px(`1.625rem`)且字号降一档;圆角 8px;横向内边距 12px(小号 8px);图标与文字间距 6.4px(`0.4rem`);文字 12.5px/500,主操作 600;图标按钮见方(32 / 26px),必须给 `aria-label`。
-- **Primary**:亮底深字——`background: var(--color-ink-0)`、文字 `ground-0`、边框同底色;悬停纯白 `#fff`,按下 `ink-1`;禁用 `ground-3` 底 + `ink-3` 字。这是"主操作 = 亮度最高的实体"的执行:全屏最亮的一块永远是当前该按的那个。
+- **Primary**:亮底深字——`background: var(--color-primary-action)`、文字 `var(--color-primary-ink)`、边框同底色;悬停/按下 = `color-mix(in oklab, primary-action 88% / 76%, ink-0)`;禁用 `ground-3` 底 + `ink-3` 字。这是"主操作 = 该世界里亮度对比最大的实体"的执行:亮主题取最暗实体、暗主题取最亮实体,两套世界实测 13.90:1 / 16.69:1。
 - **Default(次级)**:`ground-2` 底 + 1px `line-2` 边框 + `ink-0` 字;悬停 `ground-3` + 边框 `ink-3`;按下 `ground-4`;禁用 `ground-1` 底 + `line-0` 边框 + `ink-3` 字 + `cursor: not-allowed`。
 - **Quiet(幽灵/图标)**:透明底、`ink-1` 字;悬停 `ground-3` + `ink-0`;小号常与图标组合(新建、添加、删除行)。
-- **Danger(破坏性)**:透明底 + `color-mix(fail 55%)` 边框 + `fail` 字;悬停 14% 红 tint + 实边框 + 提亮字 `#ff8a8f`。不可逆动作(取消执行)走 danger 并给第二下确认。
+- **Danger(破坏性)**:透明底 + `color-mix(fail 55%)` 边框 + `fail` 字;悬停 14% 红 tint + 实边框 + 提亮字 `sig-fail-hi`(深色 `#ff8a8f` / 浅色 `#a03339`)。不可逆动作(取消执行)走 danger 并给第二下确认。
 - **Hover / Focus / Motion**:背景色、边框色、文字色 120ms `cubic-bezier(0.4, 0, 0.2, 1)`;焦点环统一走全局 `:focus-visible`。
 
 ### Chips(状态芯片)
 
 - **Shape**:高 22px(`1.375rem`)、胶囊圆角、内边距 `0 7.2px`;标签 10.5px/600/大写/+0.07em。
-- **Color**:1px 边框取状态色相 40–65% 混透明,底色取同色相 10–14% 混透明,文字取状态色相本体;例外是 `IDLE`/`PENDING`——文字 `ink-2`、边框 `line-2`、底取 `sig-idle` 22%。
+- **Color**:1px 边框取状态色相 40–65% 混透明,**底色取同色相 10–14% 不透明盖 `ground-1`**(见 The Chip-Background-Is-Opaque Rule),文字取状态色相本体;例外是 `IDLE`/`PENDING`——文字 `ink-2`、边框 `line-2`、底取 `sig-idle` 22% 盖 `ground-1`。
 - **Dual coding**:芯片内必带状态图标(11px)+ 中文标签。词表与 DDL ENUM 一一对应:执行域 `PENDING` 待执行 / `RUNNING` 执行中 / `WAITING_APPROVAL` 等待审批 / `SUCCEEDED` 已成功 / `FAILED` 已失败 / `CANCELLED` 已取消;节点域另有 `EXECUTING` 执行中 / `SKIPPED` 已跳过。不新增、不改名、不换话术;未知状态回 `CircleHelp` + 原样英文码。
 - **Quiet variant**:中性元数据(节点类型、触发来源、草稿/已发布/已归档)用 `chip-quiet`——`ground-2` 底、`line-1` 边框、`ink-1` 字、+0.06em,不承载状态。
 
@@ -321,7 +359,8 @@ components:
 
 - **Style**:`ground-2` 底、1px `line-2` 边框、8px 圆角、内边距 `4.8px 8px`、12.5px 字;标签永远在控件上方(11.5px `ink-1`),错误紧贴控件下方并优先于提示(11.5px `fail`,`role="alert"` + `aria-invalid`)。
 - **Hover**:边框 `ink-3`。**Focus**:边框 `accent` + 底色降回 `ground-1` + 2px `accent` 70% 焦点环。**Disabled**:`ground-1` 底 + `line-0` 边框 + `ink-3` 字。**Invalid**:边框 `sig-fail`。
-- **Placeholder**:`ink-3`(实测 4.52:1)。`select` 用双 5×5 线性渐变自绘箭头(`ink-2`),`textarea` 允许纵向 resize、行高 1.55。数值输入带 `min`/`max` 镜像 schema,越界就地报错。
+- **Placeholder**:`ink-3`(实测 深色 4.52:1 / 浅色 4.90:1)。`textarea` 允许纵向 resize、行高 1.55;数值输入带 `min`/`max` 镜像 schema,越界就地报错。
+- **Select / Checkbox(T21.3 单点收敛)**:外壳仍是自研(`ui/field.tsx` 的标签/hint/错误布局与 id 绑定,调用点继续写原生 `<option>`),内部控制与键盘行为交给 shadcn 的 `select`/`checkbox`(Base UI):焦点管理、弹层 Portal、列表键盘导航、`role="checkbox"`。外观由一层适配 CSS 收回自研词汇——`[data-slot='select-trigger'].select` 与 `.input` 同形(同高、同底、同描边、同焦点环),弹层 = `ground-1` + 1px `line-1` 且**无投影**;勾选框未选 = `ground-2` + `line-2`,选中 = `accent` 实体 + 对侧地面色勾(实测 5.62–6.58:1)。全仓只有这一处实现,不存在两套。
 
 ### Panels
 
@@ -335,6 +374,17 @@ components:
 ### Navigation
 
 域导航就是页签:高 36px、12.5px/500、`ink-1`;悬停 `ink-0`;当前页 `ink-0` + 600 + 底部 2px `accent` 下划线(左右内缩 8px)+ 14px 图标。全站只有这一处导航:没有第二套导航、没有二级侧边导航、没有面包屑。
+
+### Theme Control(主题三态分段)
+
+- 壳顶栏右侧的三颗等宽图标按钮(`auto` 跟随系统 / `light` / `dark`):容器高 26px、`ground-2` 底 + 1px `line-0` + 8px 圆角、内边距 2px;按钮 24×22px、未选中 `ink-2`、悬停 `ground-3`、选中 `ground-4` + `ink-0`。
+- 语义是**设定偏好**而不是开关:当前档用 `aria-pressed`,`title` 与 `sr-only` 给中文名(仅图标必须有无障碍名);三颗等宽,切换时右侧不位移(布局不动)。
+- 落点只有 `<html data-theme>` 一个属性;偏好存 `localStorage`(`braid.theme`),首绘前由 `assets/theme-boot.js`(同源外部脚本——CSP 是 `script-src 'self'`,内联脚本在生产不执行)落定,浅色用户不会先看到一闪的深色。
+
+### Collapsible Panels(可收起两栏)
+
+- 工作流面左栏(工作流列表)与右栏(属性面板)可各自收起:左栏收起后留一条 2rem 窄栏 + 展开键(画布不贴边,"这里本来有个面板"不丢);右栏开关常驻编辑器顶栏,收起后仍可达。
+- 折叠态是跨会话 UI 偏好(`localStorage`,`src/prefs.ts`),与主题同一条载体纪律。收起只让位,不改列宽规则:展开态的面板宽度是常量,不随选中态跳动。
 
 ### Alerts / Empty / Skeleton
 
@@ -382,6 +432,9 @@ components:
 - **Do** 用发丝线分组(结构 `line-0` / 分隔 `line-1` / 交互描边 `line-2`),分节用"发丝线 + 微标题"。
 - **Do** 图标统一 1.75 笔画、默认 14px、`aria-hidden`,语义交给相邻文字或 `aria-label`。
 - **Do** 尊重 `prefers-reduced-motion`,并且贴边层用不透明地面色而不是投影。
+- **Do** 主题只落 `data-theme` 一个属性:组件不读主题、不分支,切主题 = 换一套 token 值;偏好走 `localStorage`,首绘前由同源外部启动脚本落定。
+- **Do** 把跨会话 UI 偏好(主题三态、两栏折叠)放 `localStorage`,认证 token 留 `sessionStorage`——两种载体分离,互不引用。
+- **Do** 状态芯片底色不透明:标签对比度不能随所在行/悬停状态变化。
 
 ### Don't:
 
@@ -398,4 +451,7 @@ components:
 - **Don't** 在时间数据不存在时画时间:无 `started_at` 不画坐标轴,`PENDING` 节点不画段。
 - **Don't** 用进度条、进度环或 sparkline 表达执行进度——DSL 里没有"完成百分比",时间带的长度就是进度信息。
 - **Don't** 给标题加 kicker/eyebrow;微标签只做字段名、列名、分节名,不许出现在标题上方。
-- **Don't** 做移动端布局或第二主题(浅色主题不做):桌面优先、单世界,窄窗只保证不横向溢出。
+- **Don't** 把浅色做成第二套视觉语言:浅色是同一世界的日间形态(同一批 token 键、同一套类词汇、同一批色相),不是新主题;深色仍是默认世界。
+- **Don't** 在组件层引第二套语言:shadcn 只到 8 个复合交互组件,基础原语与 Select/Checkbox 外壳保持自研;registry 自带的外观 utility 必须被适配层收回(`styles/index.css` 末节),不许两套并存。
+- **Don't** 用半透明底承载状态标签:对比度会随所在行漂移(T21.3 实测曾掉到 3.2:1)。
+- **Don't** 做移动端布局:桌面优先,窄窗只保证不横向溢出。

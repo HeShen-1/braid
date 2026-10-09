@@ -200,7 +200,9 @@ describe('ExecutionDetail(执行详情)', () => {
     })
     render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
     await user.click(await screen.findByTestId(tid.nodeRow('gate', 0)))
-    await user.click(screen.getByLabelText('静默在飞'))
+    // 决策 3 收敛后 Checkbox 由 Base UI 承载:label 同时关联隐藏 input 与
+    // role=checkbox 的可见控件(label 断言保留,故按 role + 可及名取)。
+    await user.click(screen.getByRole('checkbox', { name: '静默在飞' }))
     await user.click(screen.getByTestId(TID.rollbackSubmit))
     expect(await screen.findByTestId(TID.execFlash)).toHaveTextContent('静默在飞 1 行')
     expect(sawQuiesce).toBe(true)

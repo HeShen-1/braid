@@ -1,11 +1,17 @@
 import { render, screen } from '@testing-library/react'
-import userEvent from '@testing-library/user-event'
+import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { useState } from 'react'
 import { describe, expect, it } from 'vitest'
 import { NodePanel } from './NodePanel.tsx'
 import { WorkflowPanel } from './WorkflowPanel.tsx'
 import type { DslNode, WorkflowDoc } from './model/dsl.ts'
 import { loadBase } from './model/testdata.ts'
+
+/** 决策 3 收敛后 Select 不再是原生控件:两步交互 = 点触发器 → 点选项。 */
+async function chooseOption(user: UserEvent, trigger: HTMLElement, option: string) {
+  await user.click(trigger)
+  await user.click(await screen.findByRole('option', { name: option }))
+}
 
 // Probe:受控回渲面板(update 直写 state),渲染期把最新值抛给闭包供断言。
 let latestNode: DslNode | undefined
@@ -66,10 +72,13 @@ describe('NodePanel', () => {
     if (latestNode!.type !== 'approval') throw new Error('unreachable')
     expect(latestNode!.approvers).toEqual(['alice', 'bob', 'carol'])
     // t14.2 已合入:all 会签可选(schema enum ["any","all"],D-t141 #5 消费)。
-    const mode = screen.getByLabelText('签署模式') as HTMLSelectElement
-    const all = mode.querySelector('option[value="all"]') as HTMLOptionElement
-    expect(all.disabled).toBe(false)
-    expect(mode.value).toBe('any')
+    // Base UI select 的选项只在弹层挂载后存在 ⇒ 先点开再断言 all 可选。
+    const mode = screen.getByLabelText('签署模式')
+    expect(mode).toHaveTextContent('any · 或签')
+    await user.click(mode)
+    const all = await screen.findByRole('option', { name: /all · 会签/ })
+    expect(all).not.toHaveAttribute('aria-disabled', 'true')
+    await user.keyboard('{Escape}')
   })
 
   it('branch:加分支行 + 默认去向', async () => {
@@ -91,7 +100,7 @@ describe('NodePanel', () => {
     await user.type(screen.getByLabelText('foreach(数组引用)'), '{{{{inputs.rows}}')
     if (latestNode!.type !== 'parallel') throw new Error('unreachable')
     expect(latestNode!.parallel.foreach).toBe('{{inputs.rows}}')
-    await user.selectOptions(screen.getByLabelText('类型'), 'tool')
+    await chooseOption(user, screen.getByLabelText('类型'), '工具')
     if (latestNode!.type !== 'parallel') throw new Error('unreachable')
     expect(latestNode!.parallel.body.type).toBe('tool')
     expect(latestNode!.parallel.body).toHaveProperty('tool', '')
@@ -136,10 +145,14 @@ describe('NodePanel', () => {
     expect(Object.values(out).filter((v) => v === 'string')).toHaveLength(2)
   })
 
-  it('op 词域:contains 可选(镜像 schema 8 值)', () => {
+  it('op 词域:contains 可选(镜像 schema 8 值)', async () => {
+    const user = userEvent.setup()
     render(<NodeProbe initial={nodeFrom('all-node-types', 'verdict')} />)
-    const op = screen.getAllByRole('combobox').find((s) => (s as HTMLSelectElement).value === 'eq') as HTMLSelectElement
-    expect([...op.options].map((o) => o.value)).toEqual(['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains', 'exists'])
+    // op 的 label 即值本身(NodePanel:`OPS.map((o) => ({ value: o, label: o }))`),
+    // 故弹层里的选项文本就是词域;Base UI 不把 value 落到 DOM 属性上。
+    await user.click(screen.getByLabelText('条件运算符 1'))
+    const labels = (await screen.findAllByRole('option')).map((o) => o.textContent)
+    expect(labels).toEqual(['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains', 'exists'])
   })
 
   it('就近错误:审批人重复当场指出(schema approvers uniqueItems)', async () => {

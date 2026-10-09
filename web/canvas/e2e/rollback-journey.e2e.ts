@@ -96,7 +96,11 @@ async function approvalDecide(
 /** 触发面板提交一次执行,并从 TriggerAck 回读执行 id(幂等键由 UI 生成)。 */
 async function triggerFromConsole(page: Page): Promise<string> {
   await expect(page.getByTestId(TID.triggerPanel)).toBeVisible()
-  await page.getByTestId(TID.triggerDefinition).selectOption('e2e-rollback-journey')
+  // T21.3 决策 3 收敛后 Select 不再是原生控件:两步 = 点触发器 → 点选项。
+  // 选项文案 = `${name} v${version}`,同名多版本都在列(触发按 name 走服务端
+  // 最新版,故取首个匹配即可)。
+  await page.getByTestId(TID.triggerDefinition).click()
+  await page.getByRole('option', { name: /^e2e-rollback-journey v/ }).first().click()
   await page.getByTestId(TID.triggerInput).fill(JSON.stringify({ docs: DOC_FILES }))
   const [res] = await Promise.all([
     page.waitForResponse(

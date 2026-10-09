@@ -21,7 +21,7 @@ import {
   type NodeTypes,
   type Viewport,
 } from '@xyflow/react'
-import { ChevronRight, Info, MousePointerClick, Rocket, Save, Settings2, Workflow } from 'lucide-react'
+import { ChevronRight, Info, MousePointerClick, PanelRightClose, PanelRightOpen, Rocket, Save, Settings2, Workflow } from 'lucide-react'
 import { clampViewport, fromCanvas, nextNodeId, serializeDoc, toCanvas } from './model/convert.ts'
 import type { FlowNode, FlowEdge } from './model/convert.ts'
 import type { DslNode, NodeType, WorkflowDoc } from './model/dsl.ts'
@@ -30,6 +30,7 @@ import { Palette } from './Palette.tsx'
 import { NodePanel } from './NodePanel.tsx'
 import { WorkflowPanel } from './WorkflowPanel.tsx'
 import { defaultSpec } from './defaults.ts'
+import { PANEL_RIGHT_KEY, useCollapsed } from './prefs.ts'
 import { Button, EmptyState } from './ui/primitives.tsx'
 import { I } from './ui/I.tsx'
 import { TID } from './ui/testids.ts'
@@ -62,6 +63,8 @@ function Editor({
   const [viewport, setViewport] = useState(initial.viewport)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [showWorkflowPanel, setShowWorkflowPanel] = useState(false)
+  // 右栏(属性面板)折叠态:跨会话 UI 偏好(prefs.ts),与左栏同一口径。
+  const [sideCollapsed, setSideCollapsed] = useCollapsed(PANEL_RIGHT_KEY)
   const { screenToFlowPosition } = useReactFlow()
 
   const onConnect = useCallback((c: Connection) => {
@@ -120,9 +123,11 @@ function Editor({
   )
 
   const toggleWorkflow = useCallback(() => {
+    // 面板收起时点「工作流设置」:先把面板放回来,否则点了像没反应。
+    setSideCollapsed(false)
     setShowWorkflowPanel((v) => !v)
     setSelectedId(null)
-  }, [])
+  }, [setSideCollapsed])
 
   return (
     <div className="editor" data-testid={TID.editor}>
@@ -143,6 +148,16 @@ function Editor({
           </span>
         ) : null}
         <div className="ml-auto flex shrink-0 items-center gap-2">
+          <Button
+            size="sm"
+            variant="quiet"
+            iconOnly
+            icon={sideCollapsed ? PanelRightOpen : PanelRightClose}
+            aria-label={sideCollapsed ? '展开属性面板' : '收起属性面板'}
+            aria-pressed={!sideCollapsed}
+            data-testid={TID.panelRightToggle}
+            onClick={() => setSideCollapsed(!sideCollapsed)}
+          />
           <Button
             size="sm"
             variant={showWorkflowPanel ? 'default' : 'quiet'}
@@ -200,27 +215,30 @@ function Editor({
           ) : null}
         </div>
 
-        {/* 属性面板常驻:画布宽度不随选中态跳动。 */}
-        <aside className="editor-side" aria-label="属性面板">
-          {selected !== undefined ? (
-            /* key = 节点 id:切换节点必须重建面板本地态(如 ApproversInput
-               的 raw 暂存),否则残留上一节点的输入并覆盖下一节点(对抗审计 HIGH)。 */
-            <NodePanel key={selected.id} spec={selected.data.spec} update={(patch) => updateSpec(selected.id, patch)} />
-          ) : showWorkflowPanel ? (
-            <WorkflowPanel
-              key={draftId ?? 'local'}
-              doc={base}
-              update={(patch) => setBase((b) => patch(b))}
-              nameLocked={draftId !== null}
-            />
-          ) : (
-            <EmptyState
-              icon={MousePointerClick}
-              title="未选中节点"
-              hint="在画布上点选一个节点编辑它的属性；顶栏「工作流设置」切换文档级字段。"
-            />
-          )}
-        </aside>
+        {/* 属性面板常驻:画布宽度不随选中态跳动。收起时整列让给画布,
+            开关留在顶栏(收起后仍可达,不靠悬浮按钮)。 */}
+        {sideCollapsed ? null : (
+          <aside className="editor-side" aria-label="属性面板">
+            {selected !== undefined ? (
+              /* key = 节点 id:切换节点必须重建面板本地态(如 ApproversInput
+                 的 raw 暂存),否则残留上一节点的输入并覆盖下一节点(对抗审计 HIGH)。 */
+              <NodePanel key={selected.id} spec={selected.data.spec} update={(patch) => updateSpec(selected.id, patch)} />
+            ) : showWorkflowPanel ? (
+              <WorkflowPanel
+                key={draftId ?? 'local'}
+                doc={base}
+                update={(patch) => setBase((b) => patch(b))}
+                nameLocked={draftId !== null}
+              />
+            ) : (
+              <EmptyState
+                icon={MousePointerClick}
+                title="未选中节点"
+                hint="在画布上点选一个节点编辑它的属性；顶栏「工作流设置」切换文档级字段。"
+              />
+            )}
+          </aside>
+        )}
       </div>
 
       {/* DSL 预览抽屉:导出产物,只读;折叠时只是一条横档。 */}

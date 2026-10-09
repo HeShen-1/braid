@@ -80,7 +80,8 @@
   min-height: 0;
 }
 
-/* 属性面板:常驻右列——画布宽度不随选中态跳动(控制台不该边看边晃)。 */
+/* 属性面板:常驻右列——画布宽度不随选中态跳动(控制台不该边看边晃)。
+   收起态由顶栏开关承担(见 CanvasEditor 顶栏),不占一条常驻窄栏。 */
 .editor-side {
   display: flex;
   flex: none;
@@ -89,6 +90,19 @@
   min-height: 0;
   overflow-y: auto;
   border-left: 1px solid var(--color-line-1);
+  background: var(--color-ground-1);
+}
+
+/* 收起后的面板窄栏(左列表):留一条可展开的条,画布不贴边、
+   「这里本来有个面板」不丢。展开键就在条里。 */
+.side-rail {
+  display: flex;
+  flex: none;
+  align-items: flex-start;
+  justify-content: center;
+  width: 2rem;
+  padding-top: 0.5rem;
+  border-right: 1px solid var(--color-line-1);
   background: var(--color-ground-1);
 }
 
