@@ -126,6 +126,35 @@ const narrow = await login(narrowCtx)
 await walkSurfaces(narrow, 'narrow')
 await narrowCtx.close()
 
+// ---- 三态 × 系统偏好:auto 必须真的跟随 prefers-color-scheme(渲染层,不是属性层)----
+{
+  const ctx = await browser.newContext({ viewport: { width: 1200, height: 800 }, deviceScaleFactor: 1 })
+  const page = await login(ctx)
+  const probe = () =>
+    page.evaluate(() => {
+      const cs = getComputedStyle(document.documentElement)
+      return { ground0: cs.getPropertyValue('--color-ground-0').trim(), colorScheme: cs.colorScheme }
+    })
+  const DARK = '#0a0e13'
+  const LIGHT = '#f7f9fb'
+  for (const [theme, sys, want] of [
+    ['dark', 'light', DARK],
+    ['light', 'dark', LIGHT],
+    ['auto', 'dark', DARK],
+    ['auto', 'light', LIGHT],
+  ]) {
+    await page.getByTestId(`theme-option-${theme}`).click()
+    await page.emulateMedia({ colorScheme: sys })
+    await page.waitForTimeout(300)
+    const got = await probe()
+    if (got.ground0 !== want)
+      throw new Error(`主题 ${theme} + 系统 ${sys}:ground-0=${got.ground0}, want ${want}(auto 没跟随系统?)`)
+    console.log(`theme=${theme} + 系统 ${sys} → ground-0=${got.ground0} color-scheme=${got.colorScheme} OK`)
+  }
+  await page.emulateMedia({ colorScheme: null })
+  await ctx.close()
+}
+
 // ---- 登录面(无会话):验证偏好经首绘前启动脚本落定 ----
 for (const theme of THEMES) {
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 1000 }, deviceScaleFactor: 1 })
