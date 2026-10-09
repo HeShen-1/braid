@@ -217,9 +217,10 @@ export function ExecutionsView({
           />
           {showFilters ? (
             <div className="exec-filters">
-              <span className="micro">筛选</span>
+              {/* 不设"筛选"框标签:两个字段各自的标签已经说明了这一行是什么,
+                  再加一个会让三个标签挤在两行里(收尾评审 R2)。 */}
               <Select
-                label="状态"
+                label="按状态"
                 value={status}
                 onChange={(e) => changeFilter(() => setStatus(e.target.value))}
               >
@@ -231,8 +232,8 @@ export function ExecutionsView({
                 ))}
               </Select>
               <TextInput
-                label="工作流"
-                placeholder="按名称筛选"
+                label="按名称"
+                placeholder="工作流名称"
                 value={nameInput}
                 onChange={(e) => changeFilter(() => setNameInput(e.target.value))}
               />

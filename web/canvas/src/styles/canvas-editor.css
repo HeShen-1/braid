@@ -239,9 +239,14 @@
   color: var(--color-ink-2);
 }
 
-/* 待填占位:比"已有值"更暗,但不进状态色相。 */
+/* 待填占位:与节点自身的虚线边框同一套语言(虚线 = 还没填)。
+   收尾评审 R1:ink-2/ink-3 抬到过线后档距收窄,"已填 vs 待填"不能再
+   只靠一个微弱的亮度差承担 —— 改由**形态**通道承担,亮度只作辅助。 */
 .bn-todo {
   color: var(--color-ink-3);
+  text-decoration: underline dashed;
+  text-decoration-color: color-mix(in oklab, var(--color-ink-3) 70%, transparent);
+  text-underline-offset: 3px;
 }
 
 /* 状态色相:只上 1px 边框,零发光、零投影。 */

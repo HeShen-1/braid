@@ -130,7 +130,7 @@ describe('ExecutionsView(执行面)', () => {
     await screen.findByTestId(tid.execRow('7'))
     expect(queryOf(listUrls()[0]).has('status')).toBe(false)
 
-    await user.selectOptions(screen.getByLabelText('状态'), 'FAILED')
+    await user.selectOptions(screen.getByLabelText('按状态'), 'FAILED')
     expect(await screen.findByTestId(tid.execRow('3'))).toBeInTheDocument()
     expect(screen.queryByTestId(tid.execRow('7'))).not.toBeInTheDocument()
     const last = queryOf(listUrls().at(-1) as string)
@@ -146,7 +146,7 @@ describe('ExecutionsView(执行面)', () => {
     )
     render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.execRow('7'))
-    fireEvent.change(screen.getByLabelText('工作流'), { target: { value: 'other' } })
+    fireEvent.change(screen.getByLabelText('按名称'), { target: { value: 'other' } })
     await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('name')).toBe('other'))
     expect(await screen.findByTestId(tid.execRow('6'))).toBeInTheDocument()
   })
@@ -171,7 +171,7 @@ describe('ExecutionsView(执行面)', () => {
     await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('offset')).toBe('20'))
     expect(await screen.findByTestId(tid.execRow('20'))).toBeInTheDocument()
 
-    await user.selectOptions(screen.getByLabelText('状态'), 'SUCCEEDED')
+    await user.selectOptions(screen.getByLabelText('按状态'), 'SUCCEEDED')
     await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('status')).toBe('SUCCEEDED'))
     expect(queryOf(listUrls().at(-1) as string).get('offset')).toBe('0')
   })
@@ -186,14 +186,14 @@ describe('ExecutionsView(执行面)', () => {
     render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.execRow('7'))
 
-    await user.selectOptions(screen.getByLabelText('状态'), 'FAILED')
+    await user.selectOptions(screen.getByLabelText('按状态'), 'FAILED')
     const empty = await screen.findByTestId(TID.execEmpty)
     expect(empty).toHaveTextContent('当前筛选下没有执行')
     expect(empty).not.toHaveTextContent('暂无执行')
 
     await user.click(within(empty).getByRole('button', { name: '清除筛选' }))
     expect(await screen.findByTestId(tid.execRow('7'))).toBeInTheDocument()
-    expect((screen.getByLabelText('状态') as HTMLSelectElement).value).toBe('')
+    expect((screen.getByLabelText('按状态') as HTMLSelectElement).value).toBe('')
   })
 
   it('触发:选定义 + 填输入 → POST executions(Idempotency-Key 在场)→ 列表刷新 + 选中新执行', async () => {
