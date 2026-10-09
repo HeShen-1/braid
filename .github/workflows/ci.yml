@@ -132,6 +132,9 @@ jobs:
   # build;root 容器对 runner 属主仓库跑 git 会触发 dubious ownership
   # 必红),门在宿主步骤用 runner 自带 git 执行;porcelain 而非 diff =
   # 未跟踪的纯新增产物(未来 code splitting/额外 chunk)同样拦截。
+  # 门对象路径 = vite outDir(T21.2 起 internal/api/web/)。改 outDir 必须
+  # 同改本步骤:门对不存在的路径恒判空 = 恒绿。故门自带入库文件数守卫,
+  # 对象缺失时直接红,不再静默通过。
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -142,11 +145,21 @@ jobs:
           docker run --rm -v "$PWD:/src" -w /src/web/canvas node:26.10.0-bookworm
           sh -c "npm ci && npm test && npm run build"
       - name: dist drift gate
-        run: >
-          test -z "$(git status --porcelain -- internal/api/web/canvas/)"
-          || { git status --porcelain -- internal/api/web/canvas/;
-          echo "::error::dist 漂移:前端源码改动未重建入库(npm --prefix web/canvas run build)";
-          exit 1; }
+        run: |
+          # 守卫:门必须先有可判定的对象。T21.2 把 vite outDir 从
+          # internal/api/web/canvas 上提到 internal/api/web,旧路径已不存在,
+          # 而对不存在的路径 git status --porcelain 恒空 → 门恒绿。
+          tracked=$(git ls-files internal/api/web/assets | wc -l)
+          if [ "$tracked" -eq 0 ]; then
+            echo "::error::dist 漂移门失效:internal/api/web/assets 无入库文件,门将恒绿"
+            exit 1
+          fi
+          drift=$(git status --porcelain -- internal/api/web/)
+          if [ -n "$drift" ]; then
+            echo "$drift"
+            echo "::error::dist 漂移:前端源码改动未重建入库(npm --prefix web/canvas run build)"
+            exit 1
+          fi
 
   # T16.6:回滚-重跑浏览器级 e2e(D-2026-10-04-t166-playwright-e2e)。
   # 栈 = deploy/e2e-up.sh 单一真源(compose 数据面 MySQL 13307/Redis
