@@ -10,7 +10,8 @@
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
     "vendor:shadcn-css": "node scripts/vendor-shadcn-css.mjs",
-    "test": "vitest run",
+    "check:shadcn": "node scripts/check-shadcn-add.mjs",
+    "test": "npm run check:shadcn && vitest run",
     "test:watch": "vitest",
     "test:e2e": "playwright test"
   },
