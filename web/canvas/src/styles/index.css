@@ -1,8 +1,35 @@
 @import 'tailwindcss';
 @import './fonts.css';
+@import './shadcn-variants.css';
 @import './canvas-editor.css';
 @import './executions.css';
 @import './approvals.css';
+@import 'tw-animate-css';
+
+@custom-variant dark {
+  &:where([data-theme='dark'], [data-theme='dark'] *) {
+    @slot;
+  }
+  &:where([data-theme='auto'], [data-theme='auto'] *) {
+    @media (prefers-color-scheme: dark) {
+      @slot;
+    }
+  }
+}
+
+/* 主题选择器 → Tailwind `dark:` 变体(D-2026-10-09-console-v2 决策 1)。
+   shadcn 生成的组件用 `dark:...` 前缀,必须让 `dark` 变体认 data-theme,
+   而不是 shadcn 默认的 `.dark` 类。 */
+@custom-variant dark {
+  &:where([data-theme='dark'], [data-theme='dark'] *) {
+    @slot;
+  }
+  &:where([data-theme='auto'], [data-theme='auto'] *) {
+    @media (prefers-color-scheme: dark) {
+      @slot;
+    }
+  }
+}
 
 /* ============================================================
    braid 控制台 —— 世界「控制室夜班」
@@ -909,3 +936,96 @@
   font-family: var(--font-sans);
 }
 
+@theme inline {
+  --color-background: var(--color-ground-0);
+  --color-foreground: var(--color-ink-0);
+  --color-card: var(--color-ground-1);
+  --color-card-foreground: var(--color-ink-0);
+  --color-popover: var(--color-ground-1);
+  --color-popover-foreground: var(--color-ink-0);
+  --color-primary: var(--color-ink-0);
+  --color-primary-foreground: var(--color-ground-0);
+  --color-secondary: var(--color-ground-3);
+  --color-secondary-foreground: var(--color-ink-0);
+  --color-muted: var(--color-ground-2);
+  --color-muted-foreground: var(--color-ink-2);
+  --color-accent: var(--color-ground-3);
+  --color-accent-foreground: var(--color-ink-0);
+  --color-destructive: var(--color-sig-fail);
+  --color-border: var(--color-line-1);
+  --color-input: var(--color-line-2);
+  --color-ring: var(--color-accent);
+
+  /* radius 阶梯围绕自研 --radius-control(8px)重排,不用 shadcn 的 10px 基 */
+  --radius: var(--radius-control);
+  --radius-sm: calc(var(--radius-control) * 0.6);
+  --radius-md: calc(var(--radius-control) * 0.8);
+  --radius-lg: var(--radius-control);
+  --radius-xl: calc(var(--radius-control) * 1.4);
+  --radius-2xl: calc(var(--radius-control) * 1.8);
+  --radius-3xl: calc(var(--radius-control) * 2.2);
+  --radius-4xl: calc(var(--radius-control) * 2.6);
+}
+/* ---------- 浅色世界(D-2026-10-09-console-v2 决策 1)----------
+   日间形态:近白偏冷地面(同一世界的无光屏幕,只是没关灯)。
+   每一档按它真正落地的地面实测定档,与深色同一条验收线:
+     正文 ≥4.5:1(ink-0 17.7 / ink-1 8.0–9.1 / ink-2 5.8–6.2 / ink-3 4.5–4.9,
+       均取最不利地面);非文本图形 ≥3:1(line-2 在最亮 ground-1 上 3.41:1)。
+   六态色相为浅色地面**重新配值**(不是沿用深色):深色原值在近白地面上仅
+   1.86–1.97:1,直接搬过来会糊;新值保色相、压亮度,对白 ≥4.5:1。
+   accent 由 #6e9bf5 改 #3b68c4:浅色下焦点环/链接需 ≥4.5:1(原值仅 2.74:1)。 */
+:root {
+  --color-ground-0: #f7f9fb;
+  --color-ground-1: #ffffff;
+  --color-ground-2: #eef1f5;
+  --color-ground-3: #e4e9ef;
+  --color-ground-4: #d8dfe7;
+
+  --color-line-0: #dde3ea;
+  --color-line-1: #c9d2db;
+  --color-line-2: #808d95;
+
+  --color-ink-0: #0d1319;
+  --color-ink-1: #3d4a57;
+  --color-ink-2: #4e5a68;
+  --color-ink-3: #5f6a71;
+
+  --color-sig-idle: #5a6675;
+  --color-sig-run: #1d847c;
+  --color-sig-ok: #388644;
+  --color-sig-wait: #96701a;
+  --color-sig-fail: #cd494f;
+  --color-sig-stop: #687889;
+
+  --color-accent: #3b68c4;
+  --color-accent-soft: #dbe5f7;
+}
+
+/* ---------- 深色世界(原「控制室夜班」,T21.1 定档值一字未改)---------- */
+:root[data-theme='dark'],
+:root[data-theme='dark'] * {
+  --color-ground-0: #0a0e13;
+  --color-ground-1: #101720;
+  --color-ground-2: #16202b;
+  --color-ground-3: #1e2a37;
+  --color-ground-4: #273543;
+
+  --color-line-0: #1b2530;
+  --color-line-1: #26333f;
+  --color-line-2: #556a7e;
+
+  --color-ink-0: #e8eff6;
+  --color-ink-1: #a7b7c6;
+  --color-ink-2: #8497ab;
+  --color-ink-3: #76889b;
+
+  --color-sig-idle: #3a4a5a;
+  --color-sig-run: #2ed3c6;
+  --color-sig-ok: #57d06a;
+  --color-sig-wait: #f0b429;
+  --color-sig-fail: #f4575e;
+  --color-sig-stop: #8296ab;
+
+  --color-accent: #6e9bf5;
+  --color-accent-soft: #1b2a44;
+}

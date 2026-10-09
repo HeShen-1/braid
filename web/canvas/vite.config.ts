@@ -1,4 +1,5 @@
 /// <reference types="vitest/config" />
+import { fileURLToPath } from 'node:url'
 import tailwindcss from '@tailwindcss/vite'
 import react from '@vitejs/plugin-react'
 import { defineConfig } from 'vite'
@@ -10,8 +11,15 @@ import { defineConfig } from 'vite'
 // T21.2(同条 D-,决策 6):路由硬切到根 —— base 改 '/',outDir 上提到
 // internal/api/web(审批台三件套随之退役,同目录清理由 emptyOutDir 承担);
 // /assets/* 与 /workflows|/executions|/approvals 三条深链由 web.go 承接。
+// T21.3(D-2026-10-09-console-v2 决策 4):`@/*` → src/* 别名(shadcn CLI
+// 前置条件,tsconfig.paths 同源)。既有相对 import 不动,纯增量。
 export default defineConfig({
   plugins: [react(), tailwindcss()],
+  resolve: {
+    alias: {
+      '@': fileURLToPath(new URL('./src', import.meta.url)),
+    },
+  },
   base: '/',
   build: {
     outDir: '../../internal/api/web',
