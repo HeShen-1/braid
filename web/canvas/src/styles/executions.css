@@ -176,17 +176,7 @@
   margin-left: auto;
 }
 
-/* 取消确认:唯一的一次性浮起层(危险动作才需要第二下),Esc 收起 */
-.exec-confirm {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.25rem 0.4rem;
-  border: 1px solid color-mix(in oklab, var(--color-sig-fail) 45%, transparent);
-  border-radius: var(--radius-control);
-  background: color-mix(in oklab, var(--color-sig-fail) 8%, transparent);
-}
+/* 取消确认:层本体 = index.css 的 .confirm-bar(三处危险动作共用一份) */
 
 .exec-flash {
   margin: 0;

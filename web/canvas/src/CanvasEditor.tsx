@@ -31,6 +31,7 @@ import { WorkflowPanel } from './WorkflowPanel.tsx'
 import { defaultSpec } from './defaults.ts'
 import { PANEL_RIGHT_KEY, useCollapsed } from './prefs.ts'
 import { Button, EmptyState } from './ui/primitives.tsx'
+import { ConfirmLayer } from './ui/confirm.tsx'
 import { I } from './ui/I.tsx'
 import { TID } from './ui/testids.ts'
 
@@ -64,7 +65,62 @@ function Editor({
   const [showWorkflowPanel, setShowWorkflowPanel] = useState(false)
   // 右栏(属性面板)折叠态:跨会话 UI 偏好(prefs.ts),与左栏同一口径。
   const [sideCollapsed, setSideCollapsed] = useCollapsed(PANEL_RIGHT_KEY)
-  const { screenToFlowPosition } = useReactFlow()
+  const { screenToFlowPosition, deleteElements } = useReactFlow()
+
+  // 节点删除(T21.4 ④):危险动作只留一条漏斗 —— 面板「删除节点」入口与
+  // 键盘 Delete/Backspace 都先落到 onBeforeDelete,布防确认层;确认后才真删。
+  // 纯边删除(可重连、无级联)不拦,保持画布直接操作的快路径。
+  const [pendingDelete, setPendingDelete] = useState<{ nodes: FlowNode[]; edges: FlowEdge[] } | null>(null)
+  // 确认后放行同一次删除:否则 deleteElements 再次落到 onBeforeDelete 上自我拦截。
+  const allowDelete = useRef(false)
+  const deleteLayerRef = useRef<HTMLDivElement | null>(null)
+  const deleteArmRef = useRef<HTMLButtonElement | null>(null)
+  // 焦点回归(T21.4 增项):收起确认层后回到触发点 —— 面板开着就回入口按钮,
+  // 面板收起(键盘触发)就回节点卡片,不把焦点丢回 body。
+  const lastPending = useRef<{ nodes: FlowNode[] } | null>(null)
+
+  const onBeforeDelete = useCallback(async ({ nodes: delNodes, edges: delEdges }: { nodes: FlowNode[]; edges: FlowEdge[] }) => {
+    if (allowDelete.current) {
+      allowDelete.current = false
+      return true
+    }
+    if (delNodes.length === 0) return true
+    setPendingDelete({ nodes: delNodes, edges: delEdges })
+    return false
+  }, [])
+
+  const confirmDelete = useCallback(async () => {
+    const pending = pendingDelete
+    setPendingDelete(null)
+    if (pending === null) return
+    allowDelete.current = true
+    await deleteElements(pending)
+  }, [deleteElements, pendingDelete])
+
+  useEffect(() => {
+    if (pendingDelete !== null) {
+      lastPending.current = pendingDelete
+      return
+    }
+    const prev = lastPending.current
+    if (prev === null) return
+    lastPending.current = null
+    const arm = deleteArmRef.current
+    if (arm !== null) {
+      arm.focus()
+      return
+    }
+    const id = prev.nodes[0]?.id
+    if (id !== undefined) document.querySelector<HTMLElement>(`.react-flow__node[data-id="${CSS.escape(id)}"]`)?.focus()
+  }, [pendingDelete])
+
+  // 面板入口只是把节点交给同一条漏斗:不自己删,避免两条删除路径分叉。
+  const requestDelete = useCallback(
+    (id: string) => {
+      void deleteElements({ nodes: [{ id }] })
+    },
+    [deleteElements],
+  )
 
   const onConnect = useCallback(
     (c: Connection) => {
@@ -107,6 +163,13 @@ function Editor({
 
   const doc = useMemo(() => fromCanvas({ nodes, edges, viewport }, base), [nodes, edges, viewport, base])
   const selected = nodes.find((n) => n.id === selectedId)
+  // 确认条文案:把「要删什么、连带什么」说清(危险动作的确认必须可核对)。
+  const deleteHint =
+    pendingDelete === null
+      ? ''
+      : `${pendingDelete.nodes.length === 1 ? `删除节点 ${pendingDelete.nodes[0].id}` : `删除 ${pendingDelete.nodes.length} 个节点`}${
+          pendingDelete.edges.length === 0 ? '' : `会同时移除 ${pendingDelete.edges.length} 条连线`
+        },不可撤销。`
 
   // 文档变更上报:挂载那一次不算变更(壳层打开草稿时已持有同一份文档),
   // 之后每次编辑都上报 —— 壳层据此在切路由/切执行面时保住未保存的编辑。
@@ -203,6 +266,7 @@ function Editor({
             onConnect={onConnect}
             onMoveEnd={onMoveEnd}
             onSelectionChange={onSelectionChange}
+            onBeforeDelete={onBeforeDelete}
             deleteKeyCode={['Backspace', 'Delete']}
             minZoom={0.1}
             maxZoom={4}
@@ -223,6 +287,20 @@ function Editor({
               />
             </div>
           ) : null}
+          {/* 删除确认层落在画布下缘:入口在右栏、键盘在画布上,两处触发都看得见同一个条。 */}
+          {pendingDelete !== null ? (
+            <ConfirmLayer
+              className="canvas-confirm"
+              layerRef={deleteLayerRef}
+              label="确认删除"
+              hint={deleteHint}
+              confirmText="确认删除"
+              testId={TID.deleteConfirm}
+              confirmTestId={TID.deleteConfirmSubmit}
+              onConfirm={() => void confirmDelete()}
+              onDismiss={() => setPendingDelete(null)}
+            />
+          ) : null}
         </div>
 
         {/* 属性面板常驻:画布宽度不随选中态跳动。收起时整列让给画布,
@@ -232,7 +310,13 @@ function Editor({
             {selected !== undefined ? (
               /* key = 节点 id:切换节点必须重建面板本地态(如 ApproversInput
                  的 raw 暂存),否则残留上一节点的输入并覆盖下一节点(对抗审计 HIGH)。 */
-              <NodePanel key={selected.id} spec={selected.data.spec} update={(patch) => updateSpec(selected.id, patch)} />
+              <NodePanel
+                key={selected.id}
+                spec={selected.data.spec}
+                update={(patch) => updateSpec(selected.id, patch)}
+                onDelete={() => requestDelete(selected.id)}
+                deleteArmRef={deleteArmRef}
+              />
             ) : showWorkflowPanel ? (
               <WorkflowPanel
                 key={draftId ?? 'local'}

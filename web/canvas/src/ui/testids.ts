@@ -31,6 +31,10 @@ export const TID = {
   editorFlash: 'editor-flash',
   palette: 'palette',
   nodePanel: 'node-panel',
+  /** 画布节点删除的可见入口(T21.4 ④)+ 它的确认层。 */
+  nodeDelete: 'node-delete',
+  deleteConfirm: 'delete-confirm',
+  deleteConfirmSubmit: 'delete-confirm-submit',
   issues: 'issues',
 
   // 执行面

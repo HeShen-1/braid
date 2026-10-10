@@ -80,6 +80,19 @@
   min-height: 0;
 }
 
+/* 删除确认层(T21.4 ④):入口在右栏、键盘在画布上 —— 两处触发看到同一条,
+   所以钉在画布下缘居中,而不是塞进某一侧的面板。画布是发丝网格,浮起层
+   必须不透明才读得清(层本体 = index.css 的 .confirm-bar)。 */
+.canvas-confirm {
+  position: absolute;
+  bottom: 0.75rem;
+  left: 50%;
+  z-index: 5;
+  max-width: calc(100% - 1.5rem);
+  transform: translateX(-50%);
+  background: color-mix(in oklab, var(--color-sig-fail) 12%, var(--color-ground-1));
+}
+
 /* 属性面板:常驻右列——画布宽度不随选中态跳动(控制台不该边看边晃)。
    收起态由顶栏开关承担(见 CanvasEditor 顶栏),不占一条常驻窄栏。 */
 .editor-side {
