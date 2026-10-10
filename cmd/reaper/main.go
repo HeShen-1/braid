@@ -80,9 +80,10 @@ func run(ctx context.Context) error {
 	}
 
 	// T15.2 节点号租约仲裁(D-t151 决策 2):三层解析在 ConfigFromEnv,
-	// 仲裁在此——内建缺省 auto(PID 派生已退役:容器 PID 恒 1 撞 api
-	// 默认 1),显式号被持即拒启;SIGTERM 优雅释放;续期失败 = 停发 +
-	// 响亮退出(复航 = 重启重新 acquire)。
+	// 仲裁在此——内建缺省 = 显式 3(T20.9/D-2026-10-10-t209;PID 派生已
+	// 退役:容器 PID 恒 1 撞 api 默认 1),显式号被持即拒启;多副本经 env
+	// "auto" 走池分配;SIGTERM 优雅释放;续期失败 = 停发 + 响亮退出(复航 =
+	// 重启重新 acquire)。
 	lease, err := snowflake.StartLease(ctx, mysqlDB, snowflake.LeaseConfig{
 		Kind:   snowflake.KindReaper,
 		Spec:   cfg.SnowflakeNode,

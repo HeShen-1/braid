@@ -118,13 +118,13 @@ HA 达成方式 = **每单点都有不丢正确性的恢复路径 + 明确 RTO/R
 裁定细节(D- 钉死,T15.2 细化实现):
 
 1. **新表**(迁移 0012 起):`node_id SMALLINT UNSIGNED PK`(0..1023 全局单池,三类组件共用不分池)、`holder_kind ENUM('api','worker','reaper')`、`holder_id VARCHAR(64)`(实例身份)、`expires_at DATETIME(3)`、`capabilities JSON NULL`(NULL = 未宣告,fail-closed;**建表即含,一次建齐**——T15.2 建表、T15.6 消费,省一次 ALTER 与一个迁移序号);relay 不参与(无生成器)。
-2. **节点号解析三层优先级**:`显式 env 数字 > 内建默认(1/2,视同显式 claim,「单副本现状零破坏」在此语义下成立)> 字面 "auto"(哨兵值,池分配)`;缺省 = 内建默认(现状逐字节不变)。多副本部署 = 各副本写 auto 或分配不同号。
+2. **节点号解析三层优先级**:`显式 env 数字 > 内建默认(1/2/3,视同显式 claim,「单副本现状零破坏」在此语义下成立)> 字面 "auto"(哨兵值,池分配)`;缺省 = 内建默认(现状逐字节不变;reaper 的 3 由 T20.9 / D-2026-10-10-t209 定档——原实现取 auto)。多副本部署 = 各副本写 auto 或分配不同号。
 3. **显式 claim 冲突语义**:同 `holder_id`(实例身份)复占自己的租约 = 即时成功(正常重启复航);被他持占 = 拒启(**kill -9/OOM 残窗 ≤ TTL,有界**,runbook 应急 = 清租约行);**优雅停机(SIGTERM)必须 DELETE 释放租约**——覆盖正常重启路径,把拒启窗压到非优雅路径。**k8s 限制登记**:Deployment 默认 RollingUpdate(maxSurge=1/maxUnavailable=0)下新副本先起、旧副本持号续期 → pinned-env 永久僵局,**显式 env 通道限单副本/compose 使用,k8s 多副本一律 auto 池**;chart 静态钉 1/2/3 随 T15.2 摘钉转 auto(验收「副本>1 可起」的前提)。
 4. **auto 池**:线性取首个空闲号(过期判定见下);全满(1024 活实例)→ 拒启。**acquire 原子性与竞态**:INSERT 抢注,PK(node_id) 使双副本同取一号时败者 1062——败者**有限次重扫**(退避,≤3 次)后拒启,不做拒启风暴。
 5. **过期判定全 DB 端 NOW(3)**:结构性排除的是**时钟漂移**路径(不信任进程时钟);不声称结构性排除一切双持——**已知边界登记**:MySQL 异步 failover 尾部回退可吞掉已提交的租约授予/续期(§4.3 自己钦定的 RPO 无上界场景),holder 自以为续期而行内已过期,他副本懒回收同号 → 双签发窗,症状 = 1062 响亮写入中止(不损已提交数据);心跳 goroutine 停顿(进程冻结/长 GC)同理留 zombie 窗。收紧面 = 半同步复制(§4.3);彻底解 = 租约 fencing token(签发单调递增 epoch,消费端拒旧 token),复杂度不对等,**登记后续不随 T15.2 实施**。
 6. **续期失败 = 停止签发 + 停止消费**:续期失败 → 停止签发新 id **并优雅下线 asynq 消费**(停止接新任务;只停签发会把该副本变成烧 MaxRetry=1 预算的任务黑洞——每个投递到的任务确定性失败进 archived 再由 reaper 重派)+ 响亮;复航 = 重新 acquire 成功后重启消费。
 7. **回收 = 懒回收**(acquire 覆盖过期行即回收);显式 janitor DELETE 可选(镜像 login_throttle 形态,T15.2 定)。
-8. **reaper PID 派生退役**:未显式配置时容器 PID 恒 1 = 必撞 api 默认 1;reaper 缺省改走 auto 池。
+8. **reaper PID 派生退役**:未显式配置时容器 PID 恒 1 = 必撞 api 默认 1;reaper 缺省改走 auto 池(**2026-10-10 修订:T20.9 / D-2026-10-10-t209 把内建缺省改为显式 3**——auto 池取最小空闲号在单副本下与 api/worker 争号且号不可预测;多副本仍走 auto 池)。
 9. **授权面影响**(铁律面):新表须为 api/worker/reaper 三账号补 INSERT/UPDATE/SELECT(采纳优雅释放再加 DELETE);配套 deploy/grants.sh、UPGRADE.md §3 存量数据卷手工授权路径、README §5 授权矩阵、T17.3 组件级授权断言台账。
 
 ### 4.2 R5 队列 Redis → 单实例 + 结构韧性(Sentinel 负样本否决)

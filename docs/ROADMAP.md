@@ -4,7 +4,7 @@
 > 规模:S = 半天内,M = 1-2 天,L = 3+ 天(全职当量)。
 > 里程碑依赖:M18(清账)∥ M20(收口)先行,M19(引擎纵深)随后串行(engine 包单 worktree 公约);任务级依赖单独标注,冲突时以任务级为准。
 > 方向拍板(2026-10-05 用户):**三轨全开**(P3-1 清账波 + P3-2 引擎纵深主轴 + P3-3 可靠性收口);**SSRF 扩禁 = 全五段**;多租户重契约族/动态 DAG 评估/自由文本面**维持触发器休眠**。46 条线索扫描与处置全录见会话档;P3 各任务的语义级拍板(min_success 三件/fencing 立项/scp 审计 D-/回滚族②③④⑤裁剪)在其 GATE 1 逐项裁。
-> P0 冻结记录 = docs/ROADMAP-P0.md;P1 = docs/ROADMAP-P1.md + docs/P1-DELIVERY.md;P2 = docs/ROADMAP-P2.md + docs/P2-DELIVERY.md;P3 = 本文件 + docs/P3-DELIVERY.md(**2026-10-07 收官,21/21**);**P4 = 本文件 M21 节(2026-10-09 立项,控制台重建波)**。
+> P0 冻结记录 = docs/ROADMAP-P0.md;P1 = docs/ROADMAP-P1.md + docs/P1-DELIVERY.md;P2 = docs/ROADMAP-P2.md + docs/P2-DELIVERY.md;P3 = 本文件 + docs/P3-DELIVERY.md(**2026-10-07 交付时 21/21;收官后 followup = T20.9(2026-10-10),不重算 P3 计数**);**P4 = 本文件 M21 节(2026-10-09 立项,控制台重建波)**。
 
 ## M21 控制台重建波(P4-1,UI 重做 + 路由正名)
 
@@ -47,6 +47,7 @@
 - [x] T20.6 docker 网络泄漏回收 runbook — S — 文档活:并入孤儿清理节 + default-address-pools 上界注记(≈31 用户网/daemon)(T20.6 交付:RUNBOOK §1.3 场景节——症状[worker 拒启词面 + daemon 池耗尽 27+/≤26 两代词面]/只读两步诊断/回收红线[禁 prune:零附着活网误删面]/扩容注记[整组替换 + 新建网面 + 段避让];上界精推 = 31 席 − docker0 = 用户网 30,宿主网段重叠再吃席,历史 ≈31 = bridge 族触顶行数;§1.1 与 README §9 加指针)
 - [x] T20.7 静态分区水位时弹收口 — S-M — 遗留自 t2.5 时弹族;独立 D- 两口径先行(① 0015 扩静态水位,治本但会再过期;② 安装口径钉死 reaper 先起,零迁移)— 验收:dev/t13/e2e/生产口径统一,水位过期不再触发 preflight 硬拒 × janitor 首刷竞态(e2e-up 已先行钉死,33c95d1)(T20.7 交付:D-2026-10-05-t207-install-order,裁②侧;braid audit-ready 判定动词 + 四栈分层执法 + 水位/p_min 双哨兵)
 - [x] T20.8 drill arm3 断言追认 T20.4 语义 — S — 先存回归(#174 评论登记):sandboxSweepHoldoff「同 owner 活租约 ⇒ 跳过启动清扫」(D-t204 边界①,cmd/worker/main.go:399)与 T15.6 arm3「restart 即清扫」期望冲突,arm3 确定性 60s 超时(master 基线同红,arm1/2 过)— 验收:arm3 断言改造为「等 TTL 过期/显式释放后清扫收敛」或 arm 序列调整避免复占活租约形态;TestMultiReplicaDrill 三臂全绿(T20.8 交付:GATE 1 裁断言改造路线——arm3 两幕:伪活租约钉误跳过负断言 + WARN 词面 tools 导出常量编译期钉死 + 清行/优雅释放/TTL 过期后下次启动收敛;drill 五臂绿 + 三件套绿 + 对抗审计 1 MEDIUM/8 LOW 全收)
+- [x] T20.9 reaper 雪花节点内建缺省收口 — S — issue #208 — 内建缺省 `auto` → 显式 3(与 api=1/worker=2 同形,即 compose 惯例号):`auto` 池取「首个空闲号」在单副本 bare start 下与 api/worker 争 1/2 且号不可预测,而 auto 的正当语义是多副本自取号(k8s pinned-env 僵局);env 通道与多副本 `auto` 语义不变(D-2026-10-10-t209)。验收:三件套 + reaper 反锚(env 空 → `Explicit(3)`;DefaultConfig 与 ParseNodeSpec 两条路径同源单常量,半修即红)+ 注释/文档同步 9 处;行为面 = env 传值面不动(prod `"3"` / dev `.env`=3 / drill `auto` / chart `auto`),唯一实测变化 = env-less 的 `deploy/e2e-up.sh` reaper 由 auto 池取 0 改显式 3(api=1/worker=2 不变,无碰撞)(T20.9 交付:D-2026-10-10-t209;三件套全绿 + 反锚(env 空 → `Explicit(3)`,两路径共用常量);issue #208)
 
 ## P3 停车场(触发器休眠,防遗忘)
 

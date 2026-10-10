@@ -30,11 +30,12 @@ const (
 	seqBits  = 12
 
 	// MaxNodeID 是节点号上界(10bit,也是租约池容量)。解析三层(D-t151
-	// 决策 2):显式 env 数字 > 内建默认(api=1、worker=2,视同显式 claim;
-	// reaper 内建缺省 = auto——PID 派生已随 T15.2 退役,容器 PID 恒 1 撞
-	// api 默认 1)> 字面 "auto" 哨兵(池分配)。节点号仲裁 = MySQL 租约表
-	// (migration 0012),relay 无生成器不参与。跨进程重号的唯一症状是
-	// outbox/业务表 PK 1062(写入事务中止 + 告警)。
+	// 决策 2):显式 env 数字 > 内建默认(api=1、worker=2、reaper=3,视同
+	// 显式 claim;reaper 缺省由 auto 改 3 = T20.9/D-2026-10-10-t209——PID
+	// 派生已随 T15.2 退役,容器 PID 恒 1 撞 api 默认 1)> 字面 "auto" 哨兵
+	// (池分配,多副本用)。节点号仲裁 = MySQL 租约表(migration 0012),
+	// relay 无生成器不参与。跨进程重号的唯一症状是 outbox/业务表 PK 1062
+	// (写入事务中止 + 告警)。
 	MaxNodeID = 1<<nodeBits - 1 // 1023
 
 	maxSeq         = 1<<seqBits - 1 // 序列上界;同 ms 可产 4096 个(seq 0..4095)

@@ -128,7 +128,7 @@ type Lease struct {
 // cfgNode 是显式号(spec 已在 StartLease 校验 ≤ MaxNodeID)。
 func (l *Lease) cfgNode() uint16 { return l.spec.Node }
 
-// StartLease 按三层解析仲裁节点号并起续期:显式(env 数字/内建默认 1/2)
+// StartLease 按三层解析仲裁节点号并起续期:显式(env 数字/内建默认 1/2/3)
 // 按号直达——同 holder 复占即时、被他持拒启、过期行 CAS 接管;auto 线性
 // 取空闲号(缺行或过期行),INSERT 抢注、竞态 ≤3 次退避重扫后拒启。
 // capabilities 随本次 acquire 宣告(T15.6 消费:NULL = 未宣告 fail-closed)。
