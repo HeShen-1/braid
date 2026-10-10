@@ -132,16 +132,17 @@ jobs:
   # dubious ownership 必红),门的判据在宿主步骤用 runner 自带 git 执行。
   #
   # T21.5:漂移门判据 = 「入库产物逐字节等于从入库源码重建的结果」。
-  # 构建落临时目录 web/canvas/.dist-verify(build:verify,CLI --outDir
+  # 构建落临时目录 web/canvas/.dist-verify(rm -rf + build:verify,CLI --outDir
   # 覆盖 vite 配置;不再就地重写 checkout),宿主跑
-  # web/canvas/scripts/dist-drift-gate.sh 做 diff -r 逐文件比对,差异行
-  # 即修复清单(内容不同 / 只在一侧 / 二进制都拦)。
+  # web/canvas/scripts/dist-drift-gate.sh:对象四守卫(不存在/无入库文件/
+  # 重建未就位/两侧同源)+ outDir 配置断言 + diff -r --no-dereference 逐文件
+  # 比对,差异行即修复清单(内容不同 / 只在一侧 / 二进制 / 软链类型都拦)。
   # 替换旧形态(就地重建 + git status,PR #200 后):那条判据依赖「构建写
   # 到门所看的路径」——vite build.outDir 被改走而 dist 不同步时,重建落
   # 新路径、旧 dist 原样,git status 对门对象干净 = 对冻结目录恒绿,此后
   # 源码再漂也一路绿(真机复现见 issue #205;PR #200 的 tracked-file 守卫
   # 只挡「对象整体消失」,挡不住「构建不再写它」)。现判据比对两个目录,
-  # 与构建写到哪里无关。
+  # 与构建写到哪里无关,outDir 漂移另有配置断言直接红。
   web:
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -153,29 +154,34 @@ jobs:
           sh -c "npm ci && npm test && npm run build:verify"
       - name: dist drift gate
         run: web/canvas/scripts/dist-drift-gate.sh
-      # 门自证(该门曾静默恒绿三天,PR #200):判据本体就是上面那个脚本,
-      # 故这里证的是「注入漂移后门会红」,而不是「diff 会红」。三种注入
-      # 全部必须判红,否则作业红——门自己坏掉时不许再报绿。
+      # 门自证(该门曾静默恒绿三天,PR #200;T21.5 对抗审计又实测出两种假绿:
+      # diff 解引用软链、两侧同源自比)。判据本体就是上面那个脚本,故这里钉的
+      # 是「这些注入必须判红」,其中最后一条用**默认参数**调用 = 钉住 CI 真正
+      # 的调用面(显式传参的自证挡不住「CI 调错一对目录」)。
       - name: drift gate self-test
         run: |
           set -euo pipefail
+          gate=web/canvas/scripts/dist-drift-gate.sh
+          must_red() {
+            local why=$1; shift
+            if "$gate" "$@" >/dev/null 2>&1; then
+              echo "::error::漂移门自证失败:$why 仍判绿"
+              exit 1
+            fi
+            echo "self-test red: $why"
+          }
           probe="$(mktemp -d)/probe"
           cp -a internal/api/web "$probe"
           printf '/* injected drift */\n' >> "$probe/index.html"
-          if web/canvas/scripts/dist-drift-gate.sh internal/api/web "$probe" >/dev/null 2>&1; then
-            echo "::error::漂移门自证失败:注入内容漂移后门仍判绿"
-            exit 1
-          fi
+          must_red "内容漂移" internal/api/web "$probe"
           rm -rf "$probe/assets"
-          if web/canvas/scripts/dist-drift-gate.sh internal/api/web "$probe" >/dev/null 2>&1; then
-            echo "::error::漂移门自证失败:注入缺文件后门仍判绿"
-            exit 1
-          fi
-          if web/canvas/scripts/dist-drift-gate.sh internal/api/web/no-such-dir >/dev/null 2>&1; then
-            echo "::error::漂移门自证失败:门对象缺失后门仍判绿"
-            exit 1
-          fi
-          echo "drift gate self-test: ok (3 injections all red)"
+          must_red "缺文件" internal/api/web "$probe"
+          must_red "门对象缺失(守卫 1)" internal/api/web/no-such-dir
+          must_red "重建结果缺失(守卫 3)" internal/api/web "$(mktemp -d)/none"
+          must_red "入库面空目录(守卫 2)" "$(mktemp -d)"
+          printf '/* injected drift */\n' >> web/canvas/.dist-verify/index.html
+          must_red "默认参数(CI 实际调用)注入漂移"
+          echo "drift gate self-test: ok (6 injections all red)"
 
   # T16.6:回滚-重跑浏览器级 e2e(D-2026-10-04-t166-playwright-e2e)。
   # 栈 = deploy/e2e-up.sh 单一真源(compose 数据面 MySQL 13307/Redis
