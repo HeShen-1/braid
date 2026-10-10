@@ -1,6 +1,6 @@
 // 组件原语：世界只借出四样东西（字体、调色板、密度、一个签名动作），
 // 布局与控件一律是 web 平台的标准件。这里就是那套标准件。
-import type { ButtonHTMLAttributes, ReactNode } from 'react'
+import type { ButtonHTMLAttributes, ReactNode, Ref } from 'react'
 import { I } from './I.tsx'
 import { cx } from './cx.ts'
 import { nodeStatus, execStatus } from './status.ts'
@@ -16,6 +16,8 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
   icon?: LucideIcon
   /** 仅图标：必须给 aria-label。 */
   iconOnly?: boolean
+  /** React 19 起 ref 是普通 prop：危险动作确认层要把焦点还给入口按钮。 */
+  ref?: Ref<HTMLButtonElement>
 }
 
 export function Button({
@@ -25,6 +27,7 @@ export function Button({
   iconOnly = false,
   className,
   children,
+  ref,
   type = 'button',
   ...rest
 }: ButtonProps) {
@@ -33,6 +36,7 @@ export function Button({
   return (
     <button
       type={type}
+      ref={ref}
       className={cx('btn', variantClass, size === 'sm' && 'btn-sm', iconOnly && 'btn-icon', className)}
       {...rest}
     >

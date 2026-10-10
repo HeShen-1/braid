@@ -10,7 +10,7 @@
 // 轮询:非终态 2.5s;FAILED 保持 10s 慢速(可被本页回滚/续跑、他人操作、
 // reaper 兜底翻活,恒停会冻结在过期帧);SUCCEEDED/CANCELLED 停表。
 // 零后端新端点:全部字段来自既有 executionDetailDTO / approvalDetailDTO / auditEventDTO。
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useState, type ReactNode } from 'react'
 import { Ban, Play, RefreshCw, ScrollText, TriangleAlert, Undo2 } from 'lucide-react'
 import {
   ApiError,
@@ -23,6 +23,7 @@ import {
 import { DefinitionGraph } from './DefinitionGraph.tsx'
 import { ExecutionRibbon } from './ExecutionRibbon.tsx'
 import { Checkbox } from './ui/field.tsx'
+import { ConfirmLayer, useConfirmLayer } from './ui/confirm.tsx'
 import { Alert, Badge, Button, KV, Panel, PanelHead, StatusChip } from './ui/primitives.tsx'
 import { DECISION_LABEL, ON_TIMEOUT_LABEL, TRIGGER_LABEL } from './ui/status.ts'
 import { TID, tid } from './ui/testids.ts'
@@ -66,8 +67,14 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
   const [flash, setFlash] = useState('')
   const [error, setError] = useState<{ text: string; blocked?: string[] } | null>(null)
   const [busy, setBusy] = useState(false)
-  const [confirmCancel, setConfirmCancel] = useState(false)
-  const confirmRef = useRef<HTMLDivElement>(null)
+  // 取消确认层:布防即聚焦浮起层,Esc / 放弃收起后焦点回「取消执行」(T21.4 增项)。
+  const {
+    armed: cancelArmed,
+    arm: armCancel,
+    disarm: disarmCancel,
+    layerRef: cancelLayerRef,
+    armRef: cancelArmRef,
+  } = useConfirmLayer()
 
   const load = useCallback(async () => {
     let d: ExecutionDetailData | null = null
@@ -123,10 +130,8 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     return () => clearInterval(t)
   }, [load, stopPolling, pollMs])
 
-  // 确认条是一次性的浮起层:焦点移进去,Esc 收起(浮层契约)。
-  useEffect(() => {
-    if (confirmCancel) confirmRef.current?.focus()
-  }, [confirmCancel])
+  // 确认条是一次性的浮起层:焦点移进去,Esc 收起,收起后回入口按钮 ——
+  // 契约本体在 ui/confirm.tsx(执行面 / 审批面 / 画布三处共用一份)。
 
   const faceError = useCallback((err: unknown) => {
     if (err instanceof ApiError) {
@@ -152,9 +157,9 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
       faceError(err)
     } finally {
       setBusy(false)
-      setConfirmCancel(false)
+      disarmCancel()
     }
-  }, [execId, load, onAuthExpired, faceError])
+  }, [execId, load, onAuthExpired, faceError, disarmCancel])
 
   const runAction = useCallback(
     async (fn: () => Promise<{ target_node_id: string; reset_count: number; rerun_target: boolean; quiesced_count: number }>) => {
@@ -277,30 +282,19 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
             >
               续跑
             </Button>
-            {confirmCancel ? (
-              <div
-                className="exec-confirm"
-                ref={confirmRef}
-                tabIndex={-1}
-                role="group"
-                aria-label="确认取消执行"
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    e.stopPropagation()
-                    setConfirmCancel(false)
-                  }
-                }}
-              >
-                <span className="text-xs text-ink-1">取消会楔停全部在飞节点,不可撤销。</span>
-                <Button variant="danger" size="sm" data-testid={TID.cancelSubmit} disabled={busy} onClick={() => void runCancel()}>
-                  确认取消
-                </Button>
-                <Button variant="quiet" size="sm" disabled={busy} onClick={() => setConfirmCancel(false)}>
-                  放弃
-                </Button>
-              </div>
+            {cancelArmed ? (
+              <ConfirmLayer
+                layerRef={cancelLayerRef}
+                label="确认取消执行"
+                hint="取消会楔停全部在飞节点,不可撤销。"
+                confirmText="确认取消"
+                confirmTestId={TID.cancelSubmit}
+                busy={busy}
+                onConfirm={() => void runCancel()}
+                onDismiss={disarmCancel}
+              />
             ) : (
-              <Button variant="danger" icon={Ban} disabled={!canCancel} onClick={() => setConfirmCancel(true)}>
+              <Button ref={cancelArmRef} variant="danger" icon={Ban} disabled={!canCancel} onClick={armCancel}>
                 取消执行
               </Button>
             )}

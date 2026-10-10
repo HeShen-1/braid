@@ -300,6 +300,8 @@ describe('ExecutionDetail(执行详情)', () => {
     // Esc 收起确认条(浮层契约),再打开才真提交
     fireEvent.keyDown(screen.getByRole('group', { name: '确认取消执行' }), { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId(TID.cancelSubmit)).not.toBeInTheDocument())
+    // T21.4 增项:收起后焦点回入口按钮(原先掉回 body,键盘用户要重新 Tab 一遍)
+    expect(screen.getByRole('button', { name: '取消执行' })).toHaveFocus()
     await user.click(screen.getByRole('button', { name: '取消执行' }))
     await user.click(screen.getByTestId(TID.cancelSubmit))
 

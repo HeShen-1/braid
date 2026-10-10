@@ -384,6 +384,26 @@
     width: 1.625rem;
   }
 
+  /* ---------- 危险动作确认层 ---------- */
+  /* 一次性浮起层(执行面取消 / 审批面驳回 / 画布删除节点共用):
+     失败色描边 + 8% 失败色底,是这一层唯一的语义 —— 布局细节交给使用处。 */
+
+  .confirm-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.3rem 0.5rem;
+    border: 1px solid color-mix(in oklab, var(--color-sig-fail) 45%, transparent);
+    border-radius: var(--radius-control);
+    background: color-mix(in oklab, var(--color-sig-fail) 8%, transparent);
+  }
+
+  .confirm-bar:focus-visible {
+    outline: 2px solid var(--color-sig-fail);
+    outline-offset: 1px;
+  }
+
   /* ---------- 分段导航 ---------- */
 
   .tabs {

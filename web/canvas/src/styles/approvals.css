@@ -211,14 +211,4 @@
   gap: 0.5rem 0.75rem;
 }
 
-/* 驳回确认:唯一一次性的浮起层(危险动作才要第二下),Esc 收起。 */
-.appr-confirm {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.3rem 0.5rem;
-  border: 1px solid color-mix(in oklab, var(--color-sig-fail) 45%, transparent);
-  border-radius: var(--radius-control);
-  background: color-mix(in oklab, var(--color-sig-fail) 8%, transparent);
-}
+/* 驳回确认:层本体 = index.css 的 .confirm-bar(三处危险动作共用一份) */

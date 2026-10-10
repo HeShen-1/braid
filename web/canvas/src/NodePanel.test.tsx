@@ -1,11 +1,12 @@
 import { render, screen } from '@testing-library/react'
 import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { useState } from 'react'
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { NodePanel } from './NodePanel.tsx'
 import { WorkflowPanel } from './WorkflowPanel.tsx'
 import type { DslNode, WorkflowDoc } from './model/dsl.ts'
 import { loadBase } from './model/testdata.ts'
+import { TID } from './ui/testids.ts'
 
 /** 决策 3 收敛后 Select 不再是原生控件:两步交互 = 点触发器 → 点选项。 */
 async function chooseOption(user: UserEvent, trigger: HTMLElement, option: string) {
@@ -174,6 +175,21 @@ describe('NodePanel', () => {
     await user.type(retry, '99')
     expect(screen.getByRole('alert')).toHaveTextContent('超出 schema 允许范围（1–10）')
     expect(retry).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('T21.4 ④ 删除入口:传了 onDelete 才渲染,点击只发请求(确认层归画布管)', async () => {
+    const user = userEvent.setup()
+    const onDelete = vi.fn()
+    render(<NodePanel spec={nodeFrom('all-node-types', 'parse')} update={() => {}} onDelete={onDelete} />)
+    const entry = screen.getByTestId(TID.nodeDelete)
+    expect(entry).toHaveAttribute('aria-label', '删除节点')
+    await user.click(entry)
+    expect(onDelete).toHaveBeenCalledTimes(1)
+  })
+
+  it('T21.4 ④ 未接删除面时不虚设入口(旧调用点零回归)', () => {
+    render(<NodeProbe initial={nodeFrom('all-node-types', 'parse')} />)
+    expect(screen.queryByTestId(TID.nodeDelete)).not.toBeInTheDocument()
   })
 })
 

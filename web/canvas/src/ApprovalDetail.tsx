@@ -10,10 +10,11 @@
 // 他人自由文本 —— 一律走 React 文本节点(禁 innerHTML 家族)。
 // 决定表单只在 node_status === 'WAITING_APPROVAL' 时在场(收口节点只读,
 // 前置免无效提交;后端同样 409)。备注上限在提交前就近拦下。
-import { useEffect, useRef } from 'react'
+import { useRef } from 'react'
 import { ArrowLeft, Ban, Check, TriangleAlert } from 'lucide-react'
 import type { ApprovalDetail as ApprovalDetailData } from './api.ts'
 import { TextArea } from './ui/field.tsx'
+import { ConfirmLayer, useFocusReturn } from './ui/confirm.tsx'
 import { Alert, Button, KV, Panel, PanelHead, StatusChip } from './ui/primitives.tsx'
 import { approvalModeLabel, decisionLabel, nodeStatus } from './ui/status.ts'
 import { TID } from './ui/testids.ts'
@@ -59,12 +60,10 @@ export function ApprovalDetail({
   onCancelReject,
   onBack,
 }: ApprovalDetailProps) {
-  // 确认层是一次性浮起层:布防即把焦点移进去(与执行面「取消执行」确认条
-  // 同契约 —— 否则按 r 只产生视觉变化,读屏用户不会被通知)。
+  // 确认层契约本体在 ui/confirm.tsx(挂载即聚焦);布防状态由组合根
+  // (ApprovalsView)持有,这里只补「收起后焦点回入口按钮」(T21.4 增项)。
+  const rejectArmRef = useFocusReturn<HTMLButtonElement>(confirmReject)
   const confirmRef = useRef<HTMLDivElement | null>(null)
-  useEffect(() => {
-    if (confirmReject) confirmRef.current?.focus()
-  }, [confirmReject])
 
   if (detail === null) {
     return (
@@ -197,6 +196,7 @@ export function ApprovalDetail({
                 批准
               </Button>
               <Button
+                ref={rejectArmRef}
                 variant="danger"
                 icon={Ban}
                 data-testid={TID.approvalReject}
@@ -213,27 +213,15 @@ export function ApprovalDetail({
                 执行」确认条同契约(收尾评审 fix 3:否则按 r 只产生视觉变化,
                 读屏用户不会被通知)。 */}
             {confirmReject ? (
-              <div
-                ref={confirmRef}
-                tabIndex={-1}
-                className="appr-confirm"
-                role="group"
-                aria-label="确认驳回"
-                onKeyDown={(e) => {
-                  if (e.key === 'Escape') {
-                    e.stopPropagation()
-                    onCancelReject()
-                  }
-                }}
-              >
-                <span className="text-xs text-ink-1">驳回落库即定局,会写进审计与决定时间线。</span>
-                <Button variant="danger" size="sm" disabled={busy} onClick={() => onRequestDecision('reject')}>
-                  确认驳回
-                </Button>
-                <Button variant="quiet" size="sm" disabled={busy} onClick={onCancelReject}>
-                  放弃
-                </Button>
-              </div>
+              <ConfirmLayer
+                layerRef={confirmRef}
+                label="确认驳回"
+                hint="驳回落库即定局,会写进审计与决定时间线。"
+                confirmText="确认驳回"
+                busy={busy}
+                onConfirm={() => onRequestDecision('reject')}
+                onDismiss={onCancelReject}
+              />
             ) : null}
             {error !== '' ? (
               <Alert tone="error" icon={TriangleAlert}>

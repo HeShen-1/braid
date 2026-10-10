@@ -150,6 +150,28 @@ describe('ApprovalDetail(审批详情)', () => {
     expect(props.onCancelReject).toHaveBeenCalledTimes(1)
   })
 
+  it('T21.4 增项:布防即聚焦确认层,收起后焦点回「驳回」入口', () => {
+    const props = {
+      detail: detail(),
+      loading: false,
+      error: '',
+      comment: '',
+      commentError: '',
+      busy: false,
+      confirmReject: true,
+      onCommentChange: vi.fn(),
+      onRequestDecision: vi.fn(),
+      onCancelReject: vi.fn(),
+      onBack: vi.fn(),
+    }
+    const { rerender } = render(<ApprovalDetail {...props} />)
+    // 挂载即布防:焦点进浮起层(否则按 r 只产生视觉变化,读屏用户收不到通知)
+    expect(screen.getByRole('group', { name: '确认驳回' })).toHaveFocus()
+    // 布防态由组合根持有:它翻回 false 的那一帧,焦点回入口按钮
+    rerender(<ApprovalDetail {...props} confirmReject={false} />)
+    expect(screen.getByTestId(TID.approvalReject)).toHaveFocus()
+  })
+
   it('未布防时不出现确认层,点按钮只发出一次请求(确认由组合根管)', async () => {
     const user = userEvent.setup()
     const props = renderDetail()

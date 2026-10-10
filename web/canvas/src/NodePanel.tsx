@@ -5,7 +5,8 @@
 // 布局纪律:标签在上、控件在下(纵向扫读);分节 = 发丝线 + 微标题,
 // 不做描边小卡片(禁卡片套卡片);本地可判的错误紧贴控件出现
 // (重复审批人 / 数值越界),其余错误等保存后在 issues 区回显。
-import { useState } from 'react'
+import { useState, type Ref } from 'react'
+import { Trash2 } from 'lucide-react'
 import { BRANCH_OPS, type DslNode } from './model/dsl.ts'
 import {
   AreaField,
@@ -19,6 +20,7 @@ import {
   parseLiteral,
 } from './fields.tsx'
 import { nodeTypeMeta } from './ui/status.ts'
+import { Button } from './ui/primitives.tsx'
 import { I } from './ui/I.tsx'
 import { TID } from './ui/testids.ts'
 
@@ -56,9 +58,19 @@ function ApproversInput({ spec, update }: Sec<Extract<DslNode, { type: 'approval
 export function NodePanel({
   spec,
   update,
+  onDelete,
+  deleteArmRef,
 }: {
   spec: DslNode
   update: (patch: (s: DslNode) => DslNode) => void
+  /**
+   * 删除该节点(T21.4 ④)。传入才渲染可见入口 —— 删除是危险动作,走画布的
+   * 确认层(与执行面「取消执行」、审批面「驳回」同族):这里只发出请求,
+   * 确认与焦点回归都由 CanvasEditor 的单一漏斗负责,键盘 Delete 与按钮同路。
+   */
+  onDelete?: () => void
+  /** 确认层收起后焦点回到这个入口按钮(进入画布确认层的焦点回归锚点)。 */
+  deleteArmRef?: Ref<HTMLButtonElement>
 }) {
   const meta = nodeTypeMeta(spec.type)
   return (
@@ -68,6 +80,20 @@ export function NodePanel({
         <I glyph={meta.glyph} size={13} className="text-ink-2" />
         <span className="bn-type">{meta.label}</span>
         <code className="mono min-w-0 truncate text-xs text-ink-1">{spec.id}</code>
+        {onDelete !== undefined ? (
+          <Button
+            ref={deleteArmRef}
+            variant="danger"
+            size="sm"
+            iconOnly
+            icon={Trash2}
+            className="ml-auto shrink-0"
+            aria-label="删除节点"
+            title={`删除节点 ${spec.id}`}
+            data-testid={TID.nodeDelete}
+            onClick={onDelete}
+          />
+        ) : null}
       </header>
 
       <Section title="基本">
