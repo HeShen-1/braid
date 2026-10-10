@@ -210,7 +210,7 @@ services:
     environment:
       BRAID_MYSQL_DSN: braid_reaper:${BRAID_DB_REAPER_PASSWORD:?BRAID_DB_REAPER_PASSWORD 未设}@tcp(mysql:3306)/braid
       BRAID_REDIS_QUEUE_ADDR: redis-queue:6379 # 可选(leaderless);缺省同形态
-      BRAID_REAPER_SNOWFLAKE_NODE: "3" # 显式(单副本/compose 语义,D-t151 决策 2):经租约表 claim;缺省已改 auto(PID 派生退役——容器 PID 恒 1 撞 api 默认 1)
+      BRAID_REAPER_SNOWFLAKE_NODE: "3" # 显式(单副本/compose 语义,D-t151 决策 2;与 T20.9 内建缺省同值):经租约表 claim;多副本才用 auto(PID 派生退役——容器 PID 恒 1 撞 api 默认 1)
       BRAID_METRICS_ADDR: 0.0.0.0:9090
     # T20.7 安装口径:reaper 健康 = DB 水位覆盖当日(braid audit-ready 判定
     # 水位状态而非进程活——进程活≠分区已补;镜像自带 CLI 二进制)。api/

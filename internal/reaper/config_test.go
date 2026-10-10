@@ -207,8 +207,8 @@ func TestConfigFromEnvPool(t *testing.T) {
 }
 
 // TestConfigFromEnvInfra:装配输入收编(T7.1)——DSN/Redis 队列(可选 =
-// leaderless)/指标地址 + 雪花节点三层解析(T15.2:显式数字 > 缺省 auto,
-// PID 派生已退役)。
+// leaderless)/指标地址 + 雪花节点三层解析(T15.2:显式数字 > 缺省 3,
+// PID 派生已退役;缺省值由 T20.9 定档)。
 func TestConfigFromEnvInfra(t *testing.T) {
 	env := map[string]string{
 		"BRAID_MYSQL_DSN":        "u:p@tcp(127.0.0.1:3306)/p",
@@ -237,10 +237,30 @@ func TestConfigFromEnvInfra(t *testing.T) {
 			t.Fatalf("snowflake node = %+v, want explicit 5", c.SnowflakeNode)
 		}
 	})
-	// T15.2(D-t151 决策 2):PID 派生退役——缺省 = auto 池分配,不再是
-	// os.Getpid()&1023(容器 PID 恒 1 撞 api 默认 1 的防回退锚)。
-	t.Run("snowflake default is auto (PID derivation retired)", func(t *testing.T) {
+	// T20.9(D-2026-10-10-t209):内建缺省 = 显式 3(与 api=1/worker=2 同形)——
+	// 原为 auto 池分配,单副本 bare start 会去抢 1/2 且号不可预测。两条解析
+	// 路径共用 defaultSnowflakeNode 常量(结构上无半修面),本锚把字面值 3
+	// 钉死:env 空路径与 DefaultConfig 字面两条都断言。
+	t.Run("snowflake default is explicit 3 on both paths", func(t *testing.T) {
 		c, err := ConfigFromEnv(func(string) string { return "" })
+		if err != nil {
+			t.Fatalf("ConfigFromEnv: %v", err)
+		}
+		if c.SnowflakeNode != snowflake.Explicit(3) {
+			t.Fatalf("snowflake node = %+v, want explicit 3", c.SnowflakeNode)
+		}
+		if got := DefaultConfig().SnowflakeNode; got != snowflake.Explicit(3) {
+			t.Fatalf("DefaultConfig snowflake node = %+v, want explicit 3", got)
+		}
+	})
+	// 多副本路径不受 T20.9 影响:字面 "auto" 显式声明照旧 = 池分配。
+	t.Run("snowflake auto still reachable via env", func(t *testing.T) {
+		c, err := ConfigFromEnv(func(k string) string {
+			if k == "BRAID_REAPER_SNOWFLAKE_NODE" {
+				return "auto"
+			}
+			return ""
+		})
 		if err != nil {
 			t.Fatalf("ConfigFromEnv: %v", err)
 		}

@@ -29,10 +29,11 @@ type NodeSpec struct {
 	Node uint16 // Mode == NodeExplicit 时有效(0..MaxNodeID)
 }
 
-// Explicit 返回显式节点号 spec(内建默认同构:1/2 视同显式 claim)。
+// Explicit 返回显式节点号 spec(内建默认同构:1/2/3 视同显式 claim)。
 func Explicit(node uint16) NodeSpec { return NodeSpec{Mode: NodeExplicit, Node: node} }
 
-// Auto 返回池分配 spec(字面 "auto" 哨兵/reaper 内建缺省)。
+// Auto 返回池分配 spec(字面 "auto" 哨兵;组件内建缺省一律为 Explicit——
+// api=1 / worker=2 / reaper=3,多副本部署显式声明本 spec)。
 func Auto() NodeSpec { return NodeSpec{Mode: NodeAuto} }
 
 // ParseNodeSpec 解析 env 原文(D-t151 决策 2 三层):空 → def(内建默认);

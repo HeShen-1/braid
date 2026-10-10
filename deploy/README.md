@@ -480,7 +480,8 @@ GRANT SELECT ON `analytics`.* TO 'braid_ro'@'%';
 owner 化 T15.3 / egress 一 worker 一网 T15.4 已解除三挡)。多副本清单:
 
 - **雪花节点号**:多副本一律 `*_SNOWFLAKE_NODE=auto`(compose 单副本可显式;
-  k8s RollingUpdate 下 pinned-env 永久僵局,决策 2)。
+  k8s RollingUpdate 下 pinned-env 永久僵局,决策 2)。单副本栈不写时走内建
+  缺省 api=1 / worker=2 / reaper=3(T20.9 起 reaper 由 auto 改 3)。
 - **worker 身份(owner)**:并发活体间唯一且跨重启稳定——compose 逐副本
   显式 `hostname` + `BRAID_WORKER_ID`;k8s 用 pod 名(hostname 缺省天然
   唯一)。`stop_grace_period ≥ 35s`(compose)/ `terminationGracePeriodSeconds
