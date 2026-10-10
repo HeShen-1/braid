@@ -11,8 +11,13 @@ log/
 # sandbox image host-build artifact (deploy/README.md §7)
 /braid-sandbox-exec
 # canvas frontend (D-2026-09-30-t141-canvas-pipeline): deps stay local,
-# build output lives in internal/api/web/canvas (committed for go:embed)
+# build output lives in internal/api/web (committed for go:embed; T21.2)
 web/canvas/node_modules/
+# T21.5 漂移门:临时重建目录(build:verify 输出;判据本体
+# web/canvas/scripts/dist-drift-gate.sh 比对完即可丢弃)。
+# 无尾斜杠:同名**软链**也必须被忽略——否则一条指向 internal/api/web 的
+# 软链可被提交,门会退化成 diff X X 恒绿(对抗审计 F2)。
+web/canvas/.dist-verify
 # playwright e2e artifacts (D-2026-10-04-t166-playwright-e2e)
 web/canvas/playwright-report/
 web/canvas/test-results/

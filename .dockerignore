@@ -12,3 +12,6 @@ docs
 dist
 log
 web/canvas/node_modules
+# T21.5 漂移门的临时重建目录(build:verify 产物,~1MB):不进构建上下文,
+# 否则每次本地跑门都击穿 COPY . . 的层缓存(对抗审计 F9)
+web/canvas/.dist-verify
