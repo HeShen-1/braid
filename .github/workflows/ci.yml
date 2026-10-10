@@ -128,8 +128,11 @@ jobs:
   # T14.1:画布前端作业(D-2026-09-30-t141-canvas-pipeline 决策 2+3)。
   # 工具链经钉版镜像取用(node:26.10.0-bookworm,与 web/canvas/.nvmrc
   # 数值人工同步——改 .nvmrc 必须同改本 tag),零 Secrets。
-  # 容器内只跑 npm(ci/test/build;root 容器对 runner 属主仓库跑 git 会触发
-  # dubious ownership 必红),门的判据在宿主步骤用 runner 自带 git 执行。
+  # 容器内只跑 npm(ci/test/build),并以 runner uid 运行(-u + HOME=/tmp,
+  # 同 e2e 作业口径):① 挂载仓内不落 root 属主文件 —— 门自证要往
+  # web/canvas/.dist-verify/ 注入漂移,root 属主会让宿主步骤拿不到写权限
+  # (CI 首轮实测踩到);② 容器内不跑 git,故不会触发 dubious ownership,
+  # 门的判据在宿主步骤用 runner 自带 git 执行。
   #
   # T21.5:漂移门判据 = 「入库产物逐字节等于从入库源码重建的结果」。
   # 构建落临时目录 web/canvas/.dist-verify(rm -rf + build:verify,CLI --outDir
@@ -150,7 +153,8 @@ jobs:
       - uses: actions/checkout@v7.0.1
       - name: canvas test + verify build
         run: >
-          docker run --rm -v "$PWD:/src" -w /src/web/canvas node:26.10.0-bookworm
+          docker run --rm -v "$PWD:/src" -w /src/web/canvas
+          -u "$(id -u):$(id -g)" -e HOME=/tmp node:26.10.0-bookworm
           sh -c "npm ci && npm test && npm run build:verify"
       - name: dist drift gate
         run: web/canvas/scripts/dist-drift-gate.sh
