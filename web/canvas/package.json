@@ -9,6 +9,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json --noEmit && vite build",
+    "build:verify": "tsc -p tsconfig.json --noEmit && vite build --outDir .dist-verify --emptyOutDir",
     "vendor:shadcn-css": "node scripts/vendor-shadcn-css.mjs",
     "check:shadcn": "node scripts/check-shadcn-add.mjs",
     "test": "npm run check:shadcn && vitest run",
