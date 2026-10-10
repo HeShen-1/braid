@@ -20,6 +20,18 @@ function err(code: string, status: number): Response {
   return new Response(JSON.stringify({ error: code }), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
+/** issue #213:异步 stub 的响应落在 act 之外时,应用侧的 setState 已提交、但注册
+ *  键盘监听的 effect 可能还没重新跑 —— 此刻发 keydown 会落到闭包里还是旧
+ *  actionable/items/confirmReject 的那份监听器上,事件被整段忽略。这些键都幂等
+ *  (光标封顶、布防不落库、已布防时再按 r/Esc 才推进),所以「重发到生效为止」
+ *  不改语义,只是不再赌调度顺序。 */
+function pressUntil(key: string, cond: () => void) {
+  return waitFor(() => {
+    fireEvent.keyDown(document.body, { key })
+    cond()
+  })
+}
+
 const pathOf = (url: string) => url.split('?')[0]
 const queryOf = (url: string) => new URLSearchParams(url.split('?')[1] ?? '')
 
@@ -266,16 +278,13 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     const row2 = screen.getByTestId(tid.approvalRow('7', 'n2'))
     expect(row1).toHaveAttribute('data-cursor', 'true')
 
-    fireEvent.keyDown(document.body, { key: 'j' })
-    expect(row2).toHaveAttribute('data-cursor', 'true')
+    await pressUntil('j', () => expect(row2).toHaveAttribute('data-cursor', 'true'))
     expect(row1).toHaveAttribute('data-cursor', 'false')
 
-    fireEvent.keyDown(document.body, { key: 'k' })
-    expect(row1).toHaveAttribute('data-cursor', 'true')
+    await pressUntil('k', () => expect(row1).toHaveAttribute('data-cursor', 'true'))
 
-    fireEvent.keyDown(document.body, { key: 'j' })
-    fireEvent.keyDown(document.body, { key: 'Enter' })
-    expect(onSelect).toHaveBeenCalledWith({ executionId: '7', nodeId: 'n2' })
+    await pressUntil('j', () => expect(row2).toHaveAttribute('data-cursor', 'true'))
+    await pressUntil('Enter', () => expect(onSelect).toHaveBeenCalledWith({ executionId: '7', nodeId: 'n2' }))
   })
 
   it('⑤′ 输入框聚焦时 a/r/j/k 一律不生效(打字不是命令);焦点离开后 r 布防、再按确认', async () => {
@@ -313,8 +322,7 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     await screen.findByTestId(TID.approvalComment)
 
     // 首次 keydown 只布防
-    fireEvent.keyDown(document.body, { key: 'r' })
-    expect(screen.getByRole('group', { name: '确认驳回' })).toBeInTheDocument()
+    await pressUntil('r', () => expect(screen.getByRole('group', { name: '确认驳回' })).toBeInTheDocument())
     expect(posts).toHaveLength(0)
 
     // 操作系统的 auto-repeat 事件必须被整段忽略 —— 否则长按 = 布防 + 确认
@@ -327,8 +335,7 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     expect(screen.getByRole('group', { name: '确认驳回' })).toBeInTheDocument()
 
     // 松开后再按一次(非 repeat)才允许提交
-    fireEvent.keyDown(document.body, { key: 'r' })
-    await waitFor(() => expect(posts).toHaveLength(1))
+    await pressUntil('r', () => expect(posts).toHaveLength(1))
     expect(posts[0]).toMatchObject({ decision: 'reject' })
   })
 
@@ -339,17 +346,14 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     render(<ApprovalsView selected={{ executionId: '7', nodeId: 'n1' }} onSelect={onSelect} onAuthExpired={() => {}} />)
     await screen.findByTestId(TID.approvalApprove)
 
-    fireEvent.keyDown(document.body, { key: 'r' })
-    expect(screen.getByRole('group', { name: '确认驳回' })).toBeInTheDocument()
+    await pressUntil('r', () => expect(screen.getByRole('group', { name: '确认驳回' })).toBeInTheDocument())
     fireEvent.keyDown(document.body, { key: 'Escape' })
-    expect(screen.queryByRole('group', { name: '确认驳回' })).not.toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByRole('group', { name: '确认驳回' })).not.toBeInTheDocument())
     expect(posts).toHaveLength(0)
 
-    fireEvent.keyDown(document.body, { key: 'Escape' })
-    expect(onSelect).toHaveBeenCalledWith(null)
+    await pressUntil('Escape', () => expect(onSelect).toHaveBeenCalledWith(null))
 
-    fireEvent.keyDown(document.body, { key: 'a' })
-    await waitFor(() => expect(posts).toHaveLength(1))
+    await pressUntil('a', () => expect(posts).toHaveLength(1))
     expect(posts[0]).toEqual({ decision: 'approve', comment: '' })
   })
 
@@ -427,7 +431,8 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     render(<ApprovalsView selected={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     const empty = await screen.findByTestId(TID.approvalEmpty)
     expect(empty).not.toHaveTextContent('当前没有待办审批')
-    expect(screen.getByRole('alert')).toHaveTextContent('请求失败(http_500)。')
+    // 空态首帧就在场(items=[] + loading),错误条要等读失败落地 —— 取样点必须等它。
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('请求失败(http_500)。'))
   })
 
   it('决定成功:POST body 逐字 + 回队列 + offset 归零重拉 + 成功反馈', async () => {
