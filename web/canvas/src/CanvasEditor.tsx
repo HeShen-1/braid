@@ -13,7 +13,6 @@ import {
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
-  addEdge,
   useEdgesState,
   useNodesState,
   useReactFlow,
@@ -22,7 +21,7 @@ import {
   type Viewport,
 } from '@xyflow/react'
 import { ChevronRight, Info, MousePointerClick, PanelRightClose, PanelRightOpen, Rocket, Save, Settings2, Workflow } from 'lucide-react'
-import { clampViewport, fromCanvas, nextNodeId, serializeDoc, toCanvas } from './model/convert.ts'
+import { clampViewport, connectEdges, fromCanvas, nextNodeId, reconcileSourceHandles, serializeDoc, toCanvas } from './model/convert.ts'
 import type { FlowNode, FlowEdge } from './model/convert.ts'
 import type { DslNode, NodeType, WorkflowDoc } from './model/dsl.ts'
 import { nodeTypes } from './nodes/NodeViews.tsx'
@@ -67,9 +66,14 @@ function Editor({
   const [sideCollapsed, setSideCollapsed] = useCollapsed(PANEL_RIGHT_KEY)
   const { screenToFlowPosition } = useReactFlow()
 
-  const onConnect = useCallback((c: Connection) => {
-    setEdges((eds) => addEdge(c, eds))
-  }, [setEdges])
+  const onConnect = useCallback(
+    (c: Connection) => {
+      // 同一对节点只留一条边(重复边撞 T1.2 的 duplicate_edge);再从别的锚点
+      // 连一次 = 改绑该边的源锚点(T21.4 ③)。判定是纯函数,见 connectEdges。
+      setEdges((eds) => connectEdges(eds, c))
+    },
+    [setEdges],
+  )
   const onMoveEnd = useCallback((_: unknown, vp: Viewport) => setViewport(clampViewport(vp)), [])
   const onSelectionChange = useCallback(({ nodes: sel }: { nodes: FlowNode[] }) => {
     setShowWorkflowPanel(false)
@@ -94,6 +98,12 @@ function Editor({
     },
     [setNodes],
   )
+
+  // 锚点对账(spec 变 → 锚点集合变):清掉绑在已消失锚点上的边(T21.4 ③),
+  // 否则它们会被 React Flow 静默丢掉(按 id 找不到手柄就不画)。
+  useEffect(() => {
+    setEdges((eds) => reconcileSourceHandles(nodes, eds) ?? eds)
+  }, [nodes, setEdges])
 
   const doc = useMemo(() => fromCanvas({ nodes, edges, viewport }, base), [nodes, edges, viewport, base])
   const selected = nodes.find((n) => n.id === selectedId)

@@ -1,0 +1,42 @@
+{
+  "dsl": "1.0",
+  "name": "canvas-anchor-demo",
+  "metadata": {
+    "canvas": {
+      "nodes": {
+        "decide": { "position": { "x": 40, "y": 40 } },
+        "excellent": { "position": { "x": 300, "y": 40 } },
+        "pass": { "position": { "x": 300, "y": 180 } },
+        "fail": { "position": { "x": 300, "y": 320 } }
+      },
+      "viewport": { "x": 0, "y": 0, "zoom": 0.9 },
+      "edges": [
+        { "from": "decide", "to": "excellent", "source_anchor": "case_0" },
+        { "from": "decide", "to": "pass", "source_anchor": "case_1" },
+        { "from": "decide", "to": "fail", "source_anchor": "default" }
+      ]
+    }
+  },
+  "inputs": [{ "name": "score", "type": "number", "required": true }],
+  "nodes": [
+    {
+      "id": "decide",
+      "type": "branch",
+      "cases": [
+        { "when": { "left": "{{inputs.score}}", "op": "gte", "right": 90 }, "next": "excellent" },
+        { "when": { "left": "{{inputs.score}}", "op": "gte", "right": 60 }, "next": "pass" }
+      ],
+      "default": "fail"
+    },
+    { "id": "excellent", "type": "llm", "prompt": { "template": "生成优秀评语。" }, "outputs": { "text": "string" } },
+    { "id": "pass", "type": "llm", "prompt": { "template": "生成合格评语。" }, "outputs": { "text": "string" } },
+    { "id": "fail", "type": "llm", "prompt": { "template": "生成补考建议。" }, "outputs": { "text": "string" } }
+  ],
+  "edges": [
+    { "from": "decide", "to": "excellent" },
+    { "from": "decide", "to": "pass" },
+    { "from": "decide", "to": "fail" },
+    { "from": "pass", "to": "fail" }
+  ],
+  "outputs": { "comment": "{{nodes.pass.output.text}}" }
+}

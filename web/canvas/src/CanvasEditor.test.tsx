@@ -19,8 +19,8 @@ describe('CanvasEditor(画布 UI)', () => {
     expect(screen.getByText('body LLM · wait_all')).toBeInTheDocument()
     // tool:工具名
     expect(screen.getByText('file_read')).toBeInTheDocument()
-    // branch:分支数 + 默认去向
-    expect(screen.getByText('1 个分支')).toBeInTheDocument()
+    // branch:出口端口逐条列出(case + default),与卡片下沿的锚点手柄同集合
+    expect(screen.getByText('#1 → report')).toBeInTheDocument()
     expect(screen.getByText('默认 → revise')).toBeInTheDocument()
     // llm 摘要:model 缺省与模板首行
     expect(screen.getAllByText('默认模型').length).toBeGreaterThanOrEqual(2)
@@ -86,6 +86,22 @@ describe('CanvasEditor(画布 UI)', () => {
     expect(screen.getByText('空白画布')).toBeInTheDocument()
     expect(screen.getByText('未选中节点')).toBeInTheDocument()
     expect(screen.getByTestId(TID.editor)).toBeInTheDocument()
+  })
+
+  it('branch 多锚点(T21.4 ③):每个出口一个可连手柄,单出口节点不虚构锚点', () => {
+    render(<CanvasEditor initialDoc={loadBase('all-node-types')} />)
+    const verdict = screen.getByTestId(tid.nodeCard('verdict'))
+    // 端口行与手柄同集合:case_0(→report)+ default(→revise)
+    expect(verdict.querySelector('[data-port="case_0"]')).not.toBeNull()
+    expect(verdict.querySelector('[data-anchor="case_0"]')).not.toBeNull()
+    expect(verdict.querySelector('[data-anchor="default"]')).not.toBeNull()
+    // 无 id 兜底手柄必须排在最前:React Flow 对 sourceHandle 缺省的边取 handles[0]
+    // (@xyflow/system getHandle),排在锚点后面就等于把这类边挂到 case_0 上。
+    const handles = verdict.querySelectorAll('[data-anchor]')
+    expect(handles[0].getAttribute('data-anchor')).toBe('fallback')
+    expect(handles[1].getAttribute('data-anchor')).toBe('case_0')
+    // 单出口节点(approval)= 单缺省手柄,没有锚点属性
+    expect(screen.getByTestId(tid.nodeCard('review')).querySelector('[data-anchor]')).toBeNull()
   })
 
   it('属性面板可收起(七条反馈 ②):开关在顶栏,收起后整列让给画布且留痕', async () => {

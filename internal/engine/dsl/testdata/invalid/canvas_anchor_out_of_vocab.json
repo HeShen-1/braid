@@ -1,0 +1,25 @@
+{
+  "dsl": "1.0",
+  "name": "canvas-anchor-out-of-vocab",
+  "metadata": {
+    "canvas": {
+      "edges": [
+        { "from": "decide", "to": "fail", "source_anchor": "else" }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "decide",
+      "type": "branch",
+      "cases": [{ "when": { "left": "{{inputs.score}}", "op": "gte", "right": 60 }, "next": "pass" }],
+      "default": "fail"
+    },
+    { "id": "pass", "type": "llm", "prompt": { "template": "合格。" } },
+    { "id": "fail", "type": "llm", "prompt": { "template": "补考。" } }
+  ],
+  "edges": [
+    { "from": "decide", "to": "pass" },
+    { "from": "decide", "to": "fail" }
+  ]
+}

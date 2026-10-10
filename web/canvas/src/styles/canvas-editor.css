@@ -249,6 +249,24 @@
   white-space: nowrap;
 }
 
+/* 分支出口端口:一行 = 卡片下沿的一个锚点手柄(集合与顺序同源:模型层
+   sourceAnchors)。行文本是 "#i → 目标" / "默认 → 目标";还没声明去向的
+   出口同时落 .bn-todo(虚线 = 还没填,与节点自身虚线边框同一套语言)。 */
+.bn-ports {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bn-port {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .bn-dim {
   color: var(--color-ink-2);
 }
@@ -334,6 +352,14 @@
 .react-flow__minimap-node {
   fill: var(--color-line-2);
   stroke: none;
+}
+
+/* 无 id 的兜底手柄(仅多锚点节点有):sourceHandle 缺省的边 —— 外部/历史
+   文档里目标不在 cases∪{default} 内的那条 —— 的落点。React Flow 对 null
+   handleId 取**第一个**源手柄(DOM 序即语义,见 NodeViews.SourceHandles),
+   所以它排在锚点之前;弱化处理:它不是命名出口。 */
+.react-flow__handle[data-anchor='fallback'] {
+  opacity: 0.45;
 }
 
 .react-flow__minimap {

@@ -12,6 +12,7 @@ import type {
   ApprovalNode,
   BranchCase,
   BranchNode,
+  CanvasEdgeAnchor,
   CanvasMeta,
   DslEdge,
   DslNode,
@@ -22,6 +23,7 @@ import type {
   Viewport,
   WorkflowDoc,
 } from './dsl.ts'
+import { DEFAULT_SOURCE_ANCHOR, caseAnchorId } from './dsl.ts'
 
 export interface FlowNode {
   id: string
@@ -34,6 +36,9 @@ export interface FlowEdge {
   id: string
   source: string
   target: string
+  /** T21.4 ③:源锚点 id(缺省 = 节点缺省手柄;branch 为 case_<i>/default)。 */
+  sourceHandle?: string
+  targetHandle?: string
   label?: string
 }
 
@@ -41,6 +46,95 @@ export interface CanvasState {
   nodes: FlowNode[]
   edges: FlowEdge[]
   viewport: Viewport
+}
+
+/** 节点出口上的一个可连点(id 进 schema $defs/sourceAnchor 词域)。 */
+export interface SourceAnchor {
+  id: string
+  label: string
+  /** 该出口还没声明去向(cases[i].next / default 为空)—— 作者事实,不是校验裁定。 */
+  blank: boolean
+}
+
+/**
+ * 节点源锚点集合(按节点语义推导,单一真源 = spec):
+ *   - branch:每条 case 一个 case_<i>(下标对齐 cases 序)+ default;
+ *   - 其余四类节点:DSL 语义上只有一个出口(approval 的通过/驳回不是路由,
+ *     驳回即执行失败)→ 空集 = 单缺省手柄,不虚构锚点。
+ * 集合推导而不落盘:锚点是 spec 的函数,写进 metadata 只会造出第二个真源;
+ * metadata.canvas.edges 只持久化「哪条边接在哪个锚点上」这一个事实。
+ */
+export function sourceAnchors(spec: DslNode): SourceAnchor[] {
+  if (spec.type !== 'branch') return []
+  const cases = spec.cases ?? []
+  return [
+    ...cases.map((c, i) => ({
+      id: caseAnchorId(i),
+      label: `#${i + 1} → ${c.next || '待填'}`,
+      blank: c.next === '',
+    })),
+    { id: DEFAULT_SOURCE_ANCHOR, label: `默认 → ${spec.default || '待填'}`, blank: spec.default === '' },
+  ]
+}
+
+function hasAnchor(spec: DslNode | undefined, id: string): boolean {
+  return spec !== undefined && sourceAnchors(spec).some((a) => a.id === id)
+}
+
+/**
+ * 锚点绑定对账:面板增删 cases 之后,原先绑在已消失锚点上的边会悬空 ——
+ * React Flow 按 id 精确找手柄,找不到就不画那条边(文档里还在,画布上消失)。
+ * 清掉失效绑定让边回落到缺省/回退手柄;无需变更时返回 null(调用方据此
+ * 跳过 setState,避免无谓重渲)。
+ */
+export function reconcileSourceHandles(nodes: FlowNode[], edges: FlowEdge[]): FlowEdge[] | null {
+  if (!edges.some((e) => typeof e.sourceHandle === 'string')) return null
+  // 锚点 id 集合一次算齐:本函数挂在节点变更(拖动每帧也走)上,别按边重算 spec。
+  const anchorIds = new Map(nodes.map((n) => [n.id, new Set(sourceAnchors(n.data.spec).map((a) => a.id))]))
+  let dirty = false
+  const next = edges.map((e) => {
+    if (typeof e.sourceHandle !== 'string' || anchorIds.get(e.source)?.has(e.sourceHandle) === true) return e
+    dirty = true
+    const cleared: FlowEdge = { ...e }
+    delete cleared.sourceHandle
+    return cleared
+  })
+  return dirty ? next : null
+}
+
+/** 无绑定时按语义推导:目标命中某条 case.next → 该 case 锚点;命中 default → default。 */
+function derivedAnchor(spec: DslNode, target: string): string | undefined {
+  if (spec.type !== 'branch') return undefined
+  const cases = spec.cases ?? []
+  const i = cases.findIndex((c) => c.next !== '' && c.next === target)
+  if (i >= 0) return caseAnchorId(i)
+  return spec.default !== '' && spec.default === target ? DEFAULT_SOURCE_ANCHOR : undefined
+}
+
+/**
+ * 边端点的源锚点裁决(三分支,顺序即优先级):
+ *   1. 该边在 metadata.canvas.edges 里**没有记录** → 按语义推导(老文档/外部文档
+ *      因此开箱就有锚点连线);
+ *   2. 有记录且带 source_anchor,且该锚点真在当前 spec 的锚点集里 → 用它(作者显式绑定);
+ *   3. 有记录但省略 source_anchor → **显式未绑定**(作者把边落在兜底手柄上),
+ *      不做推导 —— 否则重开一次就被改回语义锚点(独立复核 MEDIUM-2)。
+ * 记录里的锚点已不存在(改过 cases)= 悬空,退回语义推导。
+ */
+function resolveSourceHandle(
+  spec: DslNode | undefined,
+  target: string,
+  record: { present: boolean; anchor: string | undefined },
+): string | undefined {
+  if (spec === undefined || sourceAnchors(spec).length === 0) return undefined
+  if (!record.present) return derivedAnchor(spec, target)
+  if (record.anchor === undefined) return undefined
+  return hasAnchor(spec, record.anchor) ? record.anchor : derivedAnchor(spec, target)
+}
+
+// 边身份 = (from,to):顶层 edges 的二元组唯一性由 T1.2 语义校验保证
+// (validate.go IssueDuplicateEdge);identifier 词域不含 ':' ⇒ 拼接无碰撞。
+function edgeKey(from: string, to: string): string {
+  return `${from}:${to}`
 }
 
 const ZOOM_MIN = 0.1
@@ -114,12 +208,24 @@ export function toCanvas(doc: WorkflowDoc): CanvasState {
     position: complete ? { ...metaNodes![n.id].position } : layout!.get(n.id)!,
     data: { spec: n },
   }))
-  const edges: FlowEdge[] = (doc.edges ?? []).map((e) => ({
-    id: edgeId(e),
-    source: e.from,
-    target: e.to,
-    label: e.label,
-  }))
+  // T21.4 ③ 源锚点:落盘绑定优先(须真在该节点的锚点集内,悬空绑定丢弃),
+  // 否则按 cases[].next/default 推导 —— 老文档/外部文档因此也能开出锚点连线。
+  // 「有没有记录」本身是信息:记录在场 = 作者表过态,省略 source_anchor 即显式
+  // 未绑定(不推导),见 resolveSourceHandle。
+  const records = new Map<string, { present: boolean; anchor: string | undefined }>()
+  for (const a of doc.metadata?.canvas?.edges ?? []) {
+    const anchor = typeof a.source_anchor === 'string' && a.source_anchor !== '' ? a.source_anchor : undefined
+    records.set(edgeKey(a.from, a.to), { present: true, anchor })
+  }
+  const specs = new Map(doc.nodes.map((n) => [n.id, n]))
+  const edges: FlowEdge[] = (doc.edges ?? []).map((e) => {
+    const sourceHandle = resolveSourceHandle(
+      specs.get(e.from),
+      e.to,
+      records.get(edgeKey(e.from, e.to)) ?? { present: false, anchor: undefined },
+    )
+    return { id: edgeId(e), source: e.from, target: e.to, sourceHandle, label: e.label }
+  })
   return { nodes, edges, viewport: clampViewport(doc.metadata?.canvas?.viewport) }
 }
 
@@ -127,12 +233,50 @@ function edgeId(e: Pick<DslEdge, 'from' | 'to'>): string {
   return `e:${e.from}:${e.to}`
 }
 
+/** 一次连线请求(RF Connection 的结构子集:不引 React Flow 类型)。 */
+export interface EdgeConnection {
+  source: string
+  target: string
+  sourceHandle?: string | null
+  targetHandle?: string | null
+}
+
+/**
+ * 连线落库(画布唯一入口):同一对节点只留一条边 —— 顶层 edges 的 (from,to)
+ * 唯一性由 T1.2 语义校验保证(重复边 IssueDuplicateEdge 拒),并行边没有 DSL
+ * 语义。再从别的锚点连一次 = **改绑**该边的源锚点(既不翻倍,也不静默丢掉
+ * 新锚点)。边 id 与 toCanvas 同源(`e:from:to`),不引 React Flow 的 id 方案。
+ */
+export function connectEdges(edges: FlowEdge[], c: EdgeConnection): FlowEdge[] {
+  const dup = edges.find((e) => e.source === c.source && e.target === c.target)
+  const sourceHandle = c.sourceHandle ?? undefined
+  const targetHandle = c.targetHandle ?? undefined
+  if (dup !== undefined) {
+    return edges.map((e) => (e === dup ? { ...e, sourceHandle, targetHandle } : e))
+  }
+  return [...edges, { id: `e:${c.source}:${c.target}`, source: c.source, target: c.target, sourceHandle, targetHandle }]
+}
+
 /** 画布 → DSL:重建 nodes/edges/metadata.canvas,其余字段自 base 透传。 */
 export function fromCanvas(state: CanvasState, base: WorkflowDoc): WorkflowDoc {
   const nodes = state.nodes.map((n) => n.data.spec)
+  const specs = new Map(state.nodes.map((n) => [n.id, n.data.spec]))
+  // 只有多锚点节点(有出口锚点的 branch)需要记绑定状态:单出口节点恒缺省手柄,
+  // 记了只是噪声。
+  const multiAnchor = new Set(state.nodes.filter((n) => sourceAnchors(n.data.spec).length > 0).map((n) => n.id))
+  // T21.4 ③:多锚点节点的每条出边都落一条记录(锚点绑定,或省略 source_anchor =
+  // 显式未绑定);带 id 却不在锚点集内的 handle = 悬空(画布内部态,改过 cases /
+  // 换过节点类型),不冒充 DSL 语义落盘,下次导入按语义推导。
+  const anchors: CanvasEdgeAnchor[] = []
   const edges: DslEdge[] = state.edges.map((e) => {
     const out: DslEdge = { from: e.source, to: e.target }
     if (typeof e.label === 'string' && e.label !== '') out.label = e.label
+    const spec = specs.get(e.source)
+    if (spec !== undefined && multiAnchor.has(e.source)) {
+      const h = e.sourceHandle
+      if (typeof h === 'string' && hasAnchor(spec, h)) anchors.push({ from: e.source, to: e.target, source_anchor: h })
+      else if (h === undefined) anchors.push({ from: e.source, to: e.target })
+    }
     return out
   })
   const canvas: CanvasMeta = {
@@ -141,6 +285,8 @@ export function fromCanvas(state: CanvasState, base: WorkflowDoc): WorkflowDoc {
     ),
     viewport: clampViewport(state.viewport),
   }
+  // 空绑定不落键:无锚点文档(全单出口节点)导出字节不变。
+  if (anchors.length > 0) canvas.edges = anchors
   return {
     dsl: base.dsl,
     name: base.name,
@@ -267,6 +413,13 @@ function orderDoc(doc: WorkflowDoc): Record<string, unknown> {
                 ['zoom', canvas.viewport.zoom],
               ])
             : undefined,
+          // 键序 = schema 声明序(nodes/viewport/edges);空表不落键。
+          edges:
+            (canvas.edges ?? []).length > 0
+              ? (canvas.edges ?? []).map((a) =>
+                  defined([['from', a.from], ['to', a.to], ['source_anchor', a.source_anchor]]),
+                )
+              : undefined,
         },
       },
     ],

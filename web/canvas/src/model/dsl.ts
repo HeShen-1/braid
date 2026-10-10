@@ -15,7 +15,29 @@ export type BranchOp = (typeof BRANCH_OPS)[number]
 // schema $defs/identifier:^[a-z][a-z0-9_]{0,63}$
 export const ID_PATTERN = /^[a-z][a-z0-9_]{0,63}$/
 
-/** schema metadata.canvas:节点位置 + 视口(zoom 0.1..4)。引擎忽略、原文字节保留。 */
+// schema $defs/sourceAnchor:^(case_[0-9]{1,3}|default)$ —— 节点源锚点词域
+// (T21.4 ③ 多锚点连线)。词域真源在 Schema(画布导出 fixtures 经 dsl.Parse
+// 校验),此处是跨语言镜像:推导出的锚点 id 必须先过本正则才可能落盘,
+// 否则导出会撞发布校验。两侧改动必须同 commit(schema_test 有反锚样例)。
+export const SOURCE_ANCHOR_PATTERN = /^(case_[0-9]{1,3}|default)$/
+
+/** branch 第 i 条 case 的源锚点 id(下标对齐 cases 数组序)。 */
+export function caseAnchorId(index: number): string {
+  return `case_${index}`
+}
+
+/** branch 默认去向的源锚点 id。 */
+export const DEFAULT_SOURCE_ANCHOR = 'default'
+
+/** schema metadata.canvas.edges 元素:边 → 源锚点绑定(引擎忽略)。 */
+export interface CanvasEdgeAnchor {
+  from: string
+  to: string
+  /** 缺省 = 未绑定,该边落 from 节点的缺省手柄。 */
+  source_anchor?: string
+}
+
+/** schema $defs/point:画布坐标(取整后落盘)。 */
 export interface Point {
   x: number
   y: number
@@ -27,9 +49,11 @@ export interface Viewport {
   zoom: number
 }
 
+/** schema metadata.canvas:节点位置 + 视口(zoom 0.1..4)+ 连线锚点绑定。引擎忽略、原文字节保留。 */
 export interface CanvasMeta {
   nodes: Record<string, { position: Point }>
   viewport?: Viewport
+  edges?: CanvasEdgeAnchor[]
 }
 
 export interface WorkflowMeta {

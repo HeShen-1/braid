@@ -51,6 +51,21 @@
                 "y": { "type": "number" },
                 "zoom": { "type": "number", "minimum": 0.1, "maximum": 4 }
               }
+            },
+            "edges": {
+              "type": "array",
+              "maxItems": 512,
+              "description": "画布连线锚点绑定(引擎忽略,与 nodes/viewport 同层)。每条记录以 (from,to) 标识顶层 edges 的一条 —— 边唯一性由 T1.2 语义校验保证(IssueDuplicateEdge),故二元组即身份;source_anchor 指 from 节点的源锚点。锚点集合不由本层声明,而是按节点语义推导(branch = 每条 case 一个 case_<i> + default),本层只持久化「哪条边接在哪个锚点上」。**记录在场即表态**:省略 source_anchor = 作者显式把该边落在节点的缺省/兜底手柄上(导入时不做语义推导,否则显式解绑重开就被改回去);整个 (from,to) 无记录 = 从未表态,导入时按 cases[].next/default 推导(老文档开箱即有锚点连线);记录里的锚点已不存在 = 悬空,退回推导。**已知边界**:case_<i> 下标对齐 cases 数组序,cases 增删/重排后既有绑定按新下标解释(不做自动迁移);锚点整个消失时画布侧清掉绑定(边回退兜底手柄),不写悬空记录。画布导出时全表重写;未知锚点/悬空记录不承载语义(引擎忽略,画布导入时丢弃)。",
+              "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["from", "to"],
+                "properties": {
+                  "from": { "$ref": "#/$defs/identifier" },
+                  "to": { "$ref": "#/$defs/identifier" },
+                  "source_anchor": { "$ref": "#/$defs/sourceAnchor" }
+                }
+              }
             }
           }
         }
@@ -105,6 +120,11 @@
     "identifier": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "sourceAnchor": {
+      "type": "string",
+      "pattern": "^(case_[0-9]{1,3}|default)$",
+      "description": "画布源锚点词域(branch 专有,见 metadata.canvas.edges):case_<i> 下标对齐 cases 数组序,default = 默认去向。词域在此钉死 = 跨语言合同面 —— 前端镜像见 web/canvas/src/model/dsl.ts,画布导出 fixtures 经本 Schema 校验(internal/api/canvas_contract_test.go);下标上限给 (cases.maxItems=64) 留余量。"
     },
     "reference": {
       "oneOf": [
