@@ -6,7 +6,7 @@ import (
 )
 
 // NodeMode 是节点号解析的三层形态(D-2026-10-01-t151 决策 2):显式
-// env 数字 > 内建默认(1/2,视同显式 claim) > 字面 "auto" 哨兵(租约
+// env 数字 > 内建默认(1/2/3,视同显式 claim) > 字面 "auto" 哨兵(租约
 // 池分配);缺省 = 内建默认。
 type NodeMode uint8
 
