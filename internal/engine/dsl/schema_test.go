@@ -38,6 +38,12 @@ var wantCause = map[string][]string{
 	// 而非 0 值);字符串撞类型(逐字钉 jsonschema v6 措辞,升版须对拍)。
 	"parallel_min_success_zero.json":   {"minimum"},
 	"parallel_min_success_string.json": {"integer"},
+	// T21.4 ③ 画布多锚点承载(metadata.canvas.edges):canvas 层新增的唯一键,
+	// 词域与记录形状两处都留反锚 —— 放宽成自由对象即静默丢跨语言合同面。
+	// 合法面由 valid/canvas_multi_anchor.json 反向钉住:case_<i> 与 default 都必须放行。
+	"canvas_anchor_out_of_vocab.json": {"'/metadata/canvas/edges/0/source_anchor'", "'else' does not match pattern '^(case_"},
+	"canvas_edge_extra_key.json":      {"'/metadata/canvas/edges/0'", "additional properties 'source' not allowed"},
+	"canvas_unknown_key.json":         {"'/metadata/canvas'", "additional properties 'groups' not allowed"},
 }
 
 // T1.1 验收:≥5 合法样例全部通过,≥5 非法样例全部被拒且原因正确。

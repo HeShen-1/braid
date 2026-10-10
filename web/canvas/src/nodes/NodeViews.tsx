@@ -8,12 +8,16 @@
 //     <StatusChip kind="node">(状态图标 + 状态色相 1px 边框 + 挂起斜纹);
 //     编辑面不注入 status,因此不虚构执行状态。
 //   - 未配置 = 亮度/发丝线:虚线边框 + 更暗的待填占位,不占状态色相。
+//   - 出口 = 锚点(T21.4 ③):多出口节点(branch)每个锚点一个可连手柄,
+//     沿卡片下沿均分排布,id 与卡片内的端口行一一对应;单出口节点保持
+//     单缺省手柄。锚点集合由 model/convert.sourceAnchors() 从 spec 推导。
 //
 // 执行面注入契约(可选字段,缺省 = 编辑面形态):
 //   data: { spec: DslNode; status?: string; instanceNo?: number }
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import type { ReactNode } from 'react'
 import type { DslNode } from '../model/dsl.ts'
+import { sourceAnchors, type SourceAnchor } from '../model/convert.ts'
 import { nodeStatus, nodeTypeMeta } from '../ui/status.ts'
 import { StatusChip } from '../ui/primitives.tsx'
 import { I } from '../ui/I.tsx'
@@ -43,6 +47,33 @@ function isUnconfigured(spec: DslNode): boolean {
     case 'parallel':
       return spec.parallel.foreach.trim() === ''
   }
+}
+
+/**
+ * 源锚点手柄:空集 = 单缺省手柄(单出口节点,保持原形态);
+ * 非空 = 每个锚点一个带 id 的手柄,沿下沿均分。
+ * 末尾恒留一个无 id 回退点:带 id 的手柄不会被 sourceHandle 缺省的边命中
+ * (React Flow 按 id 精确找点,找不到就不画这条边),而外部/历史文档里
+ * 目标不在 cases∪{default} 内的边正是缺省形态 —— 没有回退点它们会静默消失。
+ * 回退点钉在最右端,不与均分位重叠。
+ */
+function SourceHandles({ anchors }: { anchors: SourceAnchor[] }) {
+  if (anchors.length === 0) return <Handle type="source" position={Position.Bottom} />
+  return (
+    <>
+      {anchors.map((a, i) => (
+        <Handle
+          key={a.id}
+          id={a.id}
+          type="source"
+          position={Position.Bottom}
+          style={{ left: `${((i + 1) * 100) / (anchors.length + 1)}%` }}
+          data-anchor={a.id}
+        />
+      ))}
+      <Handle type="source" position={Position.Bottom} style={{ left: '100%' }} data-anchor="fallback" />
+    </>
+  )
 }
 
 export function NodeShell({
@@ -86,7 +117,7 @@ export function NodeShell({
       ) : null}
       {children !== undefined ? <div className="bn-body">{children}</div> : null}
       <Handle type="target" position={Position.Top} />
-      <Handle type="source" position={Position.Bottom} />
+      <SourceHandles anchors={sourceAnchors(spec)} />
     </div>
   )
 }
@@ -126,10 +157,17 @@ export function ToolView({ data }: NodeProps) {
 
 export function BranchView({ data }: NodeProps) {
   const spec = data.spec as Extract<DslNode, { type: 'branch' }>
+  // 端口行与卡片下沿的锚点手柄同集合、同序(单一推导源 sourceAnchors):
+  // 行文本里的「待填」既是占位文案,也标出还没接线的出口。
   return (
     <NodeShell spec={spec} status={statusOf(data)} instanceNo={instanceOf(data)}>
-      <div className="bn-line num">{spec.cases?.length ?? 0} 个分支</div>
-      <div className={cx('bn-line', spec.default === '' ? 'bn-todo' : 'bn-dim')}>默认 → {spec.default || '待填'}</div>
+      <ul className="bn-ports">
+        {sourceAnchors(spec).map((a) => (
+          <li key={a.id} className={cx('bn-port', a.blank && 'bn-todo')} data-port={a.id}>
+            {a.label}
+          </li>
+        ))}
+      </ul>
     </NodeShell>
   )
 }

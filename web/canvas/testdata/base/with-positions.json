@@ -52,7 +52,19 @@
         "x": 0,
         "y": 0,
         "zoom": 0.85
-      }
+      },
+      "edges": [
+        {
+          "from": "verdict",
+          "to": "report",
+          "source_anchor": "case_0"
+        },
+        {
+          "from": "verdict",
+          "to": "revise",
+          "source_anchor": "default"
+        }
+      ]
     }
   },
   "inputs": [

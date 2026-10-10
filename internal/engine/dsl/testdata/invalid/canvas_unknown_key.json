@@ -1,0 +1,10 @@
+{
+  "dsl": "1.0",
+  "name": "canvas-unknown-key",
+  "metadata": {
+    "canvas": {
+      "groups": []
+    }
+  },
+  "nodes": [{ "id": "only", "type": "llm", "prompt": { "template": "说点什么。" } }]
+}

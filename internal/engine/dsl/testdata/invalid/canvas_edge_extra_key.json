@@ -1,0 +1,21 @@
+{
+  "dsl": "1.0",
+  "name": "canvas-edge-extra-key",
+  "metadata": {
+    "canvas": {
+      "edges": [
+        { "from": "decide", "to": "pass", "source_anchor": "case_0", "source": "decide" }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "decide",
+      "type": "branch",
+      "cases": [{ "when": { "left": "{{inputs.score}}", "op": "gte", "right": 60 }, "next": "pass" }],
+      "default": "pass"
+    },
+    { "id": "pass", "type": "llm", "prompt": { "template": "合格。" } }
+  ],
+  "edges": [{ "from": "decide", "to": "pass" }]
+}

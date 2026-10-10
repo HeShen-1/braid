@@ -249,6 +249,24 @@
   white-space: nowrap;
 }
 
+/* 分支出口端口:一行 = 卡片下沿的一个锚点手柄(集合与顺序同源:模型层
+   sourceAnchors)。行文本是 "#i → 目标" / "默认 → 目标";还没声明去向的
+   出口同时落 .bn-todo(虚线 = 还没填,与节点自身虚线边框同一套语言)。 */
+.bn-ports {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.bn-port {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .bn-dim {
   color: var(--color-ink-2);
 }
@@ -334,6 +352,13 @@
 .react-flow__minimap-node {
   fill: var(--color-line-2);
   stroke: none;
+}
+
+/* 无 id 的回退手柄(仅多锚点节点有):锚点集之外的边 —— 外部/历史文档里
+   目标不在 cases∪{default} 内的那条 —— 的落点。弱化处理:它不是命名出口,
+   但必须在场,否则这类边会被 React Flow 静默丢掉(按 id 精确找点)。 */
+.react-flow__handle[data-anchor='fallback'] {
+  opacity: 0.45;
 }
 
 .react-flow__minimap {
