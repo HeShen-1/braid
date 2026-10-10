@@ -214,7 +214,6 @@ export function ApprovalDetail({
                 读屏用户不会被通知)。 */}
             {confirmReject ? (
               <ConfirmLayer
-                className="appr-confirm"
                 layerRef={confirmRef}
                 label="确认驳回"
                 hint="驳回落库即定局,会写进审计与决定时间线。"

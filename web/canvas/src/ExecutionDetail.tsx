@@ -284,7 +284,6 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
             </Button>
             {cancelArmed ? (
               <ConfirmLayer
-                className="exec-confirm"
                 layerRef={cancelLayerRef}
                 label="确认取消执行"
                 hint="取消会楔停全部在飞节点,不可撤销。"

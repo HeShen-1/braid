@@ -202,4 +202,52 @@ describe('CanvasEditor(画布 UI)', () => {
     await user.click(screen.getByTestId(TID.deleteConfirmSubmit))
     expect(screen.queryByTestId(tid.nodeCard('verdict'))).not.toBeInTheDocument()
   })
+
+  it('T21.4 ④ Esc 不依赖焦点在层内(收尾审计 M2:点画布/收起面板后 Esc 仍要收)', async () => {
+    const user = userEvent.setup()
+    render(<CanvasEditor initialDoc={loadBase('with-positions')} />)
+    fireEvent.click(screen.getByTestId(tid.nodeCard('verdict')))
+    await user.click(await screen.findByTestId(TID.nodeDelete))
+    expect(screen.getByTestId(TID.deleteConfirm)).toHaveFocus()
+
+    // 焦点被点到层外(点画布 → activeElement=body):Esc 仍须收起
+    ;(document.activeElement as HTMLElement | null)?.blur()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId(TID.deleteConfirm)).not.toBeInTheDocument())
+    expect(screen.getByTestId(tid.nodeCard('verdict'))).toBeInTheDocument()
+  })
+
+  it('T21.4 ④ 面板收起时键盘删除:焦点回落节点卡片(收尾审计 M3 变异盲区)', async () => {
+    localStorage.clear()
+    localStorage.setItem(PANEL_RIGHT_KEY, '1')
+    render(<CanvasEditor initialDoc={loadBase('with-positions')} />)
+    expect(screen.queryByLabelText('属性面板')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByTestId(tid.nodeCard('verdict')))
+    fireEvent.keyDown(document, { key: 'Delete' })
+    await waitFor(() => expect(screen.getByTestId(TID.deleteConfirm)).toBeInTheDocument())
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+    await waitFor(() => expect(screen.queryByTestId(TID.deleteConfirm)).not.toBeInTheDocument())
+    // 入口按钮不存在(面板收起)⇒ 落到节点卡片(React Flow 节点 tabindex=0),
+    // 不是 body —— 键盘用户还在原来的节点上。
+    expect(document.querySelector('.react-flow__node[data-id="verdict"]')).toHaveFocus()
+    expect(screen.getByTestId(tid.nodeCard('verdict'))).toBeInTheDocument()
+  })
+
+  it('T21.4 ④ 放行旗标是一次性的:第二次删除仍要重新布防(收尾审计 M3 变异盲区)', async () => {
+    localStorage.clear()
+    const user = userEvent.setup()
+    render(<CanvasEditor initialDoc={loadBase('with-positions')} />)
+    // 第一次:确认删除 verdict(这条会把 allowDelete 置位并消费掉)
+    fireEvent.click(screen.getByTestId(tid.nodeCard('verdict')))
+    await user.click(await screen.findByTestId(TID.nodeDelete))
+    await user.click(screen.getByTestId(TID.deleteConfirmSubmit))
+    expect(screen.queryByTestId(tid.nodeCard('verdict'))).not.toBeInTheDocument()
+
+    // 第二次:选另一个节点按 Delete —— 若旗标粘住就会直删;必须先布防。
+    fireEvent.click(screen.getByTestId(tid.nodeCard('report')))
+    fireEvent.keyDown(document, { key: 'Delete' })
+    await waitFor(() => expect(screen.getByTestId(TID.deleteConfirm)).toBeInTheDocument())
+    expect(screen.getByTestId(tid.nodeCard('report'))).toBeInTheDocument()
+  })
 })
