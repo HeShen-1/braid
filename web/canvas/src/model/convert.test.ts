@@ -273,6 +273,26 @@ describe('T21.4 ③ 源锚点(branch 多锚点)', () => {
     expect(fromCanvas(cs, doc).metadata?.canvas?.edges).toBeUndefined()
   })
 
+  it('显式落在兜底手柄 = 落空绑定记录,重开不被语义推导改回去(独立复核 MEDIUM-2)', () => {
+    const doc = loadBase('all-node-types')
+    const cs = toCanvas(doc)
+    // 把 verdict→revise(语义上是 default 去向)改接到兜底手柄:sourceHandle 缺席
+    cs.edges = cs.edges.map((e) => (e.id === 'e:verdict:revise' ? { ...e, sourceHandle: undefined } : e))
+    const round = fromCanvas(cs, doc)
+    expect(round.metadata?.canvas?.edges).toEqual([
+      { from: 'verdict', to: 'report', source_anchor: 'case_0' },
+      { from: 'verdict', to: 'revise' },
+    ])
+    // 记录在场 + 省略 source_anchor = 显式未绑定:目标虽命中 default,也不许推导
+    const back = toCanvas(round)
+    expect(back.edges.find((e) => e.id === 'e:verdict:revise')?.sourceHandle).toBeUndefined()
+    expect(back.edges.find((e) => e.id === 'e:verdict:report')?.sourceHandle).toBe('case_0')
+    // 空绑定记录经 canonical 序列化/再导入字节稳定
+    const once = serializeDoc(round)
+    const reimported = JSON.parse(once) as WorkflowDoc
+    expect(serializeDoc(fromCanvas(toCanvas(reimported), reimported))).toBe(once)
+  })
+
   it('canonical:无锚点文档不落 edges 键(字节面只多「有锚点」的文档)', () => {
     const doc = loadBase('minimal-llm')
     const out = serializeDoc(fromCanvas(toCanvas(doc), doc))

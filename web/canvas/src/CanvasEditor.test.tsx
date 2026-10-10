@@ -95,8 +95,11 @@ describe('CanvasEditor(画布 UI)', () => {
     expect(verdict.querySelector('[data-port="case_0"]')).not.toBeNull()
     expect(verdict.querySelector('[data-anchor="case_0"]')).not.toBeNull()
     expect(verdict.querySelector('[data-anchor="default"]')).not.toBeNull()
-    // 无 id 回退点恒在场:锚点集之外的边(外部文档)否则会被 React Flow 静默丢掉
-    expect(verdict.querySelector('[data-anchor="fallback"]')).not.toBeNull()
+    // 无 id 兜底手柄必须排在最前:React Flow 对 sourceHandle 缺省的边取 handles[0]
+    // (@xyflow/system getHandle),排在锚点后面就等于把这类边挂到 case_0 上。
+    const handles = verdict.querySelectorAll('[data-anchor]')
+    expect(handles[0].getAttribute('data-anchor')).toBe('fallback')
+    expect(handles[1].getAttribute('data-anchor')).toBe('case_0')
     // 单出口节点(approval)= 单缺省手柄,没有锚点属性
     expect(screen.getByTestId(tid.nodeCard('review')).querySelector('[data-anchor]')).toBeNull()
   })

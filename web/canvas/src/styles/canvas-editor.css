@@ -354,9 +354,10 @@
   stroke: none;
 }
 
-/* 无 id 的回退手柄(仅多锚点节点有):锚点集之外的边 —— 外部/历史文档里
-   目标不在 cases∪{default} 内的那条 —— 的落点。弱化处理:它不是命名出口,
-   但必须在场,否则这类边会被 React Flow 静默丢掉(按 id 精确找点)。 */
+/* 无 id 的兜底手柄(仅多锚点节点有):sourceHandle 缺省的边 —— 外部/历史
+   文档里目标不在 cases∪{default} 内的那条 —— 的落点。React Flow 对 null
+   handleId 取**第一个**源手柄(DOM 序即语义,见 NodeViews.SourceHandles),
+   所以它排在锚点之前;弱化处理:它不是命名出口。 */
 .react-flow__handle[data-anchor='fallback'] {
   opacity: 0.45;
 }

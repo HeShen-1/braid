@@ -111,6 +111,26 @@ function derivedAnchor(spec: DslNode, target: string): string | undefined {
   return spec.default !== '' && spec.default === target ? DEFAULT_SOURCE_ANCHOR : undefined
 }
 
+/**
+ * 边端点的源锚点裁决(三分支,顺序即优先级):
+ *   1. 该边在 metadata.canvas.edges 里**没有记录** → 按语义推导(老文档/外部文档
+ *      因此开箱就有锚点连线);
+ *   2. 有记录且带 source_anchor,且该锚点真在当前 spec 的锚点集里 → 用它(作者显式绑定);
+ *   3. 有记录但省略 source_anchor → **显式未绑定**(作者把边落在兜底手柄上),
+ *      不做推导 —— 否则重开一次就被改回语义锚点(独立复核 MEDIUM-2)。
+ * 记录里的锚点已不存在(改过 cases)= 悬空,退回语义推导。
+ */
+function resolveSourceHandle(
+  spec: DslNode | undefined,
+  target: string,
+  record: { present: boolean; anchor: string | undefined },
+): string | undefined {
+  if (spec === undefined || sourceAnchors(spec).length === 0) return undefined
+  if (!record.present) return derivedAnchor(spec, target)
+  if (record.anchor === undefined) return undefined
+  return hasAnchor(spec, record.anchor) ? record.anchor : derivedAnchor(spec, target)
+}
+
 // 边身份 = (from,to):顶层 edges 的二元组唯一性由 T1.2 语义校验保证
 // (validate.go IssueDuplicateEdge);identifier 词域不含 ':' ⇒ 拼接无碰撞。
 function edgeKey(from: string, to: string): string {
@@ -190,22 +210,20 @@ export function toCanvas(doc: WorkflowDoc): CanvasState {
   }))
   // T21.4 ③ 源锚点:落盘绑定优先(须真在该节点的锚点集内,悬空绑定丢弃),
   // 否则按 cases[].next/default 推导 —— 老文档/外部文档因此也能开出锚点连线。
-  const bound = new Map<string, string>()
+  // 「有没有记录」本身是信息:记录在场 = 作者表过态,省略 source_anchor 即显式
+  // 未绑定(不推导),见 resolveSourceHandle。
+  const records = new Map<string, { present: boolean; anchor: string | undefined }>()
   for (const a of doc.metadata?.canvas?.edges ?? []) {
-    if (typeof a.source_anchor === 'string' && a.source_anchor !== '') {
-      bound.set(edgeKey(a.from, a.to), a.source_anchor)
-    }
+    const anchor = typeof a.source_anchor === 'string' && a.source_anchor !== '' ? a.source_anchor : undefined
+    records.set(edgeKey(a.from, a.to), { present: true, anchor })
   }
   const specs = new Map(doc.nodes.map((n) => [n.id, n]))
   const edges: FlowEdge[] = (doc.edges ?? []).map((e) => {
-    const spec = specs.get(e.from)
-    const declared = bound.get(edgeKey(e.from, e.to))
-    const sourceHandle =
-      spec !== undefined && declared !== undefined && hasAnchor(spec, declared)
-        ? declared
-        : spec === undefined
-          ? undefined
-          : derivedAnchor(spec, e.to)
+    const sourceHandle = resolveSourceHandle(
+      specs.get(e.from),
+      e.to,
+      records.get(edgeKey(e.from, e.to)) ?? { present: false, anchor: undefined },
+    )
     return { id: edgeId(e), source: e.from, target: e.to, sourceHandle, label: e.label }
   })
   return { nodes, edges, viewport: clampViewport(doc.metadata?.canvas?.viewport) }
@@ -243,15 +261,21 @@ export function connectEdges(edges: FlowEdge[], c: EdgeConnection): FlowEdge[] {
 export function fromCanvas(state: CanvasState, base: WorkflowDoc): WorkflowDoc {
   const nodes = state.nodes.map((n) => n.data.spec)
   const specs = new Map(state.nodes.map((n) => [n.id, n.data.spec]))
-  // T21.4 ③:只写「确实在该节点锚点集内」的绑定 —— 悬空绑定(改过 cases、
-  // 换过节点类型)是画布内部态,不冒充 DSL 语义落盘。
+  // 只有多锚点节点(有出口锚点的 branch)需要记绑定状态:单出口节点恒缺省手柄,
+  // 记了只是噪声。
+  const multiAnchor = new Set(state.nodes.filter((n) => sourceAnchors(n.data.spec).length > 0).map((n) => n.id))
+  // T21.4 ③:多锚点节点的每条出边都落一条记录(锚点绑定,或省略 source_anchor =
+  // 显式未绑定);带 id 却不在锚点集内的 handle = 悬空(画布内部态,改过 cases /
+  // 换过节点类型),不冒充 DSL 语义落盘,下次导入按语义推导。
   const anchors: CanvasEdgeAnchor[] = []
   const edges: DslEdge[] = state.edges.map((e) => {
     const out: DslEdge = { from: e.source, to: e.target }
     if (typeof e.label === 'string' && e.label !== '') out.label = e.label
     const spec = specs.get(e.source)
-    if (spec !== undefined && typeof e.sourceHandle === 'string' && hasAnchor(spec, e.sourceHandle)) {
-      anchors.push({ from: e.source, to: e.target, source_anchor: e.sourceHandle })
+    if (spec !== undefined && multiAnchor.has(e.source)) {
+      const h = e.sourceHandle
+      if (typeof h === 'string' && hasAnchor(spec, h)) anchors.push({ from: e.source, to: e.target, source_anchor: h })
+      else if (h === undefined) anchors.push({ from: e.source, to: e.target })
     }
     return out
   })

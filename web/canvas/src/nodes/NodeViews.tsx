@@ -51,16 +51,21 @@ function isUnconfigured(spec: DslNode): boolean {
 
 /**
  * 源锚点手柄:空集 = 单缺省手柄(单出口节点,保持原形态);
- * 非空 = 每个锚点一个带 id 的手柄,沿下沿均分。
- * 末尾恒留一个无 id 回退点:带 id 的手柄不会被 sourceHandle 缺省的边命中
- * (React Flow 按 id 精确找点,找不到就不画这条边),而外部/历史文档里
- * 目标不在 cases∪{default} 内的边正是缺省形态 —— 没有回退点它们会静默消失。
- * 回退点钉在最右端,不与均分位重叠。
+ * 非空 = 一个无 id 兜底手柄 + 每个锚点一个带 id 的手柄,沿下沿均分。
+ *
+ * **DOM 顺序有语义**:React Flow 解析边端点时,`sourceHandle` 缺省(null)取的是
+ * **第一个**源手柄,而不是「没有 id 的那个」—— @xyflow/system 的 getHandle:
+ * `handleId ? handles.find(h => h.id === handleId) : handles[0]`,而 handles 按
+ * `nodeElement.querySelectorAll('.source')` 的 DOM 序采集。所以兜底手柄必须
+ * 渲染在锚点**之前**,否则目标不在 cases∪{default} 内的边(外部/历史文档)
+ * 会被当成第一个锚点 case_0 的连线(独立复核 MEDIUM-1,Chromium 实测复现)。
+ * 视觉位置与 DOM 顺序解耦(端点按测量坐标画):兜底点仍钉在最右端,不与均分位重叠。
  */
 function SourceHandles({ anchors }: { anchors: SourceAnchor[] }) {
   if (anchors.length === 0) return <Handle type="source" position={Position.Bottom} />
   return (
     <>
+      <Handle type="source" position={Position.Bottom} style={{ left: '100%' }} data-anchor="fallback" />
       {anchors.map((a, i) => (
         <Handle
           key={a.id}
@@ -71,7 +76,6 @@ function SourceHandles({ anchors }: { anchors: SourceAnchor[] }) {
           data-anchor={a.id}
         />
       ))}
-      <Handle type="source" position={Position.Bottom} style={{ left: '100%' }} data-anchor="fallback" />
     </>
   )
 }
