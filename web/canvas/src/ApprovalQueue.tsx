@@ -1,7 +1,8 @@
-// 待办审批队列(T21.2 Lane A)——左列面板:待办表 + 翻页 + 刷新。
+// 待办审批队列(T21.2 Lane A)——面板:待办表 + 翻页 + 刷新。
 //
 // 与旧 /ui/ 审批台(app.js renderPending)逐列等价:工作流 `name vX` /
-// 执行 ID / 节点 / 截止时间 / 处理。打开动作由**整行**承担(行可点、
+// 执行 ID / 节点 / 截止时间 / 处理;T21.4 增项加「已等待」列(requested_at
+// → now,既有 Duration 组件,零新端点)。打开动作由**整行**承担(行可点、
 // Enter/Space 等效),行内「处理」按钮保留"这一列是动作列"的读法 ——
 // 两条路径都只调 onOpen,选中态真源在 URL(路由),组件不持有第二份。
 //
@@ -11,7 +12,7 @@ import { Inbox, RefreshCw, TriangleAlert } from 'lucide-react'
 import type { PendingApproval } from './api.ts'
 import { Alert, Button, EmptyState, PanelHead } from './ui/primitives.tsx'
 import { TID, tid } from './ui/testids.ts'
-import { Timestamp } from './ui/time.tsx'
+import { Duration, Timestamp } from './ui/time.tsx'
 
 /** 一页 20 条(旧实现的 PAGE_LIMIT,服务端上限内)。 */
 export const PAGE_LIMIT = 20
@@ -118,6 +119,7 @@ export function ApprovalQueue({
                     <th>工作流</th>
                     <th>执行 ID</th>
                     <th>节点</th>
+                    <th>已等待</th>
                     <th>截止时间</th>
                     <th>
                       <span className="sr-only">处理</span>
@@ -157,6 +159,11 @@ export function ApprovalQueue({
                         <td className="mono">{it.execution_id}</td>
                         <td>
                           <code className="mono">{it.node_id}</code>
+                        </td>
+                        {/* 已等待 = requested_at → now(Duration to=null 即算到
+                            现在,每秒推进;title 带绝对时刻两面同给) */}
+                        <td data-testid={tid.approvalWaited(it.execution_id, it.node_id)}>
+                          <Duration from={it.requested_at} to={null} />
                         </td>
                         <td data-overdue={late ? 'true' : 'false'}>
                           <Timestamp iso={it.deadline_at} />

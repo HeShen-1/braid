@@ -50,6 +50,7 @@ function pending(exec: string, node: string, name = 'wf', version = 1): PendingA
     definition_version: version,
     execution_status: 'WAITING_APPROVAL',
     deadline_at: '2999-01-01T00:00:00Z',
+    requested_at: '2026-10-15T08:00:00Z',
   }
 }
 
@@ -117,24 +118,46 @@ afterEach(() => {
 })
 
 describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
-  it('队列装载 + 选中态由 URL 驱动:点行把 ids 交给路由,选中即挂详情', async () => {
+  it('队列装载 + 选中态由 URL 驱动:点行把 ids 交给路由,选中即换详情级', async () => {
     const user = userEvent.setup()
     const onSelect = vi.fn()
     approvalStub({ items: [pending('7', 'n1'), pending('6', 'n2', 'other', 2)], total: 2 })
     const { rerender } = render(<ApprovalsView selected={null} onSelect={onSelect} onAuthExpired={() => {}} />)
 
+    // 列表级:队列在场,详情不在(⑥ 两级视图,无第三态占位)
     const row = await screen.findByTestId(tid.approvalRow('7', 'n1'))
-    expect(screen.getByText('未选择审批')).toBeInTheDocument()
+    expect(screen.getByTestId(TID.approvalQueue)).toBeInTheDocument()
+    expect(screen.queryByTestId(TID.approvalDetail)).not.toBeInTheDocument()
     await user.click(row)
     expect(onSelect).toHaveBeenCalledWith({ executionId: '7', nodeId: 'n1' })
 
+    // 详情级:详情占满全页,队列退场(不是左右两列)
     rerender(<ApprovalsView selected={{ executionId: '7', nodeId: 'n1' }} onSelect={onSelect} onAuthExpired={() => {}} />)
     expect(await screen.findByTestId(TID.approvalDetail)).toBeInTheDocument()
     // 详情响应没有 definition_name:标题从队列行补(旧 openDetail 同口径)
     expect(await screen.findByRole('heading', { name: 'wf · n1' })).toBeInTheDocument()
     // 节点状态以原始 ENUM 挂在详情根上(与时间带行 data-state 同语言)
     expect(screen.getByTestId(TID.approvalDetail)).toHaveAttribute('data-state', 'WAITING_APPROVAL')
-    expect(screen.getByTestId(tid.approvalRow('7', 'n1'))).toHaveAttribute('data-selected', 'true')
+    expect(screen.queryByTestId(TID.approvalQueue)).not.toBeInTheDocument()
+  })
+
+  it('⑥ 两级视图:返回队列收详情回列表;深链直达详情级后仍可返回', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    // 队列表里没有选中行(深链 + 列表已翻页的形态):标题回退执行 id
+    approvalStub({ items: [pending('6', 'n2', 'other')], total: 1 })
+    const { rerender } = render(
+      <ApprovalsView selected={{ executionId: '7', nodeId: 'n1' }} onSelect={onSelect} onAuthExpired={() => {}} />,
+    )
+    expect(await screen.findByRole('heading', { name: '执行 7 · n1' })).toBeInTheDocument()
+    expect(screen.queryByTestId(TID.approvalQueue)).not.toBeInTheDocument()
+
+    await user.click(screen.getAllByRole('button', { name: '返回队列' })[0])
+    expect(onSelect).toHaveBeenCalledWith(null)
+
+    rerender(<ApprovalsView selected={null} onSelect={onSelect} onAuthExpired={() => {}} />)
+    expect(await screen.findByTestId(TID.approvalQueue)).toBeInTheDocument()
+    expect(screen.queryByTestId(TID.approvalDetail)).not.toBeInTheDocument()
   })
 
   it('① 陈旧响应丢弃:后发先至的旧页响应不得覆盖新页', async () => {
@@ -194,7 +217,9 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
         return new Promise<Response>((res) => gates.push(res))
       },
     })
-    render(<ApprovalsView selected={{ executionId: '7', nodeId: 'n1' }} onSelect={() => {}} onAuthExpired={() => {}} />)
+    const { rerender } = render(
+      <ApprovalsView selected={{ executionId: '7', nodeId: 'n1' }} onSelect={() => {}} onAuthExpired={() => {}} />,
+    )
     const approve = await screen.findByTestId(TID.approvalApprove)
 
     await user.click(approve)
@@ -211,6 +236,8 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     expect(postCount).toBe(1)
 
     await act(async () => gates[0](ok(decisionRow())))
+    // 成功即回队列(onSelect(null)):两级视图下反馈条在列表级,rerender 同步导航
+    rerender(<ApprovalsView selected={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await waitFor(() => expect(screen.getByTestId(TID.approvalFlash)).toBeInTheDocument())
   })
 
@@ -254,19 +281,25 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     await screen.findByRole('heading', { name: 'wf · n2' })
     fireEvent.change(screen.getByTestId(TID.approvalComment), { target: { value: 'n2 的备注' } })
 
-    // n1 的响应此时才回来:反馈照给,但不能动 n2 的输入、不能把 URL 弹回队列
+    // n1 的响应此时才回来:不能动 n2 的输入、不能把 URL 弹回队列;
+    // 反馈条挂在队列面板 —— 两级视图下回列表级即见(主路径:在本条上
+    // 提交成功会自动回列表,反馈不迟到)。
     await act(async () => gates[0](ok(decisionRow())))
     expect(onSelect).not.toHaveBeenCalledWith(null)
     expect((screen.getByTestId(TID.approvalComment) as HTMLTextAreaElement).value).toBe('n2 的备注')
-    expect(await screen.findByTestId(TID.approvalFlash)).toHaveTextContent('已记录:批准')
+    expect(screen.queryByTestId(TID.approvalFlash)).not.toBeInTheDocument()
 
-    // 失败面同理:错误归队列(它是旧节点的),不误挂在新节点头上
+    // 失败面同理:n2 的决定失败响应迟到(此时用户已切到 n1)——错误归队列
+    // (它是 n2 的),不得误挂 n1 的详情;两级视图下队列退场,回列表级即见
+    // (错误条与反馈条一起在队列面板里)。
     fireEvent.keyDown(document.body, { key: 'a' })
     await waitFor(() => expect(gates).toHaveLength(2))
     rerender(<ApprovalsView selected={{ executionId: '7', nodeId: 'n1' }} onSelect={onSelect} onAuthExpired={() => {}} />)
     await screen.findByRole('heading', { name: 'wf · n1' })
     await act(async () => gates[1](err('not_approver', 403)))
     expect(within(screen.getByTestId(TID.approvalDetail)).queryByRole('alert')).toBeNull()
+    rerender(<ApprovalsView selected={null} onSelect={onSelect} onAuthExpired={() => {}} />)
+    expect(await screen.findByTestId(TID.approvalFlash)).toHaveTextContent('已记录:批准')
     expect(within(screen.getByTestId(TID.approvalQueue)).getByRole('alert')).toHaveTextContent('你不是本节点的审批人。')
   })
 
@@ -291,7 +324,9 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     const user = userEvent.setup()
     const posts: unknown[] = []
     approvalStub({ onDecision: (b) => (posts.push(b), ok(decisionRow({ decision: 'reject', comment: 'arjk' }))) })
-    render(<ApprovalsView selected={{ executionId: '7', nodeId: 'n1' }} onSelect={() => {}} onAuthExpired={() => {}} />)
+    const { rerender } = render(
+      <ApprovalsView selected={{ executionId: '7', nodeId: 'n1' }} onSelect={() => {}} onAuthExpired={() => {}} />,
+    )
     const ta = await screen.findByTestId(TID.approvalComment)
 
     await user.type(ta, 'arjk')
@@ -312,6 +347,8 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     fireEvent.keyDown(document.body, { key: 'r' })
     await waitFor(() => expect(posts).toHaveLength(1))
     expect(posts[0]).toEqual({ decision: 'reject', comment: 'arjk' })
+    // 成功即回队列:反馈条在列表级(rerender 同步 onSelect(null) 的导航)
+    rerender(<ApprovalsView selected={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     expect(await screen.findByTestId(TID.approvalFlash)).toHaveTextContent('已记录:驳回 · arjk')
   })
 
@@ -460,6 +497,8 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     await waitFor(() => expect(posts).toHaveLength(1))
     expect(posts[0]).toEqual({ decision: 'approve', comment: '看过了' })
     expect(onSelect).toHaveBeenCalledWith(null)
+    // 真实 app:URL 随 onSelect(null) 回列表级;这里 rerender 同步该导航。
+    rerender(<ApprovalsView selected={null} onSelect={onSelect} onAuthExpired={() => {}} />)
     expect(await screen.findByTestId(TID.approvalFlash)).toHaveTextContent('已记录:批准 · 看过了')
     await waitFor(() => expect(listOffsets.at(-1)).toBe('0'))
   })

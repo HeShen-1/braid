@@ -310,8 +310,16 @@ export function ExecutionRibbon({
                 {m.ticks.length === 0 ? (
                   <span className="text-ink-3">尚未开始</span>
                 ) : (
-                  m.ticks.map((t) => (
-                    <time key={t.left} dateTime={t.iso} title={t.title}>
+                  // 刻度按时间分数定位(executions.css):边缘刻度向内锚定,
+                  // 中间刻度文字中心压在时刻上 —— 与网格线/段端点同一坐标。
+                  m.ticks.map((t, i) => (
+                    <time
+                      key={t.left}
+                      dateTime={t.iso}
+                      title={t.title}
+                      data-anchor={i === 0 ? 'start' : i === m.ticks.length - 1 ? 'end' : 'mid'}
+                      style={{ left: `${t.left}%` }}
+                    >
                       {t.label}
                     </time>
                   ))

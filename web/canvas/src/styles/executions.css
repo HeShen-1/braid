@@ -331,6 +331,31 @@
   border-top: 0;
 }
 
+/* 刻度按时间分数绝对定位(T21.4 ⑤):
+   旧 flex + space-between 只在「3 个等宽刻度」时中点恰好压线;5 刻度时
+   25%/75% 刻度各向内偏 ±标签宽/4(实测 10px,带日期 22px),窄轨时整体
+   溢出轨道右缘 —— 刻度与网格线/段端点不同坐标。改为:边缘刻度向内锚定
+   (起点左对齐 0%、终点右对齐 100%),中间刻度文字中心压在时刻上。
+   行高由同行的「时间轴」标签格承担(绝对定位子元素不占高)。 */
+.exec-ribbon .exec-axis-row .ribbon-axis {
+  position: relative;
+  display: block;
+}
+
+.exec-ribbon .exec-axis-row .ribbon-axis time {
+  position: absolute;
+  top: 0.3rem;
+  white-space: nowrap;
+}
+
+.exec-ribbon .exec-axis-row .ribbon-axis time[data-anchor='mid'] {
+  transform: translateX(-50%);
+}
+
+.exec-ribbon .exec-axis-row .ribbon-axis time[data-anchor='end'] {
+  transform: translateX(-100%);
+}
+
 .exec-node-error {
   grid-column: 1 / -1;
   display: flex;

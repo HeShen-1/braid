@@ -180,6 +180,23 @@ describe('ExecutionRibbon(渲染)', () => {
     expect(onSelectNode).toHaveBeenCalledWith('gate')
   })
 
+  it('⑤ 刻度按时间分数定位:边缘向内锚定、中间刻度中心压在时刻上(T21.4)', () => {
+    // 不齐形态真机实测(executions.css 注释):flex + space-between 只在
+    // 「3 等宽刻度」时中点恰好压线;5 刻度时 25%/75% 刻度各向内偏
+    // ±标签宽/4(无日期 10px、带日期 22px),窄轨时整体溢出轨道右缘。
+    // DOM 契约 = 每根刻度带模型分数(left%)与锚别(data-anchor),几何
+    // 由 executions.css 的 translateX 承担:mid 居中、end 右对齐、start 左对齐。
+    draw([node({ node_id: 'a', instance_no: 0, status: 'SUCCEEDED', started_at: iso(T0), finished_at: iso(T0 + 3_600_000) })], {
+      live: false,
+      finishedAt: iso(T0 + 3_600_000),
+    })
+    const axis = document.querySelector('.ribbon-axis')!
+    const ticks = [...axis.querySelectorAll('time')]
+    expect(ticks).toHaveLength(5) // 2min–6h 区间走 5 刻度档
+    expect(ticks.map((t) => t.style.left)).toEqual(['0%', '25%', '50%', '75%', '100%'])
+    expect(ticks.map((t) => t.getAttribute('data-anchor'))).toEqual(['start', 'mid', 'mid', 'mid', 'end'])
+  })
+
   it('进行中执行:now 每秒推进(右端 = now,已结束段随之被压缩)', () => {
     vi.useFakeTimers()
     vi.setSystemTime(T0 + 20_000)
