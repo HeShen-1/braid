@@ -7,11 +7,13 @@ const AUTHOR = { username: 'author', password: 'e2e-author-pass-1' }
 
 async function publish(request: APIRequestContext, headers: Record<string, string>, doc: WorkflowDoc) {
   const created = await request.post('/api/v1/definitions', { headers, data: doc })
-  expect(created.status()).toBe(201)
-  const { id } = await created.json() as { id: string }
+  const createdBody = await created.json() as { id: string }
+  expect(created.status(), JSON.stringify(createdBody)).toBe(201)
+  const { id } = createdBody
   const response = await request.post(`/api/v1/drafts/${id}/publish`, { headers })
-  expect(response.ok()).toBe(true)
-  return await response.json() as { id: string; version: number; dsl_hash: string }
+  const published = await response.json() as { id: string; version: number; dsl_hash: string }
+  expect(response.ok(), JSON.stringify(published)).toBe(true)
+  return published
 }
 
 test('所选版本固定:另端发布新版与列表刷新后仍执行原版;归档拒绝且不降级', async ({ page, request }) => {
@@ -40,7 +42,7 @@ test('所选版本固定:另端发布新版与列表刷新后仍执行原版;归
   const second = await publish(request, headers, {
     ...doc,
     description: '另端发布的第二版',
-    nodes: [{ id: 'new-gate', type: 'approval', approvers: ['alice'], instructions: '第二版审批' }],
+    nodes: [{ id: 'new_gate', type: 'approval', approvers: ['alice'], instructions: '第二版审批' }],
   })
   expect(second.version).toBe(first.version + 1)
   const refresh = page.waitForResponse((res) => res.request().method() === 'GET' && new URL(res.url()).pathname === '/api/v1/definitions')
@@ -63,7 +65,7 @@ test('所选版本固定:另端发布新版与列表刷新后仍执行原版;归
   expect(ack.definition_version).toBe(first.version)
   expect(posted).toEqual([{ definition_name: doc.name, version: first.version, input: {} }])
   await expect(page.getByTestId(tid.nodeRow('gate', 0))).toHaveAttribute('data-state', 'WAITING_APPROVAL', { timeout: 30_000 })
-  await expect(page.getByTestId(tid.nodeRow('new-gate', 0))).toHaveCount(0)
+  await expect(page.getByTestId(tid.nodeRow('new_gate', 0))).toHaveCount(0)
   const stored = await request.get(`/api/v1/executions/${ack.id}`, { headers })
   expect(stored.ok()).toBe(true)
   expect(await stored.json()).toMatchObject({ definition_id: first.id, definition_version: first.version, definition_hash: first.dsl_hash })
