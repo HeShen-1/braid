@@ -6,7 +6,7 @@
 
 ## 0. 版本语义
 
-- **版本锚 = 迁移版本**(`schema_migrations.version`,当前 0005)。交付包 =
+- **版本锚 = 迁移版本**(`schema_migrations.version`,当前 0015)。交付包 =
   仓库:四入口二进制(Dockerfile)+ 迁移文件(`internal/db/migrations`)。
   二进制内嵌同套迁移(`internal/db` embed),`preflight.CheckSchemaVersion`
   在组件启动时比对两侧,版本不一致拒启或 warn(见 §2)。
