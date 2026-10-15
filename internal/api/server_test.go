@@ -154,6 +154,44 @@ func TestHTTPCreateInvalidDSL(t *testing.T) {
 	}
 }
 
+// TestHTTPCreateSchemaIssues(F05):空 LLM 节点首存的 400 响应端到端可读
+// ——issues 数组恰含唯一 minLength 事实(ref 指到具体字段),oneOf 全臂
+// 原始转储不再出现在响应里。
+func TestHTTPCreateSchemaIssues(t *testing.T) {
+	r, _, sign := newTestServer(t)
+	author := sign(auth.RoleAuthor)
+	doc := []byte(`{"dsl":"1.0","name":"empty-llm-probe","edges":[],"nodes":[{"id":"n1","type":"llm","title":"","prompt":{"template":""},"outputs":{}}]}`)
+	code, body := doJSON(t, r, http.MethodPost, "/api/v1/definitions", author, doc)
+	if code != http.StatusBadRequest {
+		t.Fatalf("empty llm node create = %d, want 400", code)
+	}
+	if body["error"] != "invalid_dsl" {
+		t.Fatalf("error code = %v, want invalid_dsl", body["error"])
+	}
+	raw, err := json.Marshal(body)
+	if err != nil {
+		t.Fatalf("marshal body: %v", err)
+	}
+	if strings.Contains(string(raw), "oneOf") {
+		t.Fatalf("response still carries oneOf arm dump: %s", raw)
+	}
+	issues := body["issues"].([]any)
+	if len(issues) != 1 {
+		t.Fatalf("issues = %d entries (%s), want exactly 1", len(issues), raw)
+	}
+	first, ok := issues[0].(map[string]any)
+	if !ok {
+		t.Fatalf("issue shape = %T, want object", issues[0])
+	}
+	if first["ref"] != "/nodes/0/prompt/template" {
+		t.Fatalf("issue ref = %v, want /nodes/0/prompt/template", first["ref"])
+	}
+	detail, _ := first["detail"].(string)
+	if !strings.Contains(detail, "minLength") {
+		t.Fatalf("issue detail = %q, want minLength fact", detail)
+	}
+}
+
 // TestHTTPDetailDSLHashRoundTrip:MED①(T3.6)可复算子集闭环——对不含
 // `<`/`>`/`&` 的文档,detail 响应的 dsl 值字节可被消费方复算出 dsl_hash
 // (decode→RawMessage→SHA-256)。HTML 敏感字符的文档因 HTTP JSON 编码器

@@ -103,6 +103,9 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
   }, [])
 
   const onDocChange = useCallback((doc: WorkflowDoc) => {
+    // F05:旧校验错误描述的是编辑前的文档,一改即过期——就地清除,
+    // 不再常驻到下次保存(错误横幅只在「刚失败」的窗口内可见)。
+    setIssues((cur) => (cur.length > 0 ? [] : cur))
     setWs((cur) => (cur === null ? cur : { ...cur, doc }))
   }, [])
 
