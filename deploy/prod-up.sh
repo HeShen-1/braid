@@ -129,4 +129,5 @@ cat <<'EOF'
    控制台、/executions/ 执行面、/approvals/ 审批台;旧审批台/画布前缀硬切 404)
    经反代指向 compose 内网 api:8081;运维面 deploy/RUNBOOK.md,升级/改密
    deploy/UPGRADE.md,验收:docker compose -f deploy/prod.docker-compose.yml ps
+== 首个用户建号(栈零种子账号,不建号无人能登录):deploy/README.md §5.1
 EOF

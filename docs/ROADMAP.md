@@ -28,7 +28,7 @@
 - [x] T22.2 F03 定义列表分页接入 — M — issue #215 — listDrafts/listPublished 消费 page envelope(total),接入执行面已有翻页器模式(修「超 20 条静默消失」+「第 21 个已发布不进触发下拉」) — 验收:三件套 + vitest + dist 同 commit;21 条草稿/发布全量可达
 - [x] T22.3 F04 发布成功反馈重构 — M — issue #216 — 成功反馈与编辑器卸载解耦(顶层 toast 或列表态成功条)+ 「查看已发布」出口(修「发布像凭空消失」) — 验收:三件套 + vitest + dist 同 commit + e2e 旅程不回归
 - [ ] T22.4 F10 回滚确认层 — S — issue #217 — 回滚接入 ui/confirm.tsx(与同面「取消执行」同契约);续跑维持直按或一次布防,不硬套同档确认 — 验收:三件套 + vitest + dist 同 commit
-- [ ] T22.5 F02 prod 首账号文档缝 — S — issue #218 — deploy 补「首个登录账号」一节(compose 网内 root DSN 跑 `braid user create` + 角色与口令纪律),README §2.1 与 prod-up.sh 就绪横幅指路 — 验收:prod 路径陌生人可登录(纯 docs)
+- [x] T22.5 F02 prod 首账号文档缝 — S — issue #218 — deploy 补「首个登录账号」一节(compose 网内 root DSN 跑 `braid user create` + 角色与口令纪律),README §2.1 与 prod-up.sh 就绪横幅指路 — 验收:prod 路径陌生人可登录(纯 docs)
 - [ ] 残件承接:#202(**已交付**:PR #223,T21.4 ⑤⑥ + 增项一并收口)、#207(T21.6 Tailwind 取材面,主会话直修)、#210(fence 种子错峰,主会话直修)、#213(修复已落 39ef08d,master 复跑 web 作业绿后直接闭单)
 
 ## M18 停车场清账波(P3-1,可唤醒面清零)
