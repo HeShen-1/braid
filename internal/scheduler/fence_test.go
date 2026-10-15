@@ -129,6 +129,9 @@ func TestSchedulerFenceAllWriteFaces(t *testing.T) {
 	if err := s.Start(ctx, execID, "zombie"); !errors.Is(err, snowflake.ErrFenced) {
 		t.Fatalf("Start (superseded): %v, want ErrFenced", err)
 	}
+	if err := s.FinishIfDone(ctx, execID); !errors.Is(err, snowflake.ErrFenced) {
+		t.Fatalf("FinishIfDone (superseded): %v, want ErrFenced", err)
+	}
 	if _, err := s.RollbackTo(ctx, RollbackParams{ExecID: execID, WorkerID: "zombie", ActorID: "zombie"}); !errors.Is(err, snowflake.ErrFenced) {
 		t.Fatalf("RollbackTo (superseded): %v, want ErrFenced", err)
 	}
