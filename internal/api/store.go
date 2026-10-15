@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/go-sql-driver/mysql"
+	"github.com/santhosh-tekuri/jsonschema/v6"
 
 	"braid/internal/engine/dsl"
 )
@@ -113,12 +114,18 @@ func parseDraft(doc []byte) (*dsl.Workflow, error) {
 	return wf, nil
 }
 
-// asInvalidDSL 把 dsl.Parse 的失败统一成 *InvalidDSLError(结构层错误
-// 原样包成单条 Issue)。
+// asInvalidDSL 把 dsl.Parse 的失败统一成 *InvalidDSLError:语义发现
+// (ParseError)原样透传;JSON Schema 违例经 schemaIssues 逐 cause 拆成
+// 结构化 issue(oneOf 全臂原始转储不再出 API,F05);其余收拢成单条
+// invalid_document。
 func asInvalidDSL(err error) error {
 	var pe *dsl.ParseError
 	if errors.As(err, &pe) {
 		return &InvalidDSLError{Issues: pe.Issues}
+	}
+	var ve *jsonschema.ValidationError
+	if errors.As(err, &ve) {
+		return &InvalidDSLError{Issues: schemaIssues(ve)}
 	}
 	return &InvalidDSLError{Issues: []dsl.Issue{{Code: "invalid_document", Detail: err.Error()}}}
 }
