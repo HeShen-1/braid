@@ -85,6 +85,8 @@ export const tid = {
   approvalEntry: (nodeId: string) => `approval-${nodeId}`,
   /** 待办行:执行 × 节点是队列行的天然主键。 */
   approvalRow: (executionId: string, nodeId: string) => `approval-row-${executionId}-${nodeId}`,
+  /** 待办行「已等待」格(T21.4 增项):同一主键。 */
+  approvalWaited: (executionId: string, nodeId: string) => `approval-waited-${executionId}-${nodeId}`,
   /** 审计链按事件词计数锚(rolled_back / approval.decided / node.state_changed)。 */
   auditRow: (eventType: string) => `audit-row-${eventType}`,
 } as const

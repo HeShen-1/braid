@@ -33,6 +33,7 @@ type PendingApproval struct {
 	ExecutionID       uint64
 	NodeID            string
 	DeadlineAt        time.Time
+	RequestedAt       time.Time
 	DefinitionName    string
 	DefinitionVersion uint32
 	ExecutionStatus   string
@@ -66,7 +67,7 @@ func (s *Store) ListPendingApprovals(ctx context.Context, q DBTX, tenant uint64,
 		return nil, 0, fmt.Errorf("api: count pending approvals of %q: %w", username, err)
 	}
 	rows, err := q.QueryContext(ctx, `
-SELECT ne.execution_id, ne.node_id, ne.deadline_at, we.definition_name, we.definition_version, we.status
+SELECT ne.execution_id, ne.node_id, ne.deadline_at, ne.status_changed_at, we.definition_name, we.definition_version, we.status
   FROM node_execution ne JOIN workflow_execution we ON we.id = ne.execution_id`+pendingWhere+`
  ORDER BY ne.deadline_at, ne.id LIMIT ? OFFSET ?`,
 		append(args, limit, offset)...)
@@ -80,7 +81,7 @@ SELECT ne.execution_id, ne.node_id, ne.deadline_at, we.definition_name, we.defin
 			p        PendingApproval
 			deadline sql.NullTime
 		)
-		if err := rows.Scan(&p.ExecutionID, &p.NodeID, &deadline,
+		if err := rows.Scan(&p.ExecutionID, &p.NodeID, &deadline, &p.RequestedAt,
 			&p.DefinitionName, &p.DefinitionVersion, &p.ExecutionStatus); err != nil {
 			return nil, 0, fmt.Errorf("api: scan pending approval: %w", err)
 		}
@@ -100,7 +101,9 @@ SELECT ne.execution_id, ne.node_id, ne.deadline_at, we.definition_name, we.defin
 }
 
 // pendingApprovalDTO 是待办行视图(execution_id 字符串化契约同
-// definitionDTO,2^53 精度)。
+// definitionDTO,2^53 精度)。requested_at = 最近一次状态迁移时刻
+// (status_changed_at)—— 即进入 WAITING_APPROVAL 的时刻;回滚重跑后
+// started_at 停在首跑,等待起点必须随最新一轮走。
 type pendingApprovalDTO struct {
 	ExecutionID       string    `json:"execution_id"`
 	NodeID            string    `json:"node_id"`
@@ -108,6 +111,7 @@ type pendingApprovalDTO struct {
 	DefinitionVersion uint32    `json:"definition_version"`
 	ExecutionStatus   string    `json:"execution_status"`
 	DeadlineAt        time.Time `json:"deadline_at"`
+	RequestedAt       time.Time `json:"requested_at"`
 }
 
 func toPendingDTO(p PendingApproval) pendingApprovalDTO {
@@ -118,6 +122,7 @@ func toPendingDTO(p PendingApproval) pendingApprovalDTO {
 		DefinitionVersion: p.DefinitionVersion,
 		ExecutionStatus:   p.ExecutionStatus,
 		DeadlineAt:        p.DeadlineAt,
+		RequestedAt:       p.RequestedAt,
 	}
 }
 

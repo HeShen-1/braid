@@ -208,7 +208,9 @@ export interface ApprovalDetail {
   decisions: ApprovalDecisionRow[]
 }
 
-/** 待办审批行(GET /approvals/pending;execution_id 字符串化契约同 definitionDTO)。 */
+/** 待办审批行(GET /approvals/pending;execution_id 字符串化契约同 definitionDTO)。
+ *  requested_at = 进入 WAITING_APPROVAL 的时刻(后端 status_changed_at):
+ *  回滚重跑后 started_at 停在首跑,等待起点随最新一轮走。 */
 export interface PendingApproval {
   execution_id: string
   node_id: string
@@ -216,6 +218,7 @@ export interface PendingApproval {
   definition_version: number
   execution_status: string
   deadline_at: string
+  requested_at: string
 }
 
 export interface AuditEvent {

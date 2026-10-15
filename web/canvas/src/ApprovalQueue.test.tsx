@@ -7,7 +7,14 @@ import { ApprovalQueue, PAGE_LIMIT } from './ApprovalQueue.tsx'
 import type { PendingApproval } from './api.ts'
 import { TID, tid } from './ui/testids.ts'
 
-function pending(exec: string, node: string, name = 'wf', version = 1, deadline = '2999-01-01T00:00:00Z'): PendingApproval {
+function pending(
+  exec: string,
+  node: string,
+  name = 'wf',
+  version = 1,
+  deadline = '2999-01-01T00:00:00Z',
+  requestedAt = '2026-10-15T08:00:00Z',
+): PendingApproval {
   return {
     execution_id: exec,
     node_id: node,
@@ -15,6 +22,7 @@ function pending(exec: string, node: string, name = 'wf', version = 1, deadline 
     definition_version: version,
     execution_status: 'WAITING_APPROVAL',
     deadline_at: deadline,
+    requested_at: requestedAt,
   }
 }
 
@@ -38,7 +46,7 @@ function renderQueue(over: Partial<Parameters<typeof ApprovalQueue>[0]> = {}) {
 }
 
 describe('ApprovalQueue(待办队列)', () => {
-  it('列与旧审批台等价:工作流 name vX / 执行 ID / 节点 / 截止时间 / 处理', () => {
+  it('列与旧审批台等价 + T21.4 增项:工作流 name vX / 执行 ID / 节点 / 已等待 / 截止时间 / 处理', () => {
     renderQueue()
     const row = screen.getByTestId(tid.approvalRow('7', 'n1'))
     expect(row).toHaveTextContent('wf')
@@ -48,6 +56,19 @@ describe('ApprovalQueue(待办队列)', () => {
     expect(row).toHaveTextContent('处理')
     expect(screen.getByTestId(tid.approvalRow('6', 'n2'))).toHaveTextContent('other')
     expect(screen.getByTestId(tid.approvalRow('6', 'n2'))).toHaveTextContent('v2')
+    // 表头带「已等待」列(增项可见形态)
+    const headers = [...screen.getAllByRole('columnheader')].map((h) => h.textContent)
+    expect(headers).toEqual(['工作流', '执行 ID', '节点', '已等待', '截止时间', '处理'])
+  })
+
+  it('已等待 = requested_at → now(挂起起点起的时长,挂标题给绝对时刻)', () => {
+    // now - 90s ⇒ fmtDuration = "1m30s";用相对 now 的 requested_at 钉语义。
+    const requested = new Date(Date.now() - 90_000).toISOString()
+    renderQueue({ items: [pending('7', 'n1', 'wf', 1, '2999-01-01T00:00:00Z', requested)] })
+    const cell = screen.getByTestId(tid.approvalWaited('7', 'n1'))
+    expect(cell.textContent).toMatch(/^1m\d{2}s$/)
+    // 悬停两面:绝对起点进 title(Duration 契约)
+    expect(cell.querySelector('span')).toHaveAttribute('title', expect.stringContaining('→ 进行中'))
   })
 
   it('整行可点:点击行、点击「处理」、行上 Enter 都只调一次 onOpen', async () => {

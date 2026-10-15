@@ -5,13 +5,14 @@
    @layer components/utilities,所以 .appr- 作用域可以覆写共享骨架的几何;
    配色一律沿用 token(状态色相只有 index.css 的 [data-state] 一处真源)。 */
 
-/* ---------- 工作区:左列(待办队列) + 右列(详情),与执行面同构 ---------- */
+/* ---------- 工作区:同页两级视图(T21.4 ⑥)----------
+   未选中 = 列表级:待办队列占满全页;选中 = 详情级:详情占满全页,
+   「返回队列」/ Esc 回列表(D-2026-10-09-console-v2 决策 5:不做新
+   标签页,详情不再被左列压成窄条)。 */
 
 .appr-view {
   display: grid;
-  /* 左列要给得下队列表的必要宽度:上限收到 30rem 时「处理」动作列会被挤出
-     可视区,落在一个没有提示的横向滚动里(收尾评审 fix 2)。 */
-  grid-template-columns: minmax(22rem, 34rem) minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr);
   flex: 1 1 auto;
   min-height: 0;
 }
@@ -23,19 +24,10 @@
   min-height: 0;
   overflow-y: auto;
   padding: 0.75rem;
-  border-right: 1px solid var(--color-line-1);
 }
 
 .appr-rail > .panel {
   flex: 0 0 auto;
-}
-
-.appr-empty-main {
-  display: grid;
-  place-items: center;
-  min-height: 0;
-  overflow: auto;
-  padding: 1rem;
 }
 
 .appr-table-wrap {

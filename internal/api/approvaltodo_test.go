@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"strconv"
 	"testing"
+	"time"
 
 	"braid/internal/auth"
 )
@@ -135,6 +136,54 @@ func TestApprovalsPendingList(t *testing.T) {
 		code, _ := list("", "")
 		if code != http.StatusUnauthorized {
 			t.Fatalf("code = %d, want 401", code)
+		}
+	})
+
+	// T21.4 增项「已等待多久」:requested_at = 进入 WAITING_APPROVAL 的时刻
+	// (status_changed_at),不是 started_at —— 后者跨重试/回滚重跑不变
+	// (首跑起点),等待起点必须随最新一轮走。回滚重跑形态:started_at 停在
+	// 48h 前,status_changed_at 在 90m 前 ⇒ 队列应显示约 90m 而非 48h。
+	t.Run("requested_at_marks_latest_waiting_entry", func(t *testing.T) {
+		cases := []struct {
+			name       string
+			startedAgo time.Duration
+			changedAgo time.Duration
+		}{
+			{"first_run_started_eq_changed", 90 * time.Minute, 90 * time.Minute},
+			{"rolled_back_and_rerun", 48 * time.Hour, 90 * time.Minute},
+		}
+		for _, tc := range cases {
+			t.Run(tc.name, func(t *testing.T) {
+				execID, _ := seedSuspendedApproval(t, dbh, "WAITING_APPROVAL", "WAITING_APPROVAL", "carol")
+				if _, err := dbh.Exec(`UPDATE node_execution
+				  SET started_at = DATE_SUB(NOW(3), INTERVAL ? MICROSECOND),
+				      status_changed_at = DATE_SUB(NOW(3), INTERVAL ? MICROSECOND)
+				  WHERE execution_id = ?`,
+					tc.startedAgo.Microseconds(), tc.changedAgo.Microseconds(), execID); err != nil {
+					t.Fatalf("backdate timestamps: %v", err)
+				}
+				code, body := list(carol, "")
+				if code != http.StatusOK {
+					t.Fatalf("code = %d %v", code, body)
+				}
+				var row map[string]any
+				for _, it := range body["items"].([]any) {
+					if it.(map[string]any)["execution_id"] == strconv.FormatUint(execID, 10) {
+						row = it.(map[string]any)
+					}
+				}
+				if row == nil {
+					t.Fatalf("exec %d missing from list", execID)
+				}
+				req, err := time.Parse(time.RFC3339Nano, row["requested_at"].(string))
+				if err != nil {
+					t.Fatalf("requested_at = %v: %v", row["requested_at"], err)
+				}
+				age := time.Since(req)
+				if d := (age - tc.changedAgo).Abs(); d > 10*time.Second {
+					t.Fatalf("requested_at age = %v, want ~%v(= status_changed_at,非 started_at)", age, tc.changedAgo)
+				}
+			})
 		}
 	})
 

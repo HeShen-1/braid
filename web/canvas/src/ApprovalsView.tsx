@@ -1,6 +1,8 @@
-// 审批面(T21.2 Lane A)—— 原 /ui/ 审批台(原生三件套)并入统一 SPA 的
-// 组合根:左列待办队列 + 右列详情 + 键盘快捷键。零后端新端点:端点、字段、
-// 错误词表与旧 app.js 逐字一致。
+// 审批面(T21.2 Lane A;T21.4 ⑥ 改同页两级视图)—— 原 /ui/ 审批台
+// (原生三件套)并入统一 SPA 的组合根。两级视图(D-2026-10-09-console-v2
+// 决策 5:不改 token 载体、不加端点,故不做新标签页):未选中 = 队列列表
+// 占满全页;选中 = 详情占满全页,「返回队列」/ Esc 回列表。零后端新端点:
+// 端点、字段、错误词表与旧 app.js 逐字一致。
 //
 // 三条对抗审计不变量(旧实现 app.js 的注释即契约,不得退化):
 //   ① 列表请求序号守卫(listSeq):快速连点时后发先至的陈旧响应丢弃,
@@ -13,11 +15,9 @@
 // 选中态真源在 URL(routes/ApprovalsRoute 受控传入);组件只发 onSelect。
 // 401 统一交 onAuthExpired(App 层 cleartoken 回登录)。
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Stamp } from 'lucide-react'
 import { ApiError, api, type ApprovalDetail as ApprovalDetailData, type PendingApproval } from './api.ts'
 import { ApprovalDetail, COMMENT_MAX, approvalCommentCount } from './ApprovalDetail.tsx'
 import { ApprovalQueue, PAGE_LIMIT, type ApprovalSelection } from './ApprovalQueue.tsx'
-import { EmptyState } from './ui/primitives.tsx'
 import { decisionLabel } from './ui/status.ts'
 
 /** 后端错误码 → 中文(逐字取自旧 app.js 的 ERR_TEXT,共 10 个码)。
@@ -137,12 +137,14 @@ export function ApprovalsView({
 
   useEffect(() => {
     // ② 换详情即清空备注(旧实现的对抗审计项):备注与节点一一对应,残留
-    // 会作为下一节点的 comment 落库。
+    // 会作为下一节点的 comment 落库。归属错误只在**打开新详情**时重置 ——
+    // 回列表级(T21.4 ⑥)不清:迟到失败的错误条还等着在队列里被看见
+    // (守卫注释的本意 = 不静默吞)。
     setComment('')
     setConfirmReject(false)
-    setDecisionError(null)
     setDetail(null)
     if (selExec === null || selNode === null) return
+    setDecisionError(null)
     const seq = ++detailSeq.current
     const key = `${selExec}/${selNode}`
     setDetailLoading(true)
@@ -204,7 +206,8 @@ export function ApprovalsView({
           setConfirmReject(false)
           onSelect(null)
         }
-        // 反馈是队列级的,无论当前在哪条都该看见。
+        // 反馈挂在队列面板(列表级):在本条上提交成功会自动回列表,主路径
+        // 即见;提交在飞时切走再回来的,回列表级补见(T21.4 ⑥ 两级视图)。
         setFlash(
           `已记录:${decisionLabel(out.decision)}${out.comment !== null && out.comment !== '' ? ` · ${out.comment}` : ''}`,
         )
@@ -309,31 +312,25 @@ export function ApprovalsView({
   const prev = useCallback(() => setOffset((o) => Math.max(0, o - PAGE_LIMIT)), [])
   const next = useCallback(() => setOffset((o) => (o + PAGE_LIMIT < total ? o + PAGE_LIMIT : o)), [total])
 
+  // 两级视图:列表级(未选中)= 队列占满全页;详情级 = 详情占满全页。
+  // 在飞提交切走时的旧节点错误归队列错误条 —— 列表级回来即见,不误挂。
   return (
     <div className="appr-view">
-      <ApprovalQueue
-        items={items}
-        total={total}
-        offset={offset}
-        loading={listLoading}
-        error={queueError}
-        flash={flash}
-        selected={selected}
-        cursor={cursor}
-        onOpen={open}
-        onRefresh={reloadFromFirst}
-        onPrev={prev}
-        onNext={next}
-      />
-
       {selected === null ? (
-        <main className="appr-empty-main">
-          <EmptyState
-            icon={Stamp}
-            title="未选择审批"
-            hint="从左侧待办队列选择一条 —— j/k 移动、Enter 打开;详情给出审批说明、决定时间线与批准/驳回。"
-          />
-        </main>
+        <ApprovalQueue
+          items={items}
+          total={total}
+          offset={offset}
+          loading={listLoading}
+          error={queueError}
+          flash={flash}
+          selected={selected}
+          cursor={cursor}
+          onOpen={open}
+          onRefresh={reloadFromFirst}
+          onPrev={prev}
+          onNext={next}
+        />
       ) : (
         <ApprovalDetail
           detail={detail}
