@@ -181,6 +181,43 @@ describe('definition list paging(T22.2 审计 F03:超 20 条全量可达)', () =
     expect(out).toHaveLength(21)
   })
 
+  it('深翻页上界:offset 递进越过服务端 maxPageOffset 前钳制收口(镜像 400 面不打到)', async () => {
+    // fake 镜像 internal/api/parsePageParams:offset>10000 回 400 bad_offset,
+    // 其余恒返满页 100 条 + total 巨大。钳制缺席时第 103 发必 400 → 红或抛。
+    stubFetch((input) => {
+      const url = String(input)
+      const q = new URLSearchParams(url.split('?')[1] ?? '')
+      const offset = Number(q.get('offset') ?? 0)
+      if (offset > 10000) {
+        return new Response(JSON.stringify({ error: 'bad_offset' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      return ok({
+        items: Array.from({ length: 100 }, (_, i) => draft(offset + i)),
+        page: { limit: 100, offset, total: 999999 },
+      })
+    })
+    const { items: out } = await api.listDrafts()
+    expect(out).toHaveLength(10100) // offset 0..10000 共 101 页,越界前截断
+    expect(calls).toHaveLength(101)
+    expect(String(calls[100].input)).toBe('/api/v1/definitions?status=DRAFT&limit=100&offset=10000')
+  })
+
+  it('窗口平移竞态:两页间并发写入拉到的重复行按 id 收敛', async () => {
+    const store = Array.from({ length: 120 }, (_, i) => draft(i))
+    stubFetch((input) => {
+      const q = new URLSearchParams(String(input).split('?')[1] ?? '')
+      const offset = Number(q.get('offset') ?? 0)
+      if (offset === 0) return ok({ items: store.slice(0, 100), page: { limit: 100, offset: 0, total: 120 } })
+      // 模拟第二页取数前有新定义插到队头:窗口整体后移,store[99] 在两页重叠
+      const shifted = [draft(-1), ...store]
+      return ok({ items: shifted.slice(offset, offset + 100), page: { limit: 100, offset, total: 121 } })
+    })
+    const { items: out } = await api.listDrafts()
+    const ids = out.map((d) => d.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(out).toHaveLength(120)
+  })
+
   it('page 缺席:退化单页,不空转', async () => {
     stubFetch(() => ok({ items: [draft(1)] }))
     const { items: out } = await api.listDrafts()
