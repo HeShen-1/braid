@@ -19,3 +19,9 @@
 - [陌生人旅程原始审计](STRANGER-AUDIT-2026-10-14.md)：56 条历史发现，保留原计数。
 - [2026-10-15 交付复核与逐条承接](DELIVERY-RECHECK-2026-10-15.md)：新反例、事实纠正和 ROADMAP M23 映射。
 - [T23.1 验证记录](T23.1-VALIDATION.md)：跨轮终态、旧任务认领、真 MySQL 交错及失败历史。
+- [T23.2 验证记录](T23.2-VALIDATION.md)：真实 worker/reaper 组件账号授权及动态扇出、耗尽收口。
+- [T23.3 验证记录](T23.3-VALIDATION.md)：正式 worker 工具、只读挂载、预算拒绝与最终 PR 准出回执。
+- [T23.4 验证记录](T23.4-VALIDATION.md)：min_success 无损往返、Go 发布契约及门禁顺序失误/补验记录。
+- [T23.5 验证记录](T23.5-VALIDATION.md)：保存后发布、脏态与迟到响应保护、浏览器旅程及最终 PR 准出回执。
+
+上述记录的完成证据汇总见[交付复核 §5](DELIVERY-RECHECK-2026-10-15.md#5-后续修复证据)；后续排期见 [M23 开发计划](../plans/M23-NEXT-WAVES-2026-10-15.md)。任务定义/依赖仍以 ROADMAP 为准，实时执行状态只查 GitHub issues。

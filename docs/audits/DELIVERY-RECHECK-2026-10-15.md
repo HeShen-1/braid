@@ -63,3 +63,17 @@ SQL driver 只控制交错点，不替代 InnoDB 行锁/隔离级别证明。T23
 ## 5. 后续修复证据
 
 T23.1 的真实 MySQL 交错、修复边界与门禁独立记录于 [T23.1-VALIDATION.md](T23.1-VALIDATION.md)。原复核时“尚未做真 MySQL”的状态是历史基线，不能抹去，也不代表修复后未补验证。
+
+2026-10-15 追加：T23.1–T23.5 已分别合并，以下入口记录对应修复证据；前文反例、原始审计计数与证据级别保持原样。此表为交付快照，实时状态仍以 GitHub issues / PR 为准。
+
+| 原问题 / 承接 | 修复与验证范围 | 合并入口 |
+| --- | --- | --- |
+| R1/R2 → T23.1 / #230 | [真 MySQL 确定性交错](T23.1-VALIDATION.md)：旧轮终态收口、认领与 attempt 插入原子性，保留正常路径与失败历史。 | [PR #247](https://github.com/HeShen-1/braid/pull/247) |
+| R3 → T23.2 / #231 | [真实组件账号验证](T23.2-VALIDATION.md)：worker 动态扇出及 reaper 耗尽收口，保持 audit_log append-only。 | [PR #249](https://github.com/HeShen-1/braid/pull/249) |
+| R4 → T23.3 / #232 | [正式 Compose 专项旅程](T23.3-VALIDATION.md)：file_read/HTTPS 成功、路径/SSRF 拒绝、预算调用前拒绝、只读挂载及 Helm 静态交付门。 | [PR #251](https://github.com/HeShen-1/braid/pull/251) |
+| R5 → T23.4 / #233 | [画布往返与发布契约](T23.4-VALIDATION.md)：min_success 启用/缺席保真、前端测试及 dist；门禁顺序失误与合并后补验原样保留。 | [PR #248](https://github.com/HeShen-1/braid/pull/248) |
+| R6/F26 → T23.5 / #234 | [保存后发布与脏态保护](T23.5-VALIDATION.md)：220 例 vitest、5/5 本机浏览器旅程、真栈三件套、迟到发布错误不污染后续编辑。 | [PR #250](https://github.com/HeShen-1/braid/pull/250) |
+
+T23.3/T23.5 的最终文档 head、七项 CI、独立审查和 merge commit 已追加到各自验证报告。T23.4 的补验完成不改写提前合并的事实，也不能统称为“五项任务全部在门禁通过后合并”。
+
+R7 的界面钉版触发仍由 T23.6 / #235 验收，R8 的完整审计/轮次消费仍由 T23.9 / #238 验收；正式配置完整业务旅程仍归 T23.13 / #242。现有组件/工程桩与局部浏览器证据，不代表真实模型或整条业务旅程已通过。[后续开发计划](../plans/M23-NEXT-WAVES-2026-10-15.md)只安排波次，不替代 ROADMAP 与 issue 状态。

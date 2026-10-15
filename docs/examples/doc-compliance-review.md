@@ -30,7 +30,8 @@ human_review ◀── summary ◀────(主线)              report_revis
 2. **驳回 = 终败收口,不是分支输入**。审批节点被驳回时以
    `approval_rejected` 终败并触发 fail-fast(下游不推进,执行 FAILED,无
    outputs)——这是引擎现义(`internal/scheduler/resume.go` failApprovalNode)。
-   「驳回后走修订回路」属 P1 停车场(回滚/断点续跑族),示例不伪造该语义。
+   本示例不把驳回改写为自动转修订分支；人工回滚/续跑沿用现有协议，
+   不改变这里的驳回终败语义。
 3. **trace 已贯穿(T6.2)**。审计行 `trace_id` = 触发请求 root trace(全主链
    一致);审批决定事务起段链 Z(decided 行 `trace_id`=Z、`linked_trace_id`
    =root,是两链唯一交点);T6.3 查询端点支持 `?trace_id=` 按链取行。
@@ -43,30 +44,59 @@ human_review ◀── summary ◀────(主线)              report_revis
 
 ## 本地走链
 
-前置:dev 栈(MySQL/Redis/Asynqmon)+ 四个 host 业务进程(api、relay、worker、reaper):
+前置:在主仓根目录运行，使用自己的 dev 栈(MySQL/Redis/Asynqmon)和已配置的
+OpenAI 兼容端点。先确定真实调用预算；下面的准备步骤只迁移/建号及启动进程，
+定义发布与模型执行在后文手动触发。worktree 只跑测试，测试隔离按 AGENTS.md。
 
 ```bash
 # 1) 基础设施(compose 只起 MySQL/Redis/Asynqmon;业务进程在 host 跑)
-cp deploy/.env.example deploy/.env   # 首次
+test -f deploy/.env || cp deploy/.env.example deploy/.env
 # 编辑 deploy/.env,至少打开:
 #   BRAID_MYSQL_DSN / BRAID_REDIS_QUEUE_ADDR / BRAID_AUTH_JWT_SECRET
 #   BRAID_LLM_BASE_URL / BRAID_LLM_API_KEY / BRAID_LLM_PRICE_TABLE
 #   (OpenAI 兼容端点 + 模型单价表;worker 缺 PRICE_TABLE 启动即败)
-#   (BRAID_TOOL_TOKEN_SECRET 可选:缺省 = 进程内随机,P0 同进程校验自洽)
-#   BRAID_FILEREAD_DIRS=["/abs/path/to/braid/docs/examples"]   # file_read 白名单
-docker compose -f deploy/dev.docker-compose.yml up -d
+#   BRAID_FILEREAD_DIRS='["/abs/path/to/braid/docs/examples"]' # 换为真实宿主路径
+# DSN、JSON 单价表/白名单等特殊值整体用单引号包住,规则见 deploy/.env.example。
+docker compose -f deploy/dev.docker-compose.yml up -d --wait --wait-timeout 60
 
-# 2) 迁移 + 业务进程(四个终端,各自 source deploy/.env 或用 --env-file 注入)
-go run ./cmd/api      # 默认 127.0.0.1:8081
-go run ./cmd/relay
-go run ./cmd/worker
-go run ./cmd/reaper   # 审计异步批量搬运 + 审批超时扫描——不跑则下表高频
-                      # 四类事件滞留 audit_pending 暂存表,对账查询看不到(不丢)
+# 2) 基础设施已就绪,导出配置,执行仓内嵌入迁移并建演示账号(只触 MySQL)
+set -a
+. deploy/.env
+set +a
+go run ./cmd/braid seed -stage db
+
+# 3) 启动 host 四进程;跳过默认 agent-council 的发布/触发,不自动调用模型
+BRAID_DEV_SEED=0 deploy/dev-up.sh
+# 脚本先起 reaper,通过 audit-ready 分区水位闸后再起 api/relay/worker。
+# api 默认 127.0.0.1:8081;日志在 log/latest,停止用 deploy/dev-down.sh。
 ```
 
-账号:T16.2 起 CLI 建号(`braid user create`,README §2.2 ④;DB 直连,
-bcrypt 与 `internal/auth.HashPassword` 同则),DSL 审批名单里的 `alice`/
-`bob` 须与 approver 账号名一致。
+`seed -stage db` 使用仓内嵌入迁移，重复执行迁移为 no-op、已有账号跳过，
+创建 `alice`(author/approver)与 `bob`(approver)。dev 占位口令及
+`BRAID_SEED_*_PASSWORD` 配置见 [README §2.2](../../README.md#22-dev-栈--真实-llm-完整链路开发联调)；
+已有账号不会被 seed 改口令。自建账号用 `braid user create`，DSL 名单中的
+`alice`/`bob` 须对应 approver。若手动开四终端，每个终端先
+`set -a; . deploy/.env; set +a`，并保持 reaper→audit-ready→其余进程的顺序，
+详见 [dev-up.sh](../../deploy/dev-up.sh)。Go 入口读进程环境，不读取 `.env` 文件，
+也没有 `--env-file` 参数。
+
+### 正式 Compose 的文件路径
+
+正式栈使用 `deploy/prod.env`；首账号、模型配置与部署步骤见
+[部署说明](../../deploy/README.md)，不要把 host dev 的路径直接用于容器执行。
+以宿主 `/srv/braid/docs/sample-doc.txt` 为例，在 `prod.env` 配置：
+
+```dotenv
+BRAID_FILEREAD_HOST_DIR=/srv/braid/docs
+BRAID_FILEREAD_DIRS='["/var/braid/docs"]'
+```
+
+宿主目录和文件须预先存在、允许镜像 uid 65532 遍历/读取。Compose 只读挂载
+到 worker 的 `/var/braid/docs`，因此后文触发请求的 `input.doc_path` 改为
+`/var/braid/docs/sample-doc.txt`；api 只注册/校验工具，不需要文件挂载。
+默认 `deploy/tool-data` 是空目录，不自带本示例文档。具体配置与预算口径见
+[生产 worker 工具与预算配置](../../deploy/README.md#13-生产-worker-工具与预算配置t233)。
+正式配置完整业务旅程的验收仍归 T23.13，本节只是操作说明。
 
 走链(认证面 = login 换 Bearer token,全程同一个 api 入口):
 
@@ -75,18 +105,19 @@ API=http://127.0.0.1:8081/api/v1
 
 # ① author 登录
 curl -s $API/auth/login -d '{"username":"<author>","password":"..."}'
-TOKEN=<上一步 token>
+TOKEN='<上一步 token>'
 
 # ② 提交定义(请求体 = DSL 原样字节)→ ③ 发布(发布点校验工具白名单)
 curl -s -X POST $API/definitions -H "Authorization: Bearer $TOKEN" \
   --data-binary @docs/examples/doc-compliance-review.json
-curl -s -X POST $API/drafts/<草稿 id>/publish -H "Authorization: Bearer $TOKEN"
+DRAFT_ID='<草稿 id>'
+curl -s -X POST "$API/drafts/$DRAFT_ID/publish" -H "Authorization: Bearer $TOKEN"
 
 # ④ 触发执行(输入 = 文件路径,须在 BRAID_FILEREAD_DIRS 白名单内)
 curl -s -X POST $API/executions -H "Authorization: Bearer $TOKEN" \
   -d '{"definition_name":"doc-compliance-review",
        "input":{"doc_path":"/abs/path/to/braid/docs/examples/sample-doc.txt"}}'
-EXEC=<上一步 id>
+EXEC='<上一步 id>'
 
 # ⑤ 观察挂起:状态变 WAITING_APPROVAL,待办列表出现该执行(approver 登录)
 curl -s $API/executions/$EXEC -H "Authorization: Bearer $TOKEN"
@@ -104,6 +135,10 @@ curl -s $API/executions/$EXEC -H "Authorization: Bearer $TOKEN"
 
 幂等提示:触发可带 `Idempotency-Key` 头(作用域 = 主体+定义,重放 200 回显
 原执行);审批重放同为 200 回显(UI 双击安全)。
+
+上例省略 `version` 时沿用 API 的按名取最新已发布版本语义；需要指定版本时，
+在触发 JSON 顶层加整数 `version`，值取刚发布的响应。界面选中版本的钉版触发
+仍由 T23.6 验收，不能因已有该 API 字段而记为界面已通过。
 
 ## 审计链(降级口径:按 execution 串联)
 
