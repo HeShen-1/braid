@@ -1000,3 +1000,10 @@
 - 决策:reaper 雪花节点号**内建缺省 = 显式 3**(与 api=1、worker=2 同形,即 compose 惯例号);env 通道(`BRAID_REAPER_SNOWFLAKE_NODE`)与字面 `"auto"` 的池分配语义**不变**——多副本部署照旧显式写 `auto`。三层解析结构、0..1023 全局单池、auto 线性抢注 + 显式号被持即拒启、复占/优雅释放语义**均不动**。否决选项 A(改 auto 分配器避开 1/2):会红 internal/snowflake 两条现存断言(`lease_test.go:529`/`:165`),env 驱动的 auto 照样能取到 1/2,且把池语义改成静态区段,成本与收益不对等。
 - 理由:三层解析的中间层本就定义为「内建默认,视同显式 claim」(决策 2 原文取 1/2),reaper 取 auto 是 T15.2 实现期的例外;单副本栈的确定性号比池分配更贴合「缺省 = 单副本惯例」。同号仲裁仍由租约表兜底(撞号 = 1062 响亮中止,不损已提交数据)。
 - 影响:`internal/reaper/config.go`(唯一来源常量 `defaultSnowflakeNode` + DefaultConfig 字面 + ParseNodeSpec 缺省参数)、`internal/reaper/config_test.go`(反锚改「两条路径 = Explicit(3)」+ env `"auto"` 路径仍在)、注释同步(`internal/snowflake/{snowflake,nodespec}.go`、`cmd/reaper/main.go`、`deploy/{.env.example,prod.env,prod.docker-compose.yml,README.md}`、`docs/designs/t151-ha-target.md` §4.1 第 8 项)、`docs/ROADMAP.md` M20。**行为面**:env 传值面一律不动——prod compose(`"3"`)/ dev(`deploy/.env` = 3)/ drill(`auto`)/ chart(`auto`,多副本语义)全经 env;唯一改变的是 **env-less 单副本栈**:`deploy/e2e-up.sh` 四进程不传 `*_SNOWFLAKE_NODE`,其 reaper 原经 auto 池取首个空闲号 = **0**,现为显式 **3**(api=1 / worker=2 不变,仍无碰撞;节点号只进 id 位域,不影响唯一性/单调性,实测面 = 该栈 reaper 启动即 claim 3)。零迁移、零 engine、零 API 面。
+
+## D-2026-10-15-console-references
+- 背景:UX-F1(issue #227)。第一波修复后用户亲测仍判「UI/UX 太丑、排版一般」——方向级反馈。经对比页(~/braid-console-references.html,六家近似还原 mockup + braid 基线)用户拍板参照系 = **1 n8n / 3 Linear / 4 Vercel / 5 Temporal**(2026-10-15,四选)。
+- 决策:**分面取长,底座不推翻**——壳层/导航/审批队列 = Linear 系近黑(#08090a 级)细线分层、行式紧凑、键盘提示外显;工作流画布 = n8n 系**亮色画布地面 + 彩色类型节点**(类型一眼可辨,胶囊形,松弛贝塞尔);执行面总览 = Vercel 系大数字卡片 + sparkline、锐利 1px;执行面列表 = Temporal 系密表格 + tab + 全面过滤。本条修订 D-2026-10-09-console-v2 决策 1 的「深色为全局默认」为**分面默认**(画布路由面亮色默认,其余面深色默认);双主题三态切换、对比度验收线(正文 ≥4.5:1 / 图形 ≥3:1)、键盘流契约、token 安全姿态**全部不降级**。
+- 理由:四家不是一种气质,n8n(亮)与 Linear(近黑)同锅必打架——但映射到 braid 四块面各自成立;画布是「创作面」受益于亮色松弛与彩色辨识,壳层/执行/审批是「运营面」受益于静与密。双主题基建(T21.3)让分面默认零新增机制:每路由面取哪个世界为默认而已。
+- 影响:web/canvas(styles 分面默认世界、画布节点彩型语言、执行面卡片/表格重排)、DESIGN.md(分面世界节 + 彩型词表)、.impeccable/design.json;审计 design 桶 19 MEDIUM 中层级/密度族随四子项吸收。零后端、零迁移。
+- 边界:①「单一世界」词退役但主题切换仍全局(用户可把画布切深);②彩色类型节点受对比度门约束(彩底上墨色 ≥4.5:1);③本条只定方向与分配,四子项的具体拆票/规模/验收在 ROADMAP M22-2,逐子项开工仍走 GATE。
