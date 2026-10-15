@@ -28,7 +28,8 @@ interface WorkflowValue {
   /** 编辑器每次变更上报——离开路由不丢编辑。 */
   onDocChange: (doc: WorkflowDoc) => void
   save: (doc: WorkflowDoc) => Promise<void>
-  publish: () => Promise<void>
+  /** true = 已发布(工作区随之关闭);false = 未发布或发布失败。 */
+  publish: () => Promise<boolean>
 }
 
 const Ctx = createContext<WorkflowValue | null>(null)
@@ -77,6 +78,10 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       if (wsRef.current?.draftId === id) return
       try {
         const detail = await api.getDraft(id)
+        // 工作区只编草稿(F04):已发布/归档的 definition 不复活编辑器 ——
+        // 否则发布后深链回弹会把刚定格的文档重新 open 成僵尸态,还会顺手
+        // 清掉发布成功条。查看已发布走执行面。
+        if (detail.status !== 'DRAFT') return
         setIssues([])
         setFlash('')
         setWs({ draftId: id, doc: detail.dsl })
@@ -139,25 +144,30 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     [guard, refresh],
   )
 
-  const publish = useCallback(async () => {
+  const publish = useCallback(async (): Promise<boolean> => {
     const cur = wsRef.current
-    if (cur === null || cur.draftId === null) return
+    if (cur === null || cur.draftId === null) return false
     try {
       const detail = await api.publishDraft(cur.draftId)
       // 发布后草稿定格为 PUBLISHED:退出编辑器,避免僵尸态(后续保存/发布
-      // 只会撞 409,被误读成校验未过)。
+      // 只会撞 409,被误读成校验未过)。成功反馈由路由层的列表态成功条承接
+      // (编辑器已卸载,F04);深链清理由路由层做 —— 本 provider 不持
+      // router,裸挂可测;深链回弹即使抢跑,open() 对非 DRAFT 的拒绝也
+      // 兜底(不复活编辑器、不清 flash)。
       setWs(null)
-      setFlash(`已发布 ${detail.name} v${detail.version ?? ''}`)
+      setFlash(`已发布 ${detail.name}${detail.version !== null ? ` v${detail.version}` : ''}`)
       setIssues([])
       void refresh()
+      return true
     } catch (err) {
-      if (guard(err)) return
+      if (guard(err)) return false
       if (err instanceof ApiError) {
         setIssues(err.issues.length > 0 ? err.issues : [{ code: err.code, detail: err.code }])
       } else {
         setIssues([{ code: 'network_error', detail: '网络异常，发布未完成。' }])
       }
       setFlash('')
+      return false
     }
   }, [guard, refresh])
 

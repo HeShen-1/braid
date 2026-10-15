@@ -29,6 +29,10 @@ export const TID = {
   editorPublish: 'editor-publish',
   editorJson: 'editor-json',
   editorFlash: 'editor-flash',
+  /** 发布成功条(F04):列表态,编辑器卸载后仍可见。 */
+  workflowFlash: 'workflow-flash',
+  /** 成功条上的「查看已发布」出口(跳执行面触发页)。 */
+  viewPublished: 'view-published',
   palette: 'palette',
   nodePanel: 'node-panel',
   /** 画布节点删除的可见入口(T21.4 ④)+ 它的确认层。 */

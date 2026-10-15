@@ -786,6 +786,19 @@
     color: var(--color-ink-0);
   }
 
+  /* 工作流面列表态成功条(F04):发布后编辑器整体卸载,反馈不能跟着走。
+     与 exec-flash / appr-flash 同族 —— role="status" 的 sig-ok 淡染横档。 */
+  .wf-flash {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.5rem 0.75rem;
+    border-bottom: 1px solid var(--color-line-0);
+    background: color-mix(in oklab, var(--color-sig-ok) 9%, transparent);
+    color: var(--color-ink-0);
+    font-size: var(--text-sm);
+  }
+
   /* ---------- 执行时间带（signature move） ----------
      每个节点一行，横向按真实时间铺开。审批挂起段用 135° 斜纹填充：
      等待在图上是有长度的东西 —— 资源没被占用，但时间在走。 */
