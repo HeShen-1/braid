@@ -3,13 +3,15 @@
 import { Outlet } from 'react-router'
 import { AppShell } from './AppShell.tsx'
 import { WorkflowProvider } from '../workflow/WorkflowProvider.tsx'
+import { WorkflowLeaveGuard } from '../workflow/WorkflowLeaveGuard.tsx'
 
 export function AppLayout() {
   return (
-    <AppShell>
-      <WorkflowProvider>
+    <WorkflowProvider>
+      <AppShell>
+        <WorkflowLeaveGuard />
         <Outlet />
-      </WorkflowProvider>
-    </AppShell>
+      </AppShell>
+    </WorkflowProvider>
   )
 }

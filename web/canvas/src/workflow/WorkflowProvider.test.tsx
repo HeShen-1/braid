@@ -1,11 +1,13 @@
 // F05:校验错误横幅的时序契约——保存失败即出现,编辑文档第一时间清除,
 // 不再常驻到下次保存。fetch 全 stub 按 URL 路由(ExecutionsView 同款)。
-import { render, screen, waitFor } from '@testing-library/react'
+import { act, render, renderHook, screen, waitFor } from '@testing-library/react'
 import { useEffect } from 'react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { tokenStore } from '../api.ts'
 import { blankDoc } from '../defaults.ts'
+import { loadBase } from '../model/testdata.ts'
+import { serializeDoc } from '../model/convert.ts'
 import { IssuesPanel } from '../ui/IssuesPanel.tsx'
 import { TID } from '../ui/testids.ts'
 import { AuthProvider } from '../auth.tsx'
@@ -15,7 +17,13 @@ function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-function stubRoute(responder: (url: string, init?: RequestInit) => Response) {
+function deferredResponse() {
+  let resolve!: (response: Response) => void
+  const promise = new Promise<Response>((r) => { resolve = r })
+  return { promise, resolve }
+}
+
+function stubRoute(responder: (url: string, init?: RequestInit) => Response | Promise<Response>) {
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => responder(String(input), init))
   vi.stubGlobal('fetch', fn)
   return fn
@@ -66,6 +74,156 @@ beforeEach(() => {
   sessionStorage.clear()
   tokenStore.set('test-token')
   sessionStorage.setItem('braid_canvas_user', 'tester')
+})
+
+describe('WorkflowProvider(保存当前画布后发布,T23.5)', () => {
+  const doc = loadBase('minimal-llm')
+  const edited = { ...doc, description: '当前画布内容' }
+  const detail = { id: '7', name: doc.name, status: 'DRAFT', version: null, dsl: doc }
+
+  function mountWorkspace() {
+    return renderHook(useWorkflow, {
+      wrapper: ({ children }) => <AuthProvider><WorkflowProvider>{children}</WorkflowProvider></AuthProvider>,
+    })
+  }
+
+  it('直接发布先 PUT 当前画布,然后 POST publish;成功才关闭工作区', async () => {
+    const writes: string[] = []
+    let saved = doc
+    stubRoute((url, init) => {
+      if (init?.method === 'PUT') {
+        writes.push('save')
+        saved = JSON.parse(String(init.body))
+        return ok({ ...detail, dsl: saved })
+      }
+      if (url.endsWith('/publish')) {
+        writes.push('publish')
+        expect(saved).toEqual(JSON.parse(serializeDoc(edited)))
+        return ok({ ...detail, status: 'PUBLISHED', version: 1, dsl: saved })
+      }
+      return ok(url.includes('/drafts/') ? detail : { items: [] })
+    })
+    const { result } = mountWorkspace()
+    await act(async () => { await result.current.open('7') })
+    act(() => result.current.onDocChange(edited))
+    await act(async () => { expect(await result.current.publish(edited)).toBe(true) })
+    expect(writes).toEqual(['save', 'publish'])
+    expect(result.current.ws).toBeNull()
+    expect(result.current.flash).toContain('已发布')
+  })
+
+  it('保存失败保持当前内容与脏态,零 publish 请求', async () => {
+    const fetchMock = stubRoute((url, init) => {
+      if (init?.method === 'PUT') return ok({ error: 'invalid_dsl', issues: [{ code: 'invalid_dsl', detail: '保存失败' }] }, 400)
+      return ok(url.includes('/drafts/') ? detail : { items: [] })
+    })
+    const { result } = mountWorkspace()
+    await act(async () => { await result.current.open('7') })
+    act(() => result.current.onDocChange(edited))
+    await act(async () => { expect(await result.current.publish(edited)).toBe(false) })
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/publish'))).toHaveLength(0)
+    expect(result.current.ws?.doc).toEqual(edited)
+    expect(result.current.dirty).toBe(true)
+    expect(result.current.issues[0].detail).toBe('保存失败')
+  })
+
+  it('保存期间继续编辑:迟到保存只更新保存基线,不覆盖新内容,也不发布旧快照', async () => {
+    const pending = deferredResponse()
+    const fetchMock = stubRoute((url, init) => {
+      if (init?.method === 'PUT') return pending.promise
+      return ok(url.includes('/drafts/') ? detail : { items: [] })
+    })
+    const { result } = mountWorkspace()
+    await act(async () => { await result.current.open('7') })
+    act(() => result.current.onDocChange(edited))
+    let publishing: Promise<boolean>
+    act(() => { publishing = result.current.publish(edited) })
+    const later = { ...edited, description: '请求发出后的修改' }
+    act(() => result.current.onDocChange(later))
+    await act(async () => {
+      pending.resolve(ok({ ...detail, dsl: edited }))
+      expect(await publishing!).toBe(false)
+    })
+    expect(result.current.ws?.doc).toEqual(later)
+    expect(result.current.dirty).toBe(true)
+    expect(fetchMock.mock.calls.filter(([url]) => String(url).endsWith('/publish'))).toHaveLength(0)
+  })
+
+  it('旧工作区的保存响应不能覆盖后来新建的画布', async () => {
+    const pending = deferredResponse()
+    stubRoute((url, init) => init?.method === 'PUT' ? pending.promise : ok(url.includes('/drafts/') ? detail : { items: [] }))
+    const { result } = mountWorkspace()
+    await act(async () => { await result.current.open('7') })
+    let saving: Promise<void>
+    act(() => { saving = result.current.save(edited) })
+    act(() => result.current.newLocal())
+    await act(async () => {
+      pending.resolve(ok({ ...detail, dsl: edited }))
+      await saving!
+    })
+    expect(result.current.ws?.draftId).toBeNull()
+    expect(result.current.ws?.doc).toEqual(blankDoc())
+    expect(result.current.flash).toBe('')
+  })
+
+  it.each([200, 409])('publish 请求已发后继续编辑:状态 %s 均保留后续内容与脏态', async (status) => {
+    const pending = deferredResponse()
+    let started = false
+    stubRoute((url) => {
+      if (url.endsWith('/publish')) { started = true; return pending.promise }
+      return ok(url.includes('/drafts/') ? detail : { items: [] })
+    })
+    const { result } = mountWorkspace()
+    await act(async () => { await result.current.open('7') })
+    let publishing: Promise<boolean>
+    act(() => { publishing = result.current.publish(edited) })
+    await waitFor(() => expect(started).toBe(true))
+    const later = { ...edited, description: '发布请求后的修改' }
+    act(() => result.current.onDocChange(later))
+    await act(async () => {
+      pending.resolve(ok(status === 200 ? { ...detail, status: 'PUBLISHED', version: 1 } : { error: 'conflict' }, status))
+      expect(await publishing!).toBe(false)
+    })
+    expect(result.current.ws?.doc).toEqual(later)
+    expect(result.current.dirty).toBe(true)
+    expect(result.current.ws?.draftId).toBe(status === 200 ? null : '7')
+    if (status === 200) expect(result.current.flash).toContain('后续更改尚未保存')
+  })
+
+  it('迟到 open 在新建后失效;后发的打开请求优先', async () => {
+    const first = deferredResponse()
+    stubRoute((url) => url.endsWith('/7') ? first.promise : ok(url.includes('/drafts/') ? { ...detail, id: '8' } : { items: [] }))
+    const { result } = mountWorkspace()
+    let opening: Promise<boolean>
+    act(() => { opening = result.current.open('7') })
+    act(() => result.current.newLocal())
+    await act(async () => { await result.current.open('8') })
+    await act(async () => {
+      first.resolve(ok(detail))
+      expect(await opening!).toBe(false)
+    })
+    expect(result.current.ws?.draftId).toBe('8')
+  })
+
+  it('同一工作区的并发保存只发一个 create;create 迟到不能锁住后来改过的名称', async () => {
+    const pending = deferredResponse()
+    const fetchMock = stubRoute((_url, init) => init?.method === 'POST' ? pending.promise : ok({ items: [] }))
+    const { result } = mountWorkspace()
+    act(() => result.current.newLocal())
+    let saving: Promise<void>
+    act(() => { saving = result.current.save(doc) })
+    await act(async () => { await result.current.save(doc) })
+    const renamed = { ...doc, name: 'renamed' }
+    act(() => result.current.onDocChange(renamed))
+    await act(async () => {
+      pending.resolve(ok(detail))
+      await saving!
+    })
+    expect(fetchMock.mock.calls.filter(([, init]) => init?.method === 'POST')).toHaveLength(1)
+    expect(result.current.ws?.draftId).toBeNull()
+    expect(result.current.ws?.doc.name).toBe('renamed')
+    expect(result.current.dirty).toBe(true)
+  })
 })
 
 afterEach(() => {

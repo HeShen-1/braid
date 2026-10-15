@@ -10,6 +10,8 @@ import { I } from '../ui/I.tsx'
 import { TID } from '../ui/testids.ts'
 import { Wordmark } from './BrandMark.tsx'
 import { ThemeControl } from './ThemeControl.tsx'
+import { ConfirmLayer, useConfirmLayer } from '../ui/confirm.tsx'
+import { useWorkflow } from '../workflow/WorkflowProvider.tsx'
 
 interface Pulse {
   running: number
@@ -68,6 +70,8 @@ const navClass = 'tab'
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth()
+  const { dirty } = useWorkflow()
+  const exit = useConfirmLayer()
   const pulse = usePulse(user !== null)
 
   return (
@@ -104,13 +108,31 @@ export function AppShell({ children }: { children: ReactNode }) {
             <span className="mono text-xs text-ink-1" data-testid={TID.whoami} title="当前账号">
               {user}
             </span>
-            <button type="button" className="btn btn-quiet btn-sm btn-icon" onClick={logout} title="退出登录" data-testid={TID.logout}>
+            <button
+              ref={exit.armRef}
+              type="button"
+              className="btn btn-quiet btn-sm btn-icon"
+              onClick={() => { if (dirty) exit.arm(); else logout() }}
+              title="退出登录"
+              data-testid={TID.logout}
+            >
               <I glyph={LogOut} size={13} />
               <span className="sr-only">退出登录</span>
             </button>
           </div>
         </div>
       </header>
+
+      {exit.armed ? (
+        <ConfirmLayer
+          layerRef={exit.layerRef}
+          label="退出前确认"
+          hint="当前画布尚未保存，退出登录会丢弃这些更改。"
+          confirmText="仍要退出"
+          onConfirm={logout}
+          onDismiss={exit.disarm}
+        />
+      ) : null}
 
       <main className="flex min-h-0 flex-1 flex-col">{children}</main>
     </div>
