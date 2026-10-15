@@ -1,4 +1,8 @@
-@import 'tailwindcss';
+/* T21.6 取材面收口(issue #207):source(none) 关掉自动扫描(否则取材面 =
+   web/canvas/** 全量,scripts/testdata 等非应用文本的注释词都会改写入库 CSS),
+   显式 @source 只取应用源码。index.html/public 零 class 使用,不入取材面。 */
+@import 'tailwindcss' source(none);
+@source '../';
 @import './fonts.css';
 @import './shadcn-variants.css';
 @import './canvas-editor.css';
