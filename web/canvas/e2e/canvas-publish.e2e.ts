@@ -96,7 +96,8 @@ test('保存失败零发布;新建/换稿/离开/刷新取消后仍有原编辑�
   await expect(page.getByTestId(TID.navExecutions)).toBeFocused()
 
   const dialog = page.waitForEvent('dialog')
-  const reload = page.reload().catch(() => null)
+  // 取消 beforeunload 后不会有 load;只等待浏览器执行刷新动作本身。
+  const reload = page.evaluate(() => window.location.reload())
   const beforeUnload = await dialog
   expect(beforeUnload.type()).toBe('beforeunload')
   await beforeUnload.dismiss()
