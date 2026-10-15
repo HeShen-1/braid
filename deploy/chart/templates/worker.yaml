@@ -1,5 +1,5 @@
 {{/* worker(prod compose worker 服务的 K8s 形态)。
-     env 键集与 compose 逐键对齐(17 键,verify.sh 对拍断言);llm 组
+     env 键集与 compose 逐键对齐(verify.sh 对拍断言);llm 组
      生产装配必填(required = compose :? 对齐)。sandbox/egress =
      D-2026-09-30-t144-helm 决策 2 的选通面:tools.sandbox.enabled 才
      渲染 8 键(词表单源复用 D-t102,零新拓扑键);dockerSocketMount
@@ -84,6 +84,11 @@ spec:
                 secretKeyRef:
                   name: {{ include "braid.secretName" . }}
                   key: tool-token-secret
+            # 与 api 使用相同 values 单源，保证可发布即可执行。
+            - name: BRAID_HTTP_ENDPOINTS
+              value: {{ .Values.config.httpEndpoints | quote }}
+            - name: BRAID_FILEREAD_DIRS
+              value: {{ .Values.config.filereadDirs | quote }}
             # llm 组(生产装配必需,缺 URL/KEY/PRICE_TABLE 启动即败):
             - name: BRAID_LLM_BASE_URL
               value: {{ required "config.llmBaseUrl is required (BRAID_LLM_BASE_URL)" .Values.config.llmBaseUrl | quote }}
@@ -94,6 +99,8 @@ spec:
                   key: llm-api-key
             - name: BRAID_LLM_PRICE_TABLE
               value: {{ required "config.llmPriceTable is required (BRAID_LLM_PRICE_TABLE)" .Values.config.llmPriceTable | quote }}
+            - name: BRAID_LLM_TOKEN_BUDGET
+              value: {{ .Values.config.llmTokenBudget | quote }}
             # smtp 组(可选;未配置 = 审批通知降级 log-only):
             - name: BRAID_SMTP_HOST
               value: {{ .Values.config.smtpHost | quote }}
@@ -144,17 +151,34 @@ spec:
             - name: BRAID_TOOL_SANDBOX_EGRESS_PORT
               value: {{ .Values.tools.sandbox.egressPort | quote }}
             {{- end }}
-          {{- if .Values.tools.dockerSocketMount }}
-          # host docker.sock = 节点 root 等价面(D-t102 拓扑的运行前提;
-          # 默认关,边界见 chart README §egress)
+          {{- if or .Values.tools.dockerSocketMount .Values.tools.fileRead.hostPath }}
           volumeMounts:
+            {{- with .Values.tools.fileRead.hostPath }}
+            - name: file-read
+              mountPath: {{ . | quote }}
+              readOnly: true
+            {{- end }}
+            {{- if .Values.tools.dockerSocketMount }}
+            # host docker.sock = 节点 root 等价面，默认关(chart README §egress)。
             - name: docker-sock
               mountPath: /var/run/docker.sock
+            {{- end }}
           {{- end }}
-      {{- if .Values.tools.dockerSocketMount }}
+      {{- if or .Values.tools.dockerSocketMount .Values.tools.fileRead.hostPath }}
       volumes:
+        {{- with .Values.tools.fileRead.hostPath }}
+        {{- if not (hasPrefix "/" .) }}
+        {{- fail "tools.fileRead.hostPath must be an absolute node directory" }}
+        {{- end }}
+        - name: file-read
+          hostPath:
+            path: {{ . | quote }}
+            type: Directory
+        {{- end }}
+        {{- if .Values.tools.dockerSocketMount }}
         - name: docker-sock
           hostPath:
             path: /var/run/docker.sock
             type: Socket
+        {{- end }}
       {{- end }}

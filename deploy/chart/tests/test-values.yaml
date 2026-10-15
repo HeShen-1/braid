@@ -16,6 +16,7 @@ secrets:
 config:
   llmBaseUrl: https://llm.example.invalid/v1
   llmPriceTable: '{"dummy":{"input":1,"output":1}}'
+  llmTokenBudget: "321"
   smtpHost: smtp.example.invalid
   smtpPort: "587"
   smtpUsername: braid
@@ -27,6 +28,8 @@ config:
   filereadDirs: '["/var/braid/docs"]'
   apiTrustedProxies: 10.0.0.0/8
 tools:
+  fileRead:
+    hostPath: /var/braid/docs
   sandbox:
     enabled: true
   dockerSocketMount: true

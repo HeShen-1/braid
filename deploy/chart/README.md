@@ -69,6 +69,32 @@ helm upgrade braid deploy/chart -f my-braid-values.yaml \
 `deploy/.env.example` 同源:空 = 相应降级或不注册,半配置启动即败由进程
 承载。
 
+## 工具白名单、文件挂载与 token 预算(T23.3)
+
+`config.httpEndpoints` / `config.filereadDirs` 同时注入 api 与 worker，
+两进程分别负责发布校验与执行；`config.llmTokenBudget` 仅注入 worker，
+缺省 `"0"` 关闭，非零预算在每次 LLM 调用前执法。
+
+file_read 的白名单与 DSL `path` 都填 **worker 容器内绝对路径**。
+需要读取节点文件时显式设置 `tools.fileRead.hostPath`，模板以只读方式
+将这个预先存在的节点目录按同一路径挂到 worker。例如：
+
+```yaml
+config:
+  filereadDirs: '["/var/braid/docs"]'
+  llmTokenBudget: "10000"
+tools:
+  fileRead:
+    hostPath: /var/braid/docs
+```
+
+目录必须在调度到的节点存在，且 uid 65532 有遍历和读取权限；多节点
+部署需各节点提供相同数据。默认 hostPath 为空，不挂载节点数据，也不
+增加 PVC。api 只构造白名单，不读取文件，无需该挂载。sandbox 模式下
+Docker daemon 读取的也是节点路径，节点与 worker 路径一致；一次性
+沙箱仍按既有 carrier 规则再次只读挂载，不能用 Pod 私有路径替代。
+`verify.sh` 除默认键集外，还对拍非空白名单、非零预算与只读挂载。
+
 ## 密钥面
 
 - values 默认值恒空(密钥不进 chart 文本 / 不进 git;gitleaks 面恒绿);

@@ -159,10 +159,14 @@ services:
       BRAID_WORKER_QUEUES: default:1 # 须含 BRAID_API_RESUME_QUEUE 指定队列,否则续跑永挂
       BRAID_METRICS_ADDR: 0.0.0.0:9090
       BRAID_TOOL_TOKEN_SECRET: ${BRAID_TOOL_TOKEN_SECRET:-}
+      # 与 api 同源：发布白名单与实际执行能力须一致。
+      BRAID_HTTP_ENDPOINTS: ${BRAID_HTTP_ENDPOINTS:-}
+      BRAID_FILEREAD_DIRS: ${BRAID_FILEREAD_DIRS:-}
       # llm 组(生产装配必需,缺 URL/KEY/PRICE_TABLE 启动即败):
       BRAID_LLM_BASE_URL: ${BRAID_LLM_BASE_URL:?BRAID_LLM_BASE_URL 未设}
       BRAID_LLM_API_KEY: ${BRAID_LLM_API_KEY:?BRAID_LLM_API_KEY 未设}
       BRAID_LLM_PRICE_TABLE: ${BRAID_LLM_PRICE_TABLE:?BRAID_LLM_PRICE_TABLE 未设}
+      BRAID_LLM_TOKEN_BUDGET: ${BRAID_LLM_TOKEN_BUDGET:-0}
       # smtp 组(可选;未配置 = 审批通知降级 log-only;半配置启动即败):
       BRAID_SMTP_HOST: ${BRAID_SMTP_HOST:-}
       BRAID_SMTP_PORT: ${BRAID_SMTP_PORT:-587}
@@ -172,6 +176,15 @@ services:
       BRAID_SMTP_NOTIFY_TO: ${BRAID_SMTP_NOTIFY_TO:-}
       BRAID_SMTP_STARTTLS: ${BRAID_SMTP_STARTTLS:-true}
       BRAID_APPROVAL_BASE_URL: ${BRAID_APPROVAL_BASE_URL:-}
+    volumes:
+      # DSL/白名单使用容器路径 /var/braid/docs；宿主来源独立配置。
+      # 缺省仅挂仓内空目录，不开放宿主其他数据；源不存在即失败。
+      - type: bind
+        source: ${BRAID_FILEREAD_HOST_DIR:-./tool-data}
+        target: /var/braid/docs
+        read_only: true
+        bind:
+          create_host_path: false
     depends_on:
       migrate:
         condition: service_completed_successfully
