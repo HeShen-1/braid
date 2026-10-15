@@ -13,7 +13,7 @@ import { loadBase } from './testdata.ts'
 
 const EXPORTS_DIR = resolve(import.meta.dirname, '../../testdata/exports')
 
-const BASES = ['all-node-types', 'with-positions', 'minimal-llm']
+const BASES = ['all-node-types', 'with-positions', 'minimal-llm', 'parallel-min-success']
 
 describe('导出 fixtures(跨语言契约面)', () => {
   for (const name of BASES) {

@@ -1,0 +1,60 @@
+{
+  "dsl": "1.0",
+  "name": "parallel-min-success",
+  "metadata": {
+    "canvas": {
+      "nodes": {
+        "fan": {
+          "position": {
+            "x": 40,
+            "y": 40
+          }
+        }
+      },
+      "viewport": {
+        "x": 0,
+        "y": 0,
+        "zoom": 1
+      }
+    }
+  },
+  "inputs": [
+    {
+      "name": "items",
+      "type": "array",
+      "required": true
+    }
+  ],
+  "edges": [],
+  "nodes": [
+    {
+      "id": "fan",
+      "type": "parallel",
+      "title": "部分成功评审",
+      "parallel": {
+        "foreach": "{{inputs.items}}",
+        "on_failure": "wait_all",
+        "min_success": 2,
+        "body": {
+          "type": "llm",
+          "prompt": {
+            "template": "评审当前条目。",
+            "user_data": [
+              {
+                "name": "piece",
+                "ref": "{{item}}"
+              }
+            ]
+          },
+          "outputs": {
+            "verdict": "string"
+          }
+        }
+      }
+    }
+  ],
+  "outputs": {
+    "results": "{{nodes.fan.output.results}}",
+    "failed_count": "{{nodes.fan.output.failed_count}}"
+  }
+}

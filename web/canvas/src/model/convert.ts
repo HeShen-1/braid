@@ -384,7 +384,12 @@ function orderNode(n: DslNode): Record<string, unknown> {
     case 'parallel':
       return defined([
         ...common,
-        ['parallel', defined([['foreach', n.parallel.foreach], ['on_failure', n.parallel.on_failure], ['body', orderBody(n.parallel.body)]])],
+        ['parallel', defined([
+          ['foreach', n.parallel.foreach],
+          ['on_failure', n.parallel.on_failure],
+          ['min_success', n.parallel.min_success],
+          ['body', orderBody(n.parallel.body)],
+        ])],
       ])
   }
 }
