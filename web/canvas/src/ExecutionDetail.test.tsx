@@ -180,8 +180,38 @@ describe('ExecutionDetail(执行详情)', () => {
     expect(row).toHaveAttribute('data-selected', 'true')
     expect(screen.getByTestId(TID.rollbackSubmit)).toBeEnabled()
     await user.click(screen.getByTestId(TID.rollbackSubmit))
+    await user.click(screen.getByTestId(TID.rollbackConfirm))
     expect(await screen.findByTestId(TID.execFlash)).toHaveTextContent('重置 2 行')
     expect(rolled).toBe(true)
+  })
+
+  it('F10 回滚确认层:单击只布防(指名目标),Esc 收起焦点回按钮,确认后才发请求', async () => {
+    const user = userEvent.setup()
+    let fired = false
+    stubRoute([/^\/api\/v1\/executions\/7$/, /rollback$/, /\/audit/], (url) => {
+      if (url.endsWith('/rollback')) {
+        fired = true
+        return ok({ execution_id: '7', target_node_id: 'gate', rerun_target: true, reset_count: 1, quiesced_count: 0 }, 201)
+      }
+      if (url === '/api/v1/executions/7') return ok({ ...baseDetail, nodes: [nodeRow('gate', 0, 'FAILED')] })
+      return ok({ items: [], next_cursor: '' })
+    })
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    await user.click(await screen.findByTestId(tid.nodeRow('gate', 0)))
+    // 单击只布防:请求未发,确认层在场且指名目标节点
+    await user.click(screen.getByTestId(TID.rollbackSubmit))
+    expect(fired).toBe(false)
+    const layer = screen.getByRole('group', { name: '确认回滚到 gate' })
+    expect(layer).toHaveTextContent('gate')
+    // Esc 收起,焦点回回滚按钮(同「取消执行」契约)
+    await user.keyboard('{Escape}')
+    expect(screen.queryByTestId(TID.rollbackConfirm)).toBeNull()
+    expect(screen.getByTestId(TID.rollbackSubmit)).toHaveFocus()
+    // 再布防 → 确认 → 请求才发出
+    await user.click(screen.getByTestId(TID.rollbackSubmit))
+    await user.click(screen.getByTestId(TID.rollbackConfirm))
+    expect(await screen.findByTestId(TID.execFlash)).toBeInTheDocument()
+    expect(fired).toBe(true)
   })
 
   it('T19.6 quiesce:勾选后回滚体带旗标,flash 带静默行数', async () => {
@@ -204,6 +234,7 @@ describe('ExecutionDetail(执行详情)', () => {
     // role=checkbox 的可见控件(label 断言保留,故按 role + 可及名取)。
     await user.click(screen.getByRole('checkbox', { name: '静默在飞' }))
     await user.click(screen.getByTestId(TID.rollbackSubmit))
+    await user.click(screen.getByTestId(TID.rollbackConfirm))
     expect(await screen.findByTestId(TID.execFlash)).toHaveTextContent('静默在飞 1 行')
     expect(sawQuiesce).toBe(true)
   })
@@ -223,6 +254,7 @@ describe('ExecutionDetail(执行详情)', () => {
     render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
     await user.click(await screen.findByTestId(tid.nodeRow('gate', 0)))
     await user.click(screen.getByTestId(TID.rollbackSubmit))
+    await user.click(screen.getByTestId(TID.rollbackConfirm))
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('rollback_blocked_inflight')
     expect(alert).toHaveTextContent('inflight residue')
