@@ -269,9 +269,10 @@ describe('ExecutionsView(执行面)', () => {
 
   it('已发布 >20 条全量可达:21 条全进触发下拉(审计 F03:第 21 个此前不进下拉)', async () => {
     const user = userEvent.setup()
-    // mock 契约 = 真实 page envelope 形状(服务端 limit 缺省 20,limit=100
-    // 单页装下 21 条 → total=21 全量)。
-    const many = Array.from({ length: 21 }, (_, i) => ({
+    // fake 服务端按请求 limit/offset 切片,limit 缺省回 20(= 服务端
+    // parsePageParams 行为):旧实现(裸 GET)只能拿 20 条,本用例为红;
+    // 翻页实现(limit=100)取全 21 条,绿。期望值 21 来自 envelope total。
+    const store = Array.from({ length: 21 }, (_, i) => ({
       id: String(i + 1),
       name: `wf-${i + 1}`,
       version: 1,
@@ -282,7 +283,12 @@ describe('ExecutionsView(执行面)', () => {
     stubRoute((url) => {
       const path = pathOf(url)
       if (path === '/api/v1/executions') return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
-      if (path === '/api/v1/definitions') return ok({ items: many, page: { limit: 100, offset: 0, total: 21 } })
+      if (path === '/api/v1/definitions') {
+        const q = queryOf(url)
+        const limit = q.has('limit') ? Number(q.get('limit')) : 20
+        const offset = Number(q.get('offset') ?? 0)
+        return ok({ items: store.slice(offset, offset + limit), page: { limit, offset, total: store.length } })
+      }
       return ok({ items: [], next_cursor: '' })
     })
     render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)

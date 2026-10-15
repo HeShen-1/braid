@@ -165,6 +165,22 @@ describe('definition list paging(T22.2 审计 F03:超 20 条全量可达)', () =
     ])
   })
 
+  it('契约忠实 mock:缺省 limit=20 的服务端也拦不住取全(红=旧单页实现,绿=翻页实现)', async () => {
+    // fake 服务端按请求 limit/offset 切片,limit 缺省回 20(= internal/api
+    // parsePageParams 行为):不带翻页参数的调用方只能拿到 20 条——期望值
+    // 21 来自 envelope total,与实现无关。旧实现(裸 GET)在此为红,即
+    // F03 的「第 21 条静默消失」;翻页实现取全为绿。
+    const store = Array.from({ length: 21 }, (_, i) => draft(i))
+    stubFetch((input) => {
+      const q = new URLSearchParams(String(input).split('?')[1] ?? '')
+      const limit = q.has('limit') ? Number(q.get('limit')) : 20
+      const offset = Number(q.get('offset') ?? 0)
+      return ok({ items: store.slice(offset, offset + limit), page: { limit, offset, total: store.length } })
+    })
+    const { items: out } = await api.listDrafts()
+    expect(out).toHaveLength(21)
+  })
+
   it('page 缺席:退化单页,不空转', async () => {
     stubFetch(() => ok({ items: [draft(1)] }))
     const { items: out } = await api.listDrafts()
