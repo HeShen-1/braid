@@ -249,6 +249,12 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
       return true
     } catch (err) {
       if (guard(err) || wsRef.current?.key !== cur.key) return false
+      // 发布有独立白名单校验;请求之后编辑/删除的节点不能再挂旧 ref 错误。
+      if (err instanceof ApiError && err.code === 'invalid_dsl' && snapshot(wsRef.current.doc) !== snapshot(doc)) {
+        setIssues([])
+        setFlash('先前内容发布失败；画布已修改，请再次发布。')
+        return false
+      }
       if (err instanceof ApiError) {
         setIssues(err.issues.length > 0 ? err.issues : [{ code: err.code, detail: err.code }])
       } else {

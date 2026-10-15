@@ -8,6 +8,7 @@ import { tokenStore } from '../api.ts'
 import { blankDoc } from '../defaults.ts'
 import { loadBase } from '../model/testdata.ts'
 import { serializeDoc } from '../model/convert.ts'
+import type { WorkflowDoc } from '../model/dsl.ts'
 import { IssuesPanel } from '../ui/IssuesPanel.tsx'
 import { TID } from '../ui/testids.ts'
 import { AuthProvider } from '../auth.tsx'
@@ -19,8 +20,9 @@ function ok(body: unknown, status = 200): Response {
 
 function deferredResponse() {
   let resolve!: (response: Response) => void
-  const promise = new Promise<Response>((r) => { resolve = r })
-  return { promise, resolve }
+  let reject!: (reason: unknown) => void
+  const promise = new Promise<Response>((r, j) => { resolve = r; reject = j })
+  return { promise, resolve, reject }
 }
 
 function stubRoute(responder: (url: string, init?: RequestInit) => Response | Promise<Response>) {
@@ -166,7 +168,7 @@ describe('WorkflowProvider(保存当前画布后发布,T23.5)', () => {
     expect(result.current.flash).toBe('')
   })
 
-  it.each([200, 409])('publish 请求已发后继续编辑:状态 %s 均保留后续内容与脏态', async (status) => {
+  it.each([200, 409, 'network'] as const)('publish 请求已发后继续编辑:状态 %s 均保留后续内容与脏态', async (status) => {
     const pending = deferredResponse()
     let started = false
     stubRoute((url) => {
@@ -181,13 +183,52 @@ describe('WorkflowProvider(保存当前画布后发布,T23.5)', () => {
     const later = { ...edited, description: '发布请求后的修改' }
     act(() => result.current.onDocChange(later))
     await act(async () => {
-      pending.resolve(ok(status === 200 ? { ...detail, status: 'PUBLISHED', version: 1 } : { error: 'conflict' }, status))
+      if (status === 'network') pending.reject(new Error('network down'))
+      else pending.resolve(ok(status === 200 ? { ...detail, status: 'PUBLISHED', version: 1 } : { error: 'conflict' }, status))
       expect(await publishing!).toBe(false)
     })
     expect(result.current.ws?.doc).toEqual(later)
     expect(result.current.dirty).toBe(true)
     expect(result.current.ws?.draftId).toBe(status === 200 ? null : '7')
     if (status === 200) expect(result.current.flash).toContain('后续更改尚未保存')
+    else expect(result.current.issues[0].code).toBe(status === 'network' ? 'network_error' : 'conflict')
+  })
+
+  it.each(['change', 'remove', 'unchanged'] as const)('迟到发布校验错误:节点 %s 后不回挂旧字段错误,未改文档仍展示', async (edit) => {
+    const toolDoc: WorkflowDoc = {
+      ...doc,
+      nodes: [{ id: 'only', type: 'tool', tool: 'unregistered_tool', inputs: { path: '/data/a.txt' }, outputs: {} }],
+    }
+    const pending = deferredResponse()
+    let started = false
+    stubRoute((url) => {
+      if (url.endsWith('/publish')) { started = true; return pending.promise }
+      return ok(url.includes('/drafts/') ? { ...detail, dsl: toolDoc } : { items: [] })
+    })
+    const { result } = mountWorkspace()
+    await act(async () => { await result.current.open('7') })
+    let publishing: Promise<boolean>
+    act(() => { publishing = result.current.publish(toolDoc) })
+    await waitFor(() => expect(started).toBe(true))
+    const current: WorkflowDoc = edit === 'remove'
+      ? { ...toolDoc, nodes: [] }
+      : edit === 'change'
+        ? { ...toolDoc, nodes: [{ ...toolDoc.nodes[0], type: 'tool', tool: 'file_read', inputs: { path: '/data/a.txt' } }] }
+        : toolDoc
+    if (edit !== 'unchanged') act(() => result.current.onDocChange(current))
+    const issue = { code: 'tool_not_allowed', ref: '/nodes/0/tool', detail: '旧节点工具 unregistered_tool 未获授权' }
+    await act(async () => {
+      pending.resolve(ok({ error: 'invalid_dsl', issues: [issue] }, 400))
+      expect(await publishing!).toBe(false)
+    })
+    expect(result.current.ws?.doc).toEqual(current)
+    expect(result.current.dirty).toBe(edit !== 'unchanged')
+    if (edit === 'unchanged') expect(result.current.issues).toEqual([issue])
+    else {
+      expect(result.current.issues).toEqual([])
+      expect(result.current.flash).toContain('先前内容发布失败')
+      expect(result.current.flash).toContain('再次发布')
+    }
   })
 
   it('迟到 open 在新建后失效;后发的打开请求优先', async () => {
