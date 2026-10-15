@@ -51,4 +51,21 @@ describe('DraftList(可收起左栏)', () => {
     expect(screen.getByTestId(tid.draftItem('1'))).toBeInTheDocument()
     expect(localStorage.getItem(PANEL_LEFT_KEY)).toBe('0')
   })
+
+  it('超 20 条全量可达:21 条草稿 21 行在场 + 计数 21(审计 F03 repro 反例)', () => {
+    const many: DraftSummary[] = Array.from({ length: 21 }, (_, i) => ({
+      id: String(i + 1),
+      name: `wf-${i + 1}`,
+      version: null,
+      status: 'DRAFT',
+      description: '',
+      updated_at: '2026-10-04T05:00:00Z',
+    }))
+    render(<DraftList drafts={many} activeId={null} onOpen={vi.fn()} onNew={vi.fn()} />)
+    for (let i = 1; i <= 21; i++) {
+      expect(screen.getByTestId(tid.draftItem(String(i)))).toBeInTheDocument()
+    }
+    // 计数条此前停在"本页条数 20";数据面取全后这里即总数。
+    expect(screen.getByText('21')).toBeInTheDocument()
+  })
 })

@@ -25,7 +25,7 @@
 > 来源 = 2026-10-14 陌生人旅程审计波(104 agents 对抗核证,56 存活:0C/5H/28M/23L;报告与波次建议全录 docs/audits/STRANGER-AUDIT-2026-10-14.md)。本波 = P4 残件(#202⑤⑥、#207、#210、#213 闭单)+ 全部 HIGH(F02/F03/F04/F05/F10);engine 零触及,纯前端 + api 错误路径 + docs,可并行 worktree。开发工作流拍板(2026-10-14 用户):复杂度分叉——复杂票 fork worktree 并行 + 主会话集成,简单票主会话直修(ponytail 代码风格 + mp-code-review 交叉对抗审,发现回主编码会话修完重验);项目铁律(CI/PR/测试三件套)不变。
 
 - [ ] T22.1 F05 校验错误结构化 — M — issue #214 — 后端 asInvalidDSL 把 jsonschema 各 cause 按 InstanceLocation 拆成结构化 issues(前端 IssuesPanel 已支持渲染)+ 前端编辑期间旧错误清除/降权(修「oneOf 全臂原始转储整屏」+「错误横幅常驻」) — 验收:三件套 + vitest + dist 同 commit + 漂移门;结构化 issues 对空 LLM 节点首存场景端到端可读
-- [ ] T22.2 F03 定义列表分页接入 — M — issue #215 — listDrafts/listPublished 消费 page envelope(total),接入执行面已有翻页器模式(修「超 20 条静默消失」+「第 21 个已发布不进触发下拉」) — 验收:三件套 + vitest + dist 同 commit;21 条草稿/发布全量可达
+- [x] T22.2 F03 定义列表分页接入 — M — issue #215 — listDrafts/listPublished 消费 page envelope(total),接入执行面已有翻页器模式(修「超 20 条静默消失」+「第 21 个已发布不进触发下拉」) — 验收:三件套 + vitest + dist 同 commit;21 条草稿/发布全量可达
 - [ ] T22.3 F04 发布成功反馈重构 — M — issue #216 — 成功反馈与编辑器卸载解耦(顶层 toast 或列表态成功条)+ 「查看已发布」出口(修「发布像凭空消失」) — 验收:三件套 + vitest + dist 同 commit + e2e 旅程不回归
 - [ ] T22.4 F10 回滚确认层 — S — issue #217 — 回滚接入 ui/confirm.tsx(与同面「取消执行」同契约);续跑维持直按或一次布防,不硬套同档确认 — 验收:三件套 + vitest + dist 同 commit
 - [ ] T22.5 F02 prod 首账号文档缝 — S — issue #218 — deploy 补「首个登录账号」一节(compose 网内 root DSN 跑 `braid user create` + 角色与口令纪律),README §2.1 与 prod-up.sh 就绪横幅指路 — 验收:prod 路径陌生人可登录(纯 docs)

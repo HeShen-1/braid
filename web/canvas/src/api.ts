@@ -239,12 +239,52 @@ export interface AuditEvent {
 
 // 端点全字面量(不拼前缀):bundle 端点锚与 grep 语义都锚在完整路径上
 // (web_test canvas bundle 锚同 app.js 纪律)。
+
+/** 定义列表翻页单页上限 = 服务端 maxPageLimit(internal/api/handlers.go),
+ * 一次请求吃满一页,少发 round-trip。 */
+const DEFINITION_PAGE_LIMIT = 100
+
+/** 深翻页防护上界,镜像服务端 maxPageOffset(handlers.go):服务端对
+ * offset>10000 回 400 bad_offset,不在此钳制收口,翻页会把列表打进错误态。 */
+const DEFINITION_MAX_OFFSET = 10000
+
+/** 定义列表翻页取全(审计 F03:缺省页 20 条,第 21 条草稿/已发布此前在
+ * 侧栏与触发下拉静默消失)。契约 = 执行面翻页器同款 page envelope
+ * ({items, page:{limit,offset,total}},server_test.go 钉死形状),差异仅在
+ * 消费策略:定义列表是"读"不是"扫",下拉与侧栏吃全量,不做翻页 UI。
+ * total 缺席/非数 → 退化单页(与执行面 page?.total 降级同口径:宁可少显,
+ * 不假造已取全)。offset 越过服务端深翻页上界即截断(服务端 maxPageOffset
+ * 的 O(offset) 扫描防护,单工作区定义到该量级属另行立项的规模问题)。 */
+async function listAllDefinitions(baseQuery: string): Promise<DraftSummary[]> {
+  const items: DraftSummary[] = []
+  const seen = new Set<string>()
+  let offset = 0
+  for (;;) {
+    const res = await call<{ items?: DraftSummary[]; page?: Page }>(
+      'GET',
+      `${baseQuery}&limit=${DEFINITION_PAGE_LIMIT}&offset=${offset}`,
+    )
+    const batch = Array.isArray(res.items) ? res.items : []
+    // 两页之间并发写入会平移 offset 窗口拉到重复行:按 id 收敛(read model
+    // 每行一次;同名多版本 id 本就不同,不误伤)。
+    for (const it of batch) {
+      if (!seen.has(it.id)) {
+        seen.add(it.id)
+        items.push(it)
+      }
+    }
+    const total = typeof res.page?.total === 'number' ? res.page.total : items.length
+    offset += batch.length
+    if (batch.length === 0 || offset >= total || offset > DEFINITION_MAX_OFFSET) return items
+  }
+}
+
 export const api = {
   login(username: string, password: string): Promise<LoginResponse> {
     return call('POST', '/api/v1/auth/login', JSON.stringify({ username, password }))
   },
   listDrafts(): Promise<{ items: DraftSummary[] }> {
-    return call('GET', '/api/v1/definitions?status=DRAFT')
+    return listAllDefinitions('/api/v1/definitions?status=DRAFT').then((items) => ({ items }))
   },
   getDraft(id: string): Promise<DraftDetail> {
     return call('GET', `/api/v1/drafts/${id}`)
@@ -260,7 +300,7 @@ export const api = {
   },
   // ---- 执行域(T16.6)----
   listPublished(): Promise<{ items: DraftSummary[] }> {
-    return call('GET', '/api/v1/definitions?status=PUBLISHED')
+    return listAllDefinitions('/api/v1/definitions?status=PUBLISHED').then((items) => ({ items }))
   },
   getVersion(name: string, version: number): Promise<DraftDetail> {
     return call('GET', `/api/v1/definitions/${name}/versions/${version}`)

@@ -2,7 +2,7 @@
 // Idempotency-Key/体)、响应解包、409 族 detail/blocked 承载。fetch 全
 // stub(同 App.test.tsx 习语);断言的形状 = internal/api DTO 的镜像面。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, api, tokenStore } from './api.ts'
+import { ApiError, api, tokenStore, type DraftSummary } from './api.ts'
 
 function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -122,13 +122,113 @@ describe('execution domain client', () => {
     expect((err as ApiError).code).toBe('http_502')
   })
 
-  it('listPublished / getVersion:定义面路径', async () => {
-    stubFetch(() => ok({ items: [] }))
+  it('listPublished / getVersion:定义面路径(翻页参数随行)', async () => {
+    stubFetch(() => ok({ items: [], page: { limit: 100, offset: 0, total: 0 } }))
     await api.listPublished()
-    expect(String(calls[0].input)).toBe('/api/v1/definitions?status=PUBLISHED')
+    expect(String(calls[0].input)).toBe('/api/v1/definitions?status=PUBLISHED&limit=100&offset=0')
 
     stubFetch(() => ok({ id: '1', dsl: {} }))
     await api.getVersion('wf', 3)
     expect(String(calls[0].input)).toBe('/api/v1/definitions/wf/versions/3')
+  })
+})
+
+describe('definition list paging(T22.2 审计 F03:超 20 条全量可达)', () => {
+  /** mock 契约用真实 page envelope 形状(internal/api handlers gin.H 同款:
+   * page 三字段都回显请求值)。 */
+  function envelope(items: unknown[], total = items.length, offset = 0): Response {
+    return ok({ items, page: { limit: 100, offset, total } })
+  }
+
+  function draft(i: number): DraftSummary {
+    return { id: String(i), name: `wf-${i}`, version: 1, status: 'DRAFT', description: '', updated_at: '2026-10-04T05:00:00Z' }
+  }
+
+  it('21 条场景:limit=100 单请求一次取全(审计 repro:此前只显 20)', async () => {
+    const items = Array.from({ length: 21 }, (_, i) => draft(i))
+    stubFetch(() => envelope(items))
+    const { items: out } = await api.listPublished()
+    expect(out).toHaveLength(21)
+    expect(String(calls[0].input)).toBe('/api/v1/definitions?status=PUBLISHED&limit=100&offset=0')
+    expect(calls).toHaveLength(1)
+  })
+
+  it('total 超单页:按 envelope 翻到取全', async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => draft(i))
+    const page2 = Array.from({ length: 21 }, (_, i) => draft(100 + i))
+    stubFetch((input) => (String(input).endsWith('offset=0') ? envelope(page1, 121, 0) : envelope(page2, 121, 100)))
+    const { items: out } = await api.listDrafts()
+    expect(out).toHaveLength(121)
+    expect(calls.map((c) => String(c.input))).toEqual([
+      '/api/v1/definitions?status=DRAFT&limit=100&offset=0',
+      '/api/v1/definitions?status=DRAFT&limit=100&offset=100',
+    ])
+  })
+
+  it('契约忠实 mock:缺省 limit=20 的服务端也拦不住取全(红=旧单页实现,绿=翻页实现)', async () => {
+    // fake 服务端按请求 limit/offset 切片,limit 缺省回 20(= internal/api
+    // parsePageParams 行为):不带翻页参数的调用方只能拿到 20 条——期望值
+    // 21 来自 envelope total,与实现无关。旧实现(裸 GET)在此为红,即
+    // F03 的「第 21 条静默消失」;翻页实现取全为绿。
+    const store = Array.from({ length: 21 }, (_, i) => draft(i))
+    stubFetch((input) => {
+      const q = new URLSearchParams(String(input).split('?')[1] ?? '')
+      const limit = q.has('limit') ? Number(q.get('limit')) : 20
+      const offset = Number(q.get('offset') ?? 0)
+      return ok({ items: store.slice(offset, offset + limit), page: { limit, offset, total: store.length } })
+    })
+    const { items: out } = await api.listDrafts()
+    expect(out).toHaveLength(21)
+  })
+
+  it('深翻页上界:offset 递进越过服务端 maxPageOffset 前钳制收口(镜像 400 面不打到)', async () => {
+    // fake 镜像 internal/api/parsePageParams:offset>10000 回 400 bad_offset,
+    // 其余恒返满页 100 条 + total 巨大。钳制缺席时第 103 发必 400 → 红或抛。
+    stubFetch((input) => {
+      const url = String(input)
+      const q = new URLSearchParams(url.split('?')[1] ?? '')
+      const offset = Number(q.get('offset') ?? 0)
+      if (offset > 10000) {
+        return new Response(JSON.stringify({ error: 'bad_offset' }), { status: 400, headers: { 'Content-Type': 'application/json' } })
+      }
+      return ok({
+        items: Array.from({ length: 100 }, (_, i) => draft(offset + i)),
+        page: { limit: 100, offset, total: 999999 },
+      })
+    })
+    const { items: out } = await api.listDrafts()
+    expect(out).toHaveLength(10100) // offset 0..10000 共 101 页,越界前截断
+    expect(calls).toHaveLength(101)
+    expect(String(calls[100].input)).toBe('/api/v1/definitions?status=DRAFT&limit=100&offset=10000')
+  })
+
+  it('窗口平移竞态:两页间并发写入拉到的重复行按 id 收敛', async () => {
+    const store = Array.from({ length: 120 }, (_, i) => draft(i))
+    stubFetch((input) => {
+      const q = new URLSearchParams(String(input).split('?')[1] ?? '')
+      const offset = Number(q.get('offset') ?? 0)
+      if (offset === 0) return ok({ items: store.slice(0, 100), page: { limit: 100, offset: 0, total: 120 } })
+      // 模拟第二页取数前有新定义插到队头:窗口整体后移,store[99] 在两页重叠
+      const shifted = [draft(-1), ...store]
+      return ok({ items: shifted.slice(offset, offset + 100), page: { limit: 100, offset, total: 121 } })
+    })
+    const { items: out } = await api.listDrafts()
+    const ids = out.map((d) => d.id)
+    expect(new Set(ids).size).toBe(ids.length)
+    expect(out).toHaveLength(120)
+  })
+
+  it('page 缺席:退化单页,不空转', async () => {
+    stubFetch(() => ok({ items: [draft(1)] }))
+    const { items: out } = await api.listDrafts()
+    expect(out).toHaveLength(1)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('服务端空页:立即收口(偏移越过 total 时不死循环)', async () => {
+    stubFetch(() => envelope([], 0))
+    const { items: out } = await api.listDrafts()
+    expect(out).toHaveLength(0)
+    expect(calls).toHaveLength(1)
   })
 })
