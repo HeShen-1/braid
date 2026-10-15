@@ -1042,7 +1042,7 @@ func (s *Scheduler) completeOnce(ctx context.Context, req CompletionRequest,
 // FinishIfDone 导出终态补判入口(reaper 扫描④b 委托,D-2026-09-22-t25-reaper-
 // semantics #9):RUNNING 执行全节点终态但提交后判定未落时收敛——Complete 的
 // 提交后 finishIfDone 失败只记日志(sched.go「卡终态留 T2.5 扫描兜底」预留点)。
-// 零锁路径,与 Complete 提交后判定完全同款;双收口由 status-only CAS 仲裁。
+// 与 Complete 提交后判定同款：独立事务锁定节点再收口，避免跨回滚轮次使用旧快照。
 func (s *Scheduler) FinishIfDone(ctx context.Context, execID uint64) error {
 	exec, err := s.loadExecution(ctx, execID)
 	if err != nil {
@@ -1064,64 +1064,55 @@ func (s *Scheduler) FinishIfDone(ctx context.Context, execID uint64) error {
 // 不提前:行集增长只发生在持有全行锁的派发事务内(T19.2 动态扇出,D-2026-10-05-t192
 // 决策 2①——同款前提改写见 rollback.go 步骤 0),新增行与控制器 PENDING→EXECUTING
 // 同事务以非终态原子提交,提交后新鲜快照必见;静态路径行集仍在 Instantiate 全量落库。
-// 不漏判:最后一个提交者的重查必见全部终态。双收口由 status-only CAS 仲裁
-// (Conflict 良性)。fail-fast 路径已在 Complete 事务内收口 FAILED,此处跳过。
+// 不漏判:最后一个提交者的重查必见全部终态。T23.1：独立事务按 uk_node_exec
+// 的 node_id/instance_no 顺序锁全行，与回滚/取消/派发串行；判定和 FinishExecution
+// 同事务，旧轮输出不能跨过回滚写入新轮。租约 fence 首置，wf 锁仍在 node 之后。
+// 双收口的 status-only CAS Conflict 良性；fail-fast 的控制行 FAILED 仍跳过。
 func (s *Scheduler) finishIfDone(ctx context.Context, execID uint64, wf *dsl.Workflow, wfInput json.RawMessage) error {
-	type nodeOut struct {
-		nodeID     string
-		instanceNo uint16
-		output     sql.NullString
-	}
-	outRows, err := s.deps.DB.QueryContext(ctx,
-		`SELECT node_id, instance_no, status, output FROM node_execution WHERE execution_id=?`, execID)
+	g, err := buildDAG(wf)
 	if err != nil {
-		return fmt.Errorf("scheduler: finish check %d: %w", execID, err)
+		return err
 	}
-	defer func() { _ = outRows.Close() }()
-	var succeeded []nodeOut
-	nonTerminal, failed := 0, 0
-	for outRows.Next() {
-		var r nodeOut
-		var status engine.NodeState
-		if err := outRows.Scan(&r.nodeID, &r.instanceNo, &status, &r.output); err != nil {
-			return fmt.Errorf("scheduler: finish scan %d: %w", execID, err)
+	finished := false
+	err = engine.WithTx(ctx, s.deps.DB, func(q engine.DBTX) error {
+		if err := s.fence(ctx, q); err != nil {
+			return err
 		}
-		switch {
-		case status == engine.NodeSucceeded:
-			succeeded = append(succeeded, r)
-		case status == engine.NodeFailed && r.instanceNo == 0:
-			failed++ // 控制面 FAILED;实例行 FAILED 归控制器收敛语义(T19.1)
-		case !status.Terminal():
-			nonTerminal++ // PENDING/EXECUTING/WAITING_APPROVAL(含实例行)
-		} // SKIPPED/CANCELLED:终态,不阻塞 SUCCEEDED 判定
-	}
-	if err := outRows.Err(); err != nil {
-		return fmt.Errorf("scheduler: finish rows %d: %w", execID, err)
-	}
-	if nonTerminal > 0 || failed > 0 {
+		// 复用回滚/派发的逐节点锁序，不另用数据库 collation 排序：下划线
+		// 等合法 id 在数据库排序与 Go 字节序之间可能不同。
+		rows, err := lockAllRows(ctx, q, execID, g)
+		if err != nil {
+			return err
+		}
+		for _, row := range rows.byID {
+			if !row.status.Terminal() || (row.instanceNo == 0 && row.status == engine.NodeFailed) {
+				return nil // 实例行 FAILED 的收敛语义归控制器；非终态仍阻塞。
+			}
+		}
+		outputs := make(map[string]json.RawMessage, len(rows.byNodeID))
+		for id, row := range rows.byNodeID {
+			if row.status == engine.NodeSucceeded && row.output.Valid {
+				outputs[id] = json.RawMessage(row.output.String)
+			}
+		}
+		env, err := newRefEnv(wfInput, outputs)
+		if err != nil {
+			return err
+		}
+		out := materializeOutputs(wf.Outputs, env)
+		if err := engine.FinishExecution(ctx, q, execID, engine.WorkflowSucceeded, out, "", ""); err != nil {
+			if errors.Is(err, engine.ErrConflict) {
+				return nil // 他方已收口，或终态判定先于回滚获得锁。
+			}
+			return err
+		}
+		finished = true
 		return nil
+	})
+	if err == nil && finished {
+		s.log.Info("execution.succeeded", "execution_id", execID)
 	}
-	// 引用面只取控制行(instance 0):parallel 实例输出经控制行 results 汇聚,
-	// 不可按 node_id 直引(键碰撞 = 实例覆盖控制器)。
-	outputs := make(map[string]json.RawMessage, len(succeeded))
-	for _, r := range succeeded {
-		if r.instanceNo == 0 && r.output.Valid {
-			outputs[r.nodeID] = json.RawMessage(r.output.String)
-		}
-	}
-	env, err := newRefEnv(wfInput, outputs)
-	if err != nil {
-		return err
-	}
-	out := materializeOutputs(wf.Outputs, env)
-	if err := engine.FinishExecution(ctx, s.deps.DB, execID, engine.WorkflowSucceeded, out, "", ""); err != nil {
-		if errors.Is(err, engine.ErrConflict) {
-			return nil // 他方已收口(双 finish 竞态的 CAS 仲裁)
-		}
-		return err
-	}
-	s.log.Info("execution.succeeded", "execution_id", execID)
-	return nil
+	return err
 }
 
 // ---- 事务内推进状态 ----

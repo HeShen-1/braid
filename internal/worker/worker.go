@@ -286,43 +286,9 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 	if err != nil {
 		return 0, fmt.Errorf("worker: gen attempt id: %w", err)
 	}
-	// T9.2 台账 + 轮次兜底(对抗审计 HIGH 修):node 行此刻的快照即本
-	// attempt 的输入(dispatch 侧 ClaimNode/RerunNode 已写就;重派不重写、
-	// 值恒同),attempt 行出生即抄档(旧轮输入证据物理载体,D-t92 决策 3①)。
-	// 轮次校验:attempt_no ≤ attempts_base = 已关闭轮次的滞留任务(回滚
-	// 重置/重跑后,base=旧轮总数;积压队列中的旧轮任务在回滚后被消化时,
-	// 其 attempt 行从未物化 ⇒ uk 不冲突 ⇒ 原样会物化新行并以新轮快照执行
-	// ——双烧 + 台账串轮)。按已终轮处理:幂等 ack、零物化零执行;行缺失
-	// = 数据缺陷,响亮拒绝(与 readAttempt 同判)。
-	// T19.3 活态闸(D-2026-10-05-t193 决策 4,与轮次正交):认领时节点非
-	// EXECUTING(CANCELLED/SUCCEEDED/FAILED/SKIPPED/PENDING/WAITING_APPROVAL)
-	// ⇒ 同款幂等 ack——取消不动 attempts_base,轮次校验拦不住取消后的
-	// 滞留副本(白烧 LLM/工具调用);已收口/挂起后的滞留副本原靠执行后
-	// Conflict 收敛,此处提前放弃。正常流认领时恒 EXECUTING(dispatch 事务
-	// = ClaimNode+事件同生共死),误伤面零;重派/回滚重跑认领时亦恒
-	// EXECUTING,闸与轮次合围不重叠。
-	var snap []byte
-	var attempts, attemptsBase uint16
-	var nodeStatus engine.NodeState
-	if err := h.deps.DB.QueryRowContext(ctx,
-		`SELECT input_snapshot, attempts, attempts_base, status FROM node_execution WHERE id=?`, p.NodeExecutionID).
-		Scan(&snap, &attempts, &attemptsBase, &nodeStatus); err != nil {
-		return 0, fmt.Errorf("worker: read node snapshot for attempt ledger (node %d): %w", p.NodeExecutionID, err)
-	}
-	if nodeStatus != engine.NodeExecuting {
-		h.log.Info("attempt.inactive_node_task",
-			"task_id", taskID, "node_execution_id", p.NodeExecutionID,
-			"node_status", nodeStatus, "attempt_no", p.AttemptNo,
-			"hint", "task for non-executing node drained; ack without materializing")
-		return 0, nil
-	}
-	if p.AttemptNo <= attemptsBase {
-		h.log.Info("attempt.stale_round_task",
-			"task_id", taskID, "node_execution_id", p.NodeExecutionID,
-			"attempt_no", p.AttemptNo, "attempts_base", attemptsBase,
-			"hint", "closed-round task drained after rollback; ack without materializing")
-		return 0, nil
-	}
+	// T23.1：活态、轮次与快照在 fence 后锁定读取；直到 attempt 物化提交
+	// 才释放 node 锁，取消/回滚无法夹在检查和 INSERT 之间。
+	admitted := false
 	// claim 物化经 fence 事务(T20.1,D-2026-10-06-t201):zombie 的 attempt
 	// 行物化在租约加冕校验后结构性回滚——双执行证据行(及其心跳维持)不再
 	// 可能由失冠进程建立。id 铸造在事务外(铸造面由 Guard 停发闸承载)。
@@ -331,6 +297,11 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 			h.countFenceRejected(ferr)
 			return ferr
 		}
+		snap, ok, err := h.claimSnapshot(ctx, q, taskID, p)
+		if err != nil || !ok {
+			return err
+		}
+		admitted = true
 		return engine.InsertAttempt(ctx, q, engine.AttemptParams{
 			ID:             id,
 			NodeExecID:     p.NodeExecutionID,
@@ -344,6 +315,9 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 	})
 	switch {
 	case err == nil:
+		if !admitted {
+			return 0, nil
+		}
 		h.log.Info("attempt.claimed", "attempt_id", id, "task_id", taskID, "node_execution_id", p.NodeExecutionID)
 		return id, nil
 	case errors.Is(err, engine.ErrConflict):
@@ -366,6 +340,7 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 		// reset 事务自身失败仍是尽力语义(warn 不阻断):本发执行的常规心跳
 		// 随即接管窗口。
 		var observed engine.AttemptState
+		var resetErr error
 		aborted := false
 		if err := engine.WithTx(ctx, h.deps.DB, func(q engine.DBTX) error {
 			// fence 首置(T20.1):zombie 不得接管重置心跳(那是挫败 reaper
@@ -377,6 +352,13 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 				h.countFenceRejected(ferr)
 				return ferr
 			}
+			// 初次 INSERT 撞键后已释放 node 锁，接管必须再次锁定复核。
+			if _, ok, err := h.claimSnapshot(ctx, q, taskID, p); err != nil {
+				return err
+			} else if !ok {
+				aborted = true
+				return nil
+			}
 			if err := q.QueryRowContext(ctx,
 				`SELECT status FROM node_attempt WHERE id=? FOR UPDATE`, rowID).Scan(&observed); err != nil {
 				return err
@@ -385,21 +367,54 @@ func (h *attHandler) claimAttempt(ctx context.Context, taskID string, p nodeTask
 				aborted = true
 				return nil // 空提交释放锁:终局已由收口方裁决,接管让位
 			}
-			return engine.TouchAttemptHeartbeat(ctx, q, rowID, p.ExecutionID)
+			resetErr = engine.TouchAttemptHeartbeat(ctx, q, rowID, p.ExecutionID)
+			return resetErr
 		}); err != nil {
-			if errors.Is(err, snowflake.ErrFenced) {
+			// 资格/状态复核或提交失败必须停止；只有已完成复核后的心跳刷新
+			// 失败沿用尽力语义，由本发常规心跳接管窗口。
+			if resetErr == nil || errors.Is(err, snowflake.ErrFenced) {
 				return 0, fmt.Errorf("worker: takeover attempt %d: %w", rowID, err)
 			}
 			h.log.Warn("takeover.heartbeat_reset_fail", "attempt_id", rowID, "err", err)
 		} else if aborted {
-			h.log.Info("attempt.already_final",
-				"attempt_id", rowID, "task_id", taskID, "status", observed)
+			if observed != "" {
+				h.log.Info("attempt.already_final",
+					"attempt_id", rowID, "task_id", taskID, "status", observed)
+			}
 			return 0, nil
 		}
 		return rowID, nil
 	default:
 		return 0, fmt.Errorf("worker: insert attempt (task %s): %w", taskID, err)
 	}
+}
+
+// claimSnapshot 在认领/接管事务中锁定节点，资格判定与 attempt 写入同生共死。
+// 与取消/回滚共用 node-first 锁序；读失败不得降级成允许执行。
+func (h *attHandler) claimSnapshot(ctx context.Context, q engine.DBTX, taskID string, p nodeTaskPayload) ([]byte, bool, error) {
+	var snap []byte
+	var attempts, attemptsBase uint16
+	var nodeStatus engine.NodeState
+	if err := q.QueryRowContext(ctx,
+		`SELECT input_snapshot, attempts, attempts_base, status FROM node_execution WHERE id=? FOR UPDATE`, p.NodeExecutionID).
+		Scan(&snap, &attempts, &attemptsBase, &nodeStatus); err != nil {
+		return nil, false, fmt.Errorf("worker: read node snapshot for attempt ledger (node %d): %w", p.NodeExecutionID, err)
+	}
+	if nodeStatus != engine.NodeExecuting {
+		h.log.Info("attempt.inactive_node_task",
+			"task_id", taskID, "node_execution_id", p.NodeExecutionID,
+			"node_status", nodeStatus, "attempt_no", p.AttemptNo,
+			"hint", "task for non-executing node drained; ack without materializing")
+		return nil, false, nil
+	}
+	if p.AttemptNo <= attemptsBase {
+		h.log.Info("attempt.stale_round_task",
+			"task_id", taskID, "node_execution_id", p.NodeExecutionID,
+			"attempt_no", p.AttemptNo, "attempts_base", attemptsBase,
+			"hint", "closed-round task drained after rollback; ack without materializing")
+		return nil, false, nil
+	}
+	return snap, true, nil
 }
 
 // readAttempt 按 uk 定位既有 attempt 行(撞键后的裁决读)。
