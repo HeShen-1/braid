@@ -76,11 +76,11 @@ GRANT INSERT                  ON braid.outbox             TO 'braid_api'@'%';
 GRANT SELECT                  ON braid.schema_migrations  TO 'braid_api'@'%';
 
 -- worker(写面 = 执行引擎状态迁移 CAS、attempt 领取、异步审计暂存、outbox
--- 发射;INSERT 面 = node_attempt + audit_pending + outbox——execution/node
--- 行由 api 的 Instantiate 建,worker 只迁移状态)
+-- 发射;INSERT 面 = node_attempt + audit_pending + outbox + node_execution。
+-- api Instantiate 建初始行,worker 的动态 foreach 在派发位补落实例行)
 GRANT SELECT                  ON braid.workflow_definition TO 'braid_worker'@'%';
 GRANT SELECT, UPDATE          ON braid.workflow_execution  TO 'braid_worker'@'%';
-GRANT SELECT, UPDATE          ON braid.node_execution      TO 'braid_worker'@'%';
+GRANT SELECT, INSERT, UPDATE  ON braid.node_execution      TO 'braid_worker'@'%';
 GRANT SELECT, INSERT, UPDATE  ON braid.node_attempt        TO 'braid_worker'@'%';
 GRANT SELECT                  ON braid.approval_decision   TO 'braid_worker'@'%';
 GRANT SELECT, INSERT          ON braid.audit_log           TO 'braid_worker'@'%';
@@ -97,8 +97,8 @@ GRANT SELECT, UPDATE          ON braid.outbox            TO 'braid_relay'@'%';
 GRANT SELECT                  ON braid.schema_migrations TO 'braid_relay'@'%';
 
 -- reaper(写面 = 判死重派 INSERT outbox / 审计搬运 / 分区水位 / 保留期清理;
--- UPDATE 面 = 状态迁移 CAS,INSERT 面 = outbox 重派,audit_pending 只 SELECT+DELETE
--- ——暂存发射(INSERT)在 worker 路径。audit_log 的 DROP 仅服务于 DROP
+-- UPDATE 面 = 状态迁移 CAS,INSERT 面 = outbox 重派 + audit_pending 的
+-- parallel 实例耗尽收口事件。audit_log 的 DROP 仅服务于 DROP
 -- PARTITION——MySQL 对该语句要求 ALTER+DROP 双权限,缺 DROP 则 janitor
 -- 回收路径 1142;D-t73 preflight 断言面是 UPDATE/DELETE,DROP 权限不触发拒启)
 GRANT SELECT                  ON braid.workflow_definition TO 'braid_reaper'@'%';
@@ -107,7 +107,7 @@ GRANT SELECT, UPDATE          ON braid.node_execution      TO 'braid_reaper'@'%'
 GRANT SELECT, UPDATE, DELETE  ON braid.node_attempt        TO 'braid_reaper'@'%'; -- T18.6 留档保留期清理:终态行批量 DELETE(谓词列 status/heartbeat_at/execution_id 走既有 SELECT,同 login_audit 先例);活执行守卫在本域只读 workflow_execution
 GRANT SELECT                  ON braid.approval_decision   TO 'braid_reaper'@'%';
 GRANT SELECT, INSERT, ALTER, DROP ON braid.audit_log       TO 'braid_reaper'@'%';
-GRANT SELECT, DELETE          ON braid.audit_pending       TO 'braid_reaper'@'%';
+GRANT SELECT, INSERT, DELETE  ON braid.audit_pending       TO 'braid_reaper'@'%';
 GRANT SELECT, INSERT, UPDATE, DELETE ON braid.chain_heads  TO 'braid_reaper'@'%'; -- T9.3:同步 Append 发射面(attempt.reaped 等)head 懒建 + 校验作业水位/断链闩 UPDATE + janitor 分区回收级联解除链义务(DELETE)
 GRANT SELECT, INSERT, DELETE  ON braid.outbox              TO 'braid_reaper'@'%';
 -- login_audit 的 SELECT 服务 DELETE 的 WHERE 谓词列(event_at 保留期条件);

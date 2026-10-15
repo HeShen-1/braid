@@ -19,7 +19,8 @@
 //     api 不调(零 Redis)。
 //   - CheckComponentGrants(按组件授权断言,T17.3):四入口各按自身组件装配,
 //     断言当前连接账号持有该组件特征写面的表级权限(断言面 = relay 的
-//     outbox、reaper 的 outbox/audit_log、api/worker/reaper 的
+//     outbox、worker 的 node_execution、reaper 的 outbox/audit_log/
+//     audit_pending、api/worker/reaper 的
 //     snowflake_node_lease)——缺失即硬拒:least-privilege 部署下缺面的
 //     失败模式 = 组件起得来、首个写路径 1142(投递状态迁移/分区回收/租约
 //     acquire 全是运行期才炸),前移到启动期并给出可执行 GRANT 提示。全局
@@ -156,7 +157,8 @@ const (
 //
 // 已知边界:MySQL 8 角色授予不经这四表展开;部署契约是直接授权(与 DDL
 // 注释同口径)。组件自身的写权限按 CheckComponentGrants 启动断言(relay 的
-// outbox UPDATE、reaper 的 outbox INSERT/DELETE 与 audit_log ALTER/DROP、
+// outbox UPDATE、worker 的 node_execution INSERT、reaper 的 outbox
+// INSERT/DELETE、audit_pending INSERT 与 audit_log ALTER/DROP、
 // api/worker/reaper 的 snowflake_node_lease 四面——T15.2 的「预登记未断言」
 // 台账已随 T17.3 收口为断言面);其余矩阵面(login_throttle、chain_heads
 // 列级面等)不在启动断言,dev 期对拍锚 = TestComponentGrantsParity,授权
@@ -519,8 +521,12 @@ var leaseFace = componentFace{
 
 // componentRequired:组件 → 断言面集(声明序即多 face 缺失时的消息序)。
 var componentRequired = map[Component][]componentFace{
-	ComponentAPI:    {leaseFace},
-	ComponentWorker: {leaseFace},
+	ComponentAPI: {leaseFace},
+	ComponentWorker: {
+		leaseFace,
+		{table: "node_execution", privs: []string{"SELECT", "INSERT", "UPDATE"},
+			why: "dynamic foreach instance expansion + node state CAS (T23.2)"},
+	},
 	ComponentRelay: {
 		{table: "outbox", privs: []string{"SELECT", "UPDATE"},
 			why: "delivery state transitions"},
@@ -532,6 +538,8 @@ var componentRequired = map[Component][]componentFace{
 			why: "sync audit emission + partition retention (DROP PARTITION needs ALTER+DROP)"},
 		{table: "node_attempt", privs: []string{"SELECT", "UPDATE", "DELETE"},
 			why: "death-scan CAS close (UPDATE) + janitor archival retention purge (T18.6; missing grant surfaces as hourly 1142 otherwise)"},
+		{table: "audit_pending", privs: []string{"SELECT", "INSERT", "DELETE"},
+			why: "parallel instance exhaustion audit emission + staged audit flush (T23.2)"},
 		leaseFace,
 	},
 }

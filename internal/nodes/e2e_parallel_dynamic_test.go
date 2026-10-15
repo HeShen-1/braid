@@ -163,11 +163,16 @@ func fanInstanceRowCount(t *testing.T, d *sql.DB, execID uint64) int {
 // → post 恰一次 → 执行 SUCCEEDED、outputs 物化。
 func TestE2EParallelDynamicFanout(t *testing.T) {
 	d := sqltest.MustOpenAt(t, nodesSchema)
+	// T23.2:触发、投递、动态展开/worker CAS 均用各自真实组件账号;
+	// admin 只建 fixture、读取断言与清理,不能替组件代写业务行。
+	apiDB := sqltest.MustComponentDB(t, d, "api")
+	workerDB := sqltest.MustComponentDB(t, d, "worker")
+	relayDB := sqltest.MustComponentDB(t, d, "relay")
 	queue := fmt.Sprintf("t_n%d", atomic.AddUint32(&queueSeq, 1))
 
 	stub := newDynFanStub(t, `["alpha","beta","gamma"]`)
-	executor := dynFanMux(t, d, queue, stub.srv.URL)
-	sched := mustE2ESched(t, d, queue)
+	executor := dynFanMux(t, workerDB, queue, stub.srv.URL)
+	sched := mustE2ESched(t, apiDB, queue)
 
 	ids, err := snowflake.New(1)
 	if err != nil {
@@ -197,10 +202,10 @@ func TestE2EParallelDynamicFanout(t *testing.T) {
 		t.Fatalf("fan instance rows at Instantiate = %d, want 0 (dispatch-time 展开)", n)
 	}
 
-	startParallelRelay(t, d)
+	startParallelRelay(t, relayDB)
 	wcfg := worker.DefaultConfig()
 	wcfg.HeartbeatInterval = 40 * time.Millisecond
-	startE2EWorker(t, d, executor, wcfg, queue)
+	startE2EWorker(t, workerDB, executor, wcfg, queue)
 
 	waitE2EExecSucceeded(t, d, execID)
 

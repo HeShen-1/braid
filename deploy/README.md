@@ -120,21 +120,23 @@ helper,无 MySQL 连接路径,不建账号;其攻击面在容器隔离与 egress
 执行),手工路径(已有卷/扩权/改密)见 `deploy/UPGRADE.md §3`。代码
 新增 SQL 写面时本表与 grants.sh 必须同步修。
 **口径修正(6 视角审计)**:按**调用链可达**而非 import 可达核权——
-scheduler.Instantiate 只被 api 调用、outbox 状态迁移原语只在 relay、
-audit 暂存发射只在 worker 路径;初版矩阵按包归属多授 7 cell
-(worker/reaper 的 execution/node INSERT、reaper 的 node_attempt INSERT /
-outbox UPDATE / audit_pending INSERT)已全部收回。
+scheduler.Instantiate 只被 api 调用、outbox 状态迁移原语只在 relay。
+T23.2 按实际调用链补齐两面:worker 的动态 foreach 在派发位 INSERT
+node_execution 实例行;reaper 的实例耗尽收口经 scheduler 发射
+node.state_changed 暂存事件,需 INSERT audit_pending。其余早期多授面
+(worker 的 workflow_execution INSERT、reaper 的 workflow_execution /
+node_execution / node_attempt INSERT 与 outbox UPDATE)仍不授予。
 
 | 表 | api | worker | relay | reaper |
 |----|-----|--------|-------|--------|
 | workflow_definition | SELECT,INSERT,UPDATE | SELECT | — | SELECT |
 | workflow_execution | SELECT,INSERT,UPDATE¹ | SELECT,UPDATE | — | SELECT,UPDATE |
-| node_execution | SELECT,INSERT,UPDATE¹ | SELECT,UPDATE | — | SELECT,UPDATE |
+| node_execution | SELECT,INSERT,UPDATE¹ | SELECT,INSERT,UPDATE | — | SELECT,UPDATE |
 | node_attempt | SELECT,UPDATE¹ | SELECT,INSERT,UPDATE | — | SELECT,UPDATE,DELETE |
 | approval_decision | SELECT,INSERT | SELECT | — | SELECT |
 | outbox | INSERT | INSERT | SELECT,UPDATE | SELECT,INSERT,DELETE |
 | audit_log | SELECT,INSERT | SELECT,INSERT | — | SELECT,INSERT,ALTER,DROP |
-| audit_pending | INSERT² | INSERT | — | SELECT,DELETE |
+| audit_pending | INSERT² | INSERT | — | SELECT,INSERT,DELETE |
 | chain_heads | SELECT,INSERT,UPDATE(last_id,last_row_hash) | SELECT,INSERT,UPDATE(last_id,last_row_hash) | — | SELECT,INSERT,UPDATE,DELETE |
 | login_audit | INSERT | — | — | SELECT,DELETE |
 | login_throttle | SELECT,INSERT,UPDATE(window_start,count,locked_until,updated_at) | — | — | SELECT,DELETE |
@@ -159,9 +161,11 @@ UPDATE 语句;权限跟随锁的写意图。² 回滚缝重派节点的 node.sta
 - **组件级授权启动断言(T17.3,`preflight.CheckComponentGrants`)**:
   四入口各按自身组件断言特征写面的表级权限在场,缺面即拒启(缺面的
   失败模式 = 起得来、首个写路径 1142,前移到启动期并给可执行 GRANT
-  提示)。断言面 = relay 的 outbox(SELECT,UPDATE)、reaper 的
-  outbox(SELECT,INSERT,DELETE)与 audit_log(SELECT,INSERT,ALTER,
-  DROP)、api/worker/reaper 的 snowflake_node_lease(全四权)。断言面
+  提示)。断言面 = relay 的 outbox(SELECT,UPDATE)、worker 的
+  node_execution(SELECT,INSERT,UPDATE)、reaper 的
+  outbox/audit_pending(SELECT,INSERT,DELETE)、audit_log(SELECT,INSERT,
+  ALTER,DROP)与 node_attempt(SELECT,UPDATE,DELETE)、api/worker/reaper 的
+  snowflake_node_lease(全四权)。断言面
   与 grants.sh 逐表全量 equality,dev 期对拍锚 =
   `TestComponentGrantsParity`(grants.sh 撤面/漂移即测试红,防「文档
   一套、SQL 一套、断言第三套」);矩阵其余面(login_throttle、
