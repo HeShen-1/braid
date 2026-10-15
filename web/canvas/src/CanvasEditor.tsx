@@ -40,6 +40,7 @@ const flowNodeTypes = nodeTypes as unknown as NodeTypes
 function Editor({
   initialDoc,
   draftId,
+  dirty,
   flash,
   onDocChange,
   onSave,
@@ -47,10 +48,11 @@ function Editor({
 }: {
   initialDoc: WorkflowDoc
   draftId: string | null
+  dirty?: boolean
   flash?: string
   onDocChange?: (doc: WorkflowDoc) => void
   onSave?: (doc: WorkflowDoc) => void | Promise<void>
-  onPublish?: () => void | Promise<void>
+  onPublish?: (doc: WorkflowDoc) => void | Promise<void>
 }) {
   const [base, setBase] = useState(initialDoc)
   const initial = useMemo(() => toCanvas(initialDoc), [initialDoc])
@@ -210,6 +212,7 @@ function Editor({
           {base.name}
         </span>
         <span className="num shrink-0 text-micro text-ink-3">{draftId === null ? '未建档' : `#${draftId}`}</span>
+        {dirty ? <span className="shrink-0 text-micro text-ink-2">未保存</span> : null}
         {flash !== undefined && flash !== '' ? (
           <span
             className="flex min-w-0 items-center gap-1.5 border-l border-line-0 pl-3 text-xs text-ink-1"
@@ -246,7 +249,7 @@ function Editor({
             </Button>
           ) : null}
           {onPublish !== undefined && draftId !== null ? (
-            <Button size="sm" icon={Rocket} data-testid={TID.editorPublish} disabled={busy} onClick={run(onPublish)}>
+            <Button size="sm" icon={Rocket} data-testid={TID.editorPublish} disabled={busy} onClick={run(() => onPublish(doc))}>
               发布
             </Button>
           ) : null}
@@ -322,7 +325,7 @@ function Editor({
                 key={draftId ?? 'local'}
                 doc={base}
                 update={(patch) => setBase((b) => patch(b))}
-                nameLocked={draftId !== null}
+                nameLocked={draftId !== null || busy}
               />
             ) : (
               <EmptyState
@@ -351,18 +354,20 @@ function Editor({
 export function CanvasEditor(props: {
   initialDoc: WorkflowDoc
   draftId?: string | null
+  dirty?: boolean
   /** 顶栏状态文案(保存/发布的结果由壳层给)。 */
   flash?: string
   /** 每次文档变更上报(挂载不算),供壳层保态。 */
   onDocChange?: (doc: WorkflowDoc) => void
   onSave?: (doc: WorkflowDoc) => void | Promise<void>
-  onPublish?: () => void | Promise<void>
+  onPublish?: (doc: WorkflowDoc) => void | Promise<void>
 }) {
   return (
     <ReactFlowProvider>
       <Editor
         initialDoc={props.initialDoc}
         draftId={props.draftId ?? null}
+        dirty={props.dirty}
         flash={props.flash}
         onDocChange={props.onDocChange}
         onSave={props.onSave}
