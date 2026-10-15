@@ -6,6 +6,8 @@
 .worktrees
 .handoff
 deploy/.env
+deploy/prod.env
+deploy/tool-data
 **/.testenv
 docs
 *.md

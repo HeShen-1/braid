@@ -568,3 +568,31 @@ D- 条目)。`deploy/release.sh` 四臂:
 - **构建上下文**:`.dockerignore` 随本任务增补 `dist`/`log`/
   `web/canvas/node_modules`(T7.4 凭证面隔离口径之上,导出面与依赖面
   不进 context)。
+
+## 13. 生产 worker 工具与预算配置(T23.3)
+
+Compose 从同一 `prod.env` 将 `BRAID_HTTP_ENDPOINTS`、
+`BRAID_FILEREAD_DIRS` 注入 api/worker。api 用其验证发布白名单，worker
+用其构造实际执行工具；空配置仍不注册。`BRAID_LLM_TOKEN_BUDGET` 同步
+进入 worker，默认 `0` 关闭；非零时沿既有 T18.2 口径，在付费调用前
+检查已计费 usage、prompt 估算与 `max_tokens` 预留，超限拒绝并审计。
+并行预算的已知边界仍见 `internal/llm/budget.go`。
+
+file_read 需要同时提供白名单和可读文件。生产 Compose 只读挂载
+`BRAID_FILEREAD_HOST_DIR` 指定的宿主目录到 `/var/braid/docs`，因此
+白名单与 DSL `path` 使用容器路径，例如：
+
+```dotenv
+BRAID_FILEREAD_HOST_DIR=/srv/braid/docs
+BRAID_FILEREAD_DIRS='["/var/braid/docs"]'
+BRAID_HTTP_ENDPOINTS='{"docs_api":"https://docs.example.com"}'
+BRAID_LLM_TOKEN_BUDGET=10000
+```
+
+文件 `/srv/braid/docs/example.txt` 在 DSL 中写
+`/var/braid/docs/example.txt`。源目录必须预先存在；Compose 不自动
+创建。目录须允许镜像 uid 65532 遍历、文件须可读。默认仅挂仓内空的
+`deploy/tool-data`，不自动开放宿主业务数据；该目录的业务文件同时被
+Git 与 Docker build context 忽略，避免入库或进入镜像构建。
+api 只做注册与发布校验，无需文件挂载。Compose 此处沿用内置执行模式；
+Helm 的节点路径、只读挂载及 sandbox 口径见 [chart README](chart/README.md)。

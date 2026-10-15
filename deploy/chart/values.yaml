@@ -81,6 +81,7 @@ secrets:
 config:
   llmBaseUrl: "" # 必填(llm 组)
   llmPriceTable: "" # 必填(llm 组;JSON 单价表)
+  llmTokenBudget: "0" # 每执行 token 预算；0 = 关，非零由 worker pre-call 执法
   # smtp 组(可选;BRAID_SMTP_HOST 空 = 审批通知降级 log-only;半配置
   # 启动即败由进程承载):
   smtpHost: ""
@@ -90,7 +91,7 @@ config:
   smtpNotifyTo: ""
   smtpStarttls: "true"
   approvalBaseUrl: ""
-  # api 工具/反代面(可选):
+  # api/worker 共用工具白名单；路径是容器内绝对目录(挂载见 tools.fileRead)。
   httpEndpoints: "" # JSON alias→https base URL(空 = 不注册 http 工具)
   filereadDirs: "" # JSON 数组绝对路径(空 = 不注册 file_read)
   apiTrustedProxies: "" # 反代部署必配(CIDR 列表;直连留空 fail-closed)
@@ -98,6 +99,11 @@ config:
 
 # ---- 选通面(默认全关:渲染产物与 compose 逐键等价;开启才渲染对应键)----
 tools:
+  # 显式选通一个节点目录，按同一路径只读挂到 worker；默认不挂宿主数据。
+  # 目录须预先存在且 uid 65532 可遍历/读取；填入 config.filereadDirs。
+  # 节点/容器同路径也满足 sandbox 的 Docker daemon bind 来源口径。
+  fileRead:
+    hostPath: ""
   # 沙箱(D-t102):启用后 BRAID_TOOL_SANDBOX=docker + 沙箱配额/egress 拓扑键
   # 注入 worker env(词表单源复用,零新拓扑键);运行前提 = dockerSocketMount。
   sandbox:

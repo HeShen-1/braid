@@ -89,6 +89,40 @@ for svc in mysql redis-queue migrate grants api worker relay reaper; do
 done
 [ $rc -eq 0 ] || fail "compose 对拍键集不等"
 
+# T23.3:键集相等不足以发现「api 能发布、worker 收不到」；用非空配置
+# 同时核对两进程实值、非零预算和只读挂载，防止两模板一起漏接仍假绿。
+note "3/8 工具配置实值、非零预算与只读文件挂载"
+docker compose -f deploy/prod.docker-compose.yml \
+  --env-file deploy/chart/tests/dummy.env --env-file deploy/chart/tests/tools.env \
+  config --format json > "$WORK/tools.json"
+chart_env_value() { # component key
+  yq_in "select(.kind == \"Deployment\" and .metadata.name == \"${RELEASE}-$1\") | .spec.template.spec.containers[0].env[] | select(.name == \"$2\") | .value" "$WORK/full.yaml" | sed '/^---$/d;/^$/d'
+}
+for svc in api worker; do
+  for key in BRAID_HTTP_ENDPOINTS BRAID_FILEREAD_DIRS; do
+    actual="$(chart_env_value "$svc" "$key")"
+    expected="$(yq_in ".services.$svc.environment.$key" "$WORK/tools.json")"
+    [ -n "$actual" ] && [ "$actual" = "$expected" ] \
+      || fail "$svc $key 实值未贯通(compose/chart)"
+  done
+done
+budget="$(chart_env_value worker BRAID_LLM_TOKEN_BUDGET)"
+[ "$budget" = "321" ] \
+  && [ "$budget" = "$(yq_in '.services.worker.environment.BRAID_LLM_TOKEN_BUDGET' "$WORK/tools.json")" ] \
+  || fail "worker 非零 token 预算未贯通(compose/chart)"
+compose_mount='.services.worker.volumes[] | select(.target == "/var/braid/docs")'
+[ "$(yq_in "$compose_mount | .source" "$WORK/tools.json")" = /braid-fixture/docs ] \
+  && [ "$(yq_in "$compose_mount | .read_only" "$WORK/tools.json")" = true ] \
+  && [ "$(yq_in "$compose_mount | .bind.create_host_path // false" "$WORK/tools.json")" = false ] \
+  && [ "$(yq_in "$compose_mount | .bind.create_host_path" "$ROOT/deploy/prod.docker-compose.yml")" = false ] \
+  || fail "compose file_read 未按指定来源只读挂载(禁止自动创建宿主目录)"
+worker_spec="select(.kind == \"Deployment\" and .metadata.name == \"${RELEASE}-worker\") | .spec.template.spec"
+[ "$(yq_in "$worker_spec | .volumes[] | select(.name == \"file-read\") | .hostPath.path" "$WORK/full.yaml" | sed '/^---$/d;/^$/d')" = /var/braid/docs ] \
+  && [ "$(yq_in "$worker_spec | .volumes[] | select(.name == \"file-read\") | .hostPath.type" "$WORK/full.yaml" | sed '/^---$/d;/^$/d')" = Directory ] \
+  && [ "$(yq_in "$worker_spec | .containers[0].volumeMounts[] | select(.name == \"file-read\") | .mountPath" "$WORK/full.yaml" | sed '/^---$/d;/^$/d')" = /var/braid/docs ] \
+  && [ "$(yq_in "$worker_spec | .containers[0].volumeMounts[] | select(.name == \"file-read\") | .readOnly" "$WORK/full.yaml" | sed '/^---$/d;/^$/d')" = true ] \
+  || fail "chart file_read 未按节点/容器同路径只读挂载"
+
 # ---- 4. 对象清单 ----
 note "4/8 对象清单(默认面)"
 # 注:yq eval-all 下跨文档字符串拼接(.kind + "/" + .name)行为损坏(kind
