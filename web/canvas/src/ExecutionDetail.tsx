@@ -75,6 +75,15 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     layerRef: cancelLayerRef,
     armRef: cancelArmRef,
   } = useConfirmLayer()
+  // 回滚确认层(F10):与「取消执行」同契约——回滚改写执行状态且改点在
+  // 时间带选点(易误触),单击只布防;续跑是高频恢复动作,维持直按不套层。
+  const {
+    armed: rollbackArmed,
+    arm: armRollback,
+    disarm: disarmRollback,
+    layerRef: rollbackLayerRef,
+    armRef: rollbackArmRef,
+  } = useConfirmLayer()
 
   const load = useCallback(async () => {
     let d: ExecutionDetailData | null = null
@@ -265,14 +274,28 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
               checked={quiesce}
               onCheckedChange={setQuiesce}
             />
-            <Button
-              icon={Undo2}
-              data-testid={TID.rollbackSubmit}
-              disabled={!canAct || target === null}
-              onClick={() => void runAction(() => api.rollbackExecution(execId, target as string, quiesce))}
-            >
-              回滚{target !== null ? `到 ${target}` : '(先选节点)'}
-            </Button>
+            {rollbackArmed && target !== null ? (
+              <ConfirmLayer
+                layerRef={rollbackLayerRef}
+                label={`确认回滚到 ${target}`}
+                hint="回滚会重置目标下游节点,本执行定格为已回滚,不可撤销。"
+                confirmText={`确认回滚到 ${target}`}
+                confirmTestId={TID.rollbackConfirm}
+                busy={busy}
+                onConfirm={() => void runAction(() => api.rollbackExecution(execId, target, quiesce)).finally(disarmRollback)}
+                onDismiss={disarmRollback}
+              />
+            ) : (
+              <Button
+                ref={rollbackArmRef}
+                icon={Undo2}
+                data-testid={TID.rollbackSubmit}
+                disabled={!canAct || target === null}
+                onClick={armRollback}
+              >
+                回滚{target !== null ? `到 ${target}` : '(先选节点)'}
+              </Button>
+            )}
             <Button
               icon={Play}
               data-testid={TID.resumeSubmit}

@@ -179,9 +179,10 @@ test('回滚-重跑全旅程:驳回翻活 → 并行实例 → 会签中间态 �
   await expect(author.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'FAILED', { timeout: 30_000 })
   await expect(author.getByTestId(tid.nodeRow('gate1', 0))).toContainText('approval_rejected')
 
-  // ④ 控制台回滚:选 gate1 行 → 回滚 → 重挂起(round 2)。
+  // ④ 控制台回滚:选 gate1 行 → 回滚(单击布防 → 确认层确认,F10)→ 重挂起(round 2)。
   await author.getByTestId(tid.nodeRow('gate1', 0)).click()
   await author.getByTestId(TID.rollbackSubmit).click()
+  await author.getByTestId(TID.rollbackConfirm).click()
   await expect(author.getByTestId(TID.execFlash)).toBeVisible()
   await expect(author.getByTestId(tid.nodeRow('gate1', 0))).toHaveAttribute('data-state', 'WAITING_APPROVAL', { timeout: 30_000 })
 

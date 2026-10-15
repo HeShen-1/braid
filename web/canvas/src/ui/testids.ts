@@ -53,6 +53,7 @@ export const TID = {
   triggerInput: 'trigger-input',
   triggerSubmit: 'trigger-submit',
   rollbackSubmit: 'rollback-submit',
+  rollbackConfirm: 'rollback-confirm',
   resumeSubmit: 'resume-submit',
   cancelSubmit: 'cancel-submit',
   auditList: 'audit-list',
