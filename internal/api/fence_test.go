@@ -24,6 +24,14 @@ import (
 
 const apiFenceNode = 1 // schema 内自洽(api 内建默认号语义,测试库隔离)
 
+// fence 种子生成器:包级单实例(issue #210)——seedApprovalFenceChain 被
+// 同一测试连发四次,per-call New(21) 的首号恒为 (当前毫秒, 21, seq=0),
+// 任意两次落同毫秒即 workflow_definition PK 1062(CI 实证)。单实例下 seq
+// 跨调用单调递增,撞号结构性消失(同 approval_test.go:82 的包级先例)。
+// 族内其余 per-call New(节点 1/2/3…)分属不同测试函数,函数间有建栈
+// 成本(建 schema/租约),跨函数同毫秒不可达,不扫。
+var fenceTestIDs, _ = snowflake.New(21)
+
 // newLeasedTestServer:newTestServer 的带租约变体(T20.1):Server 经
 // SnowflakeLease 注入真实租约 + FenceMetrics 观测面,模拟 cmd/api 生产装配。
 // 返回 Server 本体(直接方法调用锚需要);Router() 按需派生。
@@ -109,10 +117,7 @@ func TestPublishFenceRejectsSupersededLease(t *testing.T) {
 // 快照),返回 (execID, nodeExecID)。
 func seedApprovalFenceChain(t *testing.T, dbh *sql.DB, tag string) (uint64, uint64) {
 	t.Helper()
-	ids, err := snowflake.New(21) // 专属节点号:rollback_test.go:134 占 node 2,同毫秒首号会撞 PK(CI 实证)
-	if err != nil {
-		t.Fatalf("snowflake: %v", err)
-	}
+	ids := fenceTestIDs
 	defID, _ := ids.Next()
 	execID, _ := ids.Next()
 	nodeExecID, _ := ids.Next()
@@ -160,6 +165,22 @@ func fakeGinC() *gin.Context {
 	c, _ := gin.CreateTestContext(httptest.NewRecorder())
 	c.Request = httptest.NewRequest(http.MethodPost, "/", nil)
 	return c
+}
+
+// TestFenceSeedDistinctIDs:同测试连发种子的 id 唯一性锚(issue #210)。
+// 修复前 = per-call New(21) 四发同毫秒即 workflow_definition PK 1062
+// (flake 常态路径,撞号在 seed 内 Fatal);修复后包级单实例 seq 单调,
+// 恒绿——本锚同时拦住「改回 per-call New」的回归。
+func TestFenceSeedDistinctIDs(t *testing.T) {
+	_, _, dbh := newLeasedTestServer(t)
+	seen := make(map[uint64]bool)
+	for i := 0; i < 4; i++ {
+		defID, _ := seedApprovalFenceChain(t, dbh, "fence-seed-distinct")
+		if seen[defID] {
+			t.Fatalf("defID %d repeated on rapid seed #%d", defID, i)
+		}
+		seen[defID] = true
+	}
 }
 
 // TestAPIFenceAllWriteFaces:对抗审计 HIGH 锚——api 六写面(publish 见
