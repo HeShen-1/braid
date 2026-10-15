@@ -1,7 +1,7 @@
 # braid
 
 企业级 Agent 工作流编排平台(Go):JSON DSL 定义 DAG,人在回路审批,全链路审计,
-工具权限隔离;私有化交付,单二进制四入口 + docker-compose。
+工具权限隔离;私有化交付,一镜像四个常驻入口(api/worker/relay/reaper 各自二进制) + docker-compose。
 
 braid 的护城河不在「有审批、有审计」(2026 年这已是标配),而在三件做到安全审查级深度的东西:
 **工具调用的 SSRF/沙箱隔离、append-only 审计链、合规交付形态**(设计依据与竞品对照见
@@ -18,8 +18,14 @@ braid 的护城河不在「有审批、有审计」(2026 年这已是标配),而
 
 ![控制台 · 审批面:待办队列 + 决定详情;`j/k` 移动、`Enter` 打开、`a` 批准、`r` 驳回、`Esc` 返回](docs/images/console-approvals.png)
 
-截图取自本仓 `deploy/dev-up.sh` 的演示种子数据,由 [.impeccable/shot.mjs](.impeccable/shot.mjs) 生成
-(`node .impeccable/shot.mjs docs/images --readme`)。
+截图取自本仓 `deploy/dev-up.sh` 的演示种子数据,由 [.impeccable/shot.mjs](.impeccable/shot.mjs) 生成。
+复拍前按 `web/canvas/.nvmrc` 使用 Node 26.10.0，先执行
+`npm --prefix web/canvas ci` 与 `npx --prefix web/canvas playwright install chromium`，
+并确认 API、演示账号、草稿及执行数据已就绪，再从仓库根运行
+`node .impeccable/shot.mjs docs/images --readme`。脚本默认连接
+`http://127.0.0.1:8081`、使用 dev 演示账号；其他隔离环境经
+`BRAID_BASE` / `BRAID_USER` / `BRAID_PASS` 注入，真实口令勿写进命令行。
+截图脚本只登录、导航和取图，不建号或生成演示数据；缺草稿/执行时会跳过对应图片。
 
 ## 1. 架构总览
 
@@ -77,8 +83,16 @@ worker;审批决定经同一 outbox 通道触发续跑任务(`resume:<execution_
 | 审计 | append-only(无 update 接口)、按执行日期分区、每行携带 OTel trace_id、PII 脱敏钩子、保留期可配 |
 | LLM | OpenAI 兼容端点薄封装(不用 Responses API);tiktoken 词表随安装包离线分发,冷启动零外网请求 |
 | 可观测 | OTel trace 贯穿(API→worker→LLM/工具,审批段 trace link 串联)+ Prometheus 告警集(死信/审批积压/卡死节点/429/队列 Redis 水线) |
-| 用户体系 | 内置 admin / author / approver + JWT;OIDC/LDAP 留接口桩(P1) |
-| 部署 | 单二进制四入口(api/relay/worker/reaper)+ compose 编排 MySQL + Redis×2(队列/缓存物理分离)+ Asynqmon |
+| 用户体系 | 内置 admin / author / approver + JWT；OIDC、LDAP bind 企业后端已实现，Web 接入边界见下文 |
+| 部署 | 一镜像四个常驻入口；prod = MySQL + 队列 Redis，dev 另带独立热缓存 Redis 与 Asynqmon |
+
+企业实现位于 `internal/enterprise/{oidc,ldap,im}`：OIDC 提供登录跳转与回调
+API，LDAP 可换装现有用户名/口令登录的凭证核验源，钉钉提供审批通知卡片。
+身份仍锚定本地账号，角色与状态取自本地库。当前控制台只提供用户名/口令表单；
+OIDC 回调返回 token JSON，尚无 Web SSO 按钮或回调会话接入，后续由
+T23.12 / [#241](https://github.com/HeShen-1/braid/issues/241) 裁决。
+内置工具沙箱、工具包签名、db_query、双向 MCP、审计哈希链及会签也已有实现；
+是否可用于某个部署，仍取决于对应配置与模板接线，不能从能力清单推断默认全开。
 
 ## 2. 快速上手
 
@@ -90,7 +104,7 @@ trace 全链,需 LLM 端点)或 **dev 栈**(§2.2,标准端口起基础设施、
 
 ### 2.1 一键部署 —— prod 栈(生产交付形态)
 
-前置:Docker(compose 插件)。业务侧需要一个 OpenAI 兼容 LLM 端点(密钥仅经
+前置:Docker(compose 插件)、Bash、openssl。业务侧需要一个 OpenAI 兼容 LLM 端点(密钥仅经
 env 注入,不进代码/日志/审计)。
 
 ```bash
@@ -99,31 +113,36 @@ deploy/prod-up.sh
 
 脚本职责(幂等,重跑安全):
 
-1. 播种 `deploy/prod.env`(git-ignored,与 dev 的 `deploy/.env` 物理分离,
-   root 密码互不波及):`MYSQL_ROOT_PASSWORD`(git 占位值 `braid_dev_root`
-   命中即轮换)、四组件 DB 密码、JWT 密钥缺失即 `openssl rand` 生成;
-   已有值一律不覆写;
-2. LLM 三键(`BRAID_LLM_BASE_URL/API_KEY/PRICE_TABLE`)从 `deploy/.env`
-   继承,继承不到则回显待补退出(worker 启动即败项,脚本替不了);
+1. 播种 `deploy/prod.env`(git-ignored，与 dev 的 `deploy/.env` 分开保存)。
+   密钥优先级 = prod 已有值 → dev 已有值 → 随机生成，只补缺值；
+   既有 MySQL 卷却找不到原 root 密码时停止，不能代拟。`braid_dev_root`
+   占位值仅在无既有卷时轮换，存量卷改密按升级手册处理；
+2. LLM 三键(`BRAID_LLM_BASE_URL/API_KEY/PRICE_TABLE`)同样先取 prod，
+   缺项再从 `deploy/.env` 继承；仍缺则提示补值退出，不生成业务密钥；
 3. `compose build`(根 Dockerfile 多阶段,四二进制一镜像 `braid:prod`)→
    `up -d`;
 4. 等 reaper `audit-ready` 健康闸(T20.7 安装口径:janitor 首刷补当日分区
    过闸,api/worker 才放行;超时 300s 报错指路 `compose ps`)。
 
+脚本健康闸证明审计分区水位就绪；还需核对四组件在运行、API `/healthz`
+和实际登录，不能据此推断业务或真实模型旅程已通过。
+
 栈形态:`braid-prod-{api,worker,relay,reaper}` + mysql + redis-queue 六常驻
 (+ migrate / grants 两个 one-shot,迁移完成后退场);组件 DB 账号按
 [deploy/README.md §5](deploy/README.md) 矩阵最小授权。**零宿主端口**:API 与
 Web 面(`/workflows/` 控制台、`/executions/` 执行面、`/approvals/` 审批台)经反代
-指向 compose 内网 `api:8081`;**界面入口 = 根路径 `/`(重定向 `/workflows/`),
+指向 compose 内网 `api:8081`。反代需接入该 Compose 网络，完整入口清单与
+`/metrics`、`/healthz` 内网边界见 [RUNBOOK §4](deploy/RUNBOOK.md#4-反代与控制台入口)。
+**界面入口 = 根路径 `/`(重定向 `/workflows/`),
 旧审批台/画布前缀已随路由硬切下线(404,无重定向)**(D-2026-10-09-ui-console
 决策 6);运维面见
 [deploy/RUNBOOK.md](deploy/RUNBOOK.md),升级/改密/dirty 恢复见
 [deploy/UPGRADE.md](deploy/UPGRADE.md)。停栈 =
-`docker compose -f deploy/prod.docker-compose.yml down`(加 `-v` 连卷清场);
+`docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml down`(加 `-v` 连卷清场);
 镜像离线导出(air-gap)见 §2.4。端到端示例 DSL 与走链文档见
 [docs/examples/](docs/examples/)(引擎级 e2e 测试同源,CI 真跑)。
 
-**栈起好 ≠ 能登录**:prod compose 零种子账号(迁移零 INSERT),首个用户
+**栈起好 ≠ 能登录**:prod compose 不创建登录账号(迁移只播种平台租户)，首个用户
 经镜像内 CLI 建号——一分钟,可照抄命令见
 [deploy/README.md §5.1](deploy/README.md)。
 
@@ -133,7 +152,7 @@ Web 面(`/workflows/` 控制台、`/executions/` 执行面、`/approvals/` 审�
 DeepSeek 或本地 vLLM)。
 
 ```bash
-# ① 配置(全部 env 旋钮与逐键注释以 deploy/.env.example 为单源,此处只列必填)
+# ① 配置(env 键语义与逐键注释见 deploy/.env.example；模板透传边界见 deploy/README.md)
 cp deploy/.env.example deploy/.env
 ```
 
@@ -184,6 +203,7 @@ until docker exec braid-dev-mysql mysqladmin ping -uroot -pbraid_dev_root --sile
 #    PATH="$PATH:$(go env GOPATH)/bin";DSN 口令按 .env 的
 #    MYSQL_ROOT_PASSWORD 默认占位写死,改过口令则同步改)
 go install -tags 'mysql' github.com/golang-migrate/migrate/v4/cmd/migrate@v4.20.1
+# 此为手动 dev CLI/Go 依赖版本；生产 Compose/Helm 的迁移镜像仍钉 v4.18.2。
 migrate -path internal/db/migrations \
   -database "mysql://root:braid_dev_root@tcp(127.0.0.1:3306)/braid?loc=UTC&parseTime=true&multiStatements=true&time_zone=%27%2B00%3A00%27" up
 # 重复执行是 no-op;dirty 恢复 runbook 见 docs/ROADMAP-P0.md T7.4(P0 归档)
@@ -194,8 +214,8 @@ migrate -path internal/db/migrations \
 #    幂等版(口令走 BRAID_SEED_*_PASSWORD,dev 默认同占位值)。
 #    凭证纪律:口令只经 BRAID_CLI_PASSWORD
 #    env 注入,绝不写进命令行参数(shell history / ps 可见)——真实口令
-#    交互输入用 read -s(bash/zsh 通用:read -s pw;回车后 export
-#    BRAID_CLI_PASSWORD=$pw && unset pw)。下面两行 env 前缀明文写口令,
+#    交互输入在 Bash 中用 read -rs pw;回车后 export
+#    BRAID_CLI_PASSWORD=$pw && unset pw。下面两行 env 前缀明文写口令,
 #    仅因 dev 占位口令非机密;生产/真实口令一律走 read -s 形态。
 #    重跑报 "username already exists"(auth: conflict)= 已建过,属预期
 #    ——彻底重置用 docker compose -f deploy/dev.docker-compose.yml down -v
@@ -344,7 +364,7 @@ skip,CI 侧以 `BRAID_TEST_REQUIRE_STACK=1` 升级为硬失败防假绿。任务
 |------|------|------|
 | 生产一键部署 | `deploy/prod-up.sh`(§2.1) | Docker + LLM 键 |
 | 全量测试 | `go test ./...` | 集成面 = CI services 真跑;本地无栈自动 skip(`BRAID_TEST_MYSQL_DSN` / `BRAID_TEST_REDIS_ADDR` 可指自备栈) |
-| 静态检查三件套 | `go vet ./... && golangci-lint run` | golangci-lint |
+| 静态检查 | `go vet ./... && golangci-lint run` | golangci-lint；与全量测试合为仓库三件套 |
 | 沙箱 e2e(真 docker 全链路,镜像测试内自建) | `go test ./internal/tools/ -run TestSandboxE2E` | Docker |
 | 浏览器 e2e(回滚-重跑旅程 + SPA 回退) | `deploy/e2e-up.sh` → `BRAID_E2E_BASE_URL=http://127.0.0.1:18081 npm --prefix web/canvas run test:e2e` → `deploy/e2e-down.sh` | Docker;首次 `npx --prefix web/canvas playwright install chromium` |
 | 多副本故障演练(五臂注入) | `BRAID_TEST_REQUIRE_DRILL=1 go test ./internal/drill/ -run TestMultiReplicaDrill` | Docker(显式 opt-in,不进 CI 常规回归) |
@@ -352,7 +372,7 @@ skip,CI 侧以 `BRAID_TEST_REQUIRE_STACK=1` 升级为硬失败防假绿。任务
 | 前端测试 / 构建 | `npm --prefix web/canvas test` / `npm --prefix web/canvas run build` | Node(首次 `npm --prefix web/canvas ci`) |
 
 > 注:git worktree 并行开发时,集成类命令须显式带 `BRAID_TEST_REDIS_DB=<槽位>`
-> 与 schema 后缀(自动拼 worktree 名),缺省落槽位 0 与主仓互踩;主仓裸跑无需。
+> (schema 后缀由 worktree 路径自动推导，无需共同手设)，缺省落槽位 0 与主仓互踩;主仓裸跑无需。
 > 改前端源码后必须 `npm --prefix web/canvas run build` 重建 dist 并同 commit 提交,
 > 否则 CI web 作业漂移门红。
 
@@ -483,9 +503,10 @@ go test ./internal/reaper -run 'FlushKillMidDrain' -v -count=1
 | [docs/CAPACITY.md](docs/CAPACITY.md) | 压测基线与容量模型(§3 性能章数字真源;复跑口径其 §2) |
 | [docs/examples/](docs/examples/) | 端到端示例:DSL、样例输入、走链文档、审计事件序表 |
 | [deploy/README.md](deploy/README.md) | 部署配额与容量:连接池公式、Redis 契约、保留期、账号授权矩阵 |
-| [deploy/.env.example](deploy/.env.example) | env 旋钮单源(逐键注释) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 路线图(P3 活文档,M18-M20) |
+| [deploy/.env.example](deploy/.env.example) | env 键语义索引(逐键注释；生产实际透传键以 Compose/Helm 模板为准) |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 任务定义与依赖真源；当前 P4 M21/M22/M23，执行状态查 [GitHub issues](https://github.com/HeShen-1/braid/issues) |
 | [docs/ROADMAP-P2.md](docs/ROADMAP-P2.md) | P2 交付归档(M15-M17 + P2-DELIVERY) |
 | [docs/ROADMAP-P1.md](docs/ROADMAP-P1.md) | P1 交付归档(18 任务注记 + P1-DELIVERY) |
 | [docs/ROADMAP-P0.md](docs/ROADMAP-P0.md) | P0 交付归档(38 任务全量注记) |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 全部实现级决策条目(D-<date>-<slug>) |
+| [docs/audits/](docs/audits/) | 复核与分层验证证据；历史交付原始计数保留，当前验收不能由历史勾选推定 |

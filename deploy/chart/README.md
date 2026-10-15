@@ -46,7 +46,11 @@ migrate/grants Job 的 wait-mysql initContainer 等 mysql 就绪。api/worker
 hook 先跑迁移与授权(幂等),**再**应用新资源——迁移执行时旧 Deployment
 仍跑旧二进制,即 UPGRADE.md §2 的 N-1 混跑窗(schema > binary 仅 warn):
 迁移只增量、破坏性迁移须两阶段、升级前备份(§1 第 2 步)的维护纪律在
-chart 面同样适用。**dirty 恢复**(UPGRADE.md §4 的 chart 形态;Job 模板
+chart 面同样适用。迁移文件当前为 0015，工具镜像钉
+`migrate/migrate:v4.18.2`，与 Go/dev CLI 的 v4.20.1 区分；0015 混跑窗
+不能承诺旧副本具备 fencing，换代边界见 UPGRADE.md §2。
+**dirty 恢复**(先按 UPGRADE.md §4 停组件、备份并核对该版本对象；
+`force N` 只清版本标记，不修复 DDL。以下为 chart 参数形态；Job 模板
 创建后不可变,`kubectl edit` 路不通):
 
 ```sh
@@ -142,13 +146,19 @@ worker 以 uid 65532 跑,标准节点的 socket 属 root:docker——必须把
 `secrets.oidcClientSecret` 为渲染期 required(缺即 helm 失败),claim 有
 缺省;discovery 启动期拉取(issuer 不可达 = 进程启动失败)。
 
+OIDC 后端已实现，回调响应为 token JSON；当前控制台尚无 SSO 按钮或
+会话接入，不把启用该 values 组写成 Web SSO 已打通。LDAP bind 与钉钉
+IM 后端也已实现，但当前 chart 没有对应 values/env 接线；需要使用时
+先明确部署接线，键的语义仍见 `.env.example`，Web SSO 裁决归 T23.12。
+
 ## 已知边界(登记,非缺口)
 
 1. **副本 × 雪花(已解除,T15.2)**:节点号经 MySQL 租约表仲裁
    (`snowflake_node_lease`,迁移 0012),三组件模板 `BRAID_*_
-   SNOWFLAKE_NODE=auto`——副本 >1 零人工节点号分配。剩余边界:worker
-   副本 >1 仍受沙箱清扫互杀挡(T15.3,多 worker 同网互杀),解除前
-   values 保持 1;relay 无生成器,扩副本语义最简。**首次升级到本
+   SNOWFLAKE_NODE=auto`——副本 >1 零人工节点号分配。沙箱清扫互杀已由
+   T15.3 的 owner 隔离、出网端口冲突已由 T15.4 的每 worker 独立网络
+   解除；默认副本仍为 1，扩容前按部署说明 §11 核对连接容量、owner
+   与清理边界。relay 无生成器。**首次升级到本
    chart 版段**的一次性排空条款见 `deploy/UPGRADE.md §2`(旧静态号
    pod 与 auto 副本共存窗撞号)。
 2. **首装混跑窗**:hook 相位 post-install 下,组件先于 migrate/grants
@@ -171,8 +181,10 @@ worker 以 uid 65532 跑,标准节点的 socket 属 root:docker——必须把
 6. **rollback 不跑 hook**:`helm rollback` 不执行 pre-upgrade/pre-install
    hook,迁移不随回滚倒退(schema 恒前向,回滚后 = §2 warn 窗;下次
    upgrade 幂等补跑)。
-7. **组件无容器级探针** = compose 同口径(存活面 = /healthz + metrics 由
-   外部监控探,deploy/README.md §6);preflight 失败 → 容器退出 →
+7. **组件无 liveness/readinessProbe**：存活面 = /healthz + metrics 由
+   外部监控探(deploy/README.md §6)；api/worker 有 audit-ready
+   initContainer。Compose 另有 reaper 的 audit-ready healthcheck，
+   属安装水位闸；两种模板不是逐探针相同。preflight 失败 → 容器退出 →
    CrashLoopBackOff 响亮可见。
 8. **metrics 不建 Service**:监控栈由运维侧另接(§6 同口径;经
    `kubectl port-forward` 或自建 Service/ServiceMonitor)。

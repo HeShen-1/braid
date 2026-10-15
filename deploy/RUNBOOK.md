@@ -3,6 +3,10 @@
 > 稳态运维原语;版本升级流程见 deploy/UPGRADE.md,配额与拓扑契约见
 > deploy/README.md。只收「交付面之外、运维显式动作」;随任务按需增长。
 
+生产 Compose 手工命令从仓库根执行，统一带
+`--env-file deploy/prod.env -f deploy/prod.docker-compose.yml`，与
+prod-up.sh 读取同一文件；不要混用 dev 的 `deploy/.env`。
+
 ## 1. 沙箱孤儿容器与泄漏 egress 网(T15.3/T15.4,D-t151 决策 5)
 
 worker 沙箱容器与 egress 网都是 docker daemon 持久对象,worker 进程退场
@@ -285,10 +289,10 @@ audit INSERTs would all fail (MySQL 1526)`;或 Prometheus
 
 ```sh
 # ① 正路:起 reaper(janitor 首 tick 即补当日分区并顶到 +8)
-docker compose -f deploy/prod.docker-compose.yml up -d reaper
+docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml up -d reaper
 #    reaper 容器在跑但 unhealthy(进程残死/janitor 不收敛)时,up -d 是
 #    no-op——改用 restart(重启即重跑 janitor 首轮):
-#    docker compose -f deploy/prod.docker-compose.yml restart reaper
+#    docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml restart reaper
 # ② 应急(无 reaper 可起时):手工补一条当日分区(与 janitor 输出同构)
 #    错误消息里已带可直接执行的 ALTER 语句,照抄执行即可。
 ```
@@ -305,3 +309,38 @@ internal/db/sqltest/sqltest.go)。绕过口径(手起进程、单服务
 **p_min 告警**(独立判据):exec_date < 2026-01-01 的行落 p_min 兜底
 分区——非零即写方时钟漂移或异常回填,核各写方宿主时钟与 DB 时钟偏差;
 计数不自愈(append-only),核因后归档处置。
+
+## 4. 反代与控制台入口
+
+生产 Compose 不发布宿主端口，也不自带反代。先启动交付栈，再让承载
+HTTPS 入口的反代容器接入该项目网络；默认项目名为 `braid-prod`，
+网络为 `braid-prod_default`，同网 upstream 使用 `http://api:8081`。
+已有反代容器可由部署者执行 `docker network connect braid-prod_default <反代容器>`；
+自定义项目名时先用 `docker network ls --filter label=com.docker.compose.project=<项目名>`
+确认目标网络。宿主反代不能直接解析 Compose 服务名，不能把
+`api:8081` 当作宿主监听地址；这类部署需自行提供明确的内网接入。
+Helm 默认也只提供 api ClusterIP Service，Ingress/HTTPS 由部署者另接。
+
+反代转发时保留原始路径及查询参数，不剥掉 `/api/v1` 或 SPA 前缀：
+
+| 路径 | 入口规则 |
+| --- | --- |
+| `/api/v1/*` | 转发至 api，保留 Authorization 与 JSON 请求体；OIDC 启用时同前缀下两条认证路由也在此 |
+| `/`、`/login` | 返回同一 SPA 入口；服务端 HTTP 200，浏览器再按登录状态导航 |
+| `/workflows`、`/executions`、`/approvals` 及各自 `/*` | 精确路径和深链都转发，刷新不能由反代误判成静态文件 404 |
+| `/assets/*` | 转发内嵌的 JS/CSS/字体等资产 |
+| `/mcp` | 使用 MCP server 时按需转发；REST/Web 登录不依赖此入口 |
+| `/metrics`、`/healthz` | 留在内网，不经公开入口暴露 |
+| `/ui`、`/ui/*` | 旧路径已退役，保持 404，不做全路径 SPA 回退或旧路径重定向 |
+
+反代应设置可信的 Host / X-Forwarded-Proto / X-Forwarded-For，并在
+`deploy/prod.env` 的 `BRAID_API_TRUSTED_PROXIES` 精确列出反代地址/CIDR，
+重建 api 使其生效；优先 `/32` 等最窄范围，勿信任全部来源。
+否则客户端会折叠到代理地址的同一登录限流桶。实际 HTTPS 根入口也用于
+`BRAID_APPROVAL_BASE_URL`；OIDC、钉钉等额外能力还须先核对模板接线，
+不能仅把键填进 env 文件就视为已经启用。
+
+接好后按 [部署说明 §5.1](README.md#51-首个登录账号prod-栈建号审计-f02)
+创建首个登录账号，浏览器从根入口登录，核对三块工作区与深链刷新。
+再检查旧 `/ui` 路径确为 404，公开 `/metrics`、`/healthz` 被反代拒绝；
+内网 API 健康单独检查。只有这些路径实际经过反代时，才能记作反代实测。

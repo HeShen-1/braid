@@ -10,19 +10,27 @@
   仓库:四入口二进制(Dockerfile)+ 迁移文件(`internal/db/migrations`)。
   二进制内嵌同套迁移(`internal/db` embed),`preflight.CheckSchemaVersion`
   在组件启动时比对两侧,版本不一致拒启或 warn(见 §2)。
-- 生产迁移走 **golang-migrate CLI**(短连接,不走进程池——`deploy/README.md
-  §1` 预留口径);braid 进程自身从不执行迁移。
+- 生产迁移由独立 **golang-migrate CLI** 执行(短连接,不走进程池——
+  `deploy/README.md §1` 预留口径)。Compose 与 Helm 当前都钉
+  `migrate/migrate:v4.18.2`；Go 依赖及 README 的手动 dev CLI 为
+  v4.20.1，两者不是同一个安装入口，不据此擅改部署模板版本。
+  常驻四组件不执行迁移；dev `braid seed` 则调用 `internal/db.Migrate`
+  跑内嵌迁移。迁移版本号 0015 与工具版本号互相独立。
+- 下文 Compose 命令均从仓库根执行并显式指定 `deploy/prod.env`，与
+  prod-up.sh 同源；该文件应保留当前数据卷的 root/组件账号口令。
+  shell 已导出的同名变量优先于 env-file，勿带入其他栈的旧值。
 
 ## 1. 标准升级序
 
 单副本、允许短停(P0 形态;无停机窗的滚动序见 §2):
 
 ```
-1. 停组件:docker compose -f deploy/prod.docker-compose.yml stop api worker relay reaper
+1. 停组件:docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml stop api worker relay reaper
 2. 备份:数据卷快照或 mysqldump 全库(审计铁律:audit_log 只增,备份含全库)
 3. 迁移:golang-migrate up(命令见下)
-4. 起组件:docker compose -f deploy/prod.docker-compose.yml up -d
-5. 验证:api /healthz 200(docker exec braid-prod-api wget -qO-
+4. 授权:docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml run --rm grants
+5. 起组件:docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml up -d
+6. 验证:api /healthz 200(docker exec braid-prod-api wget -qO-
    http://127.0.0.1:8081/healthz);四组件启动日志无 preflight 红;指标面正常
 ```
 
@@ -36,7 +44,7 @@ preflight 对水位不覆盖当日硬拒,reaper 健康即水位就绪,`up -d` �
 `depends_on: service_healthy` 保证 janitor 首刷先行)。存活语义不变:
 healthcheck 失败不杀 reaper 容器,只挡依赖它的 api/worker 启动。
 
-**recreate 孤儿(T15.3)**:第 4 步 `up -d` 对变更配置的服务做 stop →
+**recreate 孤儿(T15.3)**:第 5 步 `up -d` 对变更配置的服务做 stop →
 recreate。交付 prod compose 的 worker 已钉 `hostname`(owner 身份跨
 recreate 稳定),新实例启动清扫按 owner 自收前身残留;自管部署若沿用
 compose 缺省 hostname(容器短 ID),recreate 必换身份,前身在飞沙箱容器
@@ -50,10 +58,10 @@ compose 缺省 hostname(容器短 ID),recreate 必换身份,前身在飞沙箱�
 执行单文件多语句迁移的前提,缺它 0001 直接红):
 
 ```sh
-docker compose -f deploy/prod.docker-compose.yml run --rm migrate   # 默认 command ["up"]
+docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml run --rm migrate   # 默认 command ["up"]
 # 等价的手工形态:
 migrate -path internal/db/migrations \
-  -database "mysql://root:<pwd>@tcp(<host>:3306)/braid?multiStatements=true" up
+  -database "mysql://root:<pwd>@tcp(<host>:3306)/braid?loc=UTC&parseTime=true&multiStatements=true&time_zone=%27%2B00%3A00%27" up
 ```
 
 compose 的 `migrate` one-shot 服务已参数化(entrypoint 透传 command):
@@ -81,7 +89,7 @@ compose 的 `migrate` one-shot 服务已参数化(entrypoint 透传 command):
 **reaper 先起的口径依据(T20.7)**:水位是 **DB 状态**而非 reaper 进程
 状态——janitor 每 tick 顶到 today+8,栈活着时滚动重启安全(水位远未
 衰减);唯一例外 = reaper 停摆 ≥8 天后水位跌破当日,此时任何重启前先
-手工判定:`docker compose -f deploy/prod.docker-compose.yml run --rm
+手工判定:`docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml run --rm
 --entrypoint /usr/local/bin/braid reaper audit-ready`(或起 reaper 等其
 自愈),过闸再动 api/worker。水位衰减有预警:`AuditPartitionWatermarkLow`
 告警(余量 <3 天,deploy/prometheus/alerts.yml)。
@@ -89,6 +97,12 @@ compose 的 `migrate` one-shot 服务已参数化(entrypoint 透传 command):
 **维护纪律**:未来迁移若破坏该不变量(改既有列语义、重命名、删对象),必须
 两阶段(先增后删、间隔一个发布窗),并在 `docs/DECISIONS.md` 登记决策——
 单阶段破坏性迁移会让窗口内旧二进制行为未定义。
+
+**0015 fencing 升级边界(T20.1)**：加列本身兼容旧 SQL，但旧二进制不检查
+fence，混跑时不能承诺新旧实例互相隔离。需要 fencing 保证时，按 §1
+停齐旧组件、迁移并换齐新二进制后再恢复入口；schema 版本检查只 warn
+不能证明这项运行语义已成立。当前版本到新版的升级/恢复实测仍须独立
+留证，§6 的早期 0004→0005 演练不覆盖后续迁移。
 
 **T15.2 首次升级例外(一次性;0012 租约表落地窗)**:上述滚动序在
 「旧二进制 = 静态节点号、新二进制 = 租约 auto」配对上产生**确定性撞号
@@ -114,17 +128,19 @@ auto 线性取号看不见它们;k8s RollingUpdate 新旧 pod 共存窗内,新�
 - **已有数据卷的升级**(交付栈从旧版升级、或自管部署):
 
   ```sh
-  docker compose -f deploy/prod.docker-compose.yml run --rm grants
+  docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml run --rm grants
   # 脱离 compose 的自管部署:sh deploy/grants.sh(需在环境里提供
   # MYSQL_ROOT_PASSWORD / MYSQL_HOST 及四账号密码;语句幂等)
   ```
 
   语句幂等(`CREATE USER IF NOT EXISTS` + `GRANT` 重跑 no-op);版本升级
   带来新写面时(如 T7.4 的 login_audit;T15.2 的 snowflake_node_lease
-  ——三账号 INSERT/UPDATE/SELECT + 优雅释放 DELETE,D-t151 决策 2),
+  ——三账号 INSERT/UPDATE/SELECT + 优雅释放 DELETE,D-t151 决策 2；
+  T23.2 的 worker INSERT node_execution、reaper INSERT audit_pending)，
   重新执行即完成增量扩权。
 - **改密**:`ALTER USER 'braid_api'@'%' IDENTIFIED BY '<new>';` 后同步改
-  `deploy/.env` 并滚动重启对应组件(IF NOT EXISTS 形态建账号不重设密码)。
+  `deploy/prod.env` 并重建对应组件使新 env 生效(`up -d --force-recreate <组件>`，
+  同样带 `--env-file`；仅 `restart` 不会更新容器 env，IF NOT EXISTS 建号也不重设密码)。
   密码字符集限 `[A-Za-z0-9._~@+%-]`(grants.sh 的 SQL/shell 字面量安全闸)。
 
 **验证**:组件启动即自检——`preflight.CheckAuditAppendOnly` 对授权违约
@@ -142,16 +158,20 @@ auto 线性取号看不见它们;k8s RollingUpdate 新旧 pod 共存窗内,新�
   `up` 从 **N+1** 继续,不重放 N 本身。
 - `migrate force N-1` 后 `up`:重放 N 本身。
 
-**重放安全性现状核验**(2026-09-27,本手册交付时点):
+**重放安全性现状核验**(2026-10-15，按当前 0001–0015 文件)：
 
 | 迁移 | 对象 | 重放安全? |
 |------|------|-----------|
-| 0001 / 0002 / 0004 / 0005 | 全部 `CREATE TABLE IF NOT EXISTS`(down 全 `DROP IF EXISTS`) | 是,重放 no-op |
-| 0003 | `approval_decision` 建表 | 是(IF NOT EXISTS) |
-| 0003 | `ALTER TABLE node_execution ADD UNIQUE KEY uk_node_id_exec` | **否**:MySQL 8 无 `ADD UNIQUE KEY IF NOT EXISTS` 语法,重放报 1061(duplicate key name) |
+| 0001 / 0002 / 0004 / 0005 / 0010 / 0012 | `CREATE TABLE IF NOT EXISTS` | 已完成对象可 no-op；仍须核对表结构完整，不会自动补齐残缺表 |
+| 0003 | 建 approval_decision + ADD UNIQUE KEY | **否**：已存在键重复添加会报 1061 |
+| 0006 / 0007 / 0008 / 0009 | ADD/MODIFY 列、索引或约束；0007 另有数据回填，0008 另建 chain_heads | **否**：部分对象已应用时不能整文件盲重放 |
+| 0011 | tenants 建表与幂等种子 + 五表归属列、索引替换、外键 | **否**：建表/种子可重放，后续多条 ALTER 须逐条核对 |
+| 0013 | login_audit 枚举、列与约束 | **否**：已加列/约束不可再次 ADD |
+| 0014 | method 枚举 MODIFY 为 oidc/password/ldap | 同一定义可重放；必须保留已有值与 NULL/默认值口径 |
+| 0015 | snowflake_node_lease ADD fencing_epoch | **否**：已存在列再次 ADD 会失败 |
 
-即「迁移对象全 IF NOT EXISTS、重跑安全」对本仓**不完全成立**:0003 的
-ALTER 是唯一例外。恢复分两臂:
+`force` 只改版本记录，不修 DDL 或数据。先停业务组件、备份并逐条对照
+该版本 `up.sql` 的实际结果(列/索引/约束及回填)，恢复分两臂：
 
 **臂 A:版本 N 的对象已全部在场**(中断发生在版本号落库前一步)——钉版本
 跳过重放:
@@ -162,19 +182,20 @@ ALTER 是唯一例外。恢复分两臂:
 #   SELECT COUNT(*) FROM information_schema.tables
 #    WHERE table_schema=DATABASE() AND table_name='approval_decision';
 # 交付栈(migrate one-shot 参数化,command 覆盖即 force 形态):
-docker compose -f deploy/prod.docker-compose.yml run --rm migrate force N
-docker compose -f deploy/prod.docker-compose.yml run --rm migrate   # = up
+docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml run --rm migrate force N
+docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml run --rm migrate   # = up
 # 自管部署的手工等价:
 migrate -path internal/db/migrations \
-  -database "mysql://root:<pwd>@tcp(<host>:3306)/braid?multiStatements=true" force N
+  -database "mysql://root:<pwd>@tcp(<host>:3306)/braid?loc=UTC&parseTime=true&multiStatements=true&time_zone=%27%2B00%3A00%27" force N
 ```
 
 **臂 B:版本 N 部分应用(有对象缺失)**:
 
-- 缺失对象少:从 N 的 `up.sql` 摘出缺失的那几条 DDL 手工执行,然后走臂 A。
-- 或 `force N-1` + `up` 重放 N:IF NOT EXISTS 对象 no-op 安全;但含 ALTER 的
-  迁移(现仅 0003)重放前先核对 ALTER 对象在场——在场则摘除该条再重放,
-  否则 1061 循环。
+- 按 N 的 `up.sql` 顺序完成尚未应用的语句，逐条确认已应用部分不重复，
+  再走臂 A；不要修改或删减仓内正式迁移文件来绕过重复对象。
+- 只有确认 N 整份文件可安全重放(或尚未应用任何语句)时，才选
+  `force N-1` + `up`。含多条 ALTER/数据回填的版本按上表逐项检查；
+  不因某条 CREATE 带 IF NOT EXISTS 就断言整份迁移幂等。
 
 **验证**:`SELECT version, dirty FROM schema_migrations;` → `(最新版, 0)`;
 起组件,preflight 全绿。
@@ -213,6 +234,9 @@ UPDATE outbox SET status='PENDING', available_at=NOW(3)
 Asynqmon 确认行转 DISPATCHED。
 
 ## 6. 升级演练记录(2026-09-27)
+
+本节保留 T7.4 原始演练记录与结果；它只证明 0004→0005，不能代替
+当前 0015 或以后版本的升级、dirty 恢复或正式业务旅程验收。
 
 对上一版本数据卷完成一次完整升级演练(N-1 兼容窗口实证,验收臂)。
 
