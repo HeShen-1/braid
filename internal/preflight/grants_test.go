@@ -340,13 +340,17 @@ func applyColumnScoped(t *testing.T, admin *sql.DB, schema string, accounts []sn
 // 「应用出的授权面确含组件特征写面」;权限串仅入失败消息,SHOW GRANTS
 // 的权限渲染序不保证)。
 var snapshotFaceAnchors = map[string][]struct{ table, privs string }{
-	"braid_api":    {{"snowflake_node_lease", "SELECT,INSERT,UPDATE,DELETE"}},
-	"braid_worker": {{"snowflake_node_lease", "SELECT,INSERT,UPDATE,DELETE"}},
-	"braid_relay":  {{"outbox", "SELECT,UPDATE"}},
+	"braid_api": {{"snowflake_node_lease", "SELECT,INSERT,UPDATE,DELETE"}},
+	"braid_worker": {
+		{"snowflake_node_lease", "SELECT,INSERT,UPDATE,DELETE"},
+		{"node_execution", "SELECT,INSERT,UPDATE"},
+	},
+	"braid_relay": {{"outbox", "SELECT,UPDATE"}},
 	"braid_reaper": {
 		{"outbox", "SELECT,INSERT,DELETE"},
 		{"audit_log", "SELECT,INSERT,ALTER,DROP"},
 		{"node_attempt", "SELECT,UPDATE,DELETE"},
+		{"audit_pending", "SELECT,INSERT,DELETE"},
 		{"snowflake_node_lease", "SELECT,INSERT,UPDATE,DELETE"},
 	},
 }
@@ -476,6 +480,23 @@ func TestComponentGrantsVerdict(t *testing.T) {
 			held: map[string]map[string]bool{"snowflake_node_lease": lease},
 		},
 		{
+			name: "worker green",
+			comp: ComponentWorker,
+			held: map[string]map[string]bool{
+				"snowflake_node_lease": lease,
+				"node_execution":       {"SELECT": true, "INSERT": true, "UPDATE": true},
+			},
+		},
+		{
+			name: "worker missing dynamic instance insert",
+			comp: ComponentWorker,
+			held: map[string]map[string]bool{
+				"snowflake_node_lease": lease,
+				"node_execution":       {"SELECT": true, "UPDATE": true},
+			},
+			wantSub: []string{"INSERT on `sch`.`node_execution`", "GRANT INSERT ON `sch`.`node_execution`", "dynamic foreach"},
+		},
+		{
 			name:    "api missing lease delete",
 			comp:    ComponentAPI,
 			held:    map[string]map[string]bool{"snowflake_node_lease": {"SELECT": true, "INSERT": true, "UPDATE": true}},
@@ -487,6 +508,7 @@ func TestComponentGrantsVerdict(t *testing.T) {
 			held: map[string]map[string]bool{
 				"outbox":               {"SELECT": true, "INSERT": true, "DELETE": true},
 				"audit_log":            {"SELECT": true, "INSERT": true, "ALTER": true, "DROP": true},
+				"audit_pending":        {"SELECT": true, "INSERT": true, "DELETE": true},
 				"node_attempt":         {"SELECT": true, "UPDATE": true, "DELETE": true},
 				"snowflake_node_lease": lease,
 			},
@@ -499,6 +521,7 @@ func TestComponentGrantsVerdict(t *testing.T) {
 			held: map[string]map[string]bool{
 				"outbox":               {"SELECT": true, "INSERT": true, "DELETE": true},
 				"audit_log":            {"SELECT": true, "INSERT": true},
+				"audit_pending":        {"SELECT": true, "INSERT": true, "DELETE": true},
 				"node_attempt":         {"SELECT": true, "UPDATE": true, "DELETE": true},
 				"snowflake_node_lease": lease,
 			},
@@ -511,6 +534,7 @@ func TestComponentGrantsVerdict(t *testing.T) {
 			held: map[string]map[string]bool{
 				"outbox":               {"SELECT": true},
 				"audit_log":            {"SELECT": true, "INSERT": true, "ALTER": true, "DROP": true},
+				"audit_pending":        {"SELECT": true, "INSERT": true, "DELETE": true},
 				"node_attempt":         {"SELECT": true, "UPDATE": true, "DELETE": true},
 				"snowflake_node_lease": {"SELECT": true},
 			},
@@ -524,17 +548,30 @@ func TestComponentGrantsVerdict(t *testing.T) {
 			held: map[string]map[string]bool{
 				"outbox":               {"SELECT": true, "INSERT": true, "DELETE": true},
 				"audit_log":            {"SELECT": true, "INSERT": true, "ALTER": true, "DROP": true},
+				"audit_pending":        {"SELECT": true, "INSERT": true, "DELETE": true},
 				"node_attempt":         {"SELECT": true, "UPDATE": true},
 				"snowflake_node_lease": lease,
 			},
 			wantSub: []string{"DELETE on `sch`.`node_attempt`", "GRANT DELETE ON `sch`.`node_attempt`"},
 		},
 		{
+			name: "reaper missing exhausted instance audit insert",
+			comp: ComponentReaper,
+			held: map[string]map[string]bool{
+				"outbox":               {"SELECT": true, "INSERT": true, "DELETE": true},
+				"audit_log":            {"SELECT": true, "INSERT": true, "ALTER": true, "DROP": true},
+				"node_attempt":         {"SELECT": true, "UPDATE": true, "DELETE": true},
+				"audit_pending":        {"SELECT": true, "DELETE": true},
+				"snowflake_node_lease": lease,
+			},
+			wantSub: []string{"INSERT on `sch`.`audit_pending`", "GRANT INSERT ON `sch`.`audit_pending`", "instance exhaustion"},
+		},
+		{
 			// 列级 UPDATE 不满足表级面:held 集只有表级形态,列级面天然不在
 			// 其中(边界注释的判定层锚)。
 			name:    "worker lease partially held",
 			comp:    ComponentWorker,
-			held:    map[string]map[string]bool{"snowflake_node_lease": {"SELECT": true, "UPDATE": true}},
+			held:    map[string]map[string]bool{"snowflake_node_lease": {"SELECT": true, "UPDATE": true}, "node_execution": {"SELECT": true, "INSERT": true, "UPDATE": true}},
 			wantSub: []string{"INSERT, DELETE on `sch`.`snowflake_node_lease`"},
 		},
 		{
@@ -588,6 +625,9 @@ func TestComponentGrantsEnforcement(t *testing.T) {
 		if err := CheckComponentGrants(ctx, limited, comp); err != nil {
 			t.Fatalf("%s green arm: %v", comp, err)
 		}
+		if err := CheckAuditAppendOnly(ctx, limited, comp == ComponentReaper); err != nil {
+			t.Fatalf("%s append-only arm: %v", comp, err)
+		}
 		_ = limited.Close()
 	}
 	// root 绿臂:全局权限(管理平面)满足一切在场断言,dev/test 栈零破坏。
@@ -634,6 +674,16 @@ func TestComponentGrantsEnforcement(t *testing.T) {
 			name: "worker missing lease insert", comp: ComponentWorker, base: "braid_worker",
 			revoke:  "INSERT ON " + schema + ".snowflake_node_lease",
 			wantSub: []string{"INSERT on `" + schema + "`.`snowflake_node_lease`"},
+		},
+		{
+			name: "worker missing dynamic instance insert", comp: ComponentWorker, base: "braid_worker",
+			revoke:  "INSERT ON " + schema + ".node_execution",
+			wantSub: []string{"INSERT on `" + schema + "`.`node_execution`", "dynamic foreach"},
+		},
+		{
+			name: "reaper missing exhausted instance audit insert", comp: ComponentReaper, base: "braid_reaper",
+			revoke:  "INSERT ON " + schema + ".audit_pending",
+			wantSub: []string{"INSERT on `" + schema + "`.`audit_pending`", "instance exhaustion"},
 		},
 	}
 	for _, st := range steps {

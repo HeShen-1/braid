@@ -20,7 +20,9 @@ import (
 	"testing"
 	"time"
 
+	"braid/internal/db/sqltest"
 	"braid/internal/engine"
+	"braid/internal/scheduler"
 )
 
 // seedParallelReap 种一个 parallel 判死现场:definition(parallel DSL,%
@@ -109,7 +111,7 @@ func execStateOf(t *testing.T, d *sql.DB, execID uint64) engine.WorkflowState {
 }
 
 func TestReapParallelInstanceFailFast(t *testing.T) {
-	r, d := newReaper(t, testCfg())
+	r, d := newComponentReaper(t)
 	execID, ctrlID, instIDs := seedParallelReap(t, d, "", 1) // deadIdx=1(实例 2)
 
 	if err := r.RunOnce(context.Background()); err != nil {
@@ -139,7 +141,7 @@ func TestReapParallelInstanceFailFast(t *testing.T) {
 }
 
 func TestReapParallelInstanceWaitAll(t *testing.T) {
-	r, d := newReaper(t, testCfg())
+	r, d := newComponentReaper(t)
 	execID, ctrlID, instIDs := seedParallelReap(t, d, `"on_failure":"wait_all",`, 1)
 
 	// 首轮:实例 2 判死耗尽,实例 1 健康 → 收齐再判:执行必须仍 RUNNING、
@@ -171,4 +173,21 @@ func TestReapParallelInstanceWaitAll(t *testing.T) {
 	if st := execStateOf(t, d, execID); st != engine.WorkflowFailed {
 		t.Fatalf("execution = %s, want FAILED (wait_all 收齐后)", st)
 	}
+}
+
+// T23.2:扫描器及其委托 scheduler 共用真实 reaper 账号,admin 仅服务
+// seedParallelReap/断言/清理,不能替耗尽收口补写 audit_pending。
+func newComponentReaper(t *testing.T) (*Reaper, *sql.DB) {
+	t.Helper()
+	d := sqltest.MustOpenAt(t, reaperSchema)
+	limited := sqltest.MustComponentDB(t, d, "reaper")
+	sched, err := scheduler.New(scheduler.Deps{DB: limited, IDs: mustTestIDs(t), Queue: "reap-test"})
+	if err != nil {
+		t.Fatalf("component scheduler: %v", err)
+	}
+	r, err := New(Deps{DB: limited, Sched: sched, IDs: mustTestIDs(t), Logger: testLogger(t)}, testCfg())
+	if err != nil {
+		t.Fatalf("component reaper: %v", err)
+	}
+	return r, d
 }
