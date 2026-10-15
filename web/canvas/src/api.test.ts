@@ -66,6 +66,14 @@ describe('execution domain client', () => {
     expect(JSON.parse(String(init?.body))).toEqual({ definition_name: 'wf', input: { docs: ['a'] } })
   })
 
+  it('triggerExecution:显式版本随请求传递;省略版本仍保留服务端 latest 语义', async () => {
+    stubFetch(() => ok({ id: '9', definition_version: 3, status: 'PENDING' }, 201))
+    await api.triggerExecution('wf', {}, 'key-pinned', 3)
+    expect(JSON.parse(String(calls[0].init?.body))).toEqual({ definition_name: 'wf', version: 3, input: {} })
+    await api.triggerExecution('wf', {}, 'key-latest')
+    expect(JSON.parse(String(calls[1].init?.body))).toEqual({ definition_name: 'wf', input: {} })
+  })
+
   it('rollbackExecution:POST rollback + node_id 体;resume 无体;quiesce 旗标透传', async () => {
     stubFetch(() => ok({ execution_id: '7', target_node_id: 'gate', rerun_target: true, reset_count: 2, quiesced_count: 0 }, 201))
     await api.rollbackExecution('7', 'gate')

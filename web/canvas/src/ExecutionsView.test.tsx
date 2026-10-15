@@ -19,7 +19,7 @@ function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-function stubRoute(responder: (url: string, init?: RequestInit) => Response) {
+function stubRoute(responder: (url: string, init?: RequestInit) => Response | Promise<Response>) {
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => responder(String(input), init))
   vi.stubGlobal('fetch', fn)
   return fn
@@ -214,7 +214,7 @@ describe('ExecutionsView(执行面)', () => {
         triggered = true
         const headers = init.headers as Record<string, string>
         sawKey = typeof headers['Idempotency-Key'] === 'string' && headers['Idempotency-Key'] !== ''
-        expect(JSON.parse(String(init.body))).toEqual({ definition_name: 'wf', input: { docs: ['a'] } })
+        expect(JSON.parse(String(init.body))).toEqual({ definition_name: 'wf', version: 3, input: { docs: ['a'] } })
         return ok({ id: '8', definition_name: 'wf', definition_version: 3, status: 'PENDING', trigger_type: 'API', triggered_by: 'author' }, 201)
       }
       if (path === '/api/v1/executions') {
@@ -235,6 +235,102 @@ describe('ExecutionsView(执行面)', () => {
     await waitFor(() => expect(onSelect).toHaveBeenCalledWith('8'))
     expect(sawKey).toBe(true)
     expect(await screen.findByTestId(tid.execRow('8'))).toBeInTheDocument()
+  })
+
+  it('列表刷新发现新版本仍保留原选择;只有重新选择才更换触发版本', async () => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    let newest = 3
+    const posted: unknown[] = []
+    stubRoute((url, init) => {
+      const path = pathOf(url)
+      if (path === '/api/v1/definitions') return ok({ items: [published[0], { ...published[0], id: String(newest), version: newest }] })
+      if (path === '/api/v1/executions' && init?.method === 'POST') {
+        posted.push(JSON.parse(String(init.body)))
+        return ok({ id: '8', definition_name: 'wf', definition_version: newest, status: 'PENDING' }, 201)
+      }
+      return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
+    await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
+    newest = 4
+    await user.click(screen.getByRole('button', { name: '刷新执行列表' }))
+    await user.click(screen.getByTestId(TID.triggerDefinition))
+    await screen.findByRole('option', { name: 'wf v4' })
+    expect(screen.getByRole('option', { name: 'wf v3' })).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.getByTestId(TID.triggerDefinition)).toHaveTextContent('wf v3')
+    await user.click(screen.getByTestId(TID.triggerSubmit))
+    await waitFor(() => expect(posted).toEqual([{ definition_name: 'wf', version: 3, input: {} }]))
+    await waitFor(() => expect(screen.getByTestId(TID.triggerSubmit)).toBeEnabled())
+    await chooseOption(user, screen.getByTestId(TID.triggerDefinition), 'wf v4')
+    await user.click(screen.getByTestId(TID.triggerSubmit))
+    await waitFor(() => expect(posted[1]).toEqual({ definition_name: 'wf', version: 4, input: {} }))
+  })
+
+  it.each([
+    [409, 'conflict', '已归档或不可执行'],
+    [404, 'not_found', '已失效或不存在'],
+  ])('所选版本失败 %i %s:明确反馈,不降级重试 latest', async (status, code, message) => {
+    const user = userEvent.setup()
+    const onSelect = vi.fn()
+    const posted: unknown[] = []
+    stubRoute((url, init) => {
+      const path = pathOf(url)
+      if (path === '/api/v1/definitions') return ok({ items: published })
+      if (path === '/api/v1/executions' && init?.method === 'POST') {
+        posted.push(JSON.parse(String(init.body)))
+        return ok({ error: code }, status)
+      }
+      return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
+    await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
+    await user.click(screen.getByTestId(TID.triggerSubmit))
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('wf v3')
+    expect(alert).toHaveTextContent(message)
+    expect(alert).toHaveTextContent(code)
+    expect(alert).toHaveTextContent('重新选择')
+    expect(posted).toEqual([{ definition_name: 'wf', version: 3, input: {} }])
+    expect(onSelect).not.toHaveBeenCalled()
+  })
+
+  it('触发在飞时锁住版本选择,迟到错误仍对应原目标', async () => {
+    const user = userEvent.setup()
+    let rejectTrigger!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => { rejectTrigger = resolve })
+    stubRoute((url, init) => {
+      const path = pathOf(url)
+      if (path === '/api/v1/definitions') return ok({ items: [...published, { ...published[0], id: '2', name: 'other' }] })
+      if (path === '/api/v1/executions' && init?.method === 'POST') return pending
+      return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
+    await user.click(screen.getByTestId(TID.triggerSubmit))
+    expect(screen.getByTestId(TID.triggerDefinition)).toBeDisabled()
+    rejectTrigger(ok({ error: 'conflict' }, 409))
+    expect(await screen.findByRole('alert')).toHaveTextContent('wf v3')
+    await waitFor(() => expect(screen.getByTestId(TID.triggerDefinition)).toBeEnabled())
+    await chooseOption(user, screen.getByTestId(TID.triggerDefinition), 'other v3')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('已发布行缺版本号时阻止触发,不以省略 version 降级', async () => {
+    const user = userEvent.setup()
+    const posted = vi.fn()
+    stubRoute((url, init) => {
+      const path = pathOf(url)
+      if (path === '/api/v1/definitions') return ok({ items: [{ ...published[0], version: null }] })
+      if (path === '/api/v1/executions' && init?.method === 'POST') posted()
+      return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf')
+    expect(screen.getByText('该版本无有效版本号，请刷新后重新选择')).toBeInTheDocument()
+    expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
+    expect(posted).not.toHaveBeenCalled()
   })
 
   it('触发输入非法 JSON:原地报错不发请求', async () => {

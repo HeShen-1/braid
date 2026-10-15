@@ -323,13 +323,14 @@ export const api = {
   getExecution(id: string): Promise<ExecutionDetail> {
     return call('GET', `/api/v1/executions/${id}`)
   },
-  triggerExecution(definitionName: string, input: unknown, idempotencyKey: string): Promise<TriggerAck> {
+  triggerExecution(definitionName: string, input: unknown, idempotencyKey: string, version?: number): Promise<TriggerAck> {
+    // UI 显式钉住所选版本;省略仍由服务端按 name 取最新已发布版本。
     // 幂等键由 UI 每次提交新生成(crypto.randomUUID):双击/重放收敛为
     // 200 原执行回显,而非双执行(服务端 uk_exec_idem 永久窗)。
     return call(
       'POST',
       '/api/v1/executions',
-      JSON.stringify({ definition_name: definitionName, input }),
+      JSON.stringify({ definition_name: definitionName, version, input }),
       { 'Idempotency-Key': idempotencyKey },
     )
   },

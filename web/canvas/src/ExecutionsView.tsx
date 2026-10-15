@@ -52,11 +52,10 @@ export function ExecutionsView({
 }) {
   const [execs, setExecs] = useState<ExecutionSummary[]>([])
   const [defs, setDefs] = useState<DraftSummary[]>([])
-  // 同名多版本:发布保留旧 PUBLISHED 行(store 不去重),于是「按 name 取值」的
-  // 控件会拿到重复值 —— 触发器按 value 找标签只会显示第一版,点第二版像没生效
-  // (对抗审计 M3,原生 select 时代同样如此)。触发本来就走服务端最新版,故这里
-  // 按 name 收敛到最高版本:一个工作流一行,值唯一。
-  const defOptions = useMemo(() => {
+  const [selectedDef, setSelectedDef] = useState<DraftSummary | null>(null)
+  // 初次只列每个工作流的最高已发布版本。选择后保留其快照,列表刷新发现
+  // 新版/归档也不替换执行目标;旧选择保留在选项中,新版须主动重新选择。
+  const latestDefs = useMemo(() => {
     const latest = new Map<string, DraftSummary>()
     for (const d of defs) {
       const seen = latest.get(d.name)
@@ -64,7 +63,9 @@ export function ExecutionsView({
     }
     return [...latest.values()]
   }, [defs])
-  const [defName, setDefName] = useState('')
+  const defOptions = selectedDef !== null && !latestDefs.some((d) => d.id === selectedDef.id)
+    ? [...latestDefs, selectedDef]
+    : latestDefs
   const [inputRaw, setInputRaw] = useState('{}')
   // 两个错误面分开:输入错误就近贴控件,接口错误贴按钮(不互相顶位)。
   const [inputError, setInputError] = useState('')
@@ -128,7 +129,7 @@ export function ExecutionsView({
   }, [])
 
   const trigger = useCallback(async () => {
-    if (defName === '' || busy) return
+    if (selectedDef === null || selectedDef.version === null || busy) return
     let input: unknown
     try {
       input = JSON.parse(inputRaw)
@@ -144,7 +145,7 @@ export function ExecutionsView({
     setInputError('')
     setApiError('')
     try {
-      const ack = await api.triggerExecution(defName, input, freshIdempotencyKey())
+      const ack = await api.triggerExecution(selectedDef.name, input, freshIdempotencyKey(), selectedDef.version)
       await refresh()
       onSelect(ack.id)
     } catch (err) {
@@ -152,11 +153,17 @@ export function ExecutionsView({
         onAuthExpired()
         return
       }
-      setApiError(err instanceof ApiError ? err.code : 'network_error')
+      const target = `${selectedDef.name} v${selectedDef.version}`
+      if (err instanceof ApiError && (err.status === 404 || err.status === 409)) {
+        const reason = err.status === 409 ? '已归档或不可执行' : '已失效或不存在'
+        setApiError(`所选版本 ${target} ${reason}，请刷新后重新选择 (${err.code})`)
+      } else {
+        setApiError(err instanceof ApiError ? err.code : 'network_error')
+      }
     } finally {
       setBusy(false)
     }
-  }, [defName, inputRaw, busy, refresh, onSelect, onAuthExpired])
+  }, [selectedDef, inputRaw, busy, refresh, onSelect, onAuthExpired])
 
   const showFilters = execs.length > 0 || filtered
   const showPager = execs.length > 0 && (total > PAGE_SIZE || offset > 0)
@@ -165,17 +172,25 @@ export function ExecutionsView({
     <div className="exec-view">
       <aside className="exec-rail" aria-label="执行列表与触发">
         <section className="panel" data-testid={TID.triggerPanel}>
-          <PanelHead title="触发执行" sub={defOptions.length > 0 ? `${defOptions.length} 个已发布` : undefined} />
+          <PanelHead title="触发执行" sub={latestDefs.length > 0 ? `${latestDefs.length} 个已发布` : undefined} />
           <div className="panel-body exec-trigger">
             <Select
               label="已发布工作流"
-              value={defName}
+              value={selectedDef?.id ?? ''}
+              disabled={busy}
               data-testid={TID.triggerDefinition}
-              onChange={setDefName}
+              hint={selectedDef === null ? '按所选版本执行；发布新版本不会替换当前选择' : selectedDef.version === null ? '该版本无有效版本号，请刷新后重新选择' : `执行目标：${selectedDef.name} v${selectedDef.version}`}
+              onChange={(id) => {
+                const next = defOptions.find((d) => d.id === id)
+                // 移除先前保留的选项时底层可能发空值通知,不抹去刚选的新目标。
+                if (next === undefined) return
+                setSelectedDef(next)
+                setApiError('')
+              }}
             >
-              <option value="">选择已发布工作流…</option>
+              <option value="" disabled>选择已发布工作流…</option>
               {defOptions.map((d) => (
-                <option key={d.id} value={d.name}>
+                <option key={d.id} value={d.id}>
                   {d.version !== null ? `${d.name} v${d.version}` : d.name}
                 </option>
               ))}
@@ -194,12 +209,12 @@ export function ExecutionsView({
                 variant="primary"
                 icon={Play}
                 data-testid={TID.triggerSubmit}
-                disabled={defName === '' || busy}
+                disabled={selectedDef === null || selectedDef.version === null || busy}
                 onClick={() => void trigger()}
               >
                 触发执行
               </Button>
-              {defName === '' ? <span className="text-xs text-ink-2">先选一个已发布工作流</span> : null}
+              {selectedDef === null ? <span className="text-xs text-ink-2">先选一个已发布工作流</span> : null}
             </div>
             {defs.length === 0 ? (
               <p className="field-hint">尚无已发布工作流 —— 先在工作流面发布一版,再回到这里触发。</p>

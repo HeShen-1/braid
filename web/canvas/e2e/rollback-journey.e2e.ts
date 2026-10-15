@@ -32,7 +32,7 @@ const DOC_FILES = ['a.txt', 'b.txt'].map((f) =>
   path.resolve(process.cwd(), 'e2e/fixtures/files', f),
 )
 
-/** 发布 fixture(每次运行发布新版本;触发走最新)。 */
+/** 发布 fixture(每次运行发布新版本;界面选择该已发布版本再触发)。 */
 async function publishFixture(req: APIRequestContext): Promise<void> {
   const login = await req.post('/api/v1/auth/login', { data: AUTHOR })
   expect(login.ok(), 'author login').toBeTruthy()
@@ -97,8 +97,7 @@ async function approvalDecide(
 async function triggerFromConsole(page: Page): Promise<string> {
   await expect(page.getByTestId(TID.triggerPanel)).toBeVisible()
   // T21.3 决策 3 收敛后 Select 不再是原生控件:两步 = 点触发器 → 点选项。
-  // 选项文案 = `${name} v${version}`,同名多版本都在列(触发按 name 走服务端
-  // 最新版,故取首个匹配即可)。
+  // 选项文案 = `${name} v${version}`,初次仅列已知最高版本;触发请求携带该版本。
   await page.getByTestId(TID.triggerDefinition).click()
   await page.getByRole('option', { name: /^e2e-rollback-journey v/ }).first().click()
   await page.getByTestId(TID.triggerInput).fill(JSON.stringify({ docs: DOC_FILES }))
