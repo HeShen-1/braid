@@ -134,9 +134,10 @@ describe('execution domain client', () => {
 })
 
 describe('definition list paging(T22.2 审计 F03:超 20 条全量可达)', () => {
-  /** mock 契约用真实 page envelope 形状(internal/api handlers gin.H 同款)。 */
-  function envelope(items: unknown[], total = items.length): Response {
-    return ok({ items, page: { limit: 100, offset: 0, total } })
+  /** mock 契约用真实 page envelope 形状(internal/api handlers gin.H 同款:
+   * page 三字段都回显请求值)。 */
+  function envelope(items: unknown[], total = items.length, offset = 0): Response {
+    return ok({ items, page: { limit: 100, offset, total } })
   }
 
   function draft(i: number): DraftSummary {
@@ -155,7 +156,7 @@ describe('definition list paging(T22.2 审计 F03:超 20 条全量可达)', () =
   it('total 超单页:按 envelope 翻到取全', async () => {
     const page1 = Array.from({ length: 100 }, (_, i) => draft(i))
     const page2 = Array.from({ length: 21 }, (_, i) => draft(100 + i))
-    stubFetch((input) => (String(input).endsWith('offset=0') ? envelope(page1, 121) : envelope(page2, 121)))
+    stubFetch((input) => (String(input).endsWith('offset=0') ? envelope(page1, 121, 0) : envelope(page2, 121, 100)))
     const { items: out } = await api.listDrafts()
     expect(out).toHaveLength(121)
     expect(calls.map((c) => String(c.input))).toEqual([
