@@ -4,9 +4,18 @@ T7.1 配置体系交付的配额表。**数字同源声明**:本文全部默认�
 (`internal/db` DefaultPoolConfig / 各包 DefaultConfig / `deploy/prometheus/alerts.yml` /
 `deploy/dev.docker-compose.yml`),代码漂移时本文必须同步修;两处冲突时以代码为准。
 
-env 旋钮全表与逐键注释见同目录 `.env.example`;换装点纪律 = 四入口
-(api/worker/relay/reaper)各自 `ConfigFromEnv` 是唯一 env 解析点,cmd 层
-不直读 `BRAID_*`(T7.1 收编,`internal/db/testenv.go` 测试基建豁免)。
+env 键语义与逐键注释见同目录 `.env.example`。核心入口配置分别经
+api/worker/relay/reaper 的 `ConfigFromEnv` 解析；LLM、通知、tracing、
+工具、回滚容量与企业 OIDC/LDAP 等配置组由各所属包解析，cmd 组合根
+传入 `os.Getenv` 并装配，不把业务配置解析散落为直接读取。
+
+**配置文件与容器透传是两层契约**：dev 本机进程由 shell 加载
+`deploy/.env`；prod-up.sh 自管 `deploy/prod.env`，生产手工命令显式用
+`docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml ...`。
+shell 已导出的同名值会优先于 Compose env-file，操作前需避免旧环境覆盖。
+生产模板只将其 `environment` 中声明的键传入对应服务，`.env.example`
+列出某键不代表 Compose/Helm 已接线；例如 Compose 未透传 OIDC/LDAP/IM，
+Helm 另有 OIDC 选通组。选用这些能力须显式接线，不把凭据全量灌入所有容器。
 
 ## 1. MySQL 连接池配额
 
@@ -210,8 +219,8 @@ UPDATE 语句;权限跟随锁的写意图。² 回滚缝重派节点的 node.sta
   reaper 对 login_audit 的 SELECT 即服务保留期 DELETE 的 `event_at` 谓词
   (无 SELECT 则 purge 报 1143)。
 - **空格 = 无权限是设计而非遗漏**:relay 对 audit_log 零权限(零审计写);
-  api 不触 audit_pending(api 审计全走同步 `audit.Append` 直写 audit_log,
-  暂存面只 worker/reaper——T7.4 修正原表误列的 api INSERT);api 对
+  api 的常规触发/审批审计同步直写 audit_log，回滚重派事件另需
+  audit_pending INSERT(表中 ²，T15.6 已补齐，不能沿用早期“api 零暂存面”描述)；api 对
   login_audit 仅 INSERT(查询面 P1)。
 - **无需显式授权的面**:preflight 的 INFORMATION_SCHEMA 探测(I_S 按
   账号既有权限过滤可见行)、`SELECT CURRENT_USER()/DATABASE()`、
@@ -222,40 +231,51 @@ UPDATE 语句;权限跟随锁的写意图。² 回滚缝重派节点的 node.sta
 
 ### 5.1 首个登录账号(prod 栈建号;审计 F02)
 
-prod compose 不带任何种子账号——迁移零 INSERT,**栈起好 = 没有人能登录**。
+prod compose 不带登录种子账号——迁移只播种平台租户，不创建用户，**栈起好 = 没有人能登录**。
 用镜像内 CLI 在 compose 网内直连建号(root 密码与用户口令都只在 env 流转,
-不进 shell 历史):
+不进 shell 历史或宿主命令参数)。栈须先由 prod-up.sh 完成迁移/授权；
+以下整块在 **Bash** 中执行(zsh 用户先运行 `bash`)，子 shell 退出后清除临时凭据：
 
 ```bash
 cd <仓库根>
-set -a; . deploy/prod.env; set +a            # 取 MYSQL_ROOT_PASSWORD(prod-up.sh 自管,git-ignored)
-read -rsp '新用户口令(8..72 位): ' pw
-export BRAID_CLI_PASSWORD="$pw"; echo        # 真实口令一律 read -s 形态
-docker compose -f deploy/prod.docker-compose.yml run --rm --entrypoint /usr/local/bin/braid \
-  -e BRAID_MYSQL_DSN="root:${MYSQL_ROOT_PASSWORD:?}@tcp(mysql:3306)/braid" \
-  -e BRAID_CLI_PASSWORD \
-  api user create -username alice -roles author,approver
+(
+  set -e
+  set -a; . deploy/prod.env; set +a
+  read -rsp '新用户口令(8..72 字节): ' BRAID_CLI_PASSWORD
+  printf '\n'
+  export BRAID_CLI_PASSWORD
+  docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml \
+    run --rm --no-deps --entrypoint /bin/sh \
+    -e MYSQL_ROOT_PASSWORD -e BRAID_CLI_PASSWORD api -ec '
+      export BRAID_MYSQL_DSN="root:${MYSQL_ROOT_PASSWORD:?}@tcp(mysql:3306)/braid"
+      exec /usr/local/bin/braid user create -username alice -roles author,approver
+    '
+)
 ```
 
 - DSN 形态与 migrate one-shot 同款(`root:…@tcp(mysql:3306)`,compose 网内
   服务名寻址);CLI 是镜像自带二进制(`go build ./cmd/...` 全量入库),
-  `run --rm` 用完即退,不产生常驻容器。
+  `run --rm --no-deps` 复用已就绪的 MySQL，用完即退；临时 CLI 容器接收
+  root 凭据，四个常驻组件仍使用各自最小授权账号。
 - 角色口径:`author,approver`(作者+审批)/ `approver`(纯审批)/
   `admin`(运维全权),授权矩阵见本节上表。
 - 退出码:0 成功 / 1 失败 / 2 用法错;重跑报 `username already exists`
   (auth: conflict)= 已建过,属预期。
-- 验证:反代就绪后开根路径 `/`(→ `/workflows/`)用该账号登录;反代
-  转发清单见 §6。
-- 彻底重来:`docker compose -f deploy/prod.docker-compose.yml down -v`
+- 验证:先按 [RUNBOOK §4](RUNBOOK.md#4-反代与控制台入口) 接好入口，浏览器打开
+  该入口的根路径 `/`，未登录时进入 `/login`；用 alice 登录后进入工作流，
+  同一标签页依次打开「执行」「审批」，刷新深链仍可返回原页。
+  新库出现空列表是正常结果，不需要触发真实 LLM 才能验证登录。
+- 彻底重来:`docker compose --env-file deploy/prod.env -f deploy/prod.docker-compose.yml down -v`
   后从 `prod-up.sh` 重走(卷清 = 账号全失)。
 
 ## 6. 指标 exposition 端口
 
-api 的 `/metrics` 恒挂 `BRAID_API_ADDR`(与 /healthz 同回环绑定);worker/
-relay/reaper 经 `BRAID_METRICS_ADDR`(空 = 不启)。无认证 exposition,
-只绑回环或留内网(反代除 `/api/v1`、`/metrics` 外还须转发 SPA 面:根路径 `/`、
-`/login`、`/workflows/*`、`/executions/*`、`/approvals/*` 与 `/assets/*`;
-旧审批台/画布前缀已下线,硬切 404)。
+api 的 `/metrics` 与 `/healthz` 共用 `BRAID_API_ADDR`；dev 默认回环，
+prod 容器内为 `0.0.0.0:8081`、零宿主端口。worker/relay/reaper 经
+`BRAID_METRICS_ADDR`(空 = 不启)。无认证的指标与健康探针只留内网，
+**不要经公开反代转发 `/metrics`、`/healthz`**。公开入口须转发 API、
+SPA 与静态资产，按需开放 `/mcp`；完整路径与网络前置见
+[RUNBOOK §4](RUNBOOK.md#4-反代与控制台入口)。旧审批台/画布前缀硬切 404。
 
 ## 7. 工具沙箱镜像(T10.1)
 
