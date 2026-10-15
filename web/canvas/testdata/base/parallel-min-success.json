@@ -1,0 +1,43 @@
+{
+  "dsl": "1.0",
+  "name": "parallel-min-success",
+  "inputs": [
+    {
+      "name": "items",
+      "type": "array",
+      "required": true
+    }
+  ],
+  "nodes": [
+    {
+      "id": "fan",
+      "type": "parallel",
+      "title": "部分成功评审",
+      "parallel": {
+        "foreach": "{{inputs.items}}",
+        "on_failure": "wait_all",
+        "min_success": 2,
+        "body": {
+          "type": "llm",
+          "prompt": {
+            "template": "评审当前条目。",
+            "user_data": [
+              {
+                "name": "piece",
+                "ref": "{{item}}"
+              }
+            ]
+          },
+          "outputs": {
+            "verdict": "string"
+          }
+        }
+      }
+    }
+  ],
+  "edges": [],
+  "outputs": {
+    "results": "{{nodes.fan.output.results}}",
+    "failed_count": "{{nodes.fan.output.failed_count}}"
+  }
+}

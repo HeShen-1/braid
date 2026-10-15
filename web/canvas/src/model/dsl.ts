@@ -162,6 +162,7 @@ export type ParallelBody = DistOmit<LlmNode | ToolNode, 'id'>
 export interface DslParallel {
   foreach: string
   on_failure?: string // 空 = "fail_fast"
+  min_success?: number // 可选正整数;字段缺席 = 未启用,与 on_failure 正交。
   body: ParallelBody
 }
 

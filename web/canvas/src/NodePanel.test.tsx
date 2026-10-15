@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { NodePanel } from './NodePanel.tsx'
 import { WorkflowPanel } from './WorkflowPanel.tsx'
 import type { DslNode, WorkflowDoc } from './model/dsl.ts'
+import { fromCanvas, serializeDoc, toCanvas } from './model/convert.ts'
 import { loadBase } from './model/testdata.ts'
 import { TID } from './ui/testids.ts'
 
@@ -105,6 +106,49 @@ describe('NodePanel', () => {
     if (latestNode!.type !== 'parallel') throw new Error('unreachable')
     expect(latestNode!.parallel.body.type).toBe('tool')
     expect(latestNode!.parallel.body).toHaveProperty('tool', '')
+  })
+
+  it.each([
+    { fixture: 'parallel-min-success', minSuccess: 2 },
+    { fixture: 'all-node-types', minSuccess: undefined },
+  ])('parallel:$fixture 编辑后 min_success 保真且不自动启用', async ({ fixture, minSuccess }) => {
+    const user = userEvent.setup()
+    const doc = loadBase(fixture)
+    doc.inputs!.push({ name: 'rows', type: 'array', required: true })
+    const state = toCanvas(doc)
+    const fan = state.nodes.find((n) => n.id === 'fan')!
+    const spec = fan.data.spec
+    if (spec.type !== 'parallel' || spec.parallel.body.type !== 'llm') throw new Error('unreachable')
+    render(<NodeProbe initial={spec} />)
+    await user.clear(screen.getByLabelText('标题'))
+    await user.type(screen.getByLabelText('标题'), '修改后的并行节点')
+    await user.type(screen.getByLabelText('描述'), '保留阈值')
+    await user.clear(screen.getByLabelText('foreach(数组引用)'))
+    await user.type(screen.getByLabelText('foreach(数组引用)'), '{{{{inputs.rows}}')
+    await chooseOption(user, screen.getByLabelText('失败策略'), 'fail_fast')
+    await user.type(screen.getByLabelText('提示词模板'), '!')
+    if (latestNode!.type !== 'parallel' || latestNode!.parallel.body.type !== 'llm') throw new Error('unreachable')
+    expect(latestNode!.parallel.body.prompt).toEqual({
+      ...spec.parallel.body.prompt,
+      template: `${spec.parallel.body.prompt.template}!`,
+    })
+
+    const exported = () => {
+      fan.data.spec = latestNode!
+      const out = JSON.parse(serializeDoc(fromCanvas(state, doc))) as WorkflowDoc
+      const node = out.nodes.find((n) => n.id === 'fan')!
+      if (node.type !== 'parallel') throw new Error('unreachable')
+      expect(node.title).toBe('修改后的并行节点')
+      expect(node.description).toBe('保留阈值')
+      expect(node.parallel.foreach).toBe('{{inputs.rows}}')
+      expect(node.parallel.on_failure).toBe('fail_fast')
+      expect(node.parallel.min_success).toBe(minSuccess)
+      if (minSuccess === undefined) expect(node.parallel).not.toHaveProperty('min_success')
+      return node.parallel
+    }
+    expect(exported().body).toEqual(latestNode!.parallel.body)
+    await chooseOption(user, screen.getByLabelText('类型'), '工具')
+    expect(exported().body).toEqual({ type: 'tool', tool: '', inputs: {}, outputs: {} })
   })
 
   it('tool:入参值 JSON 嗅探(数字串→number,花括号→对象)', async () => {

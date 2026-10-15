@@ -103,6 +103,35 @@ describe('fromCanvas(画布 → DSL)往返', () => {
     })
   })
 
+  it.each([
+    { minSuccess: undefined, onFailure: undefined },
+    { minSuccess: undefined, onFailure: 'wait_all' },
+    { minSuccess: 1, onFailure: 'fail_fast' },
+    { minSuccess: 2, onFailure: 'wait_all' },
+    { minSuccess: 3, onFailure: undefined },
+  ])('parallel min_success=$minSuccess/on_failure=$onFailure 往返保真', ({ minSuccess, onFailure }) => {
+    const doc = loadBase('parallel-min-success')
+    const fan = doc.nodes[0]
+    if (fan.type !== 'parallel') throw new Error('unreachable')
+    if (minSuccess === undefined) {
+      delete fan.parallel.min_success
+      delete doc.outputs!.failed_count
+    } else {
+      fan.parallel.min_success = minSuccess
+    }
+    if (onFailure === undefined) delete fan.parallel.on_failure
+    else fan.parallel.on_failure = onFailure
+
+    const round = fromCanvas(toCanvas(doc), doc)
+    expect(round.nodes[0]).toEqual(fan)
+    const out = JSON.parse(serializeDoc(round)) as WorkflowDoc
+    expect(out.nodes[0]).toEqual(fan)
+    expect(out.outputs).toEqual(doc.outputs)
+    // 字段缺席是禁用语义,不能因打开/保存画布自动物化 0 或默认阈值。
+    if (minSuccess === undefined) expect(serializeDoc(round)).not.toContain('"min_success"')
+    expect(serializeDoc(fromCanvas(toCanvas(out), out))).toBe(serializeDoc(round))
+  })
+
   it('被删节点的陈旧位置条目随之消失;新增节点位置写入', () => {
     const doc = loadBase('with-positions')
     const cs = toCanvas(doc)

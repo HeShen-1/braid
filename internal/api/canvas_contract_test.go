@@ -110,3 +110,46 @@ func TestCanvasExportFixturesCarryCanvasMeta(t *testing.T) {
 		})
 	}
 }
+
+// T23.4:前端导出真产物保留部分容忍阈值,Go 发布解析不能降回未启用。
+// 缺席对照同时过 schema(minimum=1),因此 0 无法冒充合法禁用字段。
+func TestCanvasExportFixturesPreserveMinSuccess(t *testing.T) {
+	tests := []struct {
+		fixture    string
+		minSuccess int
+	}{
+		{fixture: "parallel-min-success", minSuccess: 2},
+		{fixture: "all-node-types", minSuccess: 0},
+	}
+	for _, tt := range tests {
+		t.Run(tt.fixture, func(t *testing.T) {
+			raw, err := os.ReadFile(filepath.Join("..", "..", "web", "canvas", "testdata", "exports", tt.fixture+".json"))
+			if err != nil {
+				t.Fatalf("read: %v", err)
+			}
+			wf, err := dsl.Parse(raw, dsl.WithToolAllowlist("file_read", "http"))
+			if err != nil {
+				t.Fatalf("publish parse: %v", err)
+			}
+			for _, n := range wf.Nodes {
+				if n.ID != "fan" {
+					continue
+				}
+				if n.Parallel == nil {
+					t.Fatal("fan is not a parallel node")
+				}
+				if n.Parallel.MinSuccess != tt.minSuccess {
+					t.Errorf("min_success = %d, want %d", n.Parallel.MinSuccess, tt.minSuccess)
+				}
+				if n.Parallel.OnFailure != "wait_all" {
+					t.Errorf("on_failure = %q, want wait_all", n.Parallel.OnFailure)
+				}
+				if tt.minSuccess > 0 && wf.Outputs["failed_count"] != "{{nodes.fan.output.failed_count}}" {
+					t.Errorf("failed_count output contract lost: %v", wf.Outputs)
+				}
+				return
+			}
+			t.Fatal("fixture is missing fan node")
+		})
+	}
+}
