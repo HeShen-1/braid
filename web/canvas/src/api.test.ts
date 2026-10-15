@@ -2,7 +2,7 @@
 // Idempotency-Key/体)、响应解包、409 族 detail/blocked 承载。fetch 全
 // stub(同 App.test.tsx 习语);断言的形状 = internal/api DTO 的镜像面。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, api, tokenStore } from './api.ts'
+import { ApiError, api, tokenStore, type DraftSummary } from './api.ts'
 
 function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -122,13 +122,59 @@ describe('execution domain client', () => {
     expect((err as ApiError).code).toBe('http_502')
   })
 
-  it('listPublished / getVersion:定义面路径', async () => {
-    stubFetch(() => ok({ items: [] }))
+  it('listPublished / getVersion:定义面路径(翻页参数随行)', async () => {
+    stubFetch(() => ok({ items: [], page: { limit: 100, offset: 0, total: 0 } }))
     await api.listPublished()
-    expect(String(calls[0].input)).toBe('/api/v1/definitions?status=PUBLISHED')
+    expect(String(calls[0].input)).toBe('/api/v1/definitions?status=PUBLISHED&limit=100&offset=0')
 
     stubFetch(() => ok({ id: '1', dsl: {} }))
     await api.getVersion('wf', 3)
     expect(String(calls[0].input)).toBe('/api/v1/definitions/wf/versions/3')
+  })
+})
+
+describe('definition list paging(T22.2 审计 F03:超 20 条全量可达)', () => {
+  /** mock 契约用真实 page envelope 形状(internal/api handlers gin.H 同款)。 */
+  function envelope(items: unknown[], total = items.length): Response {
+    return ok({ items, page: { limit: 100, offset: 0, total } })
+  }
+
+  function draft(i: number): DraftSummary {
+    return { id: String(i), name: `wf-${i}`, version: 1, status: 'DRAFT', description: '', updated_at: '2026-10-04T05:00:00Z' }
+  }
+
+  it('21 条场景:limit=100 单请求一次取全(审计 repro:此前只显 20)', async () => {
+    const items = Array.from({ length: 21 }, (_, i) => draft(i))
+    stubFetch(() => envelope(items))
+    const { items: out } = await api.listPublished()
+    expect(out).toHaveLength(21)
+    expect(String(calls[0].input)).toBe('/api/v1/definitions?status=PUBLISHED&limit=100&offset=0')
+    expect(calls).toHaveLength(1)
+  })
+
+  it('total 超单页:按 envelope 翻到取全', async () => {
+    const page1 = Array.from({ length: 100 }, (_, i) => draft(i))
+    const page2 = Array.from({ length: 21 }, (_, i) => draft(100 + i))
+    stubFetch((input) => (String(input).endsWith('offset=0') ? envelope(page1, 121) : envelope(page2, 121)))
+    const { items: out } = await api.listDrafts()
+    expect(out).toHaveLength(121)
+    expect(calls.map((c) => String(c.input))).toEqual([
+      '/api/v1/definitions?status=DRAFT&limit=100&offset=0',
+      '/api/v1/definitions?status=DRAFT&limit=100&offset=100',
+    ])
+  })
+
+  it('page 缺席:退化单页,不空转', async () => {
+    stubFetch(() => ok({ items: [draft(1)] }))
+    const { items: out } = await api.listDrafts()
+    expect(out).toHaveLength(1)
+    expect(calls).toHaveLength(1)
+  })
+
+  it('服务端空页:立即收口(偏移越过 total 时不死循环)', async () => {
+    stubFetch(() => envelope([], 0))
+    const { items: out } = await api.listDrafts()
+    expect(out).toHaveLength(0)
+    expect(calls).toHaveLength(1)
   })
 })

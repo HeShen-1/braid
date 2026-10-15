@@ -267,6 +267,34 @@ describe('ExecutionsView(执行面)', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('顶层必须是 JSON 对象')
   })
 
+  it('已发布 >20 条全量可达:21 条全进触发下拉(审计 F03:第 21 个此前不进下拉)', async () => {
+    const user = userEvent.setup()
+    // mock 契约 = 真实 page envelope 形状(服务端 limit 缺省 20,limit=100
+    // 单页装下 21 条 → total=21 全量)。
+    const many = Array.from({ length: 21 }, (_, i) => ({
+      id: String(i + 1),
+      name: `wf-${i + 1}`,
+      version: 1,
+      status: 'PUBLISHED',
+      description: '',
+      updated_at: '2026-10-04T05:00:00Z',
+    }))
+    stubRoute((url) => {
+      const path = pathOf(url)
+      if (path === '/api/v1/executions') return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
+      if (path === '/api/v1/definitions') return ok({ items: many, page: { limit: 100, offset: 0, total: 21 } })
+      return ok({ items: [], next_cursor: '' })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    // 面板头计数此前停在 20;数据面取全后即 21。
+    expect(await screen.findByText('21 个已发布')).toBeInTheDocument()
+    await user.click(screen.getByTestId(TID.triggerDefinition))
+    // 第 21 个已发布工作流在下拉里,且有可点路径。
+    await screen.findByRole('option', { name: 'wf-21 v1' })
+    // 21 个工作流 + 占位项 = 弹层 22 个选项。
+    expect(screen.getAllByRole('option')).toHaveLength(22)
+  })
+
   it('无已发布工作流:触发禁用并给出下一步', async () => {
     stubRoute((url) => {
       const path = pathOf(url)
