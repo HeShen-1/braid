@@ -123,6 +123,10 @@ Web 面(`/workflows/` 控制台、`/executions/` 执行面、`/approvals/` 审�
 镜像离线导出(air-gap)见 §2.4。端到端示例 DSL 与走链文档见
 [docs/examples/](docs/examples/)(引擎级 e2e 测试同源,CI 真跑)。
 
+**栈起好 ≠ 能登录**:prod compose 零种子账号(迁移零 INSERT),首个用户
+经镜像内 CLI 建号——一分钟,可照抄命令见
+[deploy/README.md §5.1](deploy/README.md)。
+
 ### 2.2 dev 栈 + 真实 LLM 完整链路(开发联调)
 
 前置:Docker 之外另需 Go ≥ 1.27 与一个 OpenAI 兼容 LLM 端点(如智谱 GLM、

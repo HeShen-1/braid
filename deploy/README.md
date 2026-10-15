@@ -216,6 +216,35 @@ UPDATE 语句;权限跟随锁的写意图。² 回滚缝重派节点的 node.sta
   响亮报错(如 janitor 缺 login_audit DELETE → 每轮重试,错误隔离不
   brick)。
 
+### 5.1 首个登录账号(prod 栈建号;审计 F02)
+
+prod compose 不带任何种子账号——迁移零 INSERT,**栈起好 = 没有人能登录**。
+用镜像内 CLI 在 compose 网内直连建号(root 密码与用户口令都只在 env 流转,
+不进 shell 历史):
+
+```bash
+cd <仓库根>
+set -a; . deploy/prod.env; set +a            # 取 MYSQL_ROOT_PASSWORD(prod-up.sh 自管,git-ignored)
+read -rsp '新用户口令(8..72 位): ' pw
+export BRAID_CLI_PASSWORD="$pw"; echo        # 真实口令一律 read -s 形态
+docker compose -f deploy/prod.docker-compose.yml run --rm --entrypoint /usr/local/bin/braid \
+  -e BRAID_MYSQL_DSN="root:${MYSQL_ROOT_PASSWORD:?}@tcp(mysql:3306)/braid" \
+  -e BRAID_CLI_PASSWORD \
+  api user create -username alice -roles author,approver
+```
+
+- DSN 形态与 migrate one-shot 同款(`root:…@tcp(mysql:3306)`,compose 网内
+  服务名寻址);CLI 是镜像自带二进制(`go build ./cmd/...` 全量入库),
+  `run --rm` 用完即退,不产生常驻容器。
+- 角色口径:`author,approver`(作者+审批)/ `approver`(纯审批)/
+  `admin`(运维全权),授权矩阵见本节上表。
+- 退出码:0 成功 / 1 失败 / 2 用法错;重跑报 `username already exists`
+  (auth: conflict)= 已建过,属预期。
+- 验证:反代就绪后开根路径 `/`(→ `/workflows/`)用该账号登录;反代
+  转发清单见 §6。
+- 彻底重来:`docker compose -f deploy/prod.docker-compose.yml down -v`
+  后从 `prod-up.sh` 重走(卷清 = 账号全失)。
+
 ## 6. 指标 exposition 端口
 
 api 的 `/metrics` 恒挂 `BRAID_API_ADDR`(与 /healthz 同回环绑定);worker/
