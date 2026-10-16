@@ -1,15 +1,14 @@
 // 执行面(T21.1 Lane B 重做)。
 //
-// 左栏 = 触发面板(已发布定义 + JSON 输入,幂等键每次提交新生成:双击收敛
-// 为服务端重放)+ 执行表(状态筛选 + 工作流筛选 + 状态芯片 + 时长 + 创建);
-// 右栏 = 选中执行的详情(ExecutionDetail,纵向分层 + 执行时间带)。
+// 列表优先:状态页签 + 精确名称过滤 + 真实执行字段。未选择时触发面板在
+// 侧栏;选择后保留执行表与详情,窄窗上下排列。触发目标与输入契约不变。
 //
 // 选中态由 URL 承载(routes/ExecutionsRoute:selectedId / onSelect 受控传入),
 // 刷新与深链天然一致,组件不持有第二份选中真源。筛选是**服务端**过滤
 // (api.listExecutions 既有 status/name/limit/offset 参数,零新端点),
 // 换筛选 = 重置 offset 重拉。401 统一上抛 App 登出。
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Activity, FilterX, Inbox, Play, RefreshCw, TriangleAlert, X } from 'lucide-react'
+import { Activity, Check, FilterX, Inbox, Play, RefreshCw, TriangleAlert, X } from 'lucide-react'
 import { ApiError, api, type DraftSummary, type ExecutionSummary } from './api.ts'
 import { ExecutionDetail } from './ExecutionDetail.tsx'
 import { Select, TextArea, TextInput } from './ui/field.tsx'
@@ -20,6 +19,7 @@ import { Duration, Timestamp } from './ui/time.tsx'
 import type { DslInput } from './model/dsl.ts'
 import { apiErrorText } from './ui/errors.ts'
 import { refreshConsole } from './refresh.ts'
+import { I } from './ui/I.tsx'
 
 type InputContract = { definitionId: string; inputs: DslInput[]; error?: string }
 const INPUT_EXAMPLES: Record<string, unknown> = { string: '示例', number: 0, boolean: false, object: {}, array: [] }
@@ -35,7 +35,7 @@ const PAGE_SIZE = 20
 const NAME_DEBOUNCE_MS = 250
 
 /** 状态词表复用执行域真源(不另抄一份);顺序 = DDL ENUM 序。 */
-const STATUS_OPTIONS = Object.entries(EXEC_STATUS).map(([value, meta]) => ({ value, label: meta.label }))
+const STATUS_OPTIONS = [{ value: '', label: '全部执行' }, ...Object.entries(EXEC_STATUS).map(([value, meta]) => ({ value, label: meta.label }))]
 
 /** 幂等键:优先 randomUUID;非安全上下文(纯 HTTP 非 localhost 部署)
  * 无此 API——降级 getRandomValues 十六进制(该 API 不受 SecureContext
@@ -225,13 +225,174 @@ export function ExecutionsView({
     }
   }, [canManage, selectedDef, inputRaw, busy, contractReady, currentContract, refresh, onSelect, onAuthExpired])
 
-  const showFilters = execs.length > 0 || filtered
   const showPager = execs.length > 0 && (total > PAGE_SIZE || offset > 0)
 
   return (
-    <div className="exec-view">
+    <div className="exec-view" data-detail={selectedId !== null}>
       <aside className="exec-rail" aria-label="执行列表与触发">
-        {canManage ? <section className="panel" data-testid={TID.triggerPanel}>
+        <section className="exec-list" aria-label="执行列表" aria-busy={listLoading}>
+          <PanelHead
+            title="执行记录"
+            sub={listLoading ? '加载中…' : listError !== '' ? '读取失败' : `${execs.length}${total !== execs.length ? ` / ${total}` : ''} 条`}
+            actions={
+              <Button
+                variant="quiet"
+                size="sm"
+                icon={RefreshCw}
+                aria-label="刷新执行列表"
+                disabled={listLoading}
+                onClick={() => void refresh()}
+              >刷新</Button>
+            }
+          />
+          <div className="exec-status-tabs" role="tablist" aria-label="执行状态视图">
+            {STATUS_OPTIONS.map((option, index) => (
+              <button
+                key={option.value}
+                type="button"
+                role="tab"
+                className="tab"
+                id={`exec-status-${option.value || 'all'}`}
+                aria-controls="exec-list-results"
+                aria-selected={status === option.value}
+                tabIndex={status === option.value ? 0 : -1}
+                onClick={() => changeFilter(() => setStatus(option.value))}
+                onKeyDown={(event) => {
+                  let next = index
+                  if (event.key === 'ArrowRight') next = (index + 1) % STATUS_OPTIONS.length
+                  else if (event.key === 'ArrowLeft') next = (index + STATUS_OPTIONS.length - 1) % STATUS_OPTIONS.length
+                  else if (event.key === 'Home') next = 0
+                  else if (event.key === 'End') next = STATUS_OPTIONS.length - 1
+                  else return
+                  event.preventDefault()
+                  changeFilter(() => setStatus(STATUS_OPTIONS[next].value))
+                  event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')[next]?.focus()
+                }}
+              >{option.label}</button>
+            ))}
+          </div>
+          <div className="exec-filters">
+              <TextInput
+                label="按名称"
+                placeholder="完整工作流名称"
+                hint="精确匹配，须输入完整名称"
+                value={nameInput}
+                onChange={(e) => changeFilter(() => setNameInput(e.target.value))}
+              />
+              {/* 结果为空时「清除筛选」由空态承担,这里不再重复一个同名按钮 */}
+              {filtered && execs.length > 0 ? (
+                <Button variant="quiet" size="sm" icon={X} onClick={clearFilters}>
+                  清除筛选
+                </Button>
+              ) : null}
+          </div>
+          <div id="exec-list-results" role="tabpanel" aria-labelledby={`exec-status-${status || 'all'}`}>
+          {listLoading ? <p className="panel-body text-sm text-ink-2" role="status">正在加载执行列表…</p> : listError !== '' ? (
+            <Alert tone="error" icon={TriangleAlert}>
+              <div><strong>执行列表读取失败</strong><p>{listError}</p><Button size="sm" onClick={() => void refresh()}>重试执行列表</Button></div>
+            </Alert>
+          ) : execs.length === 0 ? (
+            <div data-testid={TID.execEmpty}>
+              {filtered ? (
+                <EmptyState
+                  icon={FilterX}
+                  title="当前筛选下没有执行"
+                  hint="没有匹配该状态与工作流名称的执行 —— 换个条件,或清除筛选查看全部。"
+                  action={
+                    <Button size="sm" icon={X} onClick={clearFilters}>
+                      清除筛选
+                    </Button>
+                  }
+                />
+              ) : (
+                <EmptyState icon={Inbox} title="暂无执行" hint="触发一次执行后,这里会出现执行记录与时间带。" />
+              )}
+            </div>
+          ) : (
+            <>
+              <div className="exec-table-wrap">
+                <table className="table exec-table" role="grid" aria-label="执行列表" data-testid={TID.execTable}>
+                  <thead>
+                    <tr>
+                      <th scope="col">执行 ID</th>
+                      <th scope="col">工作流 / 版本</th>
+                      <th scope="col">状态</th>
+                      <th scope="col">时长</th>
+                      <th scope="col">创建</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {execs.map((e) => (
+                      <tr
+                        key={e.id}
+                        data-testid={tid.execRow(e.id)}
+                        data-state={e.status}
+                        data-selected={selectedId === e.id ? 'true' : 'false'}
+                        aria-selected={selectedId === e.id}
+                        tabIndex={0}
+                        title={`#${e.id} · ${e.definition_name} v${e.definition_version}`}
+                        onClick={() => onSelect(e.id)}
+                        onKeyDown={(ev) => {
+                          if (ev.key === 'Enter' || ev.key === ' ') {
+                            ev.preventDefault()
+                            onSelect(e.id)
+                          }
+                        }}
+                      >
+                        <td className="exec-id-cell">
+                          <span className="exec-selection-mark" aria-hidden>{selectedId === e.id ? <I glyph={Check} size={12} /> : null}</span>
+                          <code className="exec-row-id" title={`#${e.id}`}>#{e.id}</code>
+                        </td>
+                        <td>
+                          <div className="exec-row-name">
+                            <span className="truncate text-ink-0">{e.definition_name}</span>
+                            <span className="num text-ink-2">v{e.definition_version}</span>
+                          </div>
+                        </td>
+                        <td>
+                          <StatusChip status={e.status} />
+                        </td>
+                        <td className="num">
+                          <Duration from={e.started_at} to={e.finished_at} />
+                        </td>
+                        <td>
+                          <Timestamp iso={e.created_at} />
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              {showPager ? (
+                <div className="exec-pager">
+                  <span className="num text-ink-2">
+                    {offset + 1}–{offset + execs.length} / {total}
+                  </span>
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    disabled={offset === 0}
+                    onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
+                  >
+                    上一页
+                  </Button>
+                  <Button
+                    variant="quiet"
+                    size="sm"
+                    disabled={offset + execs.length >= total}
+                    onClick={() => setOffset(offset + PAGE_SIZE)}
+                  >
+                    下一页
+                  </Button>
+                </div>
+              ) : null}
+            </>
+          )}
+          </div>
+          <p className="exec-table-hint"><kbd>Enter</kbd> / <kbd>Space</kbd> 查看所选执行的节点与审计</p>
+        </section>
+
+        {canManage ? <section className="panel exec-trigger-panel" data-testid={TID.triggerPanel}>
           <PanelHead title="触发执行" sub={latestDefs.length > 0 ? `${latestDefs.length} 个已发布` : undefined} />
           <div className="panel-body exec-trigger">
             <Select
@@ -320,164 +481,13 @@ export function ExecutionsView({
               </Alert>
             ) : null}
           </div>
-        </section> : <p className="panel-body text-sm text-ink-2">当前角色可查看执行；触发、回滚、续跑和取消需要 author/admin 角色。</p>}
-
-        <section className="panel" aria-label="执行列表" aria-busy={listLoading}>
-          <PanelHead
-            title="执行"
-            sub={listLoading ? '加载中…' : listError !== '' ? '读取失败' : `${execs.length}${total !== execs.length ? ` / ${total}` : ''} 条`}
-            actions={
-              <Button
-                variant="quiet"
-                size="sm"
-                iconOnly
-                icon={RefreshCw}
-                aria-label="刷新执行列表"
-                disabled={listLoading}
-                onClick={() => void refresh()}
-              />
-            }
-          />
-          {showFilters ? (
-            <div className="exec-filters">
-              {/* 不设"筛选"框标签:两个字段各自的标签已经说明了这一行是什么,
-                  再加一个会让三个标签挤在两行里(收尾评审 R2)。 */}
-              <Select
-                label="按状态"
-                value={status}
-                onChange={(next) => changeFilter(() => setStatus(next))}
-              >
-                <option value="">全部状态</option>
-                {STATUS_OPTIONS.map((o) => (
-                  <option key={o.value} value={o.value}>
-                    {o.label}
-                  </option>
-                ))}
-              </Select>
-              <TextInput
-                label="按名称"
-                placeholder="完整工作流名称"
-                hint="精确匹配，须输入完整名称"
-                value={nameInput}
-                onChange={(e) => changeFilter(() => setNameInput(e.target.value))}
-              />
-              {/* 结果为空时「清除筛选」由空态承担,这里不再重复一个同名按钮 */}
-              {filtered && execs.length > 0 ? (
-                <Button variant="quiet" size="sm" icon={X} onClick={clearFilters}>
-                  清除筛选
-                </Button>
-              ) : null}
-            </div>
-          ) : null}
-          {listLoading ? <p className="panel-body text-sm text-ink-2" role="status">正在加载执行列表…</p> : listError !== '' ? (
-            <Alert tone="error" icon={TriangleAlert}>
-              <div><strong>执行列表读取失败</strong><p>{listError}</p><Button size="sm" onClick={() => void refresh()}>重试执行列表</Button></div>
-            </Alert>
-          ) : execs.length === 0 ? (
-            <div data-testid={TID.execEmpty}>
-              {filtered ? (
-                <EmptyState
-                  icon={FilterX}
-                  title="当前筛选下没有执行"
-                  hint="没有匹配该状态与工作流名称的执行 —— 换个条件,或清除筛选查看全部。"
-                  action={
-                    <Button size="sm" icon={X} onClick={clearFilters}>
-                      清除筛选
-                    </Button>
-                  }
-                />
-              ) : (
-                <EmptyState icon={Inbox} title="暂无执行" hint="触发一次执行后,这里会出现执行记录与时间带。" />
-              )}
-            </div>
-          ) : (
-            <>
-              <div className="exec-table-wrap">
-                <table className="table" role="grid" aria-label="执行列表" data-testid={TID.execTable}>
-                  <thead>
-                    <tr>
-                      <th>状态</th>
-                      <th>工作流</th>
-                      <th>时长</th>
-                      <th>创建</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {execs.map((e) => (
-                      <tr
-                        key={e.id}
-                        data-testid={tid.execRow(e.id)}
-                        data-state={e.status}
-                        data-selected={selectedId === e.id ? 'true' : 'false'}
-                        aria-selected={selectedId === e.id}
-                        tabIndex={0}
-                        title={`#${e.id} · ${e.definition_name} v${e.definition_version}`}
-                        onClick={() => onSelect(e.id)}
-                        onKeyDown={(ev) => {
-                          if (ev.key === 'Enter' || ev.key === ' ') {
-                            ev.preventDefault()
-                            onSelect(e.id)
-                          }
-                        }}
-                      >
-                        <td>
-                          <StatusChip status={e.status} />
-                        </td>
-                        <td>
-                          <div className="exec-row-name">
-                            <span className="truncate text-ink-0">{e.definition_name}</span>
-                            <span className="num text-ink-2">v{e.definition_version}</span>
-                          </div>
-                        </td>
-                        <td className="num">
-                          <Duration from={e.started_at} to={e.finished_at} />
-                        </td>
-                        <td>
-                          <Timestamp iso={e.created_at} />
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-              {showPager ? (
-                <div className="exec-pager">
-                  <span className="num text-ink-2">
-                    {offset + 1}–{offset + execs.length} / {total}
-                  </span>
-                  <Button
-                    variant="quiet"
-                    size="sm"
-                    disabled={offset === 0}
-                    onClick={() => setOffset(Math.max(0, offset - PAGE_SIZE))}
-                  >
-                    上一页
-                  </Button>
-                  <Button
-                    variant="quiet"
-                    size="sm"
-                    disabled={offset + execs.length >= total}
-                    onClick={() => setOffset(offset + PAGE_SIZE)}
-                  >
-                    下一页
-                  </Button>
-                </div>
-              ) : null}
-            </>
-          )}
-        </section>
+        </section> : <p className="exec-permission text-sm text-ink-2">当前角色可查看执行；触发、回滚、续跑和取消需要 author/admin 角色。</p>}
       </aside>
 
       {selectedId !== null ? (
           <ExecutionDetail key={selectedId} execId={selectedId} onAuthExpired={onAuthExpired} canManage={canManage} onBack={() => onSelect(null)} />
       ) : (
-        <main className="exec-empty-main">
-          <EmptyState
-            icon={Activity}
-            title="未选择执行"
-            hint="从左侧列表选择一条执行,或在上方触发一次新执行 —— 详情会按真实时间铺开节点时间带。"
-          />
-        </main>
+        <p className="exec-selection-hint"><I glyph={Activity} /><strong>未选择执行</strong><span>从执行记录选择一行，查看节点时间带与完整审计。</span></p>
       )}
     </div>
   )
