@@ -88,14 +88,15 @@ export function NodePanel({
             ref={deleteArmRef}
             variant="danger"
             size="sm"
-            iconOnly
             icon={Trash2}
             className="ml-auto shrink-0"
             aria-label="删除节点"
             title={`删除节点 ${spec.id}`}
             data-testid={TID.nodeDelete}
             onClick={onDelete}
-          />
+          >
+            删除节点
+          </Button>
         ) : null}
       </header>
 
