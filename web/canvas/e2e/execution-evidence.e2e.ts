@@ -134,7 +134,15 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
     await expect(auditRow).toContainText('成本 0 USD')
     expect(modelAudit.trace_id).toMatch(/^[0-9a-f]{32}$/)
     await auditRow.getByRole('button', { name: /查询 trace/ }).click()
-    await expect(page.getByTestId(TID.traceAuditList)).toContainText(first.attempt_id)
+    const traceTable = page.getByTestId(TID.traceAuditList)
+    const tracePanel = traceTable.locator('..').locator('..')
+    const traceRefresh = tracePanel.getByRole('button', { name: '刷新审计', exact: true })
+    await expect(traceRefresh).toBeEnabled()
+    while (await tracePanel.getByRole('button', { name: '加载更多审计', exact: true }).count()) {
+      await tracePanel.getByRole('button', { name: '加载更多审计', exact: true }).click()
+      await expect(traceRefresh).toBeEnabled()
+    }
+    await expect(traceTable).toContainText(first.attempt_id)
     await page.getByRole('button', { name: '收起 Trace' }).click()
 
     // 原回滚漏斗：时间带选点→布防→显式确认→真实后端重跑。
