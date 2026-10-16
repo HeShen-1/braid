@@ -10,7 +10,7 @@
 // 轮询:非终态 2.5s;FAILED 保持 10s 慢速(可被本页回滚/续跑、他人操作、
 // reaper 兜底翻活,恒停会冻结在过期帧);SUCCEEDED/CANCELLED 停表。
 // 零后端新端点:全部字段来自既有 executionDetailDTO / approvalDetailDTO / auditEventDTO。
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Ban, Play, RefreshCw, TriangleAlert, Undo2 } from 'lucide-react'
 import {
   ApiError,
@@ -62,6 +62,12 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
   const [evidenceRevision, setEvidenceRevision] = useState(0)
   const [evidenceNode, setEvidenceNode] = useState<{ nodeId: string; instanceNo: number } | null>(null)
   const [trace, setTrace] = useState<string | null>(null)
+  const evidenceOpener = useRef<HTMLButtonElement | null>(null)
+  const traceOpener = useRef<HTMLButtonElement | null>(null)
+  const inspectTrace = useCallback((id: string, opener: HTMLButtonElement) => {
+    traceOpener.current = opener
+    setTrace(id)
+  }, [])
   const [target, setTarget] = useState<string | null>(null)
   // T19.6 quiesce 旗标:回滚/续跑时把 EXECUTING/等待审批的残留节点同事务
   // 楔停(缺省不勾 = 服务端 409 等后台收敛,保值等待)。
@@ -236,7 +242,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
           </Meta>
           {detail.audit.trace_id !== null ? (
             <Meta k="trace_id">
-              <Button size="sm" variant="quiet" onClick={() => setTrace(detail.audit.trace_id)}><code className="mono">{detail.audit.trace_id}</code></Button>
+              <Button size="sm" variant="quiet" aria-label={`查询执行 trace ${detail.audit.trace_id}`} onClick={(event) => inspectTrace(detail.audit.trace_id!, event.currentTarget)}><code className="mono">{detail.audit.trace_id}</code></Button>
             </Meta>
           ) : null}
         </dl>
@@ -363,10 +369,10 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
         live={LIVE.includes(detail.status)}
         selectedNodeId={target}
         onSelectNode={setTarget}
-        onInspectNode={(nodeId, instanceNo) => setEvidenceNode({ nodeId, instanceNo })}
+        onInspectNode={(nodeId, instanceNo, opener) => { evidenceOpener.current = opener; setEvidenceNode({ nodeId, instanceNo }) }}
       />
 
-      {evidenceNode !== null ? <NodeEvidence key={`${execId}:${evidenceNode.nodeId}:${evidenceNode.instanceNo}`} execId={execId} nodeId={evidenceNode.nodeId} instanceNo={evidenceNode.instanceNo} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onClose={() => setEvidenceNode(null)} /> : null}
+      {evidenceNode !== null ? <NodeEvidence key={`${execId}:${evidenceNode.nodeId}:${evidenceNode.instanceNo}`} execId={execId} nodeId={evidenceNode.nodeId} instanceNo={evidenceNode.instanceNo} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onClose={() => { setEvidenceNode(null); evidenceOpener.current?.focus() }} /> : null}
 
       {/* ④′ 当时声明的形状(可折叠:默认收起 = 零请求) */}
       <DefinitionGraph
@@ -391,8 +397,8 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
       ) : null}
 
       {/* ⑥ 审计链 */}
-      <AuditEvidence key={execId} executionId={execId} partition={detail.audit.exec_date} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={setTrace} />
-      {trace !== null ? <AuditEvidence key={`${execId}:${trace}`} traceId={trace} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={setTrace} onClose={() => setTrace(null)} /> : null}
+      <AuditEvidence key={execId} executionId={execId} partition={detail.audit.exec_date} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={inspectTrace} />
+      {trace !== null ? <AuditEvidence key={`${execId}:${trace}`} traceId={trace} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={inspectTrace} onClose={() => { setTrace(null); traceOpener.current?.focus() }} /> : null}
     </main>
   )
 }

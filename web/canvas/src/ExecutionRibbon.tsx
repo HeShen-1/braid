@@ -260,7 +260,7 @@ export function ExecutionRibbon({
   live: boolean
   selectedNodeId: string | null
   onSelectNode: (nodeId: string) => void
-  onInspectNode?: (nodeId: string, instanceNo: number) => void
+  onInspectNode?: (nodeId: string, instanceNo: number, opener: HTMLButtonElement) => void
 }) {
   // 进行中每秒推进 right = now;终态不读 now(60s 只为满足 hook 无条件调用)。
   const now = useNow(live ? 1000 : 60_000)
@@ -302,7 +302,7 @@ export function ExecutionRibbon({
                 row={row}
                 selected={selectedNodeId === row.nodeId}
                 onSelect={() => onSelectNode(row.nodeId)}
-                onInspect={onInspectNode ? () => onInspectNode(row.nodeId, row.instanceNo) : undefined}
+                onInspect={onInspectNode ? (opener) => onInspectNode(row.nodeId, row.instanceNo, opener) : undefined}
                 gridlines={m.gridlines}
                 nowLeft={m.nowLeft}
               />
@@ -347,7 +347,7 @@ function RibbonRowView({
   row: RibbonRow
   selected: boolean
   onSelect: () => void
-  onInspect?: () => void
+  onInspect?: (opener: HTMLButtonElement) => void
   gridlines: number[]
   nowLeft: number | null
 }) {
@@ -380,7 +380,7 @@ function RibbonRowView({
         ) : null}
         {row.durationMs !== null ? <span className="num ml-auto text-ink-2" title="投影墙钟，可能含跨轮间隔；本轮时长见节点证据">{fmtDuration(row.durationMs)}</span> : null}
       </button>
-      {onInspect ? <Button size="sm" variant="quiet" data-testid={tid.nodeEvidence(row.nodeId, row.instanceNo)} onClick={(event) => { event.stopPropagation(); onInspect() }} aria-label={`查看 ${row.nodeId} #${row.instanceNo} 节点证据`}>查看证据</Button> : null}
+      {onInspect ? <Button size="sm" variant="quiet" data-testid={tid.nodeEvidence(row.nodeId, row.instanceNo)} onClick={(event) => { event.stopPropagation(); onInspect(event.currentTarget) }} aria-label={`查看 ${row.nodeId} #${row.instanceNo} 节点证据`}>查看证据</Button> : null}
       </div>
 
       <div className="ribbon-track">

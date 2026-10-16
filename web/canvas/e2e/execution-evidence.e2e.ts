@@ -90,7 +90,17 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
     expect(JSON.stringify(first.input_snapshot)).toContain(input.text)
 
     // 独立证据入口不会选中/改变回滚目标。
-    await page.getByTestId(tid.nodeEvidence('model', 0)).click()
+    const nodeOpener = page.getByTestId(tid.nodeEvidence('model', 0))
+    const nodePanel = page.getByTestId(TID.nodeEvidence)
+    await nodeOpener.click()
+    await expect(nodePanel).toBeFocused()
+    await expect(nodePanel.getByRole('heading', { name: '节点证据', exact: true })).toBeInViewport()
+    await page.getByRole('button', { name: '收起证据' }).click()
+    await expect(nodeOpener).toBeFocused()
+    await expect(nodeOpener).toBeInViewport()
+    await nodeOpener.press('Enter')
+    await expect(nodePanel).toBeFocused()
+    await expect(nodePanel.getByRole('heading', { name: '节点证据', exact: true })).toBeInViewport()
     await expect(page.getByTestId(TID.rollbackSubmit)).toBeDisabled()
     const evidence = page.getByTestId(TID.attemptEvidence)
     await expect(evidence).toContainText('engineering-round-1')
@@ -112,16 +122,24 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
       return rows
     }
     await expect.poll(async () => (await readAudit()).length, { timeout: 30_000 }).toBeGreaterThan(100)
-    const allAudit = await readAudit()
-    await page.getByRole('button', { name: '刷新审计', exact: true }).click()
+    const auditRefresh = page.getByRole('button', { name: '刷新审计', exact: true })
+    await auditRefresh.click()
     await expect(page.getByTestId(TID.auditCount)).toContainText('已加载 100 条 · 仍有更多')
-    while (await page.getByTestId(TID.auditMore).count()) {
-      await page.getByTestId(TID.auditMore).click()
-      await expect.poll(async () => await page.getByTestId(TID.auditMore).count() === 0 || await page.getByTestId(TID.auditMore).isEnabled()).toBe(true)
-    }
-    await expect(page.getByTestId(TID.auditCount)).toContainText(`已加载 ${allAudit.length} 条 · 已到末页`)
-    const displayedIds = await page.getByTestId(TID.auditList).locator('tbody tr[data-event-id]').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-event-id')))
-    expect(displayedIds.sort()).toEqual(allAudit.map((row) => row.id).sort())
+    let allAudit: AuditEvent[] = []
+    // >100和SUCCEEDED都不代表audit_pending排空：有界等待本次API/UI集合一致。
+    await expect(async () => {
+      allAudit = await readAudit()
+      expect(allAudit.length).toBeGreaterThan(100)
+      await auditRefresh.click()
+      await expect(auditRefresh).toBeEnabled()
+      while (await page.getByTestId(TID.auditMore).count()) {
+        await page.getByTestId(TID.auditMore).click()
+        await expect(auditRefresh).toBeEnabled()
+      }
+      const displayedIds = await page.getByTestId(TID.auditList).locator('tbody tr[data-event-id]').evaluateAll((rows) => rows.map((row) => row.getAttribute('data-event-id')))
+      expect(displayedIds.sort()).toEqual(allAudit.map((row) => row.id).sort())
+      await expect(page.getByTestId(TID.auditCount)).toContainText(`已加载 ${allAudit.length} 条 · 已到末页`)
+    }).toPass({ timeout: 30_000, intervals: [500, 1000] })
     const rawAuditPages = page.locator('details').filter({ has: page.locator('summary', { hasText: /^审计第 \d+ 页服务端响应原文$/ }) })
     const rawAuditText = (await rawAuditPages.locator('pre').allTextContents()).join('\n')
     expect(rawAuditText).toMatch(new RegExp(`"definition_id"\\s*:\\s*${id}([,}])`))
@@ -133,16 +151,25 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
     await expect(auditRow).toContainText('payload（解析后）')
     await expect(auditRow).toContainText('成本 0 USD')
     expect(modelAudit.trace_id).toMatch(/^[0-9a-f]{32}$/)
-    await auditRow.getByRole('button', { name: /查询 trace/ }).click()
+    const traceOpener = auditRow.getByRole('button', { name: /查询 trace/ })
+    await traceOpener.click()
     const traceTable = page.getByTestId(TID.traceAuditList)
     const tracePanel = traceTable.locator('..').locator('..')
     const traceRefresh = tracePanel.getByRole('button', { name: '刷新审计', exact: true })
+    await expect(tracePanel).toBeFocused()
+    await expect(tracePanel.getByRole('heading', { name: 'Trace 审计', exact: true })).toBeInViewport()
     await expect(traceRefresh).toBeEnabled()
     while (await tracePanel.getByRole('button', { name: '加载更多审计', exact: true }).count()) {
       await tracePanel.getByRole('button', { name: '加载更多审计', exact: true }).click()
       await expect(traceRefresh).toBeEnabled()
     }
     await expect(traceTable).toContainText(first.attempt_id)
+    await page.getByRole('button', { name: '收起 Trace' }).click()
+    await expect(traceOpener).toBeFocused()
+    await expect(traceOpener).toBeInViewport()
+    await traceOpener.press('Enter')
+    await expect(page.getByRole('region', { name: 'Trace 审计' })).toBeFocused()
+    await expect(page.getByRole('region', { name: 'Trace 审计' }).getByRole('heading', { name: 'Trace 审计' })).toBeInViewport()
     await page.getByRole('button', { name: '收起 Trace' }).click()
 
     // 原回滚漏斗：时间带选点→布防→显式确认→真实后端重跑。
@@ -179,11 +206,13 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
 
     await testInfo.attach('persisted-engineering-evidence', { body: JSON.stringify({ execId, input, first, second, projection, allAudit, calls }, null, 2), contentType: 'application/json' })
     await page.getByTestId(tid.themeOption('dark')).click()
-    await page.getByTestId(TID.nodeEvidence).screenshot({ path: testInfo.outputPath('node-rounds-dark.png') })
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+    await page.getByTestId(TID.nodeEvidence).screenshot({ path: testInfo.outputPath('node-rounds-dark.png'), animations: 'disabled' })
     await page.getByTestId(tid.themeOption('light')).click()
-    await page.getByTestId(TID.nodeEvidence).screenshot({ path: testInfo.outputPath('node-rounds-light.png') })
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+    await page.getByTestId(TID.nodeEvidence).screenshot({ path: testInfo.outputPath('node-rounds-light.png'), animations: 'disabled' })
     await page.getByTestId(TID.auditList).locator('thead').scrollIntoViewIfNeeded()
-    await page.screenshot({ path: testInfo.outputPath('audit-light.png') })
+    await page.screenshot({ path: testInfo.outputPath('audit-light.png'), animations: 'disabled' })
   } finally {
     server.closeAllConnections()
     await new Promise<void>((resolve, reject) => server.close((err) => err && 'code' in err && err.code !== 'ERR_SERVER_NOT_RUNNING' ? reject(err) : resolve()))

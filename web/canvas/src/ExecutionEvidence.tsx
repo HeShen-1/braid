@@ -1,7 +1,7 @@
 // T23.9：仅消费既有证据读面。投影与轮次台账并非事务快照，缺失不补造。
 import { useEffect, useRef, useState } from 'react'
 import { ApiError, api, evidenceResponse, type AuditEvent, type NodeAttempt, type NodeAttemptSummary, type NodeProjection } from './api.ts'
-import { Button, KV, Panel, PanelHead } from './ui/primitives.tsx'
+import { Button, KV, PanelHead } from './ui/primitives.tsx'
 import { TID, tid } from './ui/testids.ts'
 import { Duration, Timestamp } from './ui/time.tsx'
 import './styles/execution-evidence.css'
@@ -17,6 +17,17 @@ export function EvidenceRaw({ value, label = '服务端响应原文' }: { value:
 
 function RawText({ text, label }: { text: string | undefined; label: string }) {
   return <details className="evidence-disclosure"><summary>{label}</summary><pre className="exec-json evidence-json">{text ?? '原文未保留，请刷新证据。'}</pre></details>
+}
+
+/** 只在证据面挂载时定位；poll、翻页和读取完成均不能抢焦点。 */
+function useEvidenceFocus(enabled = true) {
+  const ref = useRef<HTMLElement>(null)
+  useEffect(() => {
+    if (!enabled) return
+    ref.current?.focus({ preventScroll: true })
+    ref.current?.scrollIntoView?.({ block: 'start' })
+  }, [enabled])
+  return ref
 }
 
 function readError(err: unknown): string {
@@ -51,6 +62,7 @@ export function NodeEvidence({
   execId: string; nodeId: string; instanceNo: number; refreshKey: number
   onAuthExpired: () => void; onClose: () => void
 }) {
+  const panelRef = useEvidenceFocus()
   const [projection, setProjection] = useState<NodeProjection | null>(null)
   const [attempts, setAttempts] = useState<NodeAttemptSummary[]>([])
   const [attemptsRaw, setAttemptsRaw] = useState<string>()
@@ -109,7 +121,7 @@ export function NodeEvidence({
   }, [refreshKey])
 
   return (
-    <section className="panel" data-testid={TID.nodeEvidence} aria-label={`节点证据 ${nodeId} #${instanceNo}`}>
+    <section ref={panelRef} tabIndex={-1} className="panel evidence-focus" data-testid={TID.nodeEvidence} aria-label={`节点证据 ${nodeId} #${instanceNo}`}>
       <PanelHead title="节点证据" sub={`${nodeId} #${instanceNo}`} actions={
         <><Button size="sm" disabled={loading} onClick={() => setRetry((n) => n + 1)}>刷新证据</Button><Button size="sm" variant="quiet" onClick={onClose}>收起证据</Button></>
       } />
@@ -198,8 +210,9 @@ const EVENT_LABEL: Record<string, string> = {
 
 export function AuditEvidence({ executionId, traceId, partition, refreshKey, onAuthExpired, onTrace, onClose }: {
   executionId?: string; traceId?: string; partition?: string; refreshKey: number
-  onAuthExpired: () => void; onTrace: (id: string) => void; onClose?: () => void
+  onAuthExpired: () => void; onTrace: (id: string, opener: HTMLButtonElement) => void; onClose?: () => void
 }) {
+  const panelRef = useEvidenceFocus(traceId !== undefined)
   const [items, setItems] = useState<AuditEvent[]>([])
   const [rawPages, setRawPages] = useState<string[]>([])
   const [cursor, setCursor] = useState('')
@@ -246,7 +259,7 @@ export function AuditEvidence({ executionId, traceId, partition, refreshKey, onA
   }, [refreshKey])
 
   return (
-    <Panel>
+    <section ref={panelRef} tabIndex={traceId !== undefined ? -1 : undefined} className="panel evidence-focus" aria-label={traceId !== undefined ? 'Trace 审计' : undefined}>
       <PanelHead title={traceId === undefined ? '审计事件' : 'Trace 审计'} sub={
         <span data-testid={traceId === undefined ? TID.auditCount : undefined}>已加载 {items.length} 条{cursor ? ' · 仍有更多' : loading || error ? '' : ' · 已到末页'}{partition ? ` · 分区 ${partition}` : ''}</span>
       } actions={<><Button size="sm" disabled={loading} onClick={() => setRetry((n) => n + 1)}>刷新审计</Button>{onClose ? <Button size="sm" variant="quiet" onClick={onClose}>收起 Trace</Button> : null}</>} />
@@ -277,7 +290,7 @@ export function AuditEvidence({ executionId, traceId, partition, refreshKey, onA
                 <code className="evidence-note" title={ev.row_hash ?? undefined}>链 {ev.row_hash ? ev.row_hash.slice(0, 8) : '未记录'}</code>
               </td>
               <td><code>{ev.node_id ?? '—'}</code><code className="evidence-note">attempt_id {ev.attempt_id ?? '未记录'}</code>
-                {ev.trace_id ? <Button size="sm" variant="quiet" className="evidence-trace" onClick={() => onTrace(ev.trace_id!)} title={ev.trace_id}>查询 trace <code>{ev.trace_id}</code></Button> : <span className="evidence-note">trace_id 未记录</span>}
+                {ev.trace_id ? <Button size="sm" variant="quiet" className="evidence-trace" onClick={(event) => onTrace(ev.trace_id!, event.currentTarget)} title={ev.trace_id}>查询 trace <code>{ev.trace_id}</code></Button> : <span className="evidence-note">trace_id 未记录</span>}
               </td>
               <td><EvidenceUsage usage={ev} estimated={ev.cost_estimated} /></td>
               <td><span>{ev.actor_type}:{ev.actor_id}</span><span className="evidence-note"><Timestamp iso={ev.event_at} /></span></td>
@@ -286,6 +299,6 @@ export function AuditEvidence({ executionId, traceId, partition, refreshKey, onA
         </table>
       </div>
       {cursor ? <div className="panel-body"><Button disabled={loading} data-testid={traceId === undefined ? TID.auditMore : undefined} onClick={() => setPages((n) => n + 1)}>加载更多审计</Button></div> : null}
-    </Panel>
+    </section>
   )
 }
