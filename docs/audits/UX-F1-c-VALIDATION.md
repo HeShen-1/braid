@@ -53,7 +53,7 @@
 | 发现 | 当时原件与结果 | 修复及边界 |
 |---|---|---|
 | 首个非零柱采样混入 AA | 6d91 官方首轮在新总览 case 失败：1/93 柱约 0.8 实像素，旧点 `[84,86,91]` 与期望差 94；同图峰值实体点精确命中 `[178,181,188]` | 34f960 采峰值真实内点，用 CTM/屏幕边框定位，保留 RGB ≤3；没有改业务柱高、分布比例或放宽门限。原始 trace/PNG 与 `review/030-round1-png-sampling-analysis.json` 保留 |
-| 大样本污染旧审批旅程 | 6d91 首轮新增 Alice 大量等待审批，原始 API 200、待办总数 103/104，最旧优先的 20 行首屏容纳了本项 cohort，旧两个新待办不在页内 | 34f960 改本项专用合法隔离 username；DSL 明确不将账号存在作为发布期判据，待办按快照名单精确过滤。未改 Alice/Bob、种子、分页业务或旧 e2e；第二轮旧两旅程均恢复通过 |
+| 大样本污染旧审批旅程 | 6d91 首轮新增 Alice 大量等待审批，原始 API 200、待办总数 103/104，20 行首屏容纳了本项 cohort，旧两个新待办不在页内 | 34f960 改本项专用合法隔离 username；DSL 明确不将账号存在作为发布期判据，待办按快照名单精确过滤。未改 Alice/Bob、种子、分页业务或旧 e2e；第二轮旧两旅程均恢复通过 |
 | SVGRect 序列化兼容性 | 34f960 第二轮新增 case 原生失败：真实浏览器 `bar.getBBox(...).toJSON is not a function`；TypeScript 检查未覆盖这个运行时差异 | a9f46b4 显式读取 `{x,y,width,height}`，不对 SVGRect 调 `toJSON()`；真实 DOMRect 测量保留。先以隔离 Chromium 执行实际新测量原码验证，再进入正式全套 |
 | 轴线无足够实绘实体 | 独审从纯无柱间隙确认：1 SVG 单位在 100→80 高缩成 0.8px，最强 `[61,63,67]` / 背景 `[8,9,10]` 仅 1.889:1；早先落柱内的 x300 采点不构成轴证据 | a9f46b4 局部轴改 `stroke-width:2px; vector-effect:non-scaling-stroke`，令牌/比例/数据/CSP 不变；补纯轴间隙真实 PNG 回归，官方四组实体像素实测另证。保留 `review/033-round1-axis-painted-analysis.json` 与更正记录 |
 | **H5 / M/P2：刷新破坏键盘焦点；closed** | a9f46b4 独立真实 UI：09:04:04.808 为 BUTTON/focus-visible/busy=false，Enter 后 09:04:05.003 为 BODY；09:04:05.055 重新聚焦后不操作，09:04:10.020 自动轮询再次使焦点变 BODY。原件为 `visual/a9f46b4.../independent-review/` native 步骤 024–037；该轮官方脚本虽 23/23 原生 0，realUI fail 使整轮生命周期原生 1 | f8ebe1c 产品仅一行 `disabled={refreshing}` 改为 `aria-disabled={refreshing}`，沿用既有 inFlight 去重、忙态文案和 solid 2px 焦点，不写主动恢复焦点，不改 CSS/共享 primitive/旧 refresh。060 修复前新两条单测均失败，061 修复后组件 9/9，068 全量 347/347；官方 12 个真实阶段通过。**独立四矩阵 Enter/Space/真实自动轮询/在途移焦去重及 2px 实绘复验通过，H5 closed。** |
