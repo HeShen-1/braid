@@ -7,6 +7,10 @@ describe('共享错误词表', () => {
     expect(apiErrorText(new ApiError(403, 'role_denied', []))).toContain('当前账号没有执行此操作的角色权限')
     expect(apiErrorText(new ApiError(500, 'future_protocol_code', []))).toContain('future_protocol_code')
     expect(errorCodeText('future_node_failure')).toBe('future_node_failure')
+    for (const code of ['constructor', '__proto__', 'toString']) {
+      expect(errorCodeText(code)).toBe(code)
+      expect(apiErrorText(new ApiError(500, code, []))).toContain(code)
+    }
     expect(apiErrorText(new TypeError('offline'))).toContain('检查网络')
   })
 

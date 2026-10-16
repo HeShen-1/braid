@@ -38,12 +38,12 @@ export const ERROR_TEXT: Record<string, string> = {
 }
 
 export function errorCodeText(code: string): string {
-  return ERROR_TEXT[code] ?? code
+  return Object.hasOwn(ERROR_TEXT, code) ? ERROR_TEXT[code]! : code
 }
 
 export function apiErrorText(err: unknown): string {
   if (!(err instanceof ApiError)) return ERROR_TEXT.network_error!
-  const known = ERROR_TEXT[err.code]
+  const known = Object.hasOwn(ERROR_TEXT, err.code) ? ERROR_TEXT[err.code] : undefined
   if (known !== undefined) return `${known}（${err.code}）`
   if (err.status === 403) return `当前账号无权访问此资源（${err.code}）。`
   if (err.status === 404) return `目标不存在或已不可用，请返回列表确认（${err.code}）。`
