@@ -25,36 +25,35 @@
 }
 
 /* ============================================================
-   braid 控制台 —— 世界「控制室夜班」
-   近黑偏蓝绿的无光地面（未点亮的荧光屏）；层级 = 亮度台阶 + 发丝线，
+   braid 控制台 —— 运营面「Linear 近黑」(UX-F1-a)
+   中性近黑的无光地面；层级 = 亮度台阶 + 发丝线，
    不靠投影、不靠发光。色相只承担状态语义，交互靠亮度，二者不混用。
    ============================================================ */
 
 @theme {
   /* ---- 地面：四段亮度台阶 ---- */
-  --color-ground-0: #0a0e13; /* 应用底 */
-  --color-ground-1: #101720; /* 面板 */
-  --color-ground-2: #16202b; /* 抬升：输入、表头 */
-  --color-ground-3: #1e2a37; /* 悬停 */
-  --color-ground-4: #273543; /* 选中、按下 */
+  --color-ground-0: #08090a; /* 应用底 */
+  --color-ground-1: #101113; /* 面板 */
+  --color-ground-2: #18191c; /* 抬升：输入、表头 */
+  --color-ground-3: #232428; /* 悬停 */
+  --color-ground-4: #2b2d31; /* 选中、按下 */
 
   /* ---- 发丝线 ----
      line-2 是交互控件描边与 DAG 连线的唯一来源;对比度按 WCAG 非文本
      图形 ≥3:1 定档(收尾评审:旧值 #37485a 在 ground-0 上仅 2.06:1,
      而连线是读懂 DAG 结构的必要图形)。 */
-  --color-line-0: #1b2530; /* 结构分割 */
-  --color-line-1: #26333f; /* 可见分隔 */
-  --color-line-2: #5b7185; /* 交互控件描边、连线:内外邻接都过 3:1(ground-0 3.82 / g1 3.56 / 控件自身填充 g2 3.25) */
+  --color-line-0: #222428; /* 结构分割 */
+  --color-line-1: #303237; /* 可见分隔 */
+  --color-line-2: #72767d; /* 交互控件描边、连线:内外邻接都过 3:1 */
 
   /* ---- 墨色 ----
      每一档都按它真正落地的地面定档,不留"看起来更安静"的欠对比档:
-     ink-2 最亮落在 ground-2(表头)/ground-3(悬停行)上 → 5.5:1 / 4.9:1;
-     ink-3 最亮落在 ground-2(输入框占位符)上 → 4.5:1。
+     ink-2/ink-3 同时覆盖 ground-2(表头/占位符)与 ground-3(悬停行)。
      禁用态仍用 ink-3 的视觉位置,靠背景与 cursor 区分。 */
-  --color-ink-0: #e8eff6; /* 主文本 */
-  --color-ink-1: #a7b7c6; /* 次文本 */
-  --color-ink-2: #8497ab; /* 三级:表头、微标签、提示 */
-  --color-ink-3: #76889b; /* 四级:占位符、时间戳、待填 */
+  --color-ink-0: #eeeff1; /* 主文本 */
+  --color-ink-1: #b2b5bc; /* 次文本 */
+  --color-ink-2: #969ba5; /* 三级:表头、微标签、提示 */
+  --color-ink-3: #888e99; /* 四级:占位符、时间戳、待填 */
 
   /* ---- 状态语义（色相 + 形状双编码） ---- */
   --color-sig-idle: #3a4a5a; /* 未开始 */
@@ -72,8 +71,8 @@
   /* ---- 主操作实体(深色形态;浅色档在文件末覆盖)----
      决策 2「交互靠亮度」的可移植写法:主操作 = 该世界里亮度对比最大的实体,
      亮主题取最暗实体、暗主题取最亮实体,同一句规则两态成立。 */
-  --color-primary-action: #e8eff6;
-  --color-primary-ink: #0a0e13;
+  --color-primary-action: #eeeff1;
+  --color-primary-ink: #08090a;
 
   /* ---- 字体 ---- */
   --font-sans:
@@ -236,6 +235,85 @@
 }
 
 @layer components {
+  /* ---------- 壳层(UX-F1-a):导航与路由身份分两行 ---------- */
+
+  .console-shell {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-width: 0;
+    background: var(--color-ground-0);
+  }
+
+  .shell-topbar {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 1.5rem;
+    min-height: 3rem;
+    padding: 0 1.25rem;
+    border-bottom: 1px solid var(--color-line-0);
+    background: var(--color-ground-1);
+  }
+
+  .shell-nav,
+  .shell-tools,
+  .shell-account,
+  .shell-pulse,
+  .shell-pulse-stat {
+    display: flex;
+    align-items: center;
+  }
+
+  .shell-nav { gap: 0.25rem; }
+  .shell-tools { gap: 1rem; margin-left: auto; min-width: 0; }
+  .shell-account { gap: 0.75rem; min-width: 0; }
+  .shell-tab {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.45rem;
+    height: 1.875rem;
+    padding: 0 0.75rem;
+    border-radius: 5px;
+    color: var(--color-ink-2);
+    font-size: var(--text-sm);
+    font-weight: 500;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .shell-tab:hover { color: var(--color-ink-0); background: var(--color-ground-2); }
+  .shell-tab[aria-current='page'] { color: var(--color-ink-0); background: var(--color-ground-3); }
+  .shell-identity { display: flex; align-items: baseline; gap: 0.5rem; min-width: 0; }
+  .shell-user { max-width: 9rem; overflow: hidden; text-overflow: ellipsis; }
+  .shell-roles { color: var(--color-ink-2); white-space: nowrap; }
+  .shell-pulse { gap: 1rem; padding-right: 1rem; border-right: 1px solid var(--color-line-0); }
+  .shell-pulse-stat { gap: 0.35rem; white-space: nowrap; }
+  .shell-pulse-dot { width: 5px; height: 5px; border-radius: 50%; }
+  .shell-pulse-dot[data-tone='run'] { background: var(--color-sig-run); }
+  .shell-pulse-dot[data-tone='wait'] { background: var(--color-sig-wait); }
+  .shell-pulse-dot[data-tone='fail'] { background: var(--color-sig-fail); }
+
+  .shell-route-header {
+    display: flex;
+    align-items: center;
+    flex: 0 0 auto;
+    gap: 0.875rem;
+    min-height: 2.875rem;
+    padding: 0 1.5rem;
+    border-bottom: 1px solid var(--color-line-0);
+    background: var(--color-ground-0);
+  }
+
+  .shell-route-header h1 { color: var(--color-ink-0); font-size: var(--text-md); font-weight: 600; }
+  .shell-route-context { padding-left: 0.875rem; border-left: 1px solid var(--color-line-1); color: var(--color-ink-2); font-size: var(--text-xs); }
+  .shell-content { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; }
+
+  @media (max-width: 1279px) {
+    .shell-pulse { display: none; }
+    .shell-topbar { gap: 1rem; }
+  }
+
   /* ---------- 排版原语 ---------- */
 
   .micro {
@@ -1153,10 +1231,10 @@
 }
 
 /* ---------- 深色世界(默认世界)----------
-   深色档的唯一定义处是上方的 `@theme`(T21.1 定档值一字未改):
+   深色档的唯一定义处是上方的 `@theme`(UX-F1-a 的中性近黑运营面):
    无属性 / `data-theme='dark'` / `auto` + 系统深色,三种情形都直接落在那里,
    故此处不再复制一份 —— T21.3 之前这里有一份重复的深色块,已删。
-   深色 = 默认世界(D-2026-10-09-console-v2 决策 1),零闪烁靠的正是这一点。 */
+   壳层/审批/执行默认近黑；画布的分面默认由 UX-F1-b 承接(D-2026-10-15-console-references)。 */
 
 /* ============================================================
    shadcn 复合组件 ↔ 自研词汇适配(T21.3 决策 3)

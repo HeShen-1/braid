@@ -2,7 +2,7 @@
 // 脉冲条是色相在壳层里唯一的工作:执行中 / 等待审批 / 失败 三个计数,
 // 其中"等待审批"是 braid 的核心运营数字(挂起不占 worker,但人在等)。
 import { useEffect, useState, type ReactNode } from 'react'
-import { NavLink } from 'react-router'
+import { NavLink, useLocation } from 'react-router'
 import { Activity, LogOut, Stamp, Workflow } from 'lucide-react'
 import { ApiError, api } from '../api.ts'
 import { useAuth } from '../auth.tsx'
@@ -70,22 +70,23 @@ function usePulse(active: boolean, onAuthExpired: () => void): { pulse: Pulse | 
 
 function PulseStat({ tone, value, label }: { tone: string; value: number | undefined; label: string }) {
   return (
-    <span className="flex items-baseline gap-1.5" title={`${label} ${value}`}>
-      <span
-        className="inline-block size-1.5 translate-y-[-1px] rounded-full"
-        style={{ background: `var(--color-sig-${tone})` }}
-        aria-hidden
-      />
+    <span className="shell-pulse-stat" title={`${label} ${value ?? '未知'}`}>
+      <span className="shell-pulse-dot" data-tone={tone} aria-hidden />
       <span className="num text-sm font-semibold text-ink-0">{value ?? '—'}</span>
       <span className="text-xs text-ink-2">{label}</span>
     </span>
   )
 }
 
-const navClass = 'tab'
+const navClass = 'shell-tab'
 
 export function AppShell({ children }: { children: ReactNode }) {
   const { user, logout, roles, expiresAt } = useAuth()
+  const { pathname } = useLocation()
+  const domain = pathname.split('/')[1]
+  const routeTitle = domain === 'approvals' ? '审批' : domain === 'executions' ? '执行' : '工作流'
+  const routeContext = domain === 'approvals' ? (pathname.split('/').filter(Boolean).length > 1 ? '审批详情' : '待办队列')
+    : domain === 'executions' ? (pathname.split('/').filter(Boolean).length > 1 ? '执行详情' : '执行记录') : '编排工作区'
   const { dirty } = useWorkflow()
   const exit = useConfirmLayer()
   const { pulse, error: pulseError } = usePulse(user !== null, logout)
@@ -98,11 +99,11 @@ export function AppShell({ children }: { children: ReactNode }) {
   const remaining = expiresAt === null ? Infinity : new Date(expiresAt).getTime() - now
 
   return (
-    <div className="flex h-full flex-col bg-ground-0" data-testid={TID.shell}>
-      <header className="flex h-13 shrink-0 items-center gap-6 border-b border-line-1 bg-ground-1 px-4">
-        <Wordmark />
+    <div className="console-shell" data-testid={TID.shell}>
+      <header className="shell-topbar">
+        <Wordmark compact />
 
-        <nav className="tabs" aria-label="主域导航">
+        <nav className="shell-nav" aria-label="主域导航">
           <NavLink to="/workflows" className={navClass} data-testid={TID.navWorkflows}>
             <I glyph={Workflow} />
             工作流
@@ -117,18 +118,18 @@ export function AppShell({ children }: { children: ReactNode }) {
           </NavLink>
         </nav>
 
-        <div className="ml-auto flex items-center gap-5">
-            <div className="hidden items-center gap-4 border-r border-line-0 pr-5 xl:flex" aria-label="运行脉冲" title="当前租户的执行计数；审批队列只列分配给当前账号的待办节点">
+        <div className="shell-tools">
+            <div className="shell-pulse" aria-label="运行脉冲" title="当前租户的执行计数；审批队列只列分配给当前账号的待办节点">
               <PulseStat tone="run" value={pulse?.running} label="执行中" />
               <PulseStat tone="wait" value={pulse?.waiting} label="待审批执行" />
               <PulseStat tone="fail" value={pulse?.failed} label="失败" />
               {pulseError !== '' ? <span role="status" className="text-xs text-ink-2" title={pulseError}>{pulse === null ? '脉冲未能读取' : '脉冲刷新失败 · 保留上次值'}</span> : pulse === null ? <span className="text-xs text-ink-2">正在读取</span> : null}
             </div>
 
-          <div className="flex items-center gap-2">
-            <ThemeControl className="mr-1" />
-            <span className="mono text-xs text-ink-1" data-testid={TID.whoami} title="当前账号">
-              {user}<span className="ml-2 text-ink-2">{roles.length > 0 ? roles.join(' / ') : '角色未知'}</span>
+          <div className="shell-account">
+            <ThemeControl />
+            <span className="shell-identity text-xs text-ink-1" data-testid={TID.whoami} title={`当前账号：${user} · ${roles.length > 0 ? roles.join(' / ') : '角色未知'}`}>
+              <span className="mono shell-user">{user}</span><span className="shell-roles">{roles.length > 0 ? roles.join(' / ') : '角色未知'}</span>
             </span>
             <button
               ref={exit.armRef}
@@ -145,6 +146,8 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </header>
 
+      <RouteHeader title={routeTitle} sub={routeContext} />
+
       {roles.length === 0 ? <p className="border-b border-line-0 px-4 py-2 text-sm text-ink-2" role="status">当前会话缺少角色信息，只读浏览；请重新登录以恢复相应写操作。</p> : null}
       {remaining <= 5 * 60_000 && remaining > 0 ? <p className="border-b border-line-0 px-4 py-2 text-sm text-ink-1" role="status">会话即将到期，请保存当前工作；到期后需要重新登录。</p> : null}
 
@@ -159,7 +162,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         />
       ) : null}
 
-      <main className="flex min-h-0 flex-1 flex-col">{children}</main>
+      <main className="shell-content">{children}</main>
     </div>
   )
 }
@@ -175,10 +178,10 @@ export function RouteHeader({
   actions?: ReactNode
 }) {
   return (
-    <div className="flex h-14 shrink-0 items-center gap-4 border-b border-line-0 px-4">
-      <h1 className="text-lg font-semibold tracking-[-0.02em] text-ink-0">{title}</h1>
-      {sub !== undefined ? <div className="min-w-0 text-xs text-ink-2 num">{sub}</div> : null}
-      <div className="ml-auto flex items-center gap-2">{actions}</div>
+    <div className="shell-route-header">
+      <h1>{title}</h1>
+      {sub !== undefined ? <div className="shell-route-context">{sub}</div> : null}
+      {actions !== undefined ? <div className="ml-auto flex items-center gap-2">{actions}</div> : null}
     </div>
   )
 }
