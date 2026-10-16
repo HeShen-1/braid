@@ -206,12 +206,42 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
     expect(calls.every((call) => JSON.stringify(call.messages).includes(input.text))).toBe(true)
 
     await testInfo.attach('persisted-engineering-evidence', { body: JSON.stringify({ execId, input, first, second, projection, allAudit, calls }, null, 2), contentType: 'application/json' })
+    // 通过既有入口回到面板顶部；只拍真实视口，避免长元素截图越出滚动容器。
+    await page.getByRole('button', { name: '收起证据' }).click()
+    await expect(nodeOpener).toBeFocused()
+    await nodeOpener.press('Enter')
+    await expect(nodePanel.getByRole('heading', { name: '节点证据', exact: true })).toBeInViewport()
+    await nodePanel.getByRole('button', { name: '第 1 轮', exact: true }).click()
+    await expect(evidence).toContainText('engineering-round-1')
     await page.getByTestId(tid.themeOption('dark')).click()
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
-    await page.getByTestId(TID.nodeEvidence).screenshot({ path: testInfo.outputPath('node-rounds-dark.png'), animations: 'disabled' })
+    await expect(page.getByTestId(tid.attemptRow(1))).toBeInViewport()
+    await expect(page.getByTestId(tid.attemptRow(2))).toBeInViewport()
+    await page.screenshot({ path: testInfo.outputPath('node-rounds-dark.png'), animations: 'disabled' })
     await page.getByTestId(tid.themeOption('light')).click()
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-    await page.getByTestId(TID.nodeEvidence).screenshot({ path: testInfo.outputPath('node-rounds-light.png'), animations: 'disabled' })
+    await page.screenshot({ path: testInfo.outputPath('node-rounds-light.png'), animations: 'disabled' })
+
+    const inputJSON = evidence.locator(':scope > pre').nth(0)
+    const outputJSON = evidence.locator(':scope > pre').nth(1)
+    await expect(inputJSON).toContainText(input.text)
+    await expect(outputJSON).toContainText('engineering-round-1')
+    const detailBox = (await page.getByTestId(TID.execDetail).boundingBox())!
+    const inputBox = (await inputJSON.boundingBox())!
+    const outputBox = (await outputJSON.boundingBox())!
+    // 鼠标停在详情滚动容器内，按真实几何把输入/输出共同滚入视口。
+    await page.mouse.move(detailBox.x + detailBox.width - 20, detailBox.y + detailBox.height / 2)
+    await page.mouse.wheel(0, (inputBox.y + outputBox.y + outputBox.height) / 2 - (detailBox.y + detailBox.height / 2))
+    await expect(inputJSON).toBeInViewport({ ratio: 1 })
+    await expect(outputJSON).toBeInViewport({ ratio: 1 })
+    await page.screenshot({ path: testInfo.outputPath('node-io-light.png'), animations: 'disabled' })
+    await page.getByTestId(tid.themeOption('dark')).click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+    await expect(inputJSON).toBeInViewport({ ratio: 1 })
+    await expect(outputJSON).toBeInViewport({ ratio: 1 })
+    await page.screenshot({ path: testInfo.outputPath('node-io-dark.png'), animations: 'disabled' })
+    await page.getByTestId(tid.themeOption('light')).click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
     await page.getByTestId(TID.auditList).locator('thead').scrollIntoViewIfNeeded()
     await page.screenshot({ path: testInfo.outputPath('audit-light.png'), animations: 'disabled' })
   } finally {
