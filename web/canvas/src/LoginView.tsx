@@ -2,7 +2,7 @@
 import { useState, type FormEvent } from 'react'
 import { useLocation, useNavigate } from 'react-router'
 import { TriangleAlert } from 'lucide-react'
-import { ApiError } from './api.ts'
+import { apiErrorText } from './ui/errors.ts'
 import { useAuth } from './auth.tsx'
 import { BrandMark } from './shell/BrandMark.tsx'
 import { Alert, Button } from './ui/primitives.tsx'
@@ -32,7 +32,7 @@ export function LoginView() {
       await login(username, password)
       void navigate(from, { replace: true })
     } catch (err) {
-      setError(loginMessage(err))
+      setError(apiErrorText(err))
     } finally {
       setBusy(false)
     }
@@ -90,25 +90,4 @@ export function LoginView() {
       </div>
     </div>
   )
-}
-
-/** 401 与网络故障必须区分：后者不能把用户引向改密码的死胡同。 */
-function loginMessage(err: unknown): string {
-  if (err instanceof ApiError) {
-    switch (err.code) {
-      case 'invalid_credentials':
-      case 'unknown_user':
-      case 'invalid_input':
-        return '用户名或密码不正确。'
-      case 'too_many_attempts':
-        return '尝试次数过多，请稍后再试。'
-      case 'account_locked':
-        return '账号已被锁定，请联系管理员。'
-      case 'user_disabled':
-        return '账号已停用。'
-      default:
-        return `登录失败（${err.code}）。`
-    }
-  }
-  return '无法连接服务，请检查网络后重试。'
 }

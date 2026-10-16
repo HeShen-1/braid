@@ -140,7 +140,8 @@ function LlmSection({ spec, update }: Sec<Extract<DslNode, { type: 'llm' }>>) {
       <Section title="模型与采样">
         <TextField
           label="模型"
-          hint="留空用平台默认"
+          hint="填写模型服务支持的名称；平台不会自动补默认模型"
+          error={(spec.model ?? '').trim() === '' ? '模型未配置，执行此节点会失败。' : undefined}
           value={spec.model ?? ''}
           onChange={(v) => update((s) => (s.type === 'llm' ? { ...s, model: v } : s))}
         />

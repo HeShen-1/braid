@@ -18,7 +18,7 @@ import { Clock, CircleAlert, ListTree } from 'lucide-react'
 import type { NodeExecution } from './api.ts'
 import { I } from './ui/I.tsx'
 import { Badge, Button, EmptyState, PanelHead, StatusChip } from './ui/primitives.tsx'
-import { nodeStatus, nodeTypeMeta } from './ui/status.ts'
+import { execStatus, nodeStatus, nodeTypeMeta } from './ui/status.ts'
 import { TID, tid } from './ui/testids.ts'
 import { fmtDateTime, fmtDuration, useNow } from './ui/time.tsx'
 
@@ -223,22 +223,16 @@ function rowTitle(n: RibbonNode, seg: RibbonSegment | null, durationMs: number |
 }
 
 /** 图例:实心 = 已发生,斜纹 = 等待审批(时间在走,资源没占)。 */
-const LEGEND: Array<{ state: string; label: string }> = [
-  { state: 'RUNNING', label: '执行中' },
-  { state: 'SUCCEEDED', label: '成功' },
-  { state: 'FAILED', label: '失败' },
-  { state: 'CANCELLED', label: '取消' },
-  { state: 'WAITING_APPROVAL', label: '等待审批' },
-]
+const LEGEND = ['RUNNING', 'SUCCEEDED', 'FAILED', 'CANCELLED', 'WAITING_APPROVAL']
 
 function Legend() {
   return (
     <div className="exec-ribbon-legend">
-      {LEGEND.map((l) => (
-        <span key={l.state} className="exec-ribbon-legend-item">
+      {LEGEND.map((state) => (
+        <span key={state} className="exec-ribbon-legend-item">
           {/* 复用 .ribbon-seg 的 data-state 配色,避免状态映射第二真源 */}
-          <span className="ribbon-seg exec-ribbon-key" data-state={l.state} aria-hidden />
-          {l.label}
+          <span className="ribbon-seg exec-ribbon-key" data-state={state} aria-hidden />
+          {execStatus(state).label}
         </span>
       ))}
     </div>

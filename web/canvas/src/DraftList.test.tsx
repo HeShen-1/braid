@@ -23,6 +23,20 @@ beforeEach(() => {
 })
 
 describe('DraftList(可收起左栏)', () => {
+  it('加载与失败不是空态，重试保留已有列表并有明确出口', async () => {
+    const onRetry = vi.fn()
+    const props = { drafts: [], activeId: null, onOpen: vi.fn(), onNew: vi.fn(), onRetry }
+    const { rerender } = render(<DraftList {...props} loading />)
+    expect(screen.getByRole('status')).toHaveTextContent('正在加载工作流列表')
+    expect(screen.queryByTestId(TID.draftEmpty)).not.toBeInTheDocument()
+    rerender(<DraftList {...props} error="无法连接服务" />)
+    expect(screen.getByRole('alert')).toHaveTextContent('工作流列表读取失败')
+    expect(screen.queryByTestId(TID.draftEmpty)).not.toBeInTheDocument()
+    await userEvent.setup().click(screen.getByRole('button', { name: '重试工作流列表' }))
+    expect(onRetry).toHaveBeenCalledTimes(1)
+    rerender(<DraftList {...props} drafts={drafts} loading />)
+    expect(screen.getByTestId(tid.draftItem('1'))).toBeInTheDocument()
+  })
   it('默认展开:列表与动作在场,收起键可达', () => {
     mount()
     expect(screen.getByTestId(TID.draftList)).toHaveAttribute('aria-label', '工作流列表')

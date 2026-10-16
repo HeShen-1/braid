@@ -70,7 +70,7 @@ describe('CanvasEditor(画布 UI)', () => {
     expect(screen.getByText('#1 → report')).toBeInTheDocument()
     expect(screen.getByText('默认 → revise')).toBeInTheDocument()
     // llm 摘要:model 缺省与模板首行
-    expect(screen.getAllByText('默认模型').length).toBeGreaterThanOrEqual(2)
+    expect(screen.getAllByText('模型未配置', { exact: true }).length).toBeGreaterThanOrEqual(2)
     expect(screen.getByText('解析下述文档,提取关键事实。')).toBeInTheDocument()
   })
 
@@ -81,7 +81,7 @@ describe('CanvasEditor(画布 UI)', () => {
     // 标题缺省回落 id;minimal-llm 原节点 id 是 only,新 id = llm。
     expect(screen.getByText('llm', { selector: '.bn-title' })).toBeInTheDocument()
     expect(screen.getByText('待填提示词')).toBeInTheDocument()
-    expect(screen.getAllByText('默认模型')).toHaveLength(2)
+    expect(screen.getAllByText('模型未配置', { exact: true })).toHaveLength(2)
   })
 
   it('palette 加并行节点:基名 fan(词域合规)', async () => {

@@ -4,10 +4,10 @@
 // T21.3(七条反馈 ②):可收起。折叠态是跨会话 UI 偏好(localStorage,
 // 见 prefs.ts —— 与认证载体的 sessionStorage 分离,决策 6);收起后留一条
 // 窄栏而不是消失:画布不贴边,「这里本来有个面板」这件事不丢。
-import { FilePlus2, PanelLeftClose, PanelLeftOpen, Workflow } from 'lucide-react'
+import { FilePlus2, PanelLeftClose, PanelLeftOpen, RefreshCw, TriangleAlert, Workflow } from 'lucide-react'
 import type { DraftSummary } from './api.ts'
 import { PANEL_LEFT_KEY, useCollapsed } from './prefs.ts'
-import { Badge, Button } from './ui/primitives.tsx'
+import { Alert, Badge, Button } from './ui/primitives.tsx'
 import { I } from './ui/I.tsx'
 import { Timestamp } from './ui/time.tsx'
 import { TID, tid } from './ui/testids.ts'
@@ -23,11 +23,17 @@ export function DraftList({
   activeId,
   onOpen,
   onNew,
+  loading = false,
+  error = '',
+  onRetry,
 }: {
   drafts: DraftSummary[]
   activeId: string | null
   onOpen: (id: string) => void
   onNew: () => void
+  loading?: boolean
+  error?: string
+  onRetry?: () => void
 }) {
   const [collapsed, setCollapsed] = useCollapsed(PANEL_LEFT_KEY)
 
@@ -48,10 +54,10 @@ export function DraftList({
   }
 
   return (
-    <nav className="flex w-64 shrink-0 flex-col border-r border-line-1 bg-ground-1" aria-label="工作流列表" data-testid={TID.draftList}>
+    <nav className="flex w-64 shrink-0 flex-col border-r border-line-1 bg-ground-1" aria-label="工作流列表" aria-busy={loading} data-testid={TID.draftList}>
       <div className="flex h-11 shrink-0 items-center gap-2 border-b border-line-0 px-3">
         <span className="micro">工作流</span>
-        <span className="num text-xs text-ink-2">{drafts.length}</span>
+        <span className="num text-xs text-ink-2">{loading || error !== '' ? '—' : drafts.length}</span>
         <Button
           size="sm"
           variant="quiet"
@@ -74,11 +80,22 @@ export function DraftList({
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
-        {drafts.length === 0 ? (
+        {loading ? <p className="px-3 py-4 text-xs text-ink-2" role="status">正在加载工作流列表…</p> : null}
+        {error !== '' ? (
+          <Alert tone="error" icon={TriangleAlert}>
+            <div className="min-w-0">
+              <strong>工作流列表读取失败</strong>
+              <p>{error}</p>
+              {drafts.length > 0 ? <p>以下保留上次读取的工作流。</p> : null}
+              <Button size="sm" icon={RefreshCw} disabled={loading} onClick={onRetry}>重试工作流列表</Button>
+            </div>
+          </Alert>
+        ) : null}
+        {drafts.length === 0 && !loading && error === '' ? (
           <p className="px-3 py-4 text-xs text-ink-2" data-testid={TID.draftEmpty}>
             暂无工作流，右侧新建。
           </p>
-        ) : (
+        ) : drafts.length > 0 ? (
           <ul className="flex flex-col">
             {drafts.map((d) => {
               const active = activeId === d.id
@@ -111,7 +128,7 @@ export function DraftList({
               )
             })}
           </ul>
-        )}
+        ) : null}
       </div>
     </nav>
   )
