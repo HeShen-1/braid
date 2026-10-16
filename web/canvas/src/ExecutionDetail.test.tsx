@@ -2,7 +2,7 @@
 // data-state,可见文本中文)、时间带节点行(并行实例 + 失败原因就近)、
 // 会签中间态与离开挂起态的剪枝、回滚/续跑/取消(取消要第二下确认)、
 // 409 错误面、终态输出与审计链。fetch 全 stub 按 URL 路由。
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ExecutionDetail } from './ExecutionDetail.tsx'
@@ -13,7 +13,7 @@ function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-function stubRoute(routes: (string | RegExp)[], responder: (url: string, init?: RequestInit) => Response) {
+function stubRoute(routes: (string | RegExp)[], responder: (url: string, init?: RequestInit) => Response | Promise<Response>) {
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
     for (const r of routes) {
@@ -80,6 +80,45 @@ afterEach(() => {
 })
 
 describe('ExecutionDetail(执行详情)', () => {
+  it.each([
+    ['rollback', 403], ['rollback', 0], ['cancel', 403], ['cancel', 0],
+  ] as const)('%s 确认层已开后，读失败或在读期间 %i 均零POST且允许放弃', async (action, status) => {
+    let reads = 0
+    let finish!: (response: Response) => void
+    let reject!: (reason: unknown) => void
+    const pending = new Promise<Response>((resolve, fail) => { finish = resolve; reject = fail })
+    const posts: string[] = []
+    stubRoute([/^\/api\/v1\/executions\/7$/, /\/(rollback|cancel)$/, /\/audit/], (url, init) => {
+      if (init?.method === 'POST') { posts.push(url); return ok({}) }
+      if (url.includes('/audit')) return ok({ items: [], next_cursor: '' })
+      if (++reads > 1) return pending
+      return ok({ ...baseDetail, status: action === 'cancel' ? 'RUNNING' : 'FAILED', nodes: [nodeRow('gate', 0, 'FAILED')] })
+    })
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    const user = userEvent.setup()
+    await screen.findByTestId(tid.nodeRow('gate', 0))
+    if (action === 'rollback') {
+      await user.click(screen.getByTestId(tid.nodeRow('gate', 0)))
+      await user.click(screen.getByTestId(TID.rollbackSubmit))
+    } else await user.click(screen.getByRole('button', { name: '取消执行' }))
+    const confirm = screen.getByTestId(action === 'rollback' ? TID.rollbackConfirm : TID.cancelSubmit)
+    await user.click(screen.getByRole('button', { name: '刷新' }))
+    expect(confirm).toBeDisabled()
+    fireEvent.click(confirm)
+    expect(posts).toEqual([])
+    await act(async () => {
+      if (status === 0) reject(new TypeError('offline'))
+      else finish(ok({ error: 'role_denied' }, status))
+    })
+    expect(await screen.findByRole('alert')).toHaveTextContent('执行详情刷新失败')
+    expect(confirm).toBeDisabled()
+    await user.click(confirm)
+    expect(posts).toEqual([])
+    expect(screen.getByRole('button', { name: '放弃' })).toBeEnabled()
+    await user.click(screen.getByRole('button', { name: '放弃' }))
+    expect(confirm).not.toBeInTheDocument()
+  })
+
   it.each([403, 404, 0])('详情读取失败 %i 有明确原因、重试和返回出口，不启动轮询', async (status) => {
     const intervals = vi.spyOn(globalThis, 'setInterval')
     let failed = true

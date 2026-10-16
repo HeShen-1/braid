@@ -62,6 +62,7 @@ export function ConfirmLayer({
   confirmTestId,
   testId,
   busy = false,
+  confirmDisabled = false,
   className,
   onConfirm,
   onDismiss,
@@ -75,6 +76,8 @@ export function ConfirmLayer({
   /** 层本体的 testid(需要按 id 查的调用点才传;其余靠 role+name)。 */
   testId?: string
   busy?: boolean
+  /** 读取失败/刷新期间只禁确认，仍可放弃或 Esc 退出。 */
+  confirmDisabled?: boolean
   className?: string
   onConfirm: () => void
   onDismiss: () => void
@@ -106,7 +109,7 @@ export function ConfirmLayer({
       }}
     >
       <span className="text-xs text-ink-1">{hint}</span>
-      <Button variant="danger" size="sm" disabled={busy} data-testid={confirmTestId} onClick={onConfirm}>
+      <Button variant="danger" size="sm" disabled={busy || confirmDisabled} data-testid={confirmTestId} onClick={onConfirm}>
         {confirmText}
       </Button>
       <Button variant="quiet" size="sm" disabled={busy} onClick={onDismiss}>

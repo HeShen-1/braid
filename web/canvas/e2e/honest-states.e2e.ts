@@ -1,5 +1,5 @@
-// T23.8：真实 API/worker 验证缺参、缺模型、人工驳回；读取故障另用浏览器
-// route 注入。故障注入只证明显示与退出行为，不冒充后端权限/网络验收。
+// T23.8：缺参验证前端就地阻断；缺模型/人工驳回走真实 API/worker；读取
+// 故障用浏览器 route 注入，只证明显示与退出行为，不冒充后端权限/网络验收。
 import { expect, test, type APIRequestContext, type Page, type TestInfo } from '@playwright/test'
 import { loadBase } from '../src/model/testdata.ts'
 import { TID, tid } from '../src/ui/testids.ts'
@@ -41,7 +41,15 @@ async function waitingExecution(request: APIRequestContext, suffix: string) {
     data: { definition_name: draft.name, version, input: {} },
   })
   expect(trigger.ok()).toBe(true)
-  return { ...draft, execId: (await trigger.json() as { id: string }).id }
+  const execId = (await trigger.json() as { id: string }).id
+  // 触发受理不等于审批快照已生成；审批详情仅取一次，必须先等 worker 挂起。
+  await expect.poll(async () => {
+    const response = await request.get(`/api/v1/executions/${execId}`, { headers: draft.headers })
+    expect(response.ok()).toBe(true)
+    const detail = await response.json() as { nodes: { node_id: string; status: string }[] }
+    return detail.nodes.find((node) => node.node_id === 'gate')?.status
+  }, { timeout: 30_000, message: '真实 worker 生成 gate 审批等待快照' }).toBe('WAITING_APPROVAL')
+  return { ...draft, execId }
 }
 
 async function screenshot(page: Page, info: TestInfo, name: string) {

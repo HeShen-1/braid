@@ -171,7 +171,11 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
     }
   }, [])
 
+  const canAct = detail !== null && TERMINAL_ACTIONABLE.includes(detail.status) && !busy && !readLoading && readError === ''
+  const canCancel = detail !== null && CANCELLABLE.includes(detail.status) && !busy && !readLoading && readError === ''
+
   const runCancel = useCallback(async () => {
+    if (!canCancel) return
     setBusy(true)
     setError(null)
     setFlash('')
@@ -189,10 +193,11 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
       setBusy(false)
       disarmCancel()
     }
-  }, [execId, load, onAuthExpired, faceError, disarmCancel])
+  }, [canCancel, execId, load, onAuthExpired, faceError, disarmCancel])
 
   const runAction = useCallback(
     async (action: 'rollback' | 'resume', fn: () => Promise<{ target_node_id: string; reset_count: number; rerun_target: boolean; quiesced_count: number }>) => {
+      if (!canAct) return
       setBusy(true)
       setError(null)
       setFlash('')
@@ -214,7 +219,7 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
         setBusy(false)
       }
     },
-    [load, onAuthExpired, faceError],
+    [canAct, load, onAuthExpired, faceError],
   )
 
   if (detail === null) {
@@ -233,8 +238,6 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
     )
   }
 
-  const canAct = TERMINAL_ACTIONABLE.includes(detail.status) && !busy && !readLoading && readError === ''
-  const canCancel = CANCELLABLE.includes(detail.status) && !busy && !readLoading && readError === ''
   const statusRows = detail.nodes ?? []
   const approvalRows = statusRows.filter((n) => n.type === 'approval' && n.status === 'WAITING_APPROVAL' && approvals[n.node_id] != null)
   const failedNode = executionFailureNode(detail)
@@ -326,6 +329,7 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
                 confirmText={`确认回滚到 ${target}`}
                 confirmTestId={TID.rollbackConfirm}
                 busy={busy}
+                confirmDisabled={!canAct}
                 onConfirm={() => void runAction('rollback', () => api.rollbackExecution(execId, target, quiesce)).finally(disarmRollback)}
                 onDismiss={disarmRollback}
               />
@@ -357,6 +361,7 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
                 confirmText="确认取消"
                 confirmTestId={TID.cancelSubmit}
                 busy={busy}
+                confirmDisabled={!canCancel}
                 onConfirm={() => void runCancel()}
                 onDismiss={disarmCancel}
               />
