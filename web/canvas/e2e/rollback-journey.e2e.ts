@@ -210,11 +210,13 @@ test('回滚-重跑全旅程:驳回翻活 → 并行实例 → 会签中间态 �
   await aliceCanvas.getByTestId(TID.navExecutions).click()
   await aliceCanvas.getByTestId(tid.execRow(execId)).click()
   await expect(aliceCanvas.getByTestId(TID.execDetail)).toBeVisible({ timeout: 15_000 })
-  await expect(aliceCanvas.getByTestId(tid.approvalEntry('sign'))).toBeVisible({ timeout: 15_000 })
-  await expect(aliceCanvas.getByTestId(tid.approvalEntry('sign'))).toContainText('会签')
-  await expect(aliceCanvas.getByTestId(TID.pendingApprovers)).toHaveText('alice, bob')
+  const signPanel = aliceCanvas.getByTestId(tid.approvalEntry('sign'))
+  await expect(signPanel).toBeVisible({ timeout: 15_000 })
+  await expect(signPanel).toContainText('会签')
+  // T23.10保留已结束gate1的决定历史；待投名单必须属于当前sign面板。
+  await expect(signPanel.getByTestId(TID.pendingApprovers)).toHaveText('alice, bob')
   await approvalDecide(alice, 'sign', execId, 'approve')
-  await expect(aliceCanvas.getByTestId(TID.pendingApprovers)).toHaveText('bob', { timeout: 20_000 })
+  await expect(signPanel.getByTestId(TID.pendingApprovers)).toHaveText('bob', { timeout: 20_000 })
 
   // ⑨ bob 终票 → 终态 + 输出 + 审计链(reaper flush 后 node 级事件到场)。
   await approvalDecide(bob, 'sign', execId, 'approve')
