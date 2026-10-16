@@ -156,9 +156,9 @@ describe('ExecutionsView(执行面)', () => {
     render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={onAuthExpired} />)
     await screen.findByTestId(tid.execRow('7'))
     const user = userEvent.setup()
-    await chooseOption(user, screen.getByLabelText('按状态'), '已失败')
+    await user.click(screen.getByRole('tab', { name: '已失败' }))
     expect(screen.getByText('正在加载执行列表…')).toBeInTheDocument()
-    await chooseOption(user, screen.getByLabelText('按状态'), '已成功')
+    await user.click(screen.getByRole('tab', { name: '已成功' }))
     await screen.findByTestId(tid.execRow('7'))
     await act(async () => { finishOld(ok({ error: 'invalid_credentials' }, 401)) })
     expect(screen.getByTestId(tid.execRow('7'))).toBeInTheDocument()
@@ -261,7 +261,7 @@ describe('ExecutionsView(执行面)', () => {
     expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
   })
 
-  it('执行表格化:状态芯片 + 工作流版本 + 时长/创建;点行把 id 交给路由', async () => {
+  it('真实字段独立成列:执行ID、工作流版本、状态、时长、创建;点行把id交给路由', async () => {
     const user = userEvent.setup()
     const onSelect = vi.fn()
     stubRoute((url) => {
@@ -277,6 +277,8 @@ describe('ExecutionsView(执行面)', () => {
 
     const table = await screen.findByTestId(TID.execTable)
     const row7 = screen.getByTestId(tid.execRow('7'))
+    expect(within(table).getAllByRole('columnheader').map((cell) => cell.textContent)).toEqual(['执行 ID', '工作流 / 版本', '状态', '时长', '创建'])
+    expect(within(row7).getByText('#7')).toBeInTheDocument()
     expect(row7).toHaveTextContent('执行中')
     expect(row7).toHaveTextContent('wf')
     expect(row7).toHaveTextContent('v1')
@@ -314,12 +316,40 @@ describe('ExecutionsView(执行面)', () => {
     await screen.findByTestId(tid.execRow('7'))
     expect(queryOf(listUrls()[0]).has('status')).toBe(false)
 
-    await chooseOption(user, screen.getByLabelText('按状态'), '已失败')
+    await user.click(screen.getByRole('tab', { name: '已失败' }))
     expect(await screen.findByTestId(tid.execRow('3'))).toBeInTheDocument()
     expect(screen.queryByTestId(tid.execRow('7'))).not.toBeInTheDocument()
     const last = queryOf(listUrls().at(-1) as string)
     expect(last.get('status')).toBe('FAILED')
     expect(last.get('offset')).toBe('0')
+  })
+
+  it('状态页签共用服务端过滤与精确名称,方向键/Home/End切换焦点与选中,不伪造计数', async () => {
+    const user = userEvent.setup()
+    const { listUrls } = listStub(() => ok({ items: [exec('7', 'SUCCEEDED')], page: { total: 1 } }))
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await screen.findByTestId(tid.execRow('7'))
+    await user.type(screen.getByLabelText('按名称'), 'wf-exact')
+    await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('name')).toBe('wf-exact'))
+    const tabs = within(screen.getByRole('tablist', { name: '执行状态视图' })).getAllByRole('tab')
+    expect(tabs.map((tab) => tab.textContent)).toEqual(['全部执行', '待执行', '执行中', '等待审批', '已成功', '已失败', '已取消'])
+    expect(tabs.filter((tab) => tab.tabIndex === 0)).toEqual([tabs[0]])
+    tabs[0].focus()
+    await user.keyboard('{ArrowRight}')
+    expect(tabs[1]).toHaveFocus()
+    expect(tabs[1]).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByRole('tabpanel')).toHaveAttribute('aria-labelledby', tabs[1].id)
+    await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('status')).toBe('PENDING'))
+    expect(queryOf(listUrls().at(-1) as string).get('name')).toBe('wf-exact')
+    await user.keyboard('{End}')
+    expect(tabs[6]).toHaveFocus()
+    await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('status')).toBe('CANCELLED'))
+    await user.keyboard('{ArrowRight}')
+    expect(tabs[0]).toHaveFocus()
+    await waitFor(() => expect(queryOf(listUrls().at(-1) as string).has('status')).toBe(false))
+    await user.keyboard('{ArrowLeft}{Home}')
+    expect(tabs[0]).toHaveFocus()
+    expect(screen.getByLabelText('按名称')).toHaveValue('wf-exact')
   })
 
   it('工作流名筛选:防抖后请求带 name', async () => {
@@ -355,7 +385,7 @@ describe('ExecutionsView(执行面)', () => {
     await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('offset')).toBe('20'))
     expect(await screen.findByTestId(tid.execRow('20'))).toBeInTheDocument()
 
-    await chooseOption(user, screen.getByLabelText('按状态'), '已成功')
+    await user.click(screen.getByRole('tab', { name: '已成功' }))
     await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('status')).toBe('SUCCEEDED'))
     expect(queryOf(listUrls().at(-1) as string).get('offset')).toBe('0')
   })
@@ -370,14 +400,14 @@ describe('ExecutionsView(执行面)', () => {
     render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.execRow('7'))
 
-    await chooseOption(user, screen.getByLabelText('按状态'), '已失败')
+    await user.click(screen.getByRole('tab', { name: '已失败' }))
     const empty = await screen.findByTestId(TID.execEmpty)
     expect(empty).toHaveTextContent('当前筛选下没有执行')
     expect(empty).not.toHaveTextContent('暂无执行')
 
     await user.click(within(empty).getByRole('button', { name: '清除筛选' }))
     expect(await screen.findByTestId(tid.execRow('7'))).toBeInTheDocument()
-    expect(screen.getByLabelText('按状态')).toHaveTextContent('全部状态')
+    expect(screen.getByRole('tab', { name: '全部执行' })).toHaveAttribute('aria-selected', 'true')
   })
 
   it('触发:选定义 + 填输入 → POST executions(Idempotency-Key 在场)→ 列表刷新 + 选中新执行', async () => {
@@ -589,13 +619,13 @@ describe('ExecutionsView(执行面)', () => {
     expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
     expect(screen.getByText(/尚无已发布工作流/)).toBeInTheDocument()
     expect(screen.queryByText('先选一个已发布工作流')).not.toBeInTheDocument()
-    // 无筛选且无数据:走「暂无执行」而不是筛选空态,筛选栏也不占位
+    // 无筛选且无数据:走「暂无执行」;名称与状态控件仍可用
     const empty = await screen.findByTestId(TID.execEmpty)
     expect(empty).toHaveTextContent('暂无执行')
     expect(screen.queryByText('筛选')).not.toBeInTheDocument()
   })
 
-  it('无选中:右栏是引导空态(不猜数据)', async () => {
+  it('无选中:列表保留选择说明(不猜数据)', async () => {
     listStub(() => ok({ items: [], page: { limit: 20, offset: 0, total: 0 } }))
     render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     expect(await screen.findByText('未选择执行')).toBeInTheDocument()
