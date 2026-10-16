@@ -68,20 +68,26 @@ export function ApprovalsView({
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState('')
   const [flash, setFlash] = useState('')
-  const [cursor, setCursor] = useState(0)
+  const [cursorKey, setCursorKey] = useState<string | null>(null)
+  const cursor = Math.max(0, items.findIndex((item) => `${item.execution_id}/${item.node_id}` === cursorKey))
   const [focusRequest, setFocusRequest] = useState(0)
   const [lastDecision, setLastDecision] = useState<ApprovalSelection | null>(null)
   // ① listSeq:列表请求序号。快速连点时后发先至的陈旧响应必须丢弃。
   const listSeq = useRef(0)
 
-  const loadPage = useCallback(async (off: number) => {
+  const loadPage = useCallback(async (off: number, background = false) => {
     const seq = ++listSeq.current
     setListError('')
-    setListLoading(true)
+    if (!background) setListLoading(true)
     try {
       const data = await api.listPendingApprovals({ limit: PAGE_LIMIT, offset: off })
       if (seq !== listSeq.current) return // 陈旧响应:已被更新的请求取代
       const its = Array.isArray(data.items) ? data.items : []
+      // 只在被聚焦的待办移除时回退焦点；刷新不能抢走工具栏或输入框。
+      const focusedKey = document.activeElement instanceof HTMLElement
+        ? document.activeElement.closest<HTMLElement>('[data-approval-key]')?.dataset.approvalKey
+        : undefined
+      if (focusedKey !== undefined && !its.some((item) => `${item.execution_id}/${item.node_id}` === focusedKey)) setFocusRequest((n) => n + 1)
       setItems(its)
       setTotal(typeof data.page?.total === 'number' ? data.page.total : its.length)
     } catch (err) {
@@ -98,7 +104,7 @@ export function ApprovalsView({
 
   useEffect(() => {
     void loadPage(offset)
-    const refresh = () => { void loadPage(offset) }
+    const refresh = () => { void loadPage(offset, true) }
     const timer = window.setInterval(refresh, LIVE_REFRESH_MS)
     window.addEventListener(CONSOLE_REFRESH, refresh)
     window.addEventListener('focus', refresh)
@@ -260,16 +266,16 @@ export function ApprovalsView({
     [busy, selExec, selNode, actionable, confirmReject, submit],
   )
 
-  // 光标跟随队列:列表变化时夹回范围内;若当前选中的行在列表里,光标落到它
-  // 上面(j/k 从你正在看的那条继续)。
+  // 光标按稳定审批项身份保留，索引只在本次结果里推导；移除时回首项。
   useEffect(() => {
-    setCursor((c) => {
-      if (items.length === 0) return 0
+    setCursorKey((key) => {
+      if (items.length === 0) return null
       if (selExec !== null && selNode !== null) {
         const i = items.findIndex((it) => it.execution_id === selExec && it.node_id === selNode)
-        if (i >= 0) return i
+        if (i >= 0) return `${selExec}/${selNode}`
       }
-      return Math.min(c, items.length - 1)
+      if (items.some((item) => `${item.execution_id}/${item.node_id}` === key)) return key
+      return `${items[0].execution_id}/${items[0].node_id}`
     })
   }, [items, selExec, selNode])
 
@@ -287,7 +293,11 @@ export function ApprovalsView({
       if (ev.key === 'j' || ev.key === 'k') {
         if (items.length === 0 || selExec !== null) return
         ev.preventDefault()
-        setCursor((c) => (ev.key === 'j' ? Math.min(c + 1, items.length - 1) : Math.max(c - 1, 0)))
+        setCursorKey((key) => {
+          const current = Math.max(0, items.findIndex((item) => `${item.execution_id}/${item.node_id}` === key))
+          const next = items[ev.key === 'j' ? Math.min(current + 1, items.length - 1) : Math.max(current - 1, 0)]
+          return `${next.execution_id}/${next.node_id}`
+        })
         setFocusRequest((n) => n + 1)
         return
       }
@@ -347,6 +357,7 @@ export function ApprovalsView({
           flash={flash}
           selected={selected}
           cursor={cursor}
+          onCursorChange={(sel) => setCursorKey(`${sel.executionId}/${sel.nodeId}`)}
           focusRequest={focusRequest}
           lastDecision={lastDecision}
           onOpen={open}

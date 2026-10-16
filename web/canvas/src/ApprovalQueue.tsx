@@ -40,6 +40,7 @@ export function ApprovalQueue({
   flash,
   selected,
   cursor,
+  onCursorChange,
   focusRequest = 0,
   lastDecision = null,
   onOpen,
@@ -55,6 +56,7 @@ export function ApprovalQueue({
   flash: string
   selected: ApprovalSelection | null
   cursor: number
+  onCursorChange?: (sel: ApprovalSelection) => void
   focusRequest?: number
   lastDecision?: ApprovalSelection | null
   onOpen: (sel: ApprovalSelection) => void
@@ -156,9 +158,11 @@ export function ApprovalQueue({
                         data-selected={isSelected ? 'true' : 'false'}
                         aria-selected={isSelected}
                         data-cursor={i === cursor ? 'true' : 'false'}
+                        data-approval-key={`${it.execution_id}/${it.node_id}`}
                         tabIndex={0}
                         title={`#${it.execution_id} · ${it.definition_name} v${it.definition_version} · ${it.node_id}`}
                         onClick={open}
+                        onFocus={() => onCursorChange?.({ executionId: it.execution_id, nodeId: it.node_id })}
                         onKeyDown={(ev) => {
                           // 行自己吃掉 Enter/Space:全局快捷键靠 defaultPrevented
                           // 让位,避免同一次按键把 onOpen 调两遍。

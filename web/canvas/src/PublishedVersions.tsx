@@ -2,7 +2,7 @@
 // 全部版本已归档的名字仍可达；不把归档版本重新当成可运行版本。
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Archive, RefreshCw, TriangleAlert } from 'lucide-react'
-import { ApiError, api, type DraftDetail, type DraftSummary } from './api.ts'
+import { ApiError, api, tokenStore, type DraftDetail, type DraftSummary } from './api.ts'
 import { Select } from './ui/field.tsx'
 import { Alert, Badge, Button, EmptyState, Panel, PanelHead } from './ui/primitives.tsx'
 import { ConfirmLayer } from './ui/confirm.tsx'
@@ -30,6 +30,7 @@ export function PublishedVersions({ canManage, onAuthExpired }: { canManage: boo
   const listSeq = useRef(0)
   const versionSeq = useRef(0)
   const detailSeq = useRef(0)
+  const archiveSeq = useRef(0)
   const inFlight = useRef(false)
   const layerRef = useRef<HTMLDivElement | null>(null)
   const opener = useRef<HTMLElement | null>(null)
@@ -60,17 +61,27 @@ export function PublishedVersions({ canManage, onAuthExpired }: { canManage: boo
 
   useEffect(() => {
     void loadNames()
-    return () => { listSeq.current++; versionSeq.current++; detailSeq.current++ }
+    return () => { listSeq.current++; versionSeq.current++; detailSeq.current++; archiveSeq.current++ }
   }, [loadNames])
 
   const loadVersions = useCallback(async () => {
     const seq = ++versionSeq.current
+    // 版本状态可被另端归档；刷新后不能让较早的详情响应复活旧状态。
+    detailSeq.current++
+    setReading(false)
+    setDetailError('')
     if (name === '') { setVersions([]); setVersionsLoading(false); setVersionsError(''); return }
     setVersionsLoading(true)
     setVersionsError('')
     try {
       const data = await api.listVersions(name)
-      if (seq === versionSeq.current) setVersions(data.items)
+      if (seq !== versionSeq.current) return
+      setVersions(data.items)
+      setSelected((current) => {
+        if (current === null) return null
+        const row = data.items.find((item) => item.id === current.id)
+        return row === undefined ? null : { ...current, ...row }
+      })
     } catch (err) { if (seq === versionSeq.current) fail(err, setVersionsError) }
     finally { if (seq === versionSeq.current) setVersionsLoading(false) }
   }, [name, fail])
@@ -87,7 +98,7 @@ export function PublishedVersions({ canManage, onAuthExpired }: { canManage: boo
   }, [loadVersions])
 
   const inspect = async (row: DraftSummary) => {
-    if (row.version === null) return
+    if (row.version === null || loading || busy) return
     const seq = ++detailSeq.current
     setReading(true)
     setSelected(null)
@@ -102,18 +113,22 @@ export function PublishedVersions({ canManage, onAuthExpired }: { canManage: boo
   const archive = async () => {
     if (!canManage || loading || reading || error !== '' || target?.version == null || inFlight.current) return
     const row = target
+    const seq = ++archiveSeq.current
+    const requestToken = tokenStore.get()
+    const current = () => seq === archiveSeq.current && tokenStore.get() === requestToken
     inFlight.current = true
     setBusy(true)
     setActionError('')
     try {
       const data = await api.archiveVersion(row.name, row.version!)
+      if (!current()) return
       setVersions((current) => current.map((v) => v.id === data.id ? data : v))
       setSelected((current) => current?.id === data.id ? data : current)
       setFlash(`已归档 ${row.name} v${row.version}；已有执行不受影响。`)
       setTarget(null)
       refreshConsole()
-    } catch (err) { fail(err, setActionError) }
-    finally { inFlight.current = false; setBusy(false) }
+    } catch (err) { if (current()) fail(err, setActionError) }
+    finally { if (seq === archiveSeq.current) { inFlight.current = false; setBusy(false) } }
   }
 
   return <div className="min-h-0 flex-1 overflow-y-auto p-4" aria-label="已发布与版本历史">
@@ -131,7 +146,7 @@ export function PublishedVersions({ canManage, onAuthExpired }: { canManage: boo
           <tbody>{versions.map((row) => <tr key={row.id} data-selected={selected?.id === row.id ? 'true' : 'false'}>
             <td className="num">v{row.version}</td><td><Badge>{row.status === 'ARCHIVED' ? '已归档' : row.status === 'PUBLISHED' ? '已发布' : row.status}</Badge></td>
             <td><Timestamp iso={row.updated_at} /></td>
-            <td><div className="flex gap-2"><Button size="sm" variant="quiet" disabled={busy} onClick={() => void inspect(row)}>查看 v{row.version} 定义</Button>
+            <td><div className="flex gap-2"><Button size="sm" variant="quiet" disabled={busy || loading} onClick={() => void inspect(row)}>查看 v{row.version} 定义</Button>
               {canManage && row.status === 'PUBLISHED' ? <Button size="sm" variant="quiet" icon={Archive} disabled={busy || loading || reading || error !== ''} onClick={(event) => { opener.current = event.currentTarget; setTarget(row) }}>归档 v{row.version}</Button> : null}</div></td>
           </tr>)}</tbody>
         </table> : null}
