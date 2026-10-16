@@ -11,6 +11,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, Check, FilterX, Inbox, Play, RefreshCw, TriangleAlert, X } from 'lucide-react'
 import { ApiError, api, type DraftSummary, type ExecutionSummary } from './api.ts'
 import { ExecutionDetail } from './ExecutionDetail.tsx'
+import { ExecutionOverview } from './ExecutionOverview.tsx'
 import { Select, TextArea, TextInput } from './ui/field.tsx'
 import { Alert, Button, EmptyState, PanelHead, StatusChip } from './ui/primitives.tsx'
 import { EXEC_STATUS } from './ui/status.ts'
@@ -229,6 +230,7 @@ export function ExecutionsView({
 
   return (
     <div className="exec-view" data-detail={selectedId !== null}>
+      {selectedId === null ? <ExecutionOverview onAuthExpired={onAuthExpired} /> : null}
       <aside className="exec-rail" aria-label="执行列表与触发">
         <section className="exec-list" aria-label="执行列表" aria-busy={listLoading}>
           <PanelHead
