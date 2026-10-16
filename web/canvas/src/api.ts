@@ -55,7 +55,11 @@ export const tokenStore = {
   },
 }
 
-async function call<T>(method: string, path: string, body?: string, extraHeaders?: Record<string, string>): Promise<T> {
+// 证据读面保留服务端原文供核验；不改变业务数值类型，也不重建JSON数字。
+const evidenceResponses = new WeakMap<object, string>()
+export function evidenceResponse(value: object): string | undefined { return evidenceResponses.get(value) }
+
+async function call<T>(method: string, path: string, body?: string, extraHeaders?: Record<string, string>, captureEvidence = false): Promise<T> {
   const headers: Record<string, string> = { ...extraHeaders }
   const token = tokenStore.get()
   if (token !== null) headers.Authorization = `Bearer ${token}`
@@ -82,7 +86,9 @@ async function call<T>(method: string, path: string, body?: string, extraHeaders
   }
   if (res.status === 204) return undefined as T
   const text = await res.text()
-  return (text === '' ? undefined : JSON.parse(text)) as T
+  const value: unknown = text === '' ? undefined : JSON.parse(text)
+  if (captureEvidence && typeof value === 'object' && value !== null) evidenceResponses.set(value, text)
+  return value as T
 }
 
 // ---- 契约面(internal/api definitionDTO / login 响应) ----
@@ -237,7 +243,56 @@ export interface AuditEvent {
   pii_masked: boolean
   prev_hash: string
   row_hash: string | null
+  model: string | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  total_tokens: number | null
+  cost_amount: number | null
+  cost_currency: string | null
+  cost_estimated: boolean
   payload: unknown
+}
+
+/** T18.4 既有读面。attempts 单调不清零，旧轮 <= attempts_base。 */
+export interface NodeProjection {
+  execution_id: string
+  node_execution_id: string
+  node_id: string
+  instance_no: number
+  type: string
+  status: string
+  attempts: number
+  attempts_base: number
+  max_attempts: number
+  input_snapshot: unknown
+  output: unknown
+  error_code: string | null
+  error_message: string | null
+  started_at: string | null
+  finished_at: string | null
+}
+
+export interface NodeAttemptSummary {
+  attempt_id: string
+  round: number
+  status: string
+  worker_id: string | null
+  model: string | null
+  prompt_tokens: number | null
+  completion_tokens: number | null
+  total_tokens: number | null
+  cost_amount: number | null
+  cost_currency: string | null
+  estimated: boolean
+  error_code: string | null
+  error_message: string | null
+  started_at: string
+  finished_at: string | null
+}
+
+export interface NodeAttempt extends NodeAttemptSummary {
+  input_snapshot: unknown
+  output: unknown
 }
 
 // 端点全字面量(不拼前缀):bundle 端点锚与 grep 语义都锚在完整路径上
@@ -321,7 +376,16 @@ export const api = {
     return call('GET', `/api/v1/executions${qs === '' ? '' : `?${qs}`}`)
   },
   getExecution(id: string): Promise<ExecutionDetail> {
-    return call('GET', `/api/v1/executions/${id}`)
+    return call('GET', `/api/v1/executions/${id}`, undefined, undefined, true)
+  },
+  getNodeProjection(id: string, nodeId: string, instanceNo: number): Promise<NodeProjection> {
+    return call('GET', `/api/v1/executions/${id}/nodes/${encodeURIComponent(nodeId)}?instance_no=${instanceNo}`, undefined, undefined, true)
+  },
+  listNodeAttempts(id: string, nodeId: string, instanceNo: number): Promise<{ items: NodeAttemptSummary[] }> {
+    return call('GET', `/api/v1/executions/${id}/nodes/${encodeURIComponent(nodeId)}/attempts?instance_no=${instanceNo}`, undefined, undefined, true)
+  },
+  getNodeAttempt(id: string, nodeId: string, instanceNo: number, round: number): Promise<NodeAttempt> {
+    return call('GET', `/api/v1/executions/${id}/nodes/${encodeURIComponent(nodeId)}/attempts/${round}?instance_no=${instanceNo}`, undefined, undefined, true)
   },
   triggerExecution(definitionName: string, input: unknown, idempotencyKey: string, version?: number): Promise<TriggerAck> {
     // UI 显式钉住所选版本;省略仍由服务端按 name 取最新已发布版本。
@@ -378,8 +442,13 @@ export const api = {
       JSON.stringify({ decision, comment }),
     )
   },
-  listAuditEvents(executionId: string, limit?: number): Promise<{ items: AuditEvent[]; next_cursor: string }> {
+  listAuditEvents(executionId: string, limit?: number, cursor?: string): Promise<{ items: AuditEvent[]; next_cursor: string }> {
     const l = limit === undefined ? '' : `&limit=${limit}`
-    return call('GET', `/api/v1/audit?execution_id=${executionId}${l}`)
+    const c = cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+    return call('GET', `/api/v1/audit?execution_id=${executionId}${l}${c}`, undefined, undefined, true)
+  },
+  listTraceAuditEvents(traceId: string, limit = 100, cursor?: string): Promise<{ items: AuditEvent[]; next_cursor: string }> {
+    const c = cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''
+    return call('GET', `/api/v1/audit?trace_id=${encodeURIComponent(traceId)}&limit=${limit}${c}`, undefined, undefined, true)
   },
 }

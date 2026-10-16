@@ -79,6 +79,28 @@ afterEach(() => {
 })
 
 describe('ExecutionDetail(执行详情)', () => {
+  it('查看实例证据是独立入口：默认不读节点，查看后不改变已有回滚选点', async () => {
+    const user = userEvent.setup()
+    const calls: string[] = []
+    stubRoute([/^\/api\/v1\/executions\/7$/, /\/nodes\//, /\/audit/], (url) => {
+      calls.push(url)
+      if (url === '/api/v1/executions/7') return ok({ ...baseDetail, nodes: [nodeRow('gate', 0, 'FAILED'), nodeRow('fan', 2, 'SUCCEEDED')] })
+      if (url.includes('/nodes/fan/attempts')) return ok({ items: [] })
+      if (url.includes('/nodes/fan?')) return ok({ node_id: 'fan', instance_no: 2, attempts: 0, attempts_base: 0, status: 'PENDING', input_snapshot: null, output: null })
+      return ok({ items: [], next_cursor: '' })
+    })
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    await screen.findByTestId(tid.nodeRow('gate', 0))
+    expect(calls.filter((url) => url.includes('/nodes/'))).toHaveLength(0)
+    await user.click(screen.getByTestId(tid.nodeRow('gate', 0)))
+    await user.click(screen.getByTestId(tid.nodeEvidence('fan', 2)))
+    expect(await screen.findByTestId(TID.nodeEvidence)).toHaveTextContent('fan #2')
+    expect(screen.getByTestId(tid.nodeRow('gate', 0))).toHaveAttribute('data-selected', 'true')
+    expect(screen.getByTestId(tid.nodeRow('fan', 2))).toHaveAttribute('data-selected', 'false')
+    expect(screen.getByTestId(TID.rollbackSubmit)).toHaveTextContent('回滚到 gate')
+    expect(calls).toContain('/api/v1/executions/7/nodes/fan?instance_no=2')
+  })
+
   it('加载态就给 exec-detail(不带假状态);数据到达后行级 data-state + 失败原因可见', async () => {
     stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => {
       if (url === '/api/v1/executions/7') {

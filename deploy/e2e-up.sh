@@ -9,8 +9,9 @@
 # exit 1;数据面 tmpfs,down 即清、每次全新)。
 #
 # 密钥面:JWT secret 与 LLM key 运行期 openssl rand 生成(栈生命周期内
-# 稳定;零密钥形态字面量落盘);LLM 零节点执行,worker 构造期校验在位
-# 即可;file_read 白名单 = 仓内 e2e fixture 目录。跑法:
+# 稳定;零密钥形态字面量落盘);LLM 仅连接 evidence spec 生命周期内的
+# 免费工程桩(127.0.0.1:18082)，不访问真实供应商；file_read 白名单 =
+# 仓内 e2e fixture 目录。跑法:
 #   deploy/e2e-up.sh
 #   BRAID_E2E_BASE_URL=http://127.0.0.1:18081 npm --prefix web/canvas run test:e2e
 set -euo pipefail
@@ -21,8 +22,8 @@ E2E_REDIS="127.0.0.1:16380"
 E2E_API_ADDR="127.0.0.1:18081"
 # 密钥面:JWT secret 与 LLM 三件均运行期随机生成(e2e 栈生命周期内
 # 稳定即可;占位字面量会触发 gitleaks generic-api-key——对抗审计 HIGH,
-# 修法 = 不落任何密钥形态字面量,而非扩 allowlist);LLM 零节点执行,
-# worker 构造期校验在位即可。file_read 白名单 = 仓内 e2e fixture 目录。
+# 修法 = 不落任何密钥形态字面量,而非扩 allowlist);LLM 仅使用 spec
+# 自管的免费工程桩。file_read 白名单 = 仓内 e2e fixture 目录。
 E2E_JWT_SECRET="$(openssl rand -hex 32)"
 E2E_LLM_KEY="$(openssl rand -hex 16)"
 E2E_FILEREAD="$(pwd)/web/canvas/e2e/fixtures/files"
@@ -113,7 +114,7 @@ start api BRAID_API_ADDR="$E2E_API_ADDR" BRAID_API_LOGIN_RATE=60
 start relay BRAID_REDIS_QUEUE_ADDR="$E2E_REDIS"
 start worker \
   BRAID_REDIS_QUEUE_ADDR="$E2E_REDIS" \
-  BRAID_LLM_BASE_URL="http://127.0.0.1:9/v1" \
+  BRAID_LLM_BASE_URL="http://127.0.0.1:18082/v1" \
   BRAID_LLM_API_KEY="$E2E_LLM_KEY" \
   BRAID_LLM_PRICE_TABLE='{"gpt-x":{"input_per_mtok":"0","output_per_mtok":"0","currency":"USD"}}'
 

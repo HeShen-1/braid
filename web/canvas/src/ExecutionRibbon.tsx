@@ -17,7 +17,7 @@
 import { Clock, CircleAlert, ListTree } from 'lucide-react'
 import type { NodeExecution } from './api.ts'
 import { I } from './ui/I.tsx'
-import { Badge, EmptyState, PanelHead, StatusChip } from './ui/primitives.tsx'
+import { Badge, Button, EmptyState, PanelHead, StatusChip } from './ui/primitives.tsx'
 import { nodeStatus, nodeTypeMeta } from './ui/status.ts'
 import { TID, tid } from './ui/testids.ts'
 import { fmtDateTime, fmtDuration, useNow } from './ui/time.tsx'
@@ -216,7 +216,7 @@ function rowTitle(n: RibbonNode, seg: RibbonSegment | null, durationMs: number |
   } else {
     lines.push(`开始 ${fmtDateTime(n.started_at)}`)
     lines.push(`结束 ${finished ? fmtDateTime(n.finished_at) : '进行中'}`)
-    if (durationMs !== null) lines.push(`时长 ${fmtDuration(durationMs)}`)
+    if (durationMs !== null) lines.push(`投影墙钟 ${fmtDuration(durationMs)}（可能含跨轮间隔；本轮见节点证据）`)
   }
   if (n.error_code !== null) lines.push(`错误 ${n.error_code}`)
   return lines.join('\n')
@@ -252,6 +252,7 @@ export function ExecutionRibbon({
   live,
   selectedNodeId,
   onSelectNode,
+  onInspectNode,
 }: {
   nodes: RibbonNode[]
   startedAt: string | null
@@ -259,6 +260,7 @@ export function ExecutionRibbon({
   live: boolean
   selectedNodeId: string | null
   onSelectNode: (nodeId: string) => void
+  onInspectNode?: (nodeId: string, instanceNo: number) => void
 }) {
   // 进行中每秒推进 right = now;终态不读 now(60s 只为满足 hook 无条件调用)。
   const now = useNow(live ? 1000 : 60_000)
@@ -271,13 +273,13 @@ export function ExecutionRibbon({
         sub={
           <>
             {`${nodes.length} 个节点`}
-            {m.durationMs !== null ? ` · 全程 ${fmtDuration(m.durationMs)}` : ' · 尚未开始'}
+            {m.durationMs !== null ? ` · 跨轮墙钟 ${fmtDuration(m.durationMs)}` : ' · 尚未开始'}
             {m.waitMs > 0 ? (
               <>
                 {' · '}
                 <span className="exec-ribbon-wait">
                   <I glyph={Clock} size={11} />
-                  挂起 <span className="num">{fmtDuration(m.waitMs)}</span> · 未占 worker
+                  当前有审批挂起 · 挂起期间未占 worker
                 </span>
               </>
             ) : null}
@@ -300,6 +302,7 @@ export function ExecutionRibbon({
                 row={row}
                 selected={selectedNodeId === row.nodeId}
                 onSelect={() => onSelectNode(row.nodeId)}
+                onInspect={onInspectNode ? () => onInspectNode(row.nodeId, row.instanceNo) : undefined}
                 gridlines={m.gridlines}
                 nowLeft={m.nowLeft}
               />
@@ -337,12 +340,14 @@ function RibbonRowView({
   row,
   selected,
   onSelect,
+  onInspect,
   gridlines,
   nowLeft,
 }: {
   row: RibbonRow
   selected: boolean
   onSelect: () => void
+  onInspect?: () => void
   gridlines: number[]
   nowLeft: number | null
 }) {
@@ -356,6 +361,7 @@ function RibbonRowView({
       data-selected={selected ? 'true' : 'false'}
       onClick={onSelect}
     >
+      <div className="evidence-ribbon-label">
       <button
         type="button"
         className="ribbon-label"
@@ -372,8 +378,10 @@ function RibbonRowView({
             试 {row.attempts}/{row.maxAttempts}
           </span>
         ) : null}
-        {row.durationMs !== null ? <span className="num ml-auto text-ink-2">{fmtDuration(row.durationMs)}</span> : null}
+        {row.durationMs !== null ? <span className="num ml-auto text-ink-2" title="投影墙钟，可能含跨轮间隔；本轮时长见节点证据">{fmtDuration(row.durationMs)}</span> : null}
       </button>
+      {onInspect ? <Button size="sm" variant="quiet" data-testid={tid.nodeEvidence(row.nodeId, row.instanceNo)} onClick={(event) => { event.stopPropagation(); onInspect() }} aria-label={`查看 ${row.nodeId} #${row.instanceNo} 节点证据`}>查看证据</Button> : null}
+      </div>
 
       <div className="ribbon-track">
         {gridlines.map((left) => (
