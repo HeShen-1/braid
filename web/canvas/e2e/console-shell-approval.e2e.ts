@@ -179,7 +179,7 @@ test('作者触发面Select的真实ArrowDown焦点在两主题桌面窄窗都�
   const stamp = Date.now()
   for (const suffix of ['first', 'second']) {
     const created = await request.post('/api/v1/definitions', { headers, data: {
-      dsl: '1.0', name: `ux_f1_a_select_${stamp}_${suffix}`,
+      dsl: '1.0', name: `ux-f1-a-select-${stamp}-${suffix}`,
       nodes: [{ id: 'gate', type: 'approval', approvers: ['alice'], mode: 'any', instructions: 'UX-F1-a Select 自动化验收定义。', outputs: { decision: 'string' } }], edges: [],
     } })
     expect(created.ok()).toBe(true)
