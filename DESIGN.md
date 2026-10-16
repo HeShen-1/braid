@@ -84,16 +84,16 @@ spacing:
   "8": "32px"
 components:
   button-primary:
-    backgroundColor: "{colors.ink-0}"
-    textColor: "{colors.ground-0}"
+    backgroundColor: "{colors.primary-action}"
+    textColor: "{colors.primary-ink}"
     rounded: "{rounded.control}"
     padding: "0 0.75rem"
     height: "2rem"
     typography: "{typography.sm}"
   button-primary-hover:
-    backgroundColor: "#ffffff"
+    backgroundColor: "color-mix(in oklab, var(--color-primary-action) 88%, var(--color-primary-ink))"
   button-primary-active:
-    backgroundColor: "{colors.ink-1}"
+    backgroundColor: "color-mix(in oklab, var(--color-primary-action) 76%, var(--color-primary-ink))"
   button-primary-disabled:
     backgroundColor: "{colors.ground-3}"
     textColor: "{colors.ink-3}"
@@ -173,7 +173,7 @@ D-2026-10-15-console-references 已批准分面参照：壳层/导航/审批取 
 
 三个角色(author 编排、approver 审批、operator 值班)共用同一块 24–27 寸桌面屏幕,单次驻留 20 分钟到数小时,夜间值班是常态。所以这个世界没有装饰性亮度:每一级亮度差要么在回答"现在是什么状态、卡了多久",要么在说"这里可以动手"。密度按仪器读数组织——小字号、等宽数字、1px 发丝分割;留白只用来分组,不用来装饰。深色不是"科技感"品类默认,而是取自使用场景(长时间驻留 + 夜间低环境光)。
 
-两条法则把色板的自由度收窄,反而让密集控制台可读:**色相只承担状态语义**(idle / run / ok / wait / fail / stop 六态),**交互一律靠亮度**(主操作 = 亮底深字,永不与状态色相竞争)。焦点蓝 `accent` 是唯一非状态色相,只做焦点与"当前所在",永不表达状态。状态一律色相 + 形状双编码,色盲可达。
+两条法则把色板的自由度收窄,反而让密集控制台可读:**色相只承担状态语义**(idle / run / ok / wait / fail / stop 六态),**交互一律靠亮度**(主操作 = 暗色亮实体/浅色深实体,永不与状态色相竞争)。焦点蓝 `accent` 是唯一非状态色相,只做焦点与"当前所在",永不表达状态。状态一律色相 + 形状双编码,色盲可达。
 
 T21.3 起这个世界有**两套形态、一条验收线**:深色(默认)是夜班形态,浅色是同一世界的日间形态——不是第二套视觉语言。两套的每一档都按它真正落地的**最不利地面**重新定档(正文 ≥4.5:1、非文本图形 ≥3:1),六态色相在浅色地面重配(深色原值在近白地面上只有 1.87–3.30:1,五态全部低于线)。切主题 = 换一套 token 值,组件层零分支:`<html data-theme>` 承载 auto / light / dark 三态,auto 由 CSS 媒体查询解析,偏好存 localStorage(与认证 token 的 sessionStorage 载体分离)。
 
@@ -198,8 +198,8 @@ T21.3 起这个世界有**两套形态、一条验收线**:深色(默认)是夜�
 |---|---|---|---|
 | `accent` | `#6e9bf5` | `#3764bf` | 焦点环(`:focus-visible` 2px outline、85% 混透明、offset 1px)、当前页签 2px 下划线、链接文字与 3px 下划线偏移、DAG 连线/把手选中态、框选边框、文本选区、caret 与 `accent-color` |
 | `accent-soft` | `#1b2a44` | `#dbe5f7` | 时间带选中行底色(55% 混透明落在地面上) |
-| `primary-action` | `#eeeff1` | `#d8dfe7` | 主操作实体:亮主题取最暗实体、暗主题取最亮实体,同一句规则两态成立 |
-| `primary-ink` | `#08090a` | `#0d1319` | 主操作文字 |
+| `primary-action` | `#eeeff1` | `#0d1319` | 主操作实体:亮主题取最暗实体、暗主题取最亮实体,同一句规则两态成立 |
+| `primary-ink` | `#08090a` | `#f7f9fb` | 主操作文字 |
 
 浅色 accent 走到 `#3764bf` 是两次收紧的结果:`#6e9bf5` → `#3b68c4`(对白 ≥4.5)→ `#3764bf`(T21.3 把口径从「对白」改成「最不利地面」:选中行 `ground-3` 上 4.34 → 4.60)。
 
@@ -249,7 +249,7 @@ T21.3 起这个世界有**两套形态、一条验收线**:深色(默认)是夜�
 | 占位 `ink-3` / `ground-2` · `ground-3` | 5.34 · 4.71(禁用态登记) | 4.90 · 4.54(禁用态登记) | 4.5 |
 | 交互描边 `line-2` / `ground-0` · `ground-1` · `ground-2` | 4.37 · 4.14 · 3.85 | 3.23 · 3.41 · 3.01 | 3 |
 | 焦点 `accent` / `ground-0` · `ground-1` | 7.28 · 6.90 | 5.32 · 5.62 | 4.5 |
-| 主操作 `primary-ink` / `primary-action` | 17.32 | 13.90 | 4.5 |
+| 主操作 `primary-ink` / `primary-action` | 17.32 | 17.70 | 4.5 |
 | 分段控件选中 `ink-0` / `ground-4` | 11.99 | 13.90 | 4.5 |
 | 勾选框 `ground-1` / `accent` | 6.90 | 5.62 | 3 |
 | 六态芯片标签 / 自色 tint(sRGB 近似) | 5.06–8.25 | 5.48–5.55 | 4.5 |
@@ -343,7 +343,7 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 ### Buttons
 
 - **Shape**:高 32px(`2rem`);小号 26px(`1.625rem`)且字号降一档;圆角 8px;横向内边距 12px(小号 8px);图标与文字间距 6.4px(`0.4rem`);文字 12.5px/500,主操作 600;图标按钮见方(32 / 26px),必须给 `aria-label`。
-- **Primary**:亮底深字——`background: var(--color-primary-action)`、文字 `var(--color-primary-ink)`、边框同底色;悬停/按下 = `color-mix(in oklab, primary-action 88% / 76%, ink-0)`;禁用 `ground-3` 底 + `ink-3` 字。这是"主操作 = 该世界里亮度对比最大的实体"的执行:亮主题取最暗实体、暗主题取最亮实体,两套世界实测 13.90:1 / 16.69:1。
+- **Primary**:暗色亮实体深字、浅色深实体浅字——`background: var(--color-primary-action)`、文字 `var(--color-primary-ink)`、边框同底色;悬停/按下 = `color-mix(in oklab, primary-action 88% / 76%, primary-ink)`;禁用 `ground-3` 底 + `ink-3` 字。这是"主操作 = 该世界里亮度对比最大的实体"的执行:亮主题取最暗实体、暗主题取最亮实体,两套世界正文实测 17.70:1 / 17.32:1；实体对相邻地面同样须 ≥3:1。
 - **Default(次级)**:`ground-2` 底 + 1px `line-2` 边框 + `ink-0` 字;悬停 `ground-3` + 边框 `ink-3`;按下 `ground-4`;禁用 `ground-1` 底 + `line-0` 边框 + `ink-3` 字 + `cursor: not-allowed`。
 - **Quiet(幽灵/图标)**:透明底、`ink-1` 字;悬停 `ground-3` + `ink-0`;小号常与图标组合(新建、添加、删除行)。
 - **Danger(破坏性)**:透明底 + `color-mix(fail 55%)` 边框 + `fail` 字;悬停 14% 红 tint + 实边框 + 提亮字 `sig-fail-hi`(深色 `#ff8a8f` / 浅色 `#a03339`)。不可逆动作(取消执行)走 danger 并给第二下确认。
@@ -436,7 +436,7 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 ### Do:
 
 - **Do** 先问"现在是什么状态、卡了多久、下一步谁动",再决定画什么。
-- **Do** 用亮度表达交互:主操作 = 亮底深字(`ink-0` 底 + `ground-0` 字),悬停/按下/选中走 `ground-2→ground-4`。
+- **Do** 用亮度表达交互:主操作 = 对比最强实体(`primary-action` 底 + `primary-ink` 字),悬停/按下/选中走 `ground-2→ground-4`。
 - **Do** 每个状态同时给色相与形状(11px 图标 + 中文标签),`WAITING_APPROVAL` 给最暖的琥珀。
 - **Do** 让等待有长度:挂起段按真实时间铺开并给「挂起 X · 未占 worker」。
 - **Do** 所有数字等宽(tabular numerals),时间同时给相对与绝对两面。

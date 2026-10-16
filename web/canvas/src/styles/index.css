@@ -406,16 +406,16 @@
     font-weight: 600;
   }
 
-  /* 悬停 = 主操作实体向该世界的墨色方向压一档(浅色变暗、深色变亮),
-     不再硬编码 #fff —— 那是只在深色下成立的写法。 */
+  /* 悬停/按下 = 实体朝其对侧文字色混合一档；两套主题都保留可见状态变化，
+     不读主题、不借状态色相。 */
   .btn-primary:hover:not(:disabled) {
-    --btn-action: color-mix(in oklab, var(--color-primary-action) 88%, var(--color-ink-0));
+    --btn-action: color-mix(in oklab, var(--color-primary-action) 88%, var(--color-primary-ink));
     background: var(--btn-action);
     border-color: var(--btn-action);
   }
 
   .btn-primary:active:not(:disabled) {
-    --btn-action: color-mix(in oklab, var(--color-primary-action) 76%, var(--color-ink-0));
+    --btn-action: color-mix(in oklab, var(--color-primary-action) 76%, var(--color-primary-ink));
     background: var(--btn-action);
     border-color: var(--btn-action);
     color: var(--color-primary-ink);
@@ -1186,9 +1186,10 @@
      最暗,背景/文字互换后主操作会变成近白块 —— 与禁用态(ground-3)无法区分。
      所以主操作实体单独取一档:亮主题取最暗实体,暗主题取最亮实体,同一句
      「主操作是该世界里亮度对比最大的实体」两态都成立。
-     实测:light primary-ink/primary-action = 13.90:1;dark = 16.69:1。 */
-  --color-primary-action: #d8dfe7;
-  --color-primary-ink: #0d1319;
+     实测:light primary-ink/primary-action = 17.70:1;dark = 17.32:1；
+     浅色实体对 ground-0/ground-1 同时超过 3:1，避免近禁用灰主操作。 */
+  --color-primary-action: #0d1319;
+  --color-primary-ink: #f7f9fb;
   /* light-world:end */
 }
 
@@ -1225,8 +1226,8 @@
     --color-accent-soft: #dbe5f7;
 
     /* 主操作实体(同 light 档,理由见上)。 */
-    --color-primary-action: #d8dfe7;
-    --color-primary-ink: #0d1319;
+    --color-primary-action: #0d1319;
+    --color-primary-ink: #f7f9fb;
     /* light-world:end */
   }
 }

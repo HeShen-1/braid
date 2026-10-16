@@ -257,16 +257,16 @@
         "role": "primary",
         "displayName": "primary-action",
         "canonical": "#eeeff1",
-        "purpose": "主操作实体：亮主题取最暗实体、暗主题取最亮实体（浅色档 #d8dfe7）",
-        "lightCanonical": "#d8dfe7",
+        "purpose": "主操作实体：暗色近白、浅色近黑，正文与相邻地面均通过对比度门。",
+        "lightCanonical": "#0d1319",
         "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "primary-ink": {
         "role": "primary",
         "displayName": "primary-ink",
         "canonical": "#08090a",
-        "purpose": "主操作文字（浅色档 #0d1319）",
-        "lightCanonical": "#0d1319",
+        "purpose": "主操作的对侧文字色；浅色档 #f7f9fb。",
+        "lightCanonical": "#f7f9fb",
         "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       }
     },
@@ -382,7 +382,8 @@
         "sharedTokenNames": "unchanged",
         "verification": "docs/audits/UX-F1-a-VALIDATION.md",
         "focusContract": "accent remains canonical interaction blue; shadcn menu focus backgrounds use ground-3 through data-slot adapter, never a duplicate token alias",
-        "focusOpacity": 0.85
+        "focusOpacity": 0.85,
+        "primaryControlContract": "light primary-action #0d1319 / primary-ink #f7f9fb; usable primary boundary >=3, text >=4.5; existing disabled-state exemption only"
       },
       "otherSurfaces": "n8n/Vercel/Temporal direction approved; delivery belongs to UX-F1-b/c/d"
     }
@@ -392,9 +393,9 @@
       "name": "Primary Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "主操作 = 全屏最亮的一块:亮底深字;用于保存草稿、登录、触发执行。",
+      "description": "主操作：暗色亮实体深字、浅色深实体浅字；文字≥4.5、实体边界≥3；hover/active朝对侧文字色混合。",
       "html": "<button class=\"ds-btn ds-btn-primary\" type=\"button\">保存草稿</button>",
-      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;height:2rem;padding:0 .75rem;border:1px solid var(--color-line-2);border-radius:8px;background:var(--color-ground-2);color:var(--color-ink-0);font-family:var(--font-sans);font-size:.781rem;font-weight:500;line-height:1.125rem;white-space:nowrap;cursor:pointer;transition:background-color 120ms cubic-bezier(.4,0,.2,1),border-color 120ms cubic-bezier(.4,0,.2,1),color 120ms cubic-bezier(.4,0,.2,1)}.ds-btn-primary{background:var(--color-ink-0);border-color:var(--color-ink-0);color:var(--color-ground-0);font-weight:600}.ds-btn-primary:hover:not(:disabled){background:#fff;border-color:#fff}.ds-btn-primary:active:not(:disabled){background:var(--color-ink-1);border-color:var(--color-ink-1)}.ds-btn-primary:disabled{background:var(--color-ground-3);border-color:var(--color-ground-3);color:var(--color-ink-3);cursor:not-allowed}.ds-btn:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;height:2rem;padding:0 .75rem;border:1px solid var(--color-line-2);border-radius:8px;background:var(--color-ground-2);color:var(--color-ink-0);font-family:var(--font-sans);font-size:.781rem;font-weight:500;line-height:1.125rem;white-space:nowrap;cursor:pointer;transition:background-color 120ms cubic-bezier(.4,0,.2,1),border-color 120ms cubic-bezier(.4,0,.2,1),color 120ms cubic-bezier(.4,0,.2,1)}.ds-btn-primary{background:var(--color-primary-action);border-color:var(--color-primary-action);color:var(--color-primary-ink);font-weight:600}.ds-btn-primary:hover:not(:disabled){background:color-mix(in oklab,var(--color-primary-action) 88%,var(--color-primary-ink));border-color:color-mix(in oklab,var(--color-primary-action) 88%,var(--color-primary-ink))}.ds-btn-primary:active:not(:disabled){background:color-mix(in oklab,var(--color-primary-action) 76%,var(--color-primary-ink));border-color:color-mix(in oklab,var(--color-primary-action) 76%,var(--color-primary-ink))}.ds-btn-primary:disabled{background:var(--color-ground-3);border-color:var(--color-ground-3);color:var(--color-ink-3);cursor:not-allowed}.ds-btn:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
     },
     {
       "name": "Secondary Button",
