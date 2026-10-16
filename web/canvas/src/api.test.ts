@@ -2,7 +2,7 @@
 // Idempotency-Key/体)、响应解包、409 族 detail/blocked 承载。fetch 全
 // stub(同 App.test.tsx 习语);断言的形状 = internal/api DTO 的镜像面。
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ApiError, api, tokenStore, type DraftSummary } from './api.ts'
+import { ApiError, api, evidenceResponse, tokenStore, type DraftSummary } from './api.ts'
 
 function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
@@ -52,6 +52,17 @@ describe('execution domain client', () => {
     expect(String(calls[0].input)).toBe('/api/v1/executions/7')
     expect(out.nodes[0].node_id).toBe('gate')
     expect(out.audit.exec_date).toBe('2026-10-04')
+  })
+
+  it('证据响应原文保留大整数与数值字面量，不改变既有解析类型', async () => {
+    const raw = '{"input":{"large":9007199254740993,"decimal":1.2300},"outputs":null,"nodes":[]}'
+    stubFetch(() => new Response(raw))
+    const detail = await api.getExecution('7')
+    expect(evidenceResponse(detail)).toBe(raw)
+    expect(typeof (detail.input as { large: number }).large).toBe('number')
+    expect(JSON.stringify(detail.input)).toContain('9007199254740992')
+    expect(evidenceResponse(detail)).toContain('9007199254740993')
+    expect(evidenceResponse(detail)).toContain('1.2300')
   })
 
   it('triggerExecution:Bearer + Idempotency-Key + 体形状', async () => {
@@ -104,6 +115,31 @@ describe('execution domain client', () => {
     expect(String(calls[0].input)).toBe('/api/v1/audit?execution_id=7')
     await api.listAuditEvents('7', 100)
     expect(String(calls[1].input)).toBe('/api/v1/audit?execution_id=7&limit=100')
+  })
+
+  it('审计 keyset 与 trace 使用互斥查询维度，游标原样编码', async () => {
+    stubFetch(() => ok({ items: [], next_cursor: 'next' }))
+    await api.listAuditEvents('7', 100, 'a+b/=')
+    await api.listTraceAuditEvents('0'.repeat(32), 100, 'v1:a')
+    expect(String(calls[0].input)).toBe('/api/v1/audit?execution_id=7&limit=100&cursor=a%2Bb%2F%3D')
+    expect(String(calls[1].input)).toBe(`/api/v1/audit?trace_id=${'0'.repeat(32)}&limit=100&cursor=v1%3Aa`)
+    expect(String(calls[1].input)).not.toContain('execution_id')
+  })
+
+  it('节点三读面携带实例与真实 round，不把 round 重新编号', async () => {
+    stubFetch(() => ok({ items: [], round: 7, cost_amount: null, estimated: true, input_snapshot: { text: 'saved' } }))
+    await api.getNodeProjection('7', 'fan', 2)
+    await api.listNodeAttempts('7', 'fan', 2)
+    const out = await api.getNodeAttempt('7', 'fan', 2, 7)
+    expect(calls.map((c) => String(c.input))).toEqual([
+      '/api/v1/executions/7/nodes/fan?instance_no=2',
+      '/api/v1/executions/7/nodes/fan/attempts?instance_no=2',
+      '/api/v1/executions/7/nodes/fan/attempts/7?instance_no=2',
+    ])
+    expect(out.round).toBe(7)
+    expect(out.cost_amount).toBeNull()
+    expect(out.estimated).toBe(true)
+    expect(out.input_snapshot).toEqual({ text: 'saved' })
   })
 
   it('409 blocked_inflight:detail 与 blocked 清单进 ApiError', async () => {

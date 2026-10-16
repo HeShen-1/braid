@@ -159,17 +159,26 @@ describe('ExecutionRibbon(渲染)', () => {
     expect(row).toHaveTextContent('待执行')
   })
 
-  it('挂起总时长进面板头(未占 worker)', () => {
-    // now 必须钉住:等待时长 = now - started_at,真实时钟下不可断言
+  it('当前挂起不占worker；投影墙钟不冒充等待时长', () => {
+    // 节点started_at可能保留首轮，不把投影区间称纯等待时长。
     vi.useFakeTimers()
     vi.setSystemTime(T0 + 240_000)
     draw([
       node({ node_id: 'gate', instance_no: 0, type: 'approval', status: 'WAITING_APPROVAL', started_at: iso(T0) }),
     ])
     const panel = screen.getByTestId(TID.execRibbon)
-    expect(panel).toHaveTextContent('挂起')
-    expect(panel).toHaveTextContent('4m00s')
+    expect(panel).toHaveTextContent('当前有审批挂起')
+    expect(panel).toHaveTextContent('跨轮墙钟 4m00s')
+    expect(panel).not.toHaveTextContent('挂起 4m00s')
     expect(panel).toHaveTextContent('未占 worker')
+  })
+
+  it('attempts跨回滚累积，7轮不能显示成单轮代试7/2', () => {
+    draw([node({ node_id: 'model', instance_no: 0, status: 'SUCCEEDED', attempts: 7, max_attempts: 2 })])
+    const row = screen.getByTestId(tid.nodeRow('model', 0))
+    expect(row).toHaveTextContent('累计 7 轮')
+    expect(row).not.toHaveTextContent('7/2')
+    expect(within(row).getByTitle('跨回滚累计轮次；单轮代最大尝试次数 2')).toBeInTheDocument()
   })
 
   it('点击行 = 选回滚目标(标签列是按钮,尺寸不止于指针)', () => {

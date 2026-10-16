@@ -39,10 +39,11 @@ export function fmtMinute(iso: string | null | undefined): string {
 export function fmtDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return '—'
   if (ms < 1000) return `${Math.round(ms)}ms`
-  const s = ms / 1000
-  if (s < 60) return `${s < 10 ? s.toFixed(1) : Math.round(s)}s`
+  // 先在完整秒数上舍入，再拆单位，避免 7m60s / 59m60s。
+  const s = Math.round(ms / 1000)
+  if (s < 60) return `${ms < 10_000 ? (ms / 1000).toFixed(1) : s}s`
   const m = Math.floor(s / 60)
-  const rs = Math.round(s % 60)
+  const rs = s % 60
   if (m < 60) return `${m}m${pad(rs)}s`
   const h = Math.floor(m / 60)
   const rm = m % 60

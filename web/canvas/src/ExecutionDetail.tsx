@@ -10,18 +10,18 @@
 // 轮询:非终态 2.5s;FAILED 保持 10s 慢速(可被本页回滚/续跑、他人操作、
 // reaper 兜底翻活,恒停会冻结在过期帧);SUCCEEDED/CANCELLED 停表。
 // 零后端新端点:全部字段来自既有 executionDetailDTO / approvalDetailDTO / auditEventDTO。
-import { useCallback, useEffect, useState, type ReactNode } from 'react'
-import { Ban, Play, RefreshCw, ScrollText, TriangleAlert, Undo2 } from 'lucide-react'
+import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+import { Ban, Play, RefreshCw, TriangleAlert, Undo2 } from 'lucide-react'
 import {
   ApiError,
   api,
   type ApprovalDetail,
-  type AuditEvent,
   type ExecutionDetail as ExecutionDetailData,
   type NodeExecution,
 } from './api.ts'
 import { DefinitionGraph } from './DefinitionGraph.tsx'
 import { ExecutionRibbon } from './ExecutionRibbon.tsx'
+import { AuditEvidence, EvidenceJSON, EvidenceRaw, NodeEvidence } from './ExecutionEvidence.tsx'
 import { Checkbox } from './ui/field.tsx'
 import { ConfirmLayer, useConfirmLayer } from './ui/confirm.tsx'
 import { Alert, Badge, Button, KV, Panel, PanelHead, StatusChip } from './ui/primitives.tsx'
@@ -59,7 +59,17 @@ function nodeStatusIndex(rows: NodeExecution[]): Record<string, string> {
 export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onAuthExpired: () => void }) {
   const [detail, setDetail] = useState<ExecutionDetailData | null>(null)
   const [approvals, setApprovals] = useState<Record<string, ApprovalDetail | null>>({})
-  const [audit, setAudit] = useState<AuditEvent[]>([])
+  const [evidenceRevision, setEvidenceRevision] = useState(0)
+  const [evidenceNode, setEvidenceNode] = useState<{ nodeId: string; instanceNo: number } | null>(null)
+  const [trace, setTrace] = useState<string | null>(null)
+  const evidenceOpener = useRef<HTMLButtonElement | null>(null)
+  const traceOpener = useRef<HTMLButtonElement | null>(null)
+  const refreshOpener = useRef<HTMLButtonElement | null>(null)
+  const inspectTrace = useCallback((id: string, opener: HTMLButtonElement) => {
+    // Trace面内继续查询时保留外部入口；内部按钮会随切链/收起卸载。
+    if (opener.closest('[data-trace-evidence]') === null) traceOpener.current = opener
+    setTrace(id)
+  }, [])
   const [target, setTarget] = useState<string | null>(null)
   // T19.6 quiesce 旗标:回滚/续跑时把 EXECUTING/等待审批的残留节点同事务
   // 楔停(缺省不勾 = 服务端 409 等后台收敛,保值等待)。
@@ -90,6 +100,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     try {
       d = await api.getExecution(execId)
       setDetail(d)
+      setEvidenceRevision((n) => n + 1)
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) onAuthExpired()
       return // 瞬态读失败:保留上一帧,下个轮询窗自愈
@@ -118,12 +129,6 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
         }
         setApprovals((prev) => ({ ...prev, [n.node_id]: null }))
       }
-    }
-    try {
-      const a = await api.listAuditEvents(execId, 100)
-      setAudit(Array.isArray(a.items) ? a.items : [])
-    } catch {
-      /* 审计区读失败不阻断详情面 */
     }
   }, [execId, onAuthExpired])
 
@@ -221,7 +226,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
             #{detail.id} · {detail.definition_name} v{detail.definition_version}
           </code>
           <span className="ml-auto flex items-center gap-2">
-            <Button variant="quiet" size="sm" icon={RefreshCw} disabled={busy} onClick={() => void load()}>
+            <Button ref={refreshOpener} variant="quiet" size="sm" icon={RefreshCw} disabled={busy} onClick={() => void load()}>
               刷新
             </Button>
           </span>
@@ -234,16 +239,28 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
           <Meta k="创建">
             <Timestamp iso={detail.created_at} />
           </Meta>
-          <Meta k="运行">
+          <Meta k="执行墙钟（含跨轮间隔）">
             <Duration from={detail.started_at} to={detail.finished_at} />
           </Meta>
           {detail.audit.trace_id !== null ? (
             <Meta k="trace_id">
-              <code className="mono">{detail.audit.trace_id}</code>
+              <Button size="sm" variant="quiet" aria-label={`查询执行 trace ${detail.audit.trace_id}`} onClick={(event) => inspectTrace(detail.audit.trace_id!, event.currentTarget)}><code className="mono">{detail.audit.trace_id}</code></Button>
             </Meta>
           ) : null}
         </dl>
       </header>
+
+      <Panel>
+        <PanelHead title="触发输入" sub="执行创建时快照" />
+        <div className="panel-body evidence-body">
+          <details className="evidence-disclosure" open>
+            <summary>查看触发 input</summary>
+            <EvidenceJSON value={detail.input} testId={TID.execInput} />
+          </details>
+          <details className="evidence-disclosure"><summary>定义内容 hash</summary><code>{detail.definition_hash}</code></details>
+          <EvidenceRaw value={detail} label="执行详情服务端响应原文" />
+        </div>
+      </Panel>
 
       {/* ② 执行级错误:就近呈现 */}
       {detail.error_code !== null ? (
@@ -354,7 +371,10 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
         live={LIVE.includes(detail.status)}
         selectedNodeId={target}
         onSelectNode={setTarget}
+        onInspectNode={(nodeId, instanceNo, opener) => { evidenceOpener.current = opener; setEvidenceNode({ nodeId, instanceNo }) }}
       />
+
+      {evidenceNode !== null ? <NodeEvidence key={`${execId}:${evidenceNode.nodeId}:${evidenceNode.instanceNo}`} execId={execId} nodeId={evidenceNode.nodeId} instanceNo={evidenceNode.instanceNo} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onClose={() => { setEvidenceNode(null); evidenceOpener.current?.focus() }} /> : null}
 
       {/* ④′ 当时声明的形状(可折叠:默认收起 = 零请求) */}
       <DefinitionGraph
@@ -373,66 +393,14 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
       {/* ⑥ 输出 */}
       {detail.outputs !== null && detail.outputs !== undefined ? (
         <Panel>
-          <PanelHead title="输出" sub="终态快照" />
-          <pre className="exec-json" data-testid={TID.execOutputs}>
-            {JSON.stringify(detail.outputs, null, 2)}
-          </pre>
+          <PanelHead title="输出" sub="终态快照 · 解析后展示，精确值见执行详情响应原文" />
+          <EvidenceJSON value={detail.outputs} testId={TID.execOutputs} />
         </Panel>
       ) : null}
 
       {/* ⑥ 审计链 */}
-      <Panel>
-        <PanelHead
-          title="审计事件"
-          sub={`${audit.length} 条 · 分区 ${detail.audit.exec_date}`}
-          actions={<Badge icon={ScrollText}>append-only</Badge>}
-        />
-        <div className="exec-table-wrap">
-          <table className="table" data-testid={TID.auditList}>
-            <thead>
-              <tr>
-                <th>事件</th>
-                <th>节点</th>
-                <th>主体</th>
-                <th>链</th>
-                <th>时间</th>
-              </tr>
-            </thead>
-            <tbody>
-              {audit.length === 0 ? (
-                <tr>
-                  <td colSpan={5} className="text-ink-2">
-                    暂无审计事件
-                  </td>
-                </tr>
-              ) : (
-                audit.map((ev) => (
-                  <tr key={ev.id} data-testid={tid.auditRow(ev.event_type)}>
-                    <td>
-                      <code>{ev.event_type}</code>
-                    </td>
-                    <td className="num">{ev.node_id ?? '—'}</td>
-                    <td className="num">
-                      {ev.actor_type}:{ev.actor_id}
-                    </td>
-                    <td>
-                      <code
-                        className="mono"
-                        title={ev.row_hash !== null ? `row ${ev.row_hash}\nprev ${ev.prev_hash}` : undefined}
-                      >
-                        {shortHash(ev.row_hash)}
-                      </code>
-                    </td>
-                    <td>
-                      <Timestamp iso={ev.event_at} />
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </Panel>
+      <AuditEvidence key={execId} executionId={execId} partition={detail.audit.exec_date} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={inspectTrace} />
+      {trace !== null ? <AuditEvidence key={`${execId}:${trace}`} traceId={trace} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={inspectTrace} onClose={() => { setTrace(null); (traceOpener.current?.isConnected ? traceOpener.current : refreshOpener.current)?.focus() }} /> : null}
     </main>
   )
 }
@@ -445,10 +413,6 @@ function Meta({ k, children }: { k: string; children: ReactNode }) {
       <dd>{children}</dd>
     </div>
   )
-}
-
-function shortHash(h: string | null): string {
-  return h === null || h === '' ? '—' : h.slice(0, 8)
 }
 
 /** 会签中间态:待投名单 + 决定时间线(数据面 = approvalDetailDTO)。 */

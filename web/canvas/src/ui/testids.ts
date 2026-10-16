@@ -57,6 +57,12 @@ export const TID = {
   resumeSubmit: 'resume-submit',
   cancelSubmit: 'cancel-submit',
   auditList: 'audit-list',
+  auditMore: 'audit-more',
+  auditCount: 'audit-count',
+  traceAuditList: 'trace-audit-list',
+  nodeEvidence: 'node-evidence',
+  attemptEvidence: 'attempt-evidence',
+  execInput: 'exec-input',
   /** 会签中间态:待决审批人名单(e2e 旅程核心断言)。 */
   pendingApprovers: 'pending-approvers',
   /** 执行终态输出快照。 */
@@ -85,6 +91,8 @@ export const tid = {
   themeOption: (theme: string) => `theme-option-${theme}`,
   execRow: (id: string) => `exec-row-${id}`,
   nodeRow: (nodeId: string, instanceNo: number) => `node-row-${nodeId}-${instanceNo}`,
+  nodeEvidence: (nodeId: string, instanceNo: number) => `node-evidence-${nodeId}-${instanceNo}`,
+  attemptRow: (round: number) => `attempt-row-${round}`,
   paletteBtn: (type: string) => `palette-${type}`,
   nodeCard: (nodeId: string) => `node-card-${nodeId}`,
   approvalEntry: (nodeId: string) => `approval-${nodeId}`,

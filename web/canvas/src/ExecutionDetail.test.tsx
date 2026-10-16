@@ -79,6 +79,73 @@ afterEach(() => {
 })
 
 describe('ExecutionDetail(执行详情)', () => {
+  it('查看实例证据是独立入口：默认不读节点，查看后不改变已有回滚选点', async () => {
+    const user = userEvent.setup()
+    const calls: string[] = []
+    stubRoute([/^\/api\/v1\/executions\/7$/, /\/nodes\//, /\/audit/], (url) => {
+      calls.push(url)
+      if (url === '/api/v1/executions/7') return ok({ ...baseDetail, nodes: [nodeRow('gate', 0, 'FAILED'), nodeRow('fan', 2, 'SUCCEEDED')] })
+      if (url.includes('/nodes/fan/attempts')) return ok({ items: [] })
+      if (url.includes('/nodes/fan?')) return ok({ node_id: 'fan', instance_no: 2, attempts: 0, attempts_base: 0, status: 'PENDING', input_snapshot: null, output: null })
+      return ok({ items: [], next_cursor: '' })
+    })
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    await screen.findByTestId(tid.nodeRow('gate', 0))
+    expect(calls.filter((url) => url.includes('/nodes/'))).toHaveLength(0)
+    await user.click(screen.getByTestId(tid.nodeRow('gate', 0)))
+    await user.click(screen.getByTestId(tid.nodeEvidence('fan', 2)))
+    expect(await screen.findByTestId(TID.nodeEvidence)).toHaveTextContent('fan #2')
+    expect(screen.getByTestId(TID.nodeEvidence)).toHaveFocus()
+    expect(screen.getByTestId(tid.nodeRow('gate', 0))).toHaveAttribute('data-selected', 'true')
+    expect(screen.getByTestId(tid.nodeRow('fan', 2))).toHaveAttribute('data-selected', 'false')
+    expect(screen.getByTestId(TID.rollbackSubmit)).toHaveTextContent('回滚到 gate')
+    expect(calls).toContain('/api/v1/executions/7/nodes/fan?instance_no=2')
+    await user.click(screen.getByRole('button', { name: '收起证据' }))
+    expect(screen.getByTestId(tid.nodeEvidence('fan', 2))).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(await screen.findByTestId(TID.nodeEvidence)).toHaveFocus()
+  })
+
+  it('Trace鼠标/键盘下钻定位面板，收起回到真实入口', async () => {
+    const user = userEvent.setup()
+    const trace = 'a'.repeat(32)
+    stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => url === '/api/v1/executions/7' ? ok({ ...baseDetail, audit: { ...baseDetail.audit, trace_id: trace } }) : ok({ items: [], next_cursor: '' }))
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    const opener = await screen.findByRole('button', { name: `查询执行 trace ${trace}` })
+    await user.click(opener)
+    expect(await screen.findByRole('region', { name: 'Trace 审计' })).toHaveFocus()
+    await user.click(screen.getByRole('button', { name: '收起 Trace' }))
+    expect(opener).toHaveFocus()
+    await user.keyboard('{Enter}')
+    expect(await screen.findByRole('region', { name: 'Trace 审计' })).toHaveFocus()
+  })
+
+  it('Trace内重查同链或跨链A→B，收起仍返回有效外部入口', async () => {
+    const user = userEvent.setup()
+    const a = 'a'.repeat(32), b = 'b'.repeat(32)
+    const ev = (id: string, trace_id: string) => ({ id, event_type: 'execution.triggered', node_id: null, trace_id, payload: {}, row_hash: null, prev_hash: '', actor_type: 'user', actor_id: 'author', event_at: baseDetail.created_at })
+    stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => {
+      if (url === '/api/v1/executions/7') return ok({ ...baseDetail, audit: { ...baseDetail.audit, trace_id: a } })
+      return ok({ items: url.includes(`trace_id=${b}`) ? [ev('2', b)] : [ev('1', a), ev('2', b)], next_cursor: '' })
+    })
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    const external = await screen.findByRole('button', { name: `查询执行 trace ${a}` })
+    await user.click(external)
+    let panel = await screen.findByRole('region', { name: 'Trace 审计' })
+    await user.click(await within(panel).findByRole('button', { name: `查询 trace ${a}` }))
+    await user.click(within(panel).getByRole('button', { name: '收起 Trace' }))
+    expect(external).toHaveFocus()
+    await user.keyboard('{Enter}')
+    panel = await screen.findByRole('region', { name: 'Trace 审计' })
+    const internal = await within(panel).findByRole('button', { name: `查询 trace ${b}` })
+    await user.click(internal)
+    panel = await screen.findByRole('region', { name: 'Trace 审计' })
+    await within(panel).findByRole('button', { name: `查询 trace ${b}` })
+    expect(internal.isConnected).toBe(false)
+    await user.click(within(panel).getByRole('button', { name: '收起 Trace' }))
+    expect(external).toHaveFocus()
+  })
+
   it('加载态就给 exec-detail(不带假状态);数据到达后行级 data-state + 失败原因可见', async () => {
     stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => {
       if (url === '/api/v1/executions/7') {
@@ -292,8 +359,8 @@ describe('ExecutionDetail(执行详情)', () => {
     expect(screen.getByTestId(TID.execOutputs)).toHaveTextContent('approved')
 
     const audit = screen.getByTestId(TID.auditList)
-    expect(within(audit).getByTestId(tid.auditRow('execution.triggered'))).toHaveTextContent('abcdef12')
-    expect(within(audit).getByTestId(tid.auditRow('execution.rolled_back'))).toHaveTextContent('gate')
+    expect(await within(audit).findByTestId(tid.auditRow('execution.triggered'))).toHaveTextContent('abcdef12')
+    expect(await within(audit).findByTestId(tid.auditRow('execution.rolled_back'))).toHaveTextContent('gate')
 
     await user.click(screen.getByTestId(TID.resumeSubmit))
     const alert = await screen.findByRole('alert')
