@@ -359,8 +359,8 @@ describe('ExecutionDetail(执行详情)', () => {
     expect(screen.getByTestId(TID.execOutputs)).toHaveTextContent('approved')
 
     const audit = screen.getByTestId(TID.auditList)
-    expect(within(audit).getByTestId(tid.auditRow('execution.triggered'))).toHaveTextContent('abcdef12')
-    expect(within(audit).getByTestId(tid.auditRow('execution.rolled_back'))).toHaveTextContent('gate')
+    expect(await within(audit).findByTestId(tid.auditRow('execution.triggered'))).toHaveTextContent('abcdef12')
+    expect(await within(audit).findByTestId(tid.auditRow('execution.rolled_back'))).toHaveTextContent('gate')
 
     await user.click(screen.getByTestId(TID.resumeSubmit))
     const alert = await screen.findByRole('alert')
