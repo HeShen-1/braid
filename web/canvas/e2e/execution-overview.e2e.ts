@@ -52,7 +52,8 @@ test('执行总览：当前租户真实总数、最近100条创建分布、筛�
   expect(auth.ok()).toBe(true)
   const headers = { Authorization: `Bearer ${(await auth.json() as { token: string }).token}` }
   const name = `uxf1c-overview-${Date.now()}`
-  const draft = await request.post('/api/v1/definitions', { headers, data: { dsl: '1.0', name, nodes: [{ id: 'gate', type: 'approval', approvers: ['alice'], instructions: '执行总览真实样本', outputs: { decision: 'string' } }], edges: [] } })
+  // DSL 允许尚无账号的合法 username；本组只验证挂起状态，隔离既有 alice/bob 审批旅程。
+  const draft = await request.post('/api/v1/definitions', { headers, data: { dsl: '1.0', name, nodes: [{ id: 'gate', type: 'approval', approvers: ['uxf1c-isolated'], instructions: '执行总览真实样本', outputs: { decision: 'string' } }], edges: [] } })
   expect(draft.ok()).toBe(true)
   const published = await request.post(`/api/v1/drafts/${(await draft.json() as { id: string }).id}/publish`, { headers })
   expect(published.ok()).toBe(true)
@@ -119,15 +120,32 @@ test('执行总览：当前租户真实总数、最近100条创建分布、筛�
     expect(contrast.focus.ratio).toBeGreaterThanOrEqual(3)
     const focus = PNG.sync.read(await refresh.screenshot({ path: info.outputPath(`overview-focus-${theme}-${width}.png`) }))
     for (const y of [0, 1]) for (let channel = 0; channel < 3; channel++) expect(Math.abs(focus.data[(y * focus.width + Math.floor(focus.width / 2)) * 4 + channel] - contrast.focus.rgb[channel])).toBeLessThanOrEqual(3)
-    const barRects = await overview.locator('.exec-overview-bar').evaluateAll((elements) => elements.map((element) => ({ x: Number(element.getAttribute('x')), y: Number(element.getAttribute('y')), width: Number(element.getAttribute('width')), height: Number(element.getAttribute('height')) })))
-    const paintedBar = barRects.find((rect) => rect.height > 0)!
+    const chartGeometry = await overview.getByRole('img').evaluate((element) => {
+      const svg = element as SVGSVGElement
+      const chart = svg.getBoundingClientRect()
+      const bars = [...svg.querySelectorAll<SVGRectElement>('.exec-overview-bar')]
+      // 小样本柱可能不足 1px；从峰值柱的实体内部取样，不把抗锯齿边缘当填充色。
+      const peak = bars.reduce((best, bar) => bar.getBoundingClientRect().height > best.getBoundingClientRect().height ? bar : best)
+      const box = peak.getBBox(), matrix = peak.getScreenCTM()!
+      const center = new DOMPoint(box.x + box.width / 2, box.y + box.height / 2).matrixTransform(matrix)
+      return { chart: chart.toJSON(), selected: peak.getBoundingClientRect().toJSON(), screenCTM: [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f], center: { x: center.x - chart.x, y: center.y - chart.y }, bars: bars.map((bar) => ({ svg: bar.getBBox().toJSON(), screen: bar.getBoundingClientRect().toJSON() })) }
+    })
+    expect(chartGeometry.selected.width).toBeGreaterThan(4)
+    expect(chartGeometry.selected.height).toBeGreaterThan(4)
     const chart = PNG.sync.read(await overview.getByRole('img').screenshot({ path: info.outputPath(`overview-chart-${theme}-${width}.png`) }))
-    const x = Math.floor((paintedBar.x + paintedBar.width / 2) / 600 * chart.width), y = Math.floor((paintedBar.y + paintedBar.height / 2) / 100 * chart.height)
-    for (let channel = 0; channel < 3; channel++) expect(Math.abs(chart.data[(y * chart.width + x) * 4 + channel] - contrast.barRGB[channel])).toBeLessThanOrEqual(3)
+    const x = Math.floor(chartGeometry.center.x / chartGeometry.chart.width * chart.width), y = Math.floor(chartGeometry.center.y / chartGeometry.chart.height * chart.height)
+    const paintedBar = [...chart.data.subarray((y * chart.width + x) * 4, (y * chart.width + x) * 4 + 3)]
+    await writeFile(info.outputPath(`overview-bar-pixel-${theme}-${width}.json`), JSON.stringify({ chartGeometry, png: { width: chart.width, height: chart.height }, sample: { x, y, rgb: paintedBar }, expected: contrast.barRGB }, null, 2))
+    const pixelCenter = { x: (x + 0.5) / chart.width * chartGeometry.chart.width + chartGeometry.chart.x, y: (y + 0.5) / chart.height * chartGeometry.chart.height + chartGeometry.chart.y }
+    expect(pixelCenter.x).toBeGreaterThan(chartGeometry.selected.left + 1)
+    expect(pixelCenter.x).toBeLessThan(chartGeometry.selected.right - 1)
+    expect(pixelCenter.y).toBeGreaterThan(chartGeometry.selected.top + 1)
+    expect(pixelCenter.y).toBeLessThan(chartGeometry.selected.bottom - 1)
+    for (let channel = 0; channel < 3; channel++) expect(Math.abs(paintedBar[channel] - contrast.barRGB[channel])).toBeLessThanOrEqual(3)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     expect((await list.boundingBox())!.width).toBeGreaterThan(620)
     await page.screenshot({ path: info.outputPath(`overview-${theme}-${width}.png`), fullPage: true })
-    const measurement = { width, theme, contrast, paintedFocus: [0, 1].map((y) => [...focus.data.subarray((y * focus.width + Math.floor(focus.width / 2)) * 4, (y * focus.width + Math.floor(focus.width / 2)) * 4 + 3)]), paintedBar: [...chart.data.subarray((y * chart.width + x) * 4, (y * chart.width + x) * 4 + 3)], barRects, buckets: await overview.locator('.exec-overview-buckets tbody tr').allTextContents(), dom: await overview.evaluate((element) => element.outerHTML) }
+    const measurement = { width, theme, contrast, paintedFocus: [0, 1].map((y) => [...focus.data.subarray((y * focus.width + Math.floor(focus.width / 2)) * 4, (y * focus.width + Math.floor(focus.width / 2)) * 4 + 3)]), paintedBar, chartGeometry, buckets: await overview.locator('.exec-overview-buckets tbody tr').allTextContents(), dom: await overview.evaluate((element) => element.outerHTML) }
     await writeFile(info.outputPath(`overview-measure-${theme}-${width}.json`), JSON.stringify(measurement, null, 2))
     matrix.push(measurement)
   }
