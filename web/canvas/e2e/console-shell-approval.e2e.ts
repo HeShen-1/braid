@@ -11,7 +11,7 @@ async function seedApproval(request: APIRequestContext) {
   const name = `ux-f1-a-${Date.now()}-document-review-with-long-name`
   const created = await request.post('/api/v1/definitions', { headers, data: {
     dsl: '1.0', name, inputs: [{ name: 'document', type: 'string', required: true }],
-    nodes: [{ id: 'compliance-review-gate', type: 'approval', approvers: ['alice'], mode: 'any',
+    nodes: [{ id: 'compliance_review_gate', type: 'approval', approvers: ['alice'], mode: 'any',
       instructions: 'UX-F1-a 自动化验收数据。请核对输入中的文档名称、审批范围与归档说明，再决定是否继续。\n备注将完整保留在决定时间线。',
       outputs: { decision: 'string' } }], edges: [],
   } })
@@ -29,9 +29,9 @@ async function seedApproval(request: APIRequestContext) {
   await expect.poll(async () => {
     const read = await request.get(`/api/v1/executions/${id}`, { headers })
     expect(read.ok()).toBe(true)
-    return (await read.json() as { nodes: { node_id: string; status: string }[] }).nodes.find((n) => n.node_id === 'compliance-review-gate')?.status
+    return (await read.json() as { nodes: { node_id: string; status: string }[] }).nodes.find((n) => n.node_id === 'compliance_review_gate')?.status
   }, { timeout: 30_000 }).toBe('WAITING_APPROVAL')
-  return { id, name, node: 'compliance-review-gate' }
+  return { id, name, node: 'compliance_review_gate' }
 }
 
 // 由浏览器实际合成背景采样，支持 color-mix 与祖先透明背景；非禁用正文逐项断言。
