@@ -102,7 +102,7 @@ test('空白编排分支→存发与服务端DSL一致→缺必需字段就近�
     await page.getByTestId(tid.themeOption(theme)).click()
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     const shot = testInfo.outputPath(`authoring-${theme}.png`)
-    await page.screenshot({ path: shot, fullPage: true })
+    await page.screenshot({ path: shot, fullPage: true, animations: 'disabled' })
     await testInfo.attach(`authoring-${theme}`, { path: shot, contentType: 'image/png' })
   }
   await page.setViewportSize({ width: 900, height: 700 })
@@ -110,7 +110,7 @@ test('空白编排分支→存发与服务端DSL一致→缺必需字段就近�
   await expect(page.locator('.react-flow__minimap')).toBeHidden()
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
   const narrow = testInfo.outputPath('authoring-narrow.png')
-  await page.screenshot({ path: narrow, fullPage: true })
+  await page.screenshot({ path: narrow, fullPage: true, animations: 'disabled' })
   await testInfo.attach('authoring-narrow', { path: narrow, contentType: 'image/png' })
   await page.getByText('DSL 预览', { exact: true }).click()
   await page.setViewportSize({ width: 1680, height: 1050 })
@@ -157,8 +157,9 @@ test('空白编排分支→存发与服务端DSL一致→缺必需字段就近�
   expect(posted).toEqual([])
   for (const theme of ['dark', 'light'] as const) {
     await page.getByTestId(tid.themeOption(theme)).click()
+    await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     const shot = testInfo.outputPath(`inputs-${theme}.png`)
-    await page.screenshot({ path: shot, fullPage: true })
+    await page.screenshot({ path: shot, fullPage: true, animations: 'disabled' })
     await testInfo.attach(`inputs-${theme}`, { path: shot, contentType: 'image/png' })
   }
 
