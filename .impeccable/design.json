@@ -1,6 +1,6 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-09T18:36:40+08:00",
+  "generatedAt": "2026-10-16T13:45:00+08:00",
   "title": "Design System: braid 控制台",
   "extensions": {
     "colorMeta": {
@@ -8,7 +8,7 @@
         "role": "primary",
         "displayName": "焦点蓝 Interaction Blue",
         "canonical": "#6e9bf5",
-        "purpose": "唯一的非状态色相:焦点环、当前页签下划线、链接、DAG 连线/把手选中、框选、选区、caret。永不表达状态。",
+        "purpose": "焦点环、链接与可交互线索；壳层当前域使用中性亮度，不借状态色。",
         "tonalRamp": [
           "#00052c",
           "#001965",
@@ -151,172 +151,98 @@
       "ground-0": {
         "role": "neutral",
         "displayName": "无光地面 Unlit Ground",
-        "canonical": "#0a0e13",
+        "canonical": "#08090a",
         "purpose": "应用底、画布地面、JSON/DSL 只读底。",
-        "tonalRamp": [
-          "#0a0e13",
-          "#101720",
-          "#16202b",
-          "#1e2a37",
-          "#273543"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#f7f9fb"
+        "lightCanonical": "#f7f9fb",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "ground-1": {
         "role": "neutral",
         "displayName": "面板 Panel",
-        "canonical": "#101720",
+        "canonical": "#101113",
         "purpose": "面板、顶栏、左列、粘顶层底色(不透明贴边,不靠投影)。",
-        "tonalRamp": [
-          "#0a0e13",
-          "#101720",
-          "#16202b",
-          "#1e2a37",
-          "#273543"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#ffffff"
+        "lightCanonical": "#ffffff",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "ground-2": {
         "role": "neutral",
         "displayName": "抬升 Raised",
-        "canonical": "#16202b",
+        "canonical": "#18191c",
         "purpose": "输入框、表头、次级按钮、中性芯片底。",
-        "tonalRamp": [
-          "#0a0e13",
-          "#101720",
-          "#16202b",
-          "#1e2a37",
-          "#273543"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#eef1f5"
+        "lightCanonical": "#eef1f5",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "ground-3": {
         "role": "neutral",
         "displayName": "悬停 Hover",
-        "canonical": "#1e2a37",
+        "canonical": "#232428",
         "purpose": "悬停底、选中行、禁用主按钮底。",
-        "tonalRamp": [
-          "#0a0e13",
-          "#101720",
-          "#16202b",
-          "#1e2a37",
-          "#273543"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#e4e9ef"
+        "lightCanonical": "#e4e9ef",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "ground-4": {
         "role": "neutral",
         "displayName": "选中·按下 Pressed",
-        "canonical": "#273543",
+        "canonical": "#2b2d31",
         "purpose": "按下底、滚动条拇指。",
-        "tonalRamp": [
-          "#0a0e13",
-          "#101720",
-          "#16202b",
-          "#1e2a37",
-          "#273543"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#d8dfe7"
+        "lightCanonical": "#d8dfe7",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "line-0": {
         "role": "neutral",
         "displayName": "结构分割 Structural Hairline",
-        "canonical": "#1b2530",
+        "canonical": "#222428",
         "purpose": "1px 结构分割:表格行、面板头、分节上边线、画布网格。",
-        "tonalRamp": [
-          "#1b2530",
-          "#26333f",
-          "#556a7e"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#dde3ea"
+        "lightCanonical": "#dde3ea",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "line-1": {
         "role": "neutral",
         "displayName": "可见分隔 Visible Divider",
-        "canonical": "#26333f",
+        "canonical": "#303237",
         "purpose": "1px 可见分隔与面板边框:列分隔、面板外框、表头下边。",
-        "tonalRamp": [
-          "#1b2530",
-          "#26333f",
-          "#556a7e"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#c9d2db"
+        "lightCanonical": "#c9d2db",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "line-2": {
         "role": "neutral",
         "displayName": "可辨描边 Discernible Stroke",
-        "canonical": "#5b7185",
-        "purpose": "交互控件描边与 DAG 连线的唯一来源；T21.3 由 #556a7e 提到 #5b7185（旧值对控件自身填充只有 2.94:1，内外邻接都要 ≥3:1）。",
-        "tonalRamp": [
-          "#1b2530",
-          "#26333f",
-          "#556a7e"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#808d95"
+        "canonical": "#72767d",
+        "purpose": "交互控件描边与 DAG 连线，默认暗色地面内外邻接最紧 3.85:1；浅色最紧 3.01:1。",
+        "lightCanonical": "#808d95",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "ink-0": {
         "role": "neutral",
         "displayName": "主读数 Primary Reading",
-        "canonical": "#e8eff6",
+        "canonical": "#eeeff1",
         "purpose": "主文本;主操作按钮的底色(亮底深字)。",
-        "tonalRamp": [
-          "#76889b",
-          "#8497ab",
-          "#a7b7c6",
-          "#e8eff6"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#0d1319"
+        "lightCanonical": "#0d1319",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "ink-1": {
         "role": "neutral",
         "displayName": "次读数 Secondary",
-        "canonical": "#a7b7c6",
+        "canonical": "#b2b5bc",
         "purpose": "次文本:表格内容、字段标签、幽灵按钮。",
-        "tonalRamp": [
-          "#76889b",
-          "#8497ab",
-          "#a7b7c6",
-          "#e8eff6"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#3d4a57"
+        "lightCanonical": "#3d4a57",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "ink-2": {
         "role": "neutral",
         "displayName": "三级标签 Tertiary",
-        "canonical": "#8497ab",
-        "purpose": "表头、微标签、图例、选中节点的 1px 偏移环(ground-2 上 5.48:1)。",
-        "tonalRamp": [
-          "#76889b",
-          "#8497ab",
-          "#a7b7c6",
-          "#e8eff6"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#4e5a68"
+        "canonical": "#969ba5",
+        "purpose": "表头、微标签、图例；暗色 ground-3 上 5.56:1。",
+        "lightCanonical": "#4e5a68",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "ink-3": {
         "role": "neutral",
         "displayName": "待填 Quaternary",
-        "canonical": "#76889b",
-        "purpose": "占位符、未填占位、时间戳缺口、禁用字(ground-2 上 4.52:1)。",
-        "tonalRamp": [
-          "#76889b",
-          "#8497ab",
-          "#a7b7c6",
-          "#e8eff6"
-        ],
-        "rampKind": "project-ladder",
-        "lightCanonical": "#5f6a71"
+        "canonical": "#888e99",
+        "purpose": "占位、时间戳缺口与禁用字；暗色 ground-2 上 5.34:1。",
+        "lightCanonical": "#5f6a71",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "sig-fail-hi": {
         "role": "secondary",
@@ -330,20 +256,18 @@
       "primary-action": {
         "role": "primary",
         "displayName": "primary-action",
-        "canonical": "#e8eff6",
-        "purpose": "主操作实体：亮主题取最暗实体、暗主题取最亮实体（浅色档 #d8dfe7）",
-        "tonalRamp": [],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#d8dfe7"
+        "canonical": "#eeeff1",
+        "purpose": "主操作实体：暗色近白、浅色近黑，正文与相邻地面均通过对比度门。",
+        "lightCanonical": "#0d1319",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       },
       "primary-ink": {
         "role": "primary",
         "displayName": "primary-ink",
-        "canonical": "#0a0e13",
-        "purpose": "主操作文字（浅色档 #0d1319）",
-        "tonalRamp": [],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#0d1319"
+        "canonical": "#08090a",
+        "purpose": "主操作的对侧文字色；浅色档 #f7f9fb。",
+        "lightCanonical": "#f7f9fb",
+        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
       }
     },
     "typographyMeta": {
@@ -445,16 +369,39 @@
         "value": "无移动端断点",
         "purpose": "桌面优先;窄窗只保证不横向溢出(仅收尾截图复核)。"
       }
-    ]
+    ],
+    "surfaces": {
+      "shellAndApprovals": {
+        "reference": "Linear",
+        "mode": "Operate",
+        "default": "dark",
+        "topbarHeight": "48px",
+        "routeHeaderHeight": "46px",
+        "approvalRowHeight": "44px",
+        "detailMaxWidth": "1056px",
+        "sharedTokenNames": "unchanged",
+        "verification": "docs/audits/UX-F1-a-VALIDATION.md",
+        "focusContract": "accent remains canonical interaction blue; shadcn menu focus backgrounds use ground-3 through data-slot adapter, never a duplicate token alias",
+        "focusOpacity": 0.85,
+        "primaryControlContract": "light primary-action #0d1319 / primary-ink #f7f9fb; usable primary boundary >=3, text >=4.5; existing disabled-state exemption only",
+        "selectKeyboardFocus": {
+          "selector": "[data-slot='select-item']:focus-visible",
+          "outline": "2px solid 85% accent",
+          "outlineOffset": "-2px",
+          "regression": "real author triggerDefinition Select, ArrowDown, both themes and 1440/1024"
+        }
+      },
+      "otherSurfaces": "n8n/Vercel/Temporal direction approved; delivery belongs to UX-F1-b/c/d"
+    }
   },
   "components": [
     {
       "name": "Primary Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "主操作 = 全屏最亮的一块:亮底深字;用于保存草稿、登录、触发执行。",
+      "description": "主操作：暗色亮实体深字、浅色深实体浅字；文字≥4.5、实体边界≥3；hover/active朝对侧文字色混合。",
       "html": "<button class=\"ds-btn ds-btn-primary\" type=\"button\">保存草稿</button>",
-      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;height:2rem;padding:0 .75rem;border:1px solid var(--color-line-2);border-radius:8px;background:var(--color-ground-2);color:var(--color-ink-0);font-family:var(--font-sans);font-size:.781rem;font-weight:500;line-height:1.125rem;white-space:nowrap;cursor:pointer;transition:background-color 120ms cubic-bezier(.4,0,.2,1),border-color 120ms cubic-bezier(.4,0,.2,1),color 120ms cubic-bezier(.4,0,.2,1)}.ds-btn-primary{background:var(--color-ink-0);border-color:var(--color-ink-0);color:var(--color-ground-0);font-weight:600}.ds-btn-primary:hover:not(:disabled){background:#fff;border-color:#fff}.ds-btn-primary:active:not(:disabled){background:var(--color-ink-1);border-color:var(--color-ink-1)}.ds-btn-primary:disabled{background:var(--color-ground-3);border-color:var(--color-ground-3);color:var(--color-ink-3);cursor:not-allowed}.ds-btn:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;height:2rem;padding:0 .75rem;border:1px solid var(--color-line-2);border-radius:8px;background:var(--color-ground-2);color:var(--color-ink-0);font-family:var(--font-sans);font-size:.781rem;font-weight:500;line-height:1.125rem;white-space:nowrap;cursor:pointer;transition:background-color 120ms cubic-bezier(.4,0,.2,1),border-color 120ms cubic-bezier(.4,0,.2,1),color 120ms cubic-bezier(.4,0,.2,1)}.ds-btn-primary{background:var(--color-primary-action);border-color:var(--color-primary-action);color:var(--color-primary-ink);font-weight:600}.ds-btn-primary:hover:not(:disabled){background:color-mix(in oklab,var(--color-primary-action) 88%,var(--color-primary-ink));border-color:color-mix(in oklab,var(--color-primary-action) 88%,var(--color-primary-ink))}.ds-btn-primary:active:not(:disabled){background:color-mix(in oklab,var(--color-primary-action) 76%,var(--color-primary-ink));border-color:color-mix(in oklab,var(--color-primary-action) 76%,var(--color-primary-ink))}.ds-btn-primary:disabled{background:var(--color-ground-3);border-color:var(--color-ground-3);color:var(--color-ink-3);cursor:not-allowed}.ds-btn:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
     },
     {
       "name": "Secondary Button",
@@ -508,9 +455,9 @@
       "name": "Nav Tab",
       "kind": "nav",
       "refersTo": "nav-tab",
-      "description": "全站唯一的域导航(工作流 / 执行):悬停抬字色,当前页用 2px 焦点蓝下划线 —— 下划线是焦点色唯一的导航落点。",
-      "html": "<nav class=\"ds-tabs\"><a class=\"ds-tab\" data-active=\"true\" href=\"#\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" aria-hidden=\"true\"><rect x=\"3\" y=\"3\" width=\"6\" height=\"6\" rx=\"1\"/><rect x=\"15\" y=\"15\" width=\"6\" height=\"6\" rx=\"1\"/><path d=\"M9 6h6a3 3 0 0 1 3 3v6\"/></svg>工作流</a><a class=\"ds-tab\" href=\"#\"><svg width=\"14\" height=\"14\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" aria-hidden=\"true\"><path d=\"M22 12h-4l-3 9L9 3l-3 9H2\"/></svg>执行</a></nav>",
-      "css": ".ds-tabs{display:flex;align-items:stretch;gap:.25rem;border-bottom:1px solid var(--color-line-1);font-family:var(--font-sans)}.ds-tab{position:relative;display:inline-flex;align-items:center;gap:.4rem;height:2.25rem;padding:0 .75rem;background:transparent;color:var(--color-ink-1);font-size:.781rem;line-height:1.125rem;font-weight:500;text-decoration:none;cursor:pointer;transition:color 120ms cubic-bezier(.4,0,.2,1)}.ds-tab:hover{color:var(--color-ink-0)}.ds-tab[data-active='true']{color:var(--color-ink-0);font-weight:600}.ds-tab[data-active='true']::after{content:'';position:absolute;inset-inline:.5rem;bottom:-1px;height:2px;background:var(--color-accent);border-radius:2px 2px 0 0}.ds-tab:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
+      "description": "主域导航：30px 紧凑按钮，当前域用 ground-3/ink-0；路由条只有一个可见h1。局部页签继续使用原tabs词汇。",
+      "html": "<a class=\"shell-tab\" aria-current=\"page\" href=\"/approvals\">审批</a>",
+      "css": ".shell-tab{display:inline-flex;align-items:center;gap:.45rem;height:1.875rem;padding:0 .75rem;border-radius:5px;color:var(--color-ink-2);font-size:var(--text-sm);font-weight:500;text-decoration:none}.shell-tab[aria-current=\"page\"]{color:var(--color-ink-0);background:var(--color-ground-3)}"
     },
     {
       "name": "Execution Ribbon Row",
@@ -537,8 +484,8 @@
     }
   ],
   "narrative": {
-    "northStar": "控制室夜班 (The Night-Shift Control Room)",
-    "overview": "物理场景一句话:夜间机房里的控制台——近黑偏蓝绿的无光地面像一排尚未点亮的荧光屏,信息是被点亮的刻度与读数,不是浮在桌面上的卡片。\n\n三个角色(author 编排、approver 审批、operator 值班)共用同一块 24–27 寸桌面屏幕,单次驻留 20 分钟到数小时,夜间值班是常态。所以这个世界没有装饰性亮度:每一级亮度差要么在回答\"现在是什么状态、卡了多久\",要么在说\"这里可以动手\"。密度按仪器读数组织——小字号、等宽数字、1px 发丝分割;留白只用来分组,不用来装饰。深色不是\"科技感\"品类默认,而是取自使用场景(长时间驻留 + 夜间低环境光)。\n\n两条法则把色板的自由度收窄,反而让密集控制台可读:色相只承担状态语义(idle / run / ok / wait / fail / stop 六态),交互一律靠亮度(主操作 = 亮底深字,永不与状态色相竞争)。焦点蓝 accent 是唯一非状态色相,只做焦点与\"当前所在\",永不表达状态。状态一律色相 + 形状双编码,色盲可达。\n\n本档记录的是 T21.1 已建成并经收尾截图复核的实现(.impeccable/review/desktop-*.png 与前端源码 token);构建路径为 code-led,没有 approved comp、没有像素级 comp-diff。不含 benchmark 数字、客户案例、定价或第三方 logo——产品真源 PRODUCT.md 已明确这些不存在,界面不得编造。",
+    "northStar": "分面取长，运营面安静而紧凑",
+    "overview": "D-2026-10-15-console-references：UX-F1-a 的壳层/导航/审批采用 Linear 中性近黑、1px 细线与紧凑行；画布、执行总览、执行列表分别由其他子票持有。双主题、键盘流、token 载体与安全契约保留。",
     "keyCharacteristics": [
       "四段亮度台阶(ground-0…ground-4)+ 三档发丝线(line-0/1/2)承担全部层级;零发光、零投影。",
       "六态状态色相只做状态,每个状态同时有图标形状与中文标签。",

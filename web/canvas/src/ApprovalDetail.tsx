@@ -75,7 +75,7 @@ export function ApprovalDetail({
 
   if (detail === null) {
     return (
-      <main className="appr-detail" data-testid={TID.approvalDetail}>
+      <article className="appr-detail" data-testid={TID.approvalDetail}>
         {loading ? (
           <p className="text-sm text-ink-2">加载审批详情…</p>
         ) : (
@@ -91,7 +91,7 @@ export function ApprovalDetail({
             </div>
           </>
         )}
-      </main>
+      </article>
     )
   }
 
@@ -105,19 +105,23 @@ export function ApprovalDetail({
       : `执行 ${detail.execution_id} · ${detail.node_id}`
 
   return (
-    <main className="appr-detail" data-testid={TID.approvalDetail} data-state={detail.node_status}>
+    <article className="appr-detail" data-testid={TID.approvalDetail} data-state={detail.node_status}>
       {/* ① 身份 + 元数据 */}
       <header className="panel">
         <div className="panel-body appr-head-body">
           <div className="appr-head-title">
-            <StatusChip kind="node" status={detail.node_status} />
             <h2 className="text-md font-semibold text-ink-0">{title}</h2>
+            <StatusChip kind="node" status={detail.node_status} />
             <span className="ml-auto">
               <Button variant="quiet" size="sm" icon={ArrowLeft} onClick={onBack}>
                 返回队列
               </Button>
             </span>
           </div>
+          <p className="appr-keys appr-detail-keys" aria-label="详情快捷键">
+            <span><kbd>Esc</kbd> 返回队列</span>
+            {actionable ? <><span><kbd>a</kbd> 批准</span><span><kbd>r</kbd> 驳回</span></> : null}
+          </p>
           <dl className="appr-meta" data-testid={TID.approvalMeta}>
             <KV k="执行 ID">
               <code className="panel-id">{detail.execution_id}</code>
@@ -143,7 +147,7 @@ export function ApprovalDetail({
       </header>
 
       <Panel><PanelHead title="执行上下文" sub={execution == null ? undefined : `${execution.definition_name} v${execution.definition_version}`} />
-        <div className="panel-body">
+        <div className="panel-body appr-context">
           {execution != null ? <><p className="text-sm text-ink-1">触发人：<span className="mono">{execution.triggered_by}</span></p><p className="micro mt-3">触发输入</p><p className="text-xs text-ink-2">解析后展示；精确值可在执行详情的原始响应核对。</p><pre className="mt-2 overflow-x-auto text-xs text-ink-1">{JSON.stringify(execution.input, null, 2)}</pre></>
             : <p className="text-sm text-ink-2">{contextError !== '' ? `执行上下文未能读取：${contextError}` : '正在读取执行上下文…'}</p>}
         </div>
@@ -187,7 +191,7 @@ export function ApprovalDetail({
 
       {/* ④ 决定 */}
       {actionable ? (
-        <Panel>
+        <Panel className="appr-decision-panel">
           <PanelHead title="决定" sub="提交即续跑挂起的执行" />
           <div className="panel-body appr-decide">
             <TextArea
@@ -222,7 +226,7 @@ export function ApprovalDetail({
               >
                 驳回
               </Button>
-              <span className="text-xs text-ink-2">{busy ? '提交中…' : 'a 批准 · r 驳回'}</span>
+              {busy ? <span className="text-xs text-ink-2" role="status">提交中…</span> : null}
             </div>
             {/* 驳回 = 一次布防 + 一次确认(会签驳回即判死,与服务端不可改判
                 同构);批准是主操作,单击直达。Esc / 放弃 收起确认层。
@@ -255,7 +259,7 @@ export function ApprovalDetail({
           </span>
         </Alert>
       )}
-    </main>
+    </article>
   )
 }
 

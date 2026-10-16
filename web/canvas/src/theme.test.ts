@@ -77,6 +77,12 @@ describe('样式表结构锚(styles/index.css)', () => {
     expect(css).toContain("@media (prefers-color-scheme: light)")
   })
 
+  it('shadcn适配别名不能覆盖已有语义token，避免焦点蓝在构建时被中性底色替换', () => {
+    const canonical = new Set([...css.match(/@theme \{([\s\S]*?)\n\}/)![1].matchAll(/--color-([a-z0-9-]+):/g)].map((m) => m[1]))
+    const aliases = [...css.match(/@theme inline \{([\s\S]*?)\n\}/)![1].matchAll(/--color-([a-z0-9-]+):/g)].map((m) => m[1])
+    expect(aliases.filter((key) => canonical.has(key))).toEqual([])
+  })
+
   it('浅色档声明的每个 token 都在 @theme(默认世界)有具体值', () => {
     // 血泪锚:primary-action / primary-ink / sig-fail-hi 曾只存在于「深色覆盖块」,
     // 默认世界改成 @theme 后它们无处落脚 —— 深色下主操作背景直接落空(透明)。

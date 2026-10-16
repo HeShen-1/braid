@@ -87,17 +87,24 @@ export function ApprovalQueue({
           sub={total > items.length ? `${items.length} / ${total} 条` : `${items.length} 条`}
           actions={
             <Button
-              variant="quiet"
+              variant="default"
               size="sm"
-              iconOnly
               icon={RefreshCw}
               aria-label="刷新待办队列"
               data-testid={TID.approvalRefresh}
               disabled={loading}
               onClick={onRefresh}
-            />
+            >刷新</Button>
           }
         />
+
+        <div className="appr-queue-toolbar">
+          <p>分配给当前账号的待办节点</p>
+          <p className="appr-keys" aria-label="队列快捷键">
+            <span><kbd>j</kbd> <kbd>k</kbd> 移动</span>
+            <span><kbd>Enter</kbd> 打开</span>
+          </p>
+        </div>
 
         {flash !== '' ? (
           <p className="appr-flash" role="status" data-testid={TID.approvalFlash}>
@@ -132,7 +139,12 @@ export function ApprovalQueue({
         ) : (
           <>
             <div className="appr-table-wrap">
-              <table className="table" role="grid" aria-label="待办审批">
+              <table className="table appr-table" role="grid" aria-label="待办审批">
+                <colgroup>
+                  <col className="appr-col-workflow" /><col className="appr-col-execution" />
+                  <col className="appr-col-node" /><col className="appr-col-wait" />
+                  <col className="appr-col-deadline" /><col className="appr-col-action" />
+                </colgroup>
                 <thead>
                   <tr>
                     <th>工作流</th>
@@ -174,13 +186,13 @@ export function ApprovalQueue({
                       >
                         <td>
                           <div className="appr-row-name">
-                            <span className="truncate text-ink-0">{it.definition_name}</span>
+                            <span className="truncate text-ink-0" title={it.definition_name}>{it.definition_name}</span>
                             <span className="num text-ink-2">v{it.definition_version}</span>
                           </div>
                         </td>
-                        <td className="mono">{it.execution_id}</td>
-                        <td>
-                          <code className="mono">{it.node_id}</code>
+                        <td className="mono" title={it.execution_id}><span className="appr-cell-id">{it.execution_id}</span></td>
+                        <td title={it.node_id}>
+                          <code className="mono appr-cell-id">{it.node_id}</code>
                         </td>
                         {/* 已等待 = requested_at → now(Duration to=null 即算到
                             现在,每秒推进;title 带绝对时刻两面同给) */}
@@ -224,10 +236,6 @@ export function ApprovalQueue({
           </>
         )}
 
-        <p className="appr-keys">
-          <kbd>j</kbd>
-          <kbd>k</kbd> 移动 · <kbd>Enter</kbd> 打开 · <kbd>a</kbd> 批准 · <kbd>r</kbd> 驳回 · <kbd>Esc</kbd> 返回
-        </p>
       </section>
     </aside>
   )

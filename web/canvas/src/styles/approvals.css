@@ -20,19 +20,61 @@
 .appr-rail {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0;
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 0.75rem;
+  padding: 0;
 }
 
 .appr-rail > .panel {
   flex: 0 0 auto;
+  min-width: 0;
+  min-height: 100%;
+  border: 0;
+  border-radius: 0;
+  background: var(--color-ground-0);
 }
+
+.appr-rail .panel-head {
+  min-height: 3.5rem;
+  padding: 0.875rem 1.5rem 0.5rem;
+  border: 0;
+}
+
+.appr-rail .panel-head h2 { font-size: var(--text-md); }
+
+.appr-queue-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding: 0 1.5rem 0.875rem;
+  border-bottom: 1px solid var(--color-line-0);
+  color: var(--color-ink-2);
+  font-size: var(--text-xs);
+}
+
+.appr-queue-toolbar p { margin: 0; }
 
 .appr-table-wrap {
   overflow-x: auto;
 }
+
+.appr-table { table-layout: fixed; min-width: 50rem; }
+.appr-col-workflow { width: 26%; }
+.appr-col-execution { width: 20%; }
+.appr-col-node { width: 16%; }
+.appr-col-wait { width: 10%; }
+.appr-col-deadline { width: 20%; }
+.appr-col-action { width: 8%; }
+.appr-table thead th { padding: 0.55rem 0.75rem; background: var(--color-ground-1); letter-spacing: 0.02em; }
+.appr-table tbody td { height: 2.75rem; padding: 0.35rem 0.75rem; }
+.appr-table :is(th, td):first-child { padding-left: 1.5rem; }
+.appr-table :is(th, td):last-child { padding-right: 1.5rem; }
+.appr-cell-id { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.appr-row-name > .num { flex-shrink: 0; font-size: var(--text-xs); }
 
 .appr-row-name {
   display: flex;
@@ -63,14 +105,14 @@
 /* ---------- 队列:错误 / 成功反馈 / 翻页 / 快捷键提示 ---------- */
 
 .appr-error {
-  padding: 0.6rem 0.75rem 0;
+  padding: 0.75rem 1.5rem;
 }
 
 .appr-flash {
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   margin: 0;
-  padding: 0.45rem 0.75rem;
+  padding: 0.75rem 1.5rem;
   border-bottom: 1px solid var(--color-line-0);
   background: color-mix(in oklab, var(--color-sig-ok) 9%, transparent);
   color: var(--color-ink-0);
@@ -86,7 +128,7 @@
   display: flex;
   align-items: center;
   gap: 0.5rem;
-  padding: 0.4rem 0.75rem;
+  padding: 0.75rem 1.5rem;
   border-top: 1px solid var(--color-line-0);
   font-size: var(--text-xs);
 }
@@ -99,24 +141,27 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: 0.15rem 0.35rem;
+  gap: 0.5rem 1rem;
   margin: 0;
-  padding: 0.45rem 0.75rem 0.55rem;
-  border-top: 1px solid var(--color-line-0);
-  color: var(--color-ink-3);
-  font-size: var(--text-micro);
-  font-weight: 600;
-  letter-spacing: 0.06em;
+  color: var(--color-ink-2);
+  font-size: var(--text-xs);
 }
 
+.appr-keys > span { display: inline-flex; align-items: center; gap: 0.3rem; }
+
 .appr-keys kbd {
-  padding: 0 0.25rem;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1.125rem;
+  height: 1.125rem;
+  padding: 0 0.3rem;
   border: 1px solid var(--color-line-1);
   border-radius: 4px;
   background: var(--color-ground-2);
   color: var(--color-ink-1);
   font-family: var(--font-mono);
-  font-size: var(--text-micro);
+  font-size: var(--text-xs);
 }
 
 /* ---------- 详情:纵向分层(身份 → 元数据 → 说明 → 时间线 → 决定) ---------- */
@@ -124,15 +169,37 @@
 .appr-detail {
   display: flex;
   flex-direction: column;
-  gap: 0.75rem;
+  gap: 0;
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 0.75rem 1rem 2rem;
+  padding: 0 2rem 2rem;
 }
 
 .appr-detail > * {
   flex: 0 0 auto;
+  width: 100%;
+  max-width: 66rem;
+  margin-inline: auto;
+}
+
+.appr-detail > .panel {
+  border: 0;
+  border-bottom: 1px solid var(--color-line-0);
+  border-radius: 0;
+  background: transparent;
+}
+
+.appr-detail .panel-body { padding: 1rem 0; }
+.appr-detail .panel-head { min-height: 2.75rem; padding: 0.875rem 0 0; border: 0; }
+.appr-detail .panel-head h2 { font-size: var(--text-sm); }
+.appr-detail > header .panel-body { padding-top: 1.25rem; }
+.appr-detail-keys { padding-bottom: 0.75rem; }
+.appr-context pre { max-height: 12rem; padding: 0.75rem; border: 1px solid var(--color-line-0); border-radius: 5px; background: var(--color-ground-1); }
+.appr-decision-panel .appr-decide { padding-bottom: 1.5rem; }
+
+@media (max-width: 1100px) {
+  .appr-detail { padding-inline: 1.5rem; }
 }
 
 .appr-head-body {
@@ -148,11 +215,18 @@
   gap: 0.5rem 0.75rem;
 }
 
+.appr-head-title h2 { min-width: 0; overflow-wrap: anywhere; }
+
 .appr-meta {
-  display: flex;
-  flex-direction: column;
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.5rem 1.5rem;
   margin: 0;
 }
+
+.appr-meta > div { flex-direction: column; align-items: flex-start; gap: 0.25rem; padding: 0.25rem 0; }
+.appr-meta dt { width: auto; }
+.appr-meta dd { width: 100%; overflow-wrap: anywhere; }
 
 .appr-instructions {
   margin: 0;
@@ -167,7 +241,7 @@
   flex-direction: column;
   gap: 0.25rem;
   margin: 0;
-  padding: 0.4rem 0.75rem 0.6rem;
+  padding: 0.75rem 0 1rem;
   list-style: none;
   font-size: var(--text-xs);
 }
