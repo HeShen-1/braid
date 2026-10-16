@@ -51,7 +51,7 @@ interface WorkflowValue {
 const Ctx = createContext<WorkflowValue | null>(null)
 
 export function WorkflowProvider({ children }: { children: ReactNode }) {
-  const { user, logout } = useAuth()
+  const { user, logout, canAuthor } = useAuth()
   const [drafts, setDrafts] = useState<DraftSummary[]>([])
   const [loading, setLoading] = useState(true)
   const [listError, setListError] = useState('')
@@ -126,6 +126,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
 
   const open = useCallback(
     async (id: string) => {
+      if (!canAuthor) return false
       const seq = ++openSeq.current
       if (wsRef.current?.draftId === id) return true
       const before = wsRef.current
@@ -150,17 +151,18 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
         return false
       }
     },
-    [guard, setWorkspace],
+    [guard, setWorkspace, canAuthor],
   )
 
   const newLocal = useCallback(() => {
+    if (!canAuthor) return
     openSeq.current++
     setIssues([])
     setFlash('')
     const key = ++nextKey.current
     setWorkspace({ key, draftId: null, doc: blankDoc(), saved: null })
     setEditorKey(key)
-  }, [setWorkspace])
+  }, [setWorkspace, canAuthor])
 
   const close = useCallback(() => {
     openSeq.current++
@@ -170,6 +172,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
   }, [setWorkspace])
 
   const onDocChange = useCallback((doc: WorkflowDoc) => {
+    if (!canAuthor) return
     // F05:旧校验错误描述的是编辑前的文档,一改即过期——就地清除,
     // 不再常驻到下次保存(错误横幅只在「刚失败」的窗口内可见)。
     setIssues((cur) => (cur.length > 0 ? [] : cur))
@@ -177,11 +180,12 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
     if (cur === null) return
     if (snapshot(cur.doc) !== snapshot(doc)) setFlash('')
     setWorkspace({ ...cur, doc })
-  }, [setWorkspace])
+  }, [setWorkspace, canAuthor])
 
   // 保存 = create-or-update:首次(本地新建)POST /definitions,之后 PUT。
   const saveDoc = useCallback(
     async (doc: WorkflowDoc) => {
+      if (!canAuthor) return null
       const cur = wsRef.current
       if (cur === null) return null
       const saved = snapshot(doc)
@@ -213,7 +217,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
         return null
       }
     },
-    [guard, refresh, setWorkspace],
+    [guard, refresh, setWorkspace, canAuthor],
   )
 
   const save = useCallback(async (doc: WorkflowDoc) => {

@@ -83,11 +83,22 @@ describe('WorkflowsRoute(发布成功反馈,F04)', () => {
     session.clear()
   })
 
+  it.each([{ roles: ['approver'] }, { roles: [] }])('角色 $roles 深链草稿也不能挂编辑器或发写请求', async ({ roles }) => {
+    session.start('t', 'same-user', roles)
+    const fetcher = stubFetch()
+    mount(`/workflows/${draftId}`)
+    expect(await screen.findByRole('heading', { name: '已发布与版本历史' })).toBeInTheDocument()
+    expect(screen.queryByTestId(TID.editor)).not.toBeInTheDocument()
+    expect(screen.queryByTestId(TID.draftNew)).not.toBeInTheDocument()
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === 'POST' || init?.method === 'PUT')).toBe(false)
+    expect(fetcher.mock.calls.some(([url]) => String(url) === `/api/v1/drafts/${draftId}`)).toBe(false)
+  })
+
   it('点发布:编辑器卸载后成功条仍可见,带「查看已发布」出口;深链不复活编辑器', async () => {
-    session.start('t', 'author')
+    session.start('t', 'author', ['author'])
     stubFetch()
     const user = userEvent.setup()
-    mount(`/workflows/${draftId}`)
+    const { router } = mount(`/workflows/${draftId}`)
 
     await screen.findByTestId(TID.editor)
     expect(screen.queryByTestId(TID.workflowFlash)).not.toBeInTheDocument()
@@ -106,13 +117,14 @@ describe('WorkflowsRoute(发布成功反馈,F04)', () => {
     expect(screen.queryByTestId(TID.editor)).not.toBeInTheDocument()
     expect(screen.getByTestId(TID.workflowFlash)).toHaveTextContent('已发布 告警分诊 v2')
 
-    // 「查看已发布」出口:跳执行面触发页(已发布定义在那里面向触发)。
+    // 「查看已发布」进入工作流版本浏览，URL 可刷新恢复该视图。
     await user.click(screen.getByTestId(TID.viewPublished))
-    await screen.findByTestId('exec-probe')
+    expect(await screen.findByRole('heading', { name: '已发布与版本历史' })).toBeInTheDocument()
+    expect(router.state.location.search).toBe('?view=versions')
   })
 
   it('open() 只编草稿:深链直指 PUBLISHED definition 不挂编辑器,也不循环重取', async () => {
-    session.start('t', 'author')
+    session.start('t', 'author', ['author'])
     // 详情恒为 PUBLISHED(不发布、只深链):守卫要在这条冷路径上拒绝挂载。
     const fetchMock = stubFetch()
     fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
@@ -134,7 +146,7 @@ describe('WorkflowsRoute(发布成功反馈,F04)', () => {
   })
 
   it('发布失败:编辑器不卸载,走 issues 面,成功条不出现', async () => {
-    session.start('t', 'author')
+    session.start('t', 'author', ['author'])
     vi.stubGlobal(
       'fetch',
       vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -163,7 +175,7 @@ describe('WorkflowsRoute(发布成功反馈,F04)', () => {
   })
 
   it('新建前保护未保存内容;取消回入口焦点,确认才丢弃', async () => {
-    session.start('t', 'author')
+    session.start('t', 'author', ['author'])
     stubFetch()
     const user = userEvent.setup()
     mount(`/workflows/${draftId}`)
@@ -183,7 +195,7 @@ describe('WorkflowsRoute(发布成功反馈,F04)', () => {
   })
 
   it('直接切换草稿 URL/浏览器后退均保护;确认后停在目标草稿,不被旧状态拉回', async () => {
-    session.start('t', 'author')
+    session.start('t', 'author', ['author'])
     const second = { ...draftDetail, id: '8', name: 'second', dsl: { ...draftDetail.dsl, name: 'second' } }
     vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
       const path = String(input).split('?')[0]
@@ -211,7 +223,7 @@ describe('WorkflowsRoute(发布成功反馈,F04)', () => {
   })
 
   it('离开主导航与刷新有脏态保护;保存成功后解除,单纯选择节点不误报', async () => {
-    session.start('t', 'author')
+    session.start('t', 'author', ['author'])
     stubFetch()
     const user = userEvent.setup()
     mount(`/workflows/${draftId}`)
@@ -241,7 +253,7 @@ describe('WorkflowsRoute(发布成功反馈,F04)', () => {
   })
 
   it('B 详情在飞时后退 A 会废弃 B 的迟到响应,URL 与画布保持 A', async () => {
-    session.start('t', 'author')
+    session.start('t', 'author', ['author'])
     let resolve!: (response: Response) => void
     const pending = new Promise<Response>((r) => { resolve = r })
     let requested = false

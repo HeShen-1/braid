@@ -8,7 +8,7 @@ import { useAuth } from '../auth.tsx'
 export function ApprovalsRoute() {
   const { executionId, nodeId } = useParams()
   const navigate = useNavigate()
-  const { logout } = useAuth()
+  const { logout, user, canApprove } = useAuth()
 
   const selected = executionId !== undefined && nodeId !== undefined ? { executionId, nodeId } : null
 
@@ -17,6 +17,8 @@ export function ApprovalsRoute() {
       selected={selected}
       onSelect={(sel) => void navigate(sel === null ? '/approvals' : `/approvals/${sel.executionId}/${sel.nodeId}`)}
       onAuthExpired={logout}
+      canDecide={canApprove}
+      username={user}
     />
   )
 }

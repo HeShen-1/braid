@@ -4,6 +4,8 @@
 import { tokenStore } from './api.ts'
 
 const USER_KEY = 'braid_canvas_user'
+const ROLES_KEY = 'braid_canvas_roles'
+const EXPIRY_KEY = 'braid_canvas_expires_at'
 
 function readUser(): string | null {
   try {
@@ -20,10 +22,22 @@ export const session = {
   get authed(): boolean {
     return tokenStore.get() !== null
   },
-  start(token: string, username: string) {
+  get roles(): string[] {
+    try {
+      const roles: unknown = JSON.parse(sessionStorage.getItem(ROLES_KEY) ?? '[]')
+      return Array.isArray(roles) ? roles.filter((r): r is string => typeof r === 'string') : []
+    } catch { return [] }
+  },
+  get expiresAt(): string | null {
+    try { return sessionStorage.getItem(EXPIRY_KEY) } catch { return null }
+  },
+  start(token: string, username: string, roles: string[], expiresAt: string | null = null) {
     tokenStore.set(token)
     try {
       sessionStorage.setItem(USER_KEY, username)
+      sessionStorage.setItem(ROLES_KEY, JSON.stringify(roles))
+      if (expiresAt === null) sessionStorage.removeItem(EXPIRY_KEY)
+      else sessionStorage.setItem(EXPIRY_KEY, expiresAt)
     } catch {
       /* 私密模式等存储不可用:仅本次内存态生效 */
     }
@@ -32,6 +46,8 @@ export const session = {
     tokenStore.clear()
     try {
       sessionStorage.removeItem(USER_KEY)
+      sessionStorage.removeItem(ROLES_KEY)
+      sessionStorage.removeItem(EXPIRY_KEY)
     } catch {
       /* 同上 */
     }

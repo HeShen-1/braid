@@ -26,6 +26,7 @@ function detail(over: Partial<ApprovalDetailData> = {}): ApprovalDetailData {
 function renderDetail(over: Partial<Parameters<typeof ApprovalDetail>[0]> = {}) {
   const props = {
     detail: detail(),
+    canDecide: true,
     loading: false,
     error: '',
     definitionName: 'wf',
@@ -153,7 +154,8 @@ describe('ApprovalDetail(审批详情)', () => {
   it('T21.4 增项:布防即聚焦确认层,收起后焦点回「驳回」入口', () => {
     const props = {
       detail: detail(),
-      loading: false,
+      canDecide: true,
+    loading: false,
       error: '',
       comment: '',
       commentError: '',

@@ -94,6 +94,18 @@ afterEach(() => {
 })
 
 describe('ExecutionsView(执行面)', () => {
+  it('只读角色仍能选择执行，且没有触发写入口；选中态带行语义', async () => {
+    const { fn } = listStub(() => ok({ items: [exec('7', 'SUCCEEDED')], page: { limit: 20, offset: 0, total: 1 } }))
+    const onSelect = vi.fn()
+    render(<ExecutionsView canManage={false} selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
+    const row = await screen.findByTestId(tid.execRow('7'))
+    expect(row).toHaveRole('row')
+    expect(row).toHaveAttribute('aria-selected', 'false')
+    expect(screen.queryByTestId(TID.triggerSubmit)).not.toBeInTheDocument()
+    fireEvent.keyDown(row, { key: 'Enter' })
+    expect(onSelect).toHaveBeenCalledWith('7')
+    expect(fn.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
   it('首帧、翻页与名称筛选等待期间显示加载，不把未返回的数据称为空', async () => {
     const user = userEvent.setup()
     let finish!: (response: Response) => void
@@ -103,7 +115,7 @@ describe('ExecutionsView(执行面)', () => {
       return pathOf(url) === '/api/v1/definitions' ? ok({ items: published })
         : new Promise<Response>((resolve) => { finish = resolve })
     })
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     expect(screen.getByRole('region', { name: '执行列表' })).toHaveAttribute('aria-busy', 'true')
     expect(screen.queryByTestId(TID.execEmpty)).not.toBeInTheDocument()
     finish(ok({ items: [exec('7', 'SUCCEEDED')], page: { total: 21 } }))
@@ -125,7 +137,7 @@ describe('ExecutionsView(执行面)', () => {
     let failed = true
     stubRoute((url) => pathOf(url) === '/api/v1/definitions' ? ok({ items: published })
       : failed ? ok({ error: 'role_denied' }, 403) : ok({ items: [], page: { total: 0 } }))
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     expect(await screen.findByRole('alert')).toHaveTextContent('当前账号没有执行此操作的角色权限')
     expect(screen.queryByTestId(TID.execEmpty)).not.toBeInTheDocument()
     failed = false
@@ -141,7 +153,7 @@ describe('ExecutionsView(执行面)', () => {
       if (queryOf(url).get('status') === 'FAILED') return new Promise<Response>((resolve) => { finishOld = resolve })
       return ok({ items: [exec('7', 'SUCCEEDED')], page: { total: 1 } })
     })
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={onAuthExpired} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={onAuthExpired} />)
     await screen.findByTestId(tid.execRow('7'))
     const user = userEvent.setup()
     await chooseOption(user, screen.getByLabelText('按状态'), '已失败')
@@ -171,7 +183,7 @@ describe('ExecutionsView(执行面)', () => {
       }
       return ok({ items: [], page: { total: 0 } })
     }, () => ok({ ...published[0], dsl: { inputs } }))
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
     const contract = screen.getByLabelText('所选版本输入要求')
     expect(contract).toHaveTextContent('输入要求 · wf v3')
@@ -202,7 +214,7 @@ describe('ExecutionsView(执行面)', () => {
       versions.push(url)
       return url.endsWith('/3') ? pending : ok({ ...published[0], version: 4, dsl: { inputs: [{ name: 'new_field', type: 'string', required: true }] } })
     })
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
     expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
     expect(screen.getByRole('status')).toHaveTextContent('wf v3 的输入要求')
@@ -224,7 +236,7 @@ describe('ExecutionsView(执行面)', () => {
     let failed = true
     stubRoute((url) => pathOf(url) === '/api/v1/definitions' ? ok({ items: published }) : ok({ items: [], page: { total: 0 } }),
       () => failed ? ok({ error: 'http_503' }, 503) : ok({ ...published[0], dsl: { inputs: [] } }))
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: '{"preserved":true}' } })
     await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
     expect(await screen.findByRole('alert')).toHaveTextContent('读取 wf v3 的输入要求失败，请重试后再触发')
@@ -242,7 +254,7 @@ describe('ExecutionsView(执行面)', () => {
     const expired = vi.fn()
     stubRoute((url) => pathOf(url) === '/api/v1/definitions' ? ok({ items: published }) : ok({ items: [], page: { total: 0 } }),
       () => ok({ error: status === 401 ? 'unauthorized' : 'not_found' }, status))
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={expired} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={expired} />)
     await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
     if (status === 401) await waitFor(() => expect(expired).toHaveBeenCalledTimes(1))
     else expect(await screen.findByRole('alert')).toHaveTextContent('wf v3 已失效或不存在，请刷新后重新选择')
@@ -261,7 +273,7 @@ describe('ExecutionsView(执行面)', () => {
       if (path === '/api/v1/definitions') return ok({ items: [] })
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionsView selectedId="6" onSelect={onSelect} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId="6" onSelect={onSelect} onAuthExpired={() => {}} />)
 
     const table = await screen.findByTestId(TID.execTable)
     const row7 = screen.getByTestId(tid.execRow('7'))
@@ -286,7 +298,7 @@ describe('ExecutionsView(执行面)', () => {
       if (path === '/api/v1/definitions') return ok({ items: [] })
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionsView selectedId="7" onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId="7" onSelect={() => {}} onAuthExpired={() => {}} />)
     expect(await screen.findByTestId(TID.execDetail)).toBeInTheDocument()
     expect(await screen.findByTestId(TID.execStatus)).toHaveAttribute('data-state', 'RUNNING')
   })
@@ -298,7 +310,7 @@ describe('ExecutionsView(执行面)', () => {
         ? ok({ items: [exec('3', 'FAILED')], page: { limit: 20, offset: 0, total: 1 } })
         : ok({ items: [exec('7', 'RUNNING'), exec('6', 'SUCCEEDED')], page: { limit: 20, offset: 0, total: 2 } }),
     )
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.execRow('7'))
     expect(queryOf(listUrls()[0]).has('status')).toBe(false)
 
@@ -316,7 +328,7 @@ describe('ExecutionsView(执行面)', () => {
         ? ok({ items: [exec('6', 'SUCCEEDED', 'other')], page: { limit: 20, offset: 0, total: 1 } })
         : ok({ items: [exec('7', 'RUNNING')], page: { limit: 20, offset: 0, total: 1 } }),
     )
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.execRow('7'))
     fireEvent.change(screen.getByLabelText('按名称'), { target: { value: 'other' } })
     await waitFor(() => expect(queryOf(listUrls().at(-1) as string).get('name')).toBe('other'))
@@ -335,7 +347,7 @@ describe('ExecutionsView(执行面)', () => {
         page: { limit: 20, offset: off, total: 45 },
       })
     })
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.execRow('0'))
     expect(screen.getByText(/1–20 \/ 45/)).toBeInTheDocument()
 
@@ -355,7 +367,7 @@ describe('ExecutionsView(执行面)', () => {
         ? ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
         : ok({ items: [exec('7', 'RUNNING')], page: { limit: 20, offset: 0, total: 1 } }),
     )
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.execRow('7'))
 
     await chooseOption(user, screen.getByLabelText('按状态'), '已失败')
@@ -391,7 +403,7 @@ describe('ExecutionsView(执行面)', () => {
       }
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionsView selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
     await screen.findByTestId(TID.triggerDefinition)
     await chooseOption(user, screen.getByTestId(TID.triggerDefinition), 'wf v3')
     // JSON 文本含 {/[ (user-event 键描述符元字符),直改值免转义
@@ -417,7 +429,7 @@ describe('ExecutionsView(执行面)', () => {
       }
       return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
     })
-    render(<ExecutionsView selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
     await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
     newest = 4
     await user.click(screen.getByRole('button', { name: '刷新执行列表' }))
@@ -450,7 +462,7 @@ describe('ExecutionsView(执行面)', () => {
       }
       return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
     })
-    render(<ExecutionsView selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={onSelect} onAuthExpired={() => {}} />)
     await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
     await user.click(screen.getByTestId(TID.triggerSubmit))
     const alert = await screen.findByRole('alert')
@@ -472,7 +484,7 @@ describe('ExecutionsView(执行面)', () => {
       if (path === '/api/v1/executions' && init?.method === 'POST') return pending
       return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
     })
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
     await user.click(screen.getByTestId(TID.triggerSubmit))
     expect(screen.getByTestId(TID.triggerSubmit)).toHaveTextContent('正在触发…')
@@ -493,7 +505,7 @@ describe('ExecutionsView(执行面)', () => {
       if (path === '/api/v1/executions' && init?.method === 'POST') posted()
       return ok({ items: [], page: { limit: 20, offset: 0, total: 0 } })
     })
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf')
     expect(screen.getByText('该版本无有效版本号，请刷新后重新选择')).toBeInTheDocument()
     expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
@@ -510,7 +522,7 @@ describe('ExecutionsView(执行面)', () => {
       if (path === '/api/v1/definitions') return ok({ items: published })
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(TID.triggerDefinition)
     await chooseOption(user, screen.getByTestId(TID.triggerDefinition), 'wf v3')
     fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: 'not-json' } })
@@ -522,7 +534,7 @@ describe('ExecutionsView(执行面)', () => {
   it('触发输入顶层是数组:同样就地拦下', async () => {
     const user = userEvent.setup()
     listStub(() => ok({ items: [], page: { limit: 20, offset: 0, total: 0 } }))
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(TID.triggerDefinition)
     await chooseOption(user, screen.getByTestId(TID.triggerDefinition), 'wf v3')
     fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: '[]' } })
@@ -554,7 +566,7 @@ describe('ExecutionsView(执行面)', () => {
       }
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     // 面板头计数此前停在 20;数据面取全后即 21。
     expect(await screen.findByText('21 个已发布')).toBeInTheDocument()
     await user.click(screen.getByTestId(TID.triggerDefinition))
@@ -572,7 +584,7 @@ describe('ExecutionsView(执行面)', () => {
       if (path === '/api/v1/definitions') return ok({ items: [] })
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await screen.findByTestId(TID.triggerDefinition)
     expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
     expect(screen.getByText(/尚无已发布工作流/)).toBeInTheDocument()
@@ -585,7 +597,7 @@ describe('ExecutionsView(执行面)', () => {
 
   it('无选中:右栏是引导空态(不猜数据)', async () => {
     listStub(() => ok({ items: [], page: { limit: 20, offset: 0, total: 0 } }))
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     expect(await screen.findByText('未选择执行')).toBeInTheDocument()
     expect(screen.queryByTestId(TID.execDetail)).not.toBeInTheDocument()
   })
@@ -601,7 +613,7 @@ describe('ExecutionsView(执行面)', () => {
       }
       return ok({ items: [] })
     })
-    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={onAuthExpired} />)
+    render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={onAuthExpired} />)
     await waitFor(() => expect(onAuthExpired).toHaveBeenCalled())
   })
 })

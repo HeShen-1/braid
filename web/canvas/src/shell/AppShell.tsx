@@ -12,6 +12,8 @@ import { Wordmark } from './BrandMark.tsx'
 import { ThemeControl } from './ThemeControl.tsx'
 import { ConfirmLayer, useConfirmLayer } from '../ui/confirm.tsx'
 import { useWorkflow } from '../workflow/WorkflowProvider.tsx'
+import { CONSOLE_REFRESH, LIVE_REFRESH_MS } from '../refresh.ts'
+import { apiErrorText } from '../ui/errors.ts'
 
 interface Pulse {
   running: number
@@ -19,40 +21,54 @@ interface Pulse {
   failed: number
 }
 
-function usePulse(active: boolean): Pulse | null {
+function usePulse(active: boolean, onAuthExpired: () => void): { pulse: Pulse | null; error: string } {
   const [pulse, setPulse] = useState<Pulse | null>(null)
+  const [error, setError] = useState('')
   useEffect(() => {
     if (!active) return
     let alive = true
-    let timer: number | undefined
+    let seq = 0
 
     const tick = async () => {
-      try {
-        const [run, wait, fail] = await Promise.all([
+      const request = ++seq
+      const results = await Promise.allSettled([
           api.listExecutions({ status: 'RUNNING', limit: 1 }),
           api.listExecutions({ status: 'WAITING_APPROVAL', limit: 1 }),
           api.listExecutions({ status: 'FAILED', limit: 1 }),
-        ])
-        if (!alive) return
-        setPulse({ running: run.page.total, waiting: wait.page.total, failed: fail.page.total })
-      } catch (err) {
-        // 脉冲是增益不是依赖:401 由调用方登出,其余静默降级。
-        if (err instanceof ApiError && err.status === 401) return
-        if (alive) setPulse(null)
+      ])
+      if (!alive || request !== seq) return
+      for (const result of results) {
+        if (result.status === 'rejected' && result.reason instanceof ApiError && result.reason.status === 401) {
+          onAuthExpired()
+          return
+        }
+      }
+      const [run, wait, fail] = results
+      if (run.status === 'fulfilled' && wait.status === 'fulfilled' && fail.status === 'fulfilled') {
+        setPulse({ running: run.value.page.total, waiting: wait.value.page.total, failed: fail.value.page.total })
+        setError('')
+      } else {
+        const failed = results.find((r) => r.status === 'rejected')
+        setError(failed?.status === 'rejected' ? apiErrorText(failed.reason) : '运行脉冲未能读取。')
       }
     }
 
     void tick()
-    timer = window.setInterval(() => void tick(), 20_000)
+    const refresh = () => { void tick() }
+    const timer = window.setInterval(refresh, LIVE_REFRESH_MS)
+    window.addEventListener(CONSOLE_REFRESH, refresh)
+    window.addEventListener('focus', refresh)
     return () => {
       alive = false
-      if (timer !== undefined) window.clearInterval(timer)
+      window.clearInterval(timer)
+      window.removeEventListener(CONSOLE_REFRESH, refresh)
+      window.removeEventListener('focus', refresh)
     }
-  }, [active])
-  return pulse
+  }, [active, onAuthExpired])
+  return { pulse, error }
 }
 
-function PulseStat({ tone, value, label }: { tone: string; value: number; label: string }) {
+function PulseStat({ tone, value, label }: { tone: string; value: number | undefined; label: string }) {
   return (
     <span className="flex items-baseline gap-1.5" title={`${label} ${value}`}>
       <span
@@ -60,7 +76,7 @@ function PulseStat({ tone, value, label }: { tone: string; value: number; label:
         style={{ background: `var(--color-sig-${tone})` }}
         aria-hidden
       />
-      <span className="num text-sm font-semibold text-ink-0">{value}</span>
+      <span className="num text-sm font-semibold text-ink-0">{value ?? '—'}</span>
       <span className="text-xs text-ink-2">{label}</span>
     </span>
   )
@@ -69,10 +85,17 @@ function PulseStat({ tone, value, label }: { tone: string; value: number; label:
 const navClass = 'tab'
 
 export function AppShell({ children }: { children: ReactNode }) {
-  const { user, logout } = useAuth()
+  const { user, logout, roles, expiresAt } = useAuth()
   const { dirty } = useWorkflow()
   const exit = useConfirmLayer()
-  const pulse = usePulse(user !== null)
+  const { pulse, error: pulseError } = usePulse(user !== null, logout)
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (expiresAt === null) return
+    const timer = window.setInterval(() => setNow(Date.now()), 30_000)
+    return () => window.clearInterval(timer)
+  }, [expiresAt])
+  const remaining = expiresAt === null ? Infinity : new Date(expiresAt).getTime() - now
 
   return (
     <div className="flex h-full flex-col bg-ground-0" data-testid={TID.shell}>
@@ -95,18 +118,17 @@ export function AppShell({ children }: { children: ReactNode }) {
         </nav>
 
         <div className="ml-auto flex items-center gap-5">
-          {pulse !== null ? (
-            <div className="hidden items-center gap-4 border-r border-line-0 pr-5 xl:flex" aria-label="运行脉冲">
-              <PulseStat tone="run" value={pulse.running} label="执行中" />
-              <PulseStat tone="wait" value={pulse.waiting} label="待审批" />
-              <PulseStat tone="fail" value={pulse.failed} label="失败" />
+            <div className="hidden items-center gap-4 border-r border-line-0 pr-5 xl:flex" aria-label="运行脉冲" title="当前租户的执行计数；审批队列只列分配给当前账号的待办节点">
+              <PulseStat tone="run" value={pulse?.running} label="执行中" />
+              <PulseStat tone="wait" value={pulse?.waiting} label="待审批执行" />
+              <PulseStat tone="fail" value={pulse?.failed} label="失败" />
+              {pulseError !== '' ? <span role="status" className="text-xs text-ink-2" title={pulseError}>{pulse === null ? '脉冲未能读取' : '脉冲刷新失败 · 保留上次值'}</span> : pulse === null ? <span className="text-xs text-ink-2">正在读取</span> : null}
             </div>
-          ) : null}
 
           <div className="flex items-center gap-2">
             <ThemeControl className="mr-1" />
             <span className="mono text-xs text-ink-1" data-testid={TID.whoami} title="当前账号">
-              {user}
+              {user}<span className="ml-2 text-ink-2">{roles.length > 0 ? roles.join(' / ') : '角色未知'}</span>
             </span>
             <button
               ref={exit.armRef}
@@ -122,6 +144,9 @@ export function AppShell({ children }: { children: ReactNode }) {
           </div>
         </div>
       </header>
+
+      {roles.length === 0 ? <p className="border-b border-line-0 px-4 py-2 text-sm text-ink-2" role="status">当前会话缺少角色信息，只读浏览；请重新登录以恢复相应写操作。</p> : null}
+      {remaining <= 5 * 60_000 && remaining > 0 ? <p className="border-b border-line-0 px-4 py-2 text-sm text-ink-1" role="status">会话即将到期，请保存当前工作；到期后需要重新登录。</p> : null}
 
       {exit.armed ? (
         <ConfirmLayer

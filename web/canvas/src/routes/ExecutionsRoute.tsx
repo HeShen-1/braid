@@ -7,13 +7,14 @@ import { useAuth } from '../auth.tsx'
 export function ExecutionsRoute() {
   const { executionId } = useParams()
   const navigate = useNavigate()
-  const { logout } = useAuth()
+  const { logout, canAuthor } = useAuth()
 
   return (
     <ExecutionsView
       selectedId={executionId ?? null}
       onSelect={(id) => void navigate(id === null ? '/executions' : `/executions/${id}`)}
       onAuthExpired={logout}
+      canManage={canAuthor}
     />
   )
 }

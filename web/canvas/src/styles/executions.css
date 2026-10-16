@@ -288,6 +288,11 @@
   border-top: 1px solid var(--color-line-0);
 }
 
+.exec-decisions li .text-ink-1 {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* ---------- ⑥ 输出 / 审计 ---------- */
 
 .exec-json {

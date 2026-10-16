@@ -94,6 +94,8 @@ describe('ApprovalQueue(待办队列)', () => {
   it('选中与光标是两件事:data-selected 由 URL 选中态给,data-cursor 由 j/k 给', () => {
     renderQueue({ selected: { executionId: '6', nodeId: 'n2' }, cursor: 0 })
     expect(screen.getByTestId(tid.approvalRow('6', 'n2'))).toHaveAttribute('data-selected', 'true')
+    expect(screen.getByTestId(tid.approvalRow('6', 'n2'))).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId(tid.approvalRow('6', 'n2'))).toHaveRole('row')
     expect(screen.getByTestId(tid.approvalRow('6', 'n2'))).toHaveAttribute('data-cursor', 'false')
     expect(screen.getByTestId(tid.approvalRow('7', 'n1'))).toHaveAttribute('data-selected', 'false')
     expect(screen.getByTestId(tid.approvalRow('7', 'n1'))).toHaveAttribute('data-cursor', 'true')

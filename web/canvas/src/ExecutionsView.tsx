@@ -19,6 +19,7 @@ import { TID, tid } from './ui/testids.ts'
 import { Duration, Timestamp } from './ui/time.tsx'
 import type { DslInput } from './model/dsl.ts'
 import { apiErrorText } from './ui/errors.ts'
+import { refreshConsole } from './refresh.ts'
 
 type InputContract = { definitionId: string; inputs: DslInput[]; error?: string }
 const INPUT_EXAMPLES: Record<string, unknown> = { string: '示例', number: 0, boolean: false, object: {}, array: [] }
@@ -50,10 +51,12 @@ export function ExecutionsView({
   selectedId,
   onSelect,
   onAuthExpired,
+  canManage = false,
 }: {
   selectedId: string | null
   onSelect: (id: string | null) => void
   onAuthExpired: () => void
+  canManage?: boolean
 }) {
   const [execs, setExecs] = useState<ExecutionSummary[]>([])
   const [defs, setDefs] = useState<DraftSummary[]>([])
@@ -179,7 +182,7 @@ export function ExecutionsView({
   }, [])
 
   const trigger = useCallback(async () => {
-    if (selectedDef === null || selectedDef.version === null || busy || !contractReady) return
+    if (!canManage || selectedDef === null || selectedDef.version === null || busy || !contractReady) return
     let input: unknown
     try {
       input = JSON.parse(inputRaw)
@@ -202,6 +205,7 @@ export function ExecutionsView({
     setApiError('')
     try {
       const ack = await api.triggerExecution(selectedDef.name, input, freshIdempotencyKey(), selectedDef.version)
+      refreshConsole()
       await refresh()
       onSelect(ack.id)
     } catch (err) {
@@ -219,7 +223,7 @@ export function ExecutionsView({
     } finally {
       setBusy(false)
     }
-  }, [selectedDef, inputRaw, busy, contractReady, currentContract, refresh, onSelect, onAuthExpired])
+  }, [canManage, selectedDef, inputRaw, busy, contractReady, currentContract, refresh, onSelect, onAuthExpired])
 
   const showFilters = execs.length > 0 || filtered
   const showPager = execs.length > 0 && (total > PAGE_SIZE || offset > 0)
@@ -227,7 +231,7 @@ export function ExecutionsView({
   return (
     <div className="exec-view">
       <aside className="exec-rail" aria-label="执行列表与触发">
-        <section className="panel" data-testid={TID.triggerPanel}>
+        {canManage ? <section className="panel" data-testid={TID.triggerPanel}>
           <PanelHead title="触发执行" sub={latestDefs.length > 0 ? `${latestDefs.length} 个已发布` : undefined} />
           <div className="panel-body exec-trigger">
             <Select
@@ -316,7 +320,7 @@ export function ExecutionsView({
               </Alert>
             ) : null}
           </div>
-        </section>
+        </section> : <p className="panel-body text-sm text-ink-2">当前角色可查看执行；触发、回滚、续跑和取消需要 author/admin 角色。</p>}
 
         <section className="panel" aria-label="执行列表" aria-busy={listLoading}>
           <PanelHead
@@ -389,7 +393,7 @@ export function ExecutionsView({
           ) : (
             <>
               <div className="exec-table-wrap">
-                <table className="table" data-testid={TID.execTable}>
+                <table className="table" role="grid" aria-label="执行列表" data-testid={TID.execTable}>
                   <thead>
                     <tr>
                       <th>状态</th>
@@ -405,6 +409,7 @@ export function ExecutionsView({
                         data-testid={tid.execRow(e.id)}
                         data-state={e.status}
                         data-selected={selectedId === e.id ? 'true' : 'false'}
+                        aria-selected={selectedId === e.id}
                         tabIndex={0}
                         title={`#${e.id} · ${e.definition_name} v${e.definition_version}`}
                         onClick={() => onSelect(e.id)}
@@ -464,7 +469,7 @@ export function ExecutionsView({
       </aside>
 
       {selectedId !== null ? (
-        <ExecutionDetail key={selectedId} execId={selectedId} onAuthExpired={onAuthExpired} onBack={() => onSelect(null)} />
+          <ExecutionDetail key={selectedId} execId={selectedId} onAuthExpired={onAuthExpired} canManage={canManage} onBack={() => onSelect(null)} />
       ) : (
         <main className="exec-empty-main">
           <EmptyState

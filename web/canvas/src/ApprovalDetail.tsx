@@ -12,7 +12,7 @@
 // 前置免无效提交;后端同样 409)。备注上限在提交前就近拦下。
 import { useRef } from 'react'
 import { ArrowLeft, Ban, Check, TriangleAlert } from 'lucide-react'
-import type { ApprovalDetail as ApprovalDetailData } from './api.ts'
+import type { ApprovalDetail as ApprovalDetailData, ExecutionDetail } from './api.ts'
 import { TextArea } from './ui/field.tsx'
 import { ConfirmLayer, useFocusReturn } from './ui/confirm.tsx'
 import { Alert, Button, KV, Panel, PanelHead, StatusChip } from './ui/primitives.tsx'
@@ -44,6 +44,10 @@ export interface ApprovalDetailProps {  detail: ApprovalDetailData | null
   onRequestDecision: (d: 'approve' | 'reject') => void
   onCancelReject: () => void
   onBack: () => void
+  canDecide?: boolean
+  decisionHint?: string
+  execution?: ExecutionDetail | null
+  contextError?: string
 }
 
 export function ApprovalDetail({
@@ -59,6 +63,10 @@ export function ApprovalDetail({
   onRequestDecision,
   onCancelReject,
   onBack,
+  canDecide = false,
+  decisionHint = '当前账号不能提交新的决定。',
+  execution = null,
+  contextError = '',
 }: ApprovalDetailProps) {
   // 确认层契约本体在 ui/confirm.tsx(挂载即聚焦);布防状态由组合根
   // (ApprovalsView)持有,这里只补「收起后焦点回入口按钮」(T21.4 增项)。
@@ -87,7 +95,7 @@ export function ApprovalDetail({
     )
   }
 
-  const actionable = detail.node_status === 'WAITING_APPROVAL'
+  const actionable = detail.node_status === 'WAITING_APPROVAL' && canDecide
   const approvers = detail.approvers ?? []
   const pending = detail.pending_approvers ?? []
   const decisions = detail.decisions ?? []
@@ -130,8 +138,16 @@ export function ApprovalDetail({
               </span>
             </KV>
           </dl>
+          <a className="btn btn-quiet btn-sm" href={`/executions/${detail.execution_id}`}>查看执行详情与审计</a>
         </div>
       </header>
+
+      <Panel><PanelHead title="执行上下文" sub={execution == null ? undefined : `${execution.definition_name} v${execution.definition_version}`} />
+        <div className="panel-body">
+          {execution != null ? <><p className="text-sm text-ink-1">触发人：<span className="mono">{execution.triggered_by}</span></p><p className="micro mt-3">触发输入</p><p className="text-xs text-ink-2">解析后展示；精确值可在执行详情的原始响应核对。</p><pre className="mt-2 overflow-x-auto text-xs text-ink-1">{JSON.stringify(execution.input, null, 2)}</pre></>
+            : <p className="text-sm text-ink-2">{contextError !== '' ? `执行上下文未能读取：${contextError}` : '正在读取执行上下文…'}</p>}
+        </div>
+      </Panel>
 
       {/* ② 审批说明(自由文本,文本节点) */}
       <Panel>
@@ -156,6 +172,7 @@ export function ApprovalDetail({
           <ul className="appr-decisions" data-testid={TID.approvalTimeline}>
             {decisions.map((dec) => (
               <li key={dec.id}>
+                <span className="num text-ink-2">第 {dec.round} 轮</span>
                 <span className="num text-ink-2">{fmtDateTime(dec.decided_at)}</span>
                 <span className="mono text-ink-0">{dec.decided_by}</span>
                 <span className={dec.decision === 'reject' ? 'appr-decision-reject' : 'appr-decision-approve'}>
@@ -232,9 +249,9 @@ export function ApprovalDetail({
         </Panel>
       ) : (
         <Alert tone="warn" icon={TriangleAlert}>
-          <strong>该审批已收口</strong>
+          <strong>{detail.node_status === 'WAITING_APPROVAL' ? '当前审批只读' : '该审批已收口'}</strong>
           <span className="ml-2 text-ink-1">
-            节点状态 {nodeStatus(detail.node_status).label},不再接受新的决定(后端同样会拒绝)。
+            {detail.node_status === 'WAITING_APPROVAL' ? decisionHint : `节点状态 ${nodeStatus(detail.node_status).label},不再接受新的决定(后端同样会拒绝)。`}
           </span>
         </Alert>
       )}

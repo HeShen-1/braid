@@ -9,6 +9,7 @@
 // 键盘光标(cursor)与选中(selected)是两件事:光标 = 下一次 Enter 的目标,
 // 选中 = 已经打开的详情。j/k 只动光标,不动 URL。
 import { Inbox, RefreshCw, TriangleAlert } from 'lucide-react'
+import { useEffect, useRef } from 'react'
 import type { PendingApproval } from './api.ts'
 import { Alert, Button, EmptyState, PanelHead } from './ui/primitives.tsx'
 import { TID, tid } from './ui/testids.ts'
@@ -39,6 +40,8 @@ export function ApprovalQueue({
   flash,
   selected,
   cursor,
+  focusRequest = 0,
+  lastDecision = null,
   onOpen,
   onRefresh,
   onPrev,
@@ -52,6 +55,8 @@ export function ApprovalQueue({
   flash: string
   selected: ApprovalSelection | null
   cursor: number
+  focusRequest?: number
+  lastDecision?: ApprovalSelection | null
   onOpen: (sel: ApprovalSelection) => void
   onRefresh: () => void
   onPrev: () => void
@@ -60,9 +65,20 @@ export function ApprovalQueue({
   // 与旧实现同口径:上一页 = offset>0;下一页 = offset+PAGE_LIMIT < total。
   const hasPrev = offset > 0
   const hasNext = offset + PAGE_LIMIT < total
+  const rootRef = useRef<HTMLElement | null>(null)
+  const consumedFocus = useRef(0)
+  useEffect(() => {
+    if (focusRequest === 0 || focusRequest === consumedFocus.current || loading) return
+    const rows = rootRef.current?.querySelectorAll<HTMLTableRowElement>('tbody tr')
+    const row = rows?.[Math.min(cursor, (rows?.length ?? 1) - 1)]
+    const target = row ?? rootRef.current
+    target?.focus({ preventScroll: true })
+    row?.scrollIntoView?.({ block: 'nearest' })
+    consumedFocus.current = focusRequest
+  }, [cursor, focusRequest, items, loading])
 
   return (
-    <aside className="appr-rail" aria-label="待办审批队列">
+    <aside ref={rootRef} tabIndex={-1} className="appr-rail" aria-label="待办审批队列">
       <section className="panel" data-testid={TID.approvalQueue} aria-busy={loading}>
         <PanelHead
           title="待办审批"
@@ -84,6 +100,7 @@ export function ApprovalQueue({
         {flash !== '' ? (
           <p className="appr-flash" role="status" data-testid={TID.approvalFlash}>
             {flash}
+            {lastDecision !== null ? <Button size="sm" variant="quiet" onClick={() => onOpen(lastDecision)}>查看刚才的决定</Button> : null}
           </p>
         ) : null}
 
@@ -113,7 +130,7 @@ export function ApprovalQueue({
         ) : (
           <>
             <div className="appr-table-wrap">
-              <table className="table">
+              <table className="table" role="grid" aria-label="待办审批">
                 <thead>
                   <tr>
                     <th>工作流</th>
@@ -137,6 +154,7 @@ export function ApprovalQueue({
                         key={`${it.execution_id}/${it.node_id}`}
                         data-testid={tid.approvalRow(it.execution_id, it.node_id)}
                         data-selected={isSelected ? 'true' : 'false'}
+                        aria-selected={isSelected}
                         data-cursor={i === cursor ? 'true' : 'false'}
                         tabIndex={0}
                         title={`#${it.execution_id} · ${it.definition_name} v${it.definition_version} · ${it.node_id}`}

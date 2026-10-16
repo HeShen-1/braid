@@ -166,6 +166,8 @@ test('缺模型在编辑和真实worker失败中均可辨；缺参数先就地�
   await page.getByTestId(TID.editorPublish).click()
   await expect(page.getByTestId(TID.workflowFlash)).toContainText(name)
   await page.getByTestId(TID.viewPublished).click()
+  await expect(page.getByRole('heading', { name: '已发布与版本历史' })).toBeVisible()
+  await page.getByTestId(TID.navExecutions).click()
   await page.getByTestId(TID.triggerDefinition).click()
   await page.getByRole('option', { name: `${name} v1`, exact: true }).click()
   let posts = 0

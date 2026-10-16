@@ -67,12 +67,19 @@
 }
 
 .appr-flash {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
   margin: 0;
   padding: 0.45rem 0.75rem;
   border-bottom: 1px solid var(--color-line-0);
   background: color-mix(in oklab, var(--color-sig-ok) 9%, transparent);
   color: var(--color-ink-0);
   font-size: var(--text-sm);
+}
+
+.appr-decisions li .text-ink-1 {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 
 .appr-pager {
