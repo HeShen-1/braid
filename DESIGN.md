@@ -196,7 +196,7 @@ T21.3 起这个世界有**两套形态、一条验收线**:深色(默认)是夜�
 
 | 键 | 深色(默认) | 浅色 | 落点 |
 |---|---|---|---|
-| `accent` | `#6e9bf5` | `#3764bf` | 焦点环(`:focus-visible` 2px outline、70% 混透明、offset 1px)、当前页签 2px 下划线、链接文字与 3px 下划线偏移、DAG 连线/把手选中态、框选边框、文本选区、caret 与 `accent-color` |
+| `accent` | `#6e9bf5` | `#3764bf` | 焦点环(`:focus-visible` 2px outline、85% 混透明、offset 1px)、当前页签 2px 下划线、链接文字与 3px 下划线偏移、DAG 连线/把手选中态、框选边框、文本选区、caret 与 `accent-color` |
 | `accent-soft` | `#1b2a44` | `#dbe5f7` | 时间带选中行底色(55% 混透明落在地面上) |
 | `primary-action` | `#eeeff1` | `#d8dfe7` | 主操作实体:亮主题取最暗实体、暗主题取最亮实体,同一句规则两态成立 |
 | `primary-ink` | `#08090a` | `#0d1319` | 主操作文字 |
@@ -359,7 +359,7 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 ### Inputs / Fields
 
 - **Style**:`ground-2` 底、1px `line-2` 边框、8px 圆角、内边距 `4.8px 8px`、12.5px 字;标签永远在控件上方(11.5px `ink-1`),错误紧贴控件下方并优先于提示(11.5px `fail`,`role="alert"` + `aria-invalid`)。
-- **Hover**:边框 `ink-3`。**Focus**:边框 `accent` + 底色降回 `ground-1` + 2px `accent` 70% 焦点环。**Disabled**:`ground-1` 底 + `line-0` 边框 + `ink-3` 字。**Invalid**:边框 `sig-fail`。
+- **Hover**:边框 `ink-3`。**Focus**:边框 `accent` + 底色降回 `ground-1` + 2px `accent` 85% 焦点环。**Disabled**:`ground-1` 底 + `line-0` 边框 + `ink-3` 字。**Invalid**:边框 `sig-fail`。
 - **Placeholder**:`ink-3`(实测 深色 4.52:1 / 浅色 4.90:1)。`textarea` 允许纵向 resize、行高 1.55;数值输入带 `min`/`max` 镜像 schema,越界就地报错。
 - **Select / Checkbox(T21.3 单点收敛)**:外壳仍是自研(`ui/field.tsx` 的标签/hint/错误布局与 id 绑定,调用点继续写原生 `<option>`),内部控制与键盘行为交给 shadcn 的 `select`/`checkbox`(Base UI):焦点管理、弹层 Portal、列表键盘导航、`role="checkbox"`。外观由一层适配 CSS 收回自研词汇——`[data-slot='select-trigger'].select` 与 `.input` 同形(同高、同底、同描边、同焦点环),弹层 = `ground-1` + 1px `line-1` 且**无投影**;勾选框未选 = `ground-2` + `line-2`,选中 = `accent` 实体 + 对侧地面色勾(实测 5.62–6.58:1)。全仓只有这一处实现,不存在两套。
 
@@ -383,6 +383,8 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 队列是无外框的单一行式表面：24px 页边、固定列的六列表格、44px 紧凑行、细线分隔。工作流与版本并列，执行/节点标识省略时可查看完整 title；截止时间逾期仍有明确文字。刷新按钮带可见文案。`j` / `k` 移动与 `Enter` 打开提示在表格上方，不把详情命令放进队列。
 
 详情保持同页两级模型与 T23.10 的焦点/URL/决定逻辑。主阅读面最大 1056px，身份与六项元数据分组后，依次为执行上下文、审批说明、决定时间线、决定；分节使用 1px 结构线，无多个圆角盒。详情顶部外显 `Esc` 返回；只有可提交时外显 `a` / `r`。批准/驳回继续使用原本的防重、备注校验与驳回确认层。
+
+共享 shadcn 别名层不得覆盖已有语义 token。`accent` 始终是焦点蓝；菜单项的 `focus:bg-accent` 外观由 data-slot 适配层明确收回 `ground-3`，不把中性菜单底写成同名全局 token。全局、输入框、主题分段、Select 与 Checkbox 的焦点环统一为 85% `accent`，避免浅色相邻地面上的 70% 合成结果低于 3:1。主题测试与浏览器焦点实测共同约束这一点。
 
 全部颜色读取既有语义 token，新增 CSS 限于壳层与 `.appr-` 作用域。浅色主题继续通过同一批 token 覆盖，不在组件读取主题。真实浏览器矩阵由独立 e2e spec `console-shell-approval.e2e.ts` 维护。
 

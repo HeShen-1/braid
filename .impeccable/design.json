@@ -380,7 +380,9 @@
         "approvalRowHeight": "44px",
         "detailMaxWidth": "1056px",
         "sharedTokenNames": "unchanged",
-        "verification": "docs/audits/UX-F1-a-VALIDATION.md"
+        "verification": "docs/audits/UX-F1-a-VALIDATION.md",
+        "focusContract": "accent remains canonical interaction blue; shadcn menu focus backgrounds use ground-3 through data-slot adapter, never a duplicate token alias",
+        "focusOpacity": 0.85
       },
       "otherSurfaces": "n8n/Vercel/Temporal direction approved; delivery belongs to UX-F1-b/c/d"
     }

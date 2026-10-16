@@ -573,7 +573,7 @@
   }
 
   .seg-item:focus-visible {
-    outline: 2px solid color-mix(in oklab, var(--color-accent) 70%, transparent);
+    outline: 2px solid color-mix(in oklab, var(--color-accent) 85%, transparent);
     outline-offset: 1px;
   }
 
@@ -639,7 +639,7 @@
   .input:focus-visible,
   .select:focus-visible,
   .textarea:focus-visible {
-    outline: 2px solid color-mix(in oklab, var(--color-accent) 70%, transparent);
+    outline: 2px solid color-mix(in oklab, var(--color-accent) 85%, transparent);
     outline-offset: 1px;
   }
 
@@ -1124,7 +1124,8 @@
   --color-secondary-foreground: var(--color-ink-0);
   --color-muted: var(--color-ground-2);
   --color-muted-foreground: var(--color-ink-2);
-  --color-accent: var(--color-ground-3);
+  /* accent 已是自研焦点蓝，不能用 shadcn 的中性菜单底覆盖同名 token。
+     菜单项的中性聚焦底由下方 data-slot 适配层负责。 */
   --color-accent-foreground: var(--color-ink-0);
   --color-destructive: var(--color-sig-fail);
   --color-border: var(--color-line-1);
@@ -1265,7 +1266,7 @@
 
 [data-slot='select-trigger'].select:focus,
 [data-slot='select-trigger'].select:focus-visible {
-  outline: 2px solid color-mix(in oklab, var(--color-accent) 70%, transparent);
+  outline: 2px solid color-mix(in oklab, var(--color-accent) 85%, transparent);
   outline-offset: 1px;
   border-color: var(--color-accent);
   background: var(--color-ground-1);
@@ -1307,6 +1308,12 @@
   font-size: var(--text-sm);
 }
 
+/* registry 的 focus:bg-accent 指菜单高亮，自研 accent 指焦点蓝。
+   把菜单高亮收回中性地面，保留蓝色给焦点环/勾选框/链接。 */
+:is([data-slot='select-item'], [data-slot='dropdown-menu-item'], [data-slot='dropdown-menu-checkbox-item'], [data-slot='dropdown-menu-radio-item'], [data-slot='dropdown-menu-sub-trigger']):not([data-variant='destructive']):is(:hover, :focus, [data-highlighted], [data-popup-open], [data-open]) {
+  background: var(--color-ground-3);
+}
+
 /* ---- Checkbox:未选 = ground-2 + line-2(与输入框同),选中 = accent 实体 ---- */
 [data-slot='checkbox'] {
   width: 0.875rem;
@@ -1317,7 +1324,7 @@
 }
 
 [data-slot='checkbox']:focus-visible {
-  outline: 2px solid color-mix(in oklab, var(--color-accent) 70%, transparent);
+  outline: 2px solid color-mix(in oklab, var(--color-accent) 85%, transparent);
   outline-offset: 1px;
   border-color: var(--color-accent);
   box-shadow: none;
