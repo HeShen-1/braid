@@ -15,12 +15,13 @@
 // 选中态真源在 URL(routes/ApprovalsRoute 受控传入);组件只发 onSelect。
 // 401 统一交 onAuthExpired(App 层 cleartoken 回登录)。
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ApiError, api, type ApprovalDetail as ApprovalDetailData, type PendingApproval } from './api.ts'
+import { ApiError, api, type ApprovalDetail as ApprovalDetailData, type ExecutionDetail, type PendingApproval } from './api.ts'
 import { ApprovalDetail, COMMENT_MAX, approvalCommentCount } from './ApprovalDetail.tsx'
 import { ApprovalQueue, PAGE_LIMIT, type ApprovalSelection } from './ApprovalQueue.tsx'
 import { decisionLabel } from './ui/status.ts'
 
 import { apiErrorText, ERROR_TEXT } from './ui/errors.ts'
+import { CONSOLE_REFRESH, LIVE_REFRESH_MS, refreshConsole } from './refresh.ts'
 
 /** 备注上限提示词(与后端 bad_comment 同文案;上限见 ApprovalDetail.COMMENT_MAX)。 */
 const COMMENT_TOO_LONG = ERROR_TEXT.bad_comment as string
@@ -41,10 +42,14 @@ export function ApprovalsView({
   selected,
   onSelect,
   onAuthExpired,
+  canDecide = false,
+  username = null,
 }: {
   selected: ApprovalSelection | null
   onSelect: (sel: ApprovalSelection | null) => void
   onAuthExpired: () => void
+  canDecide?: boolean
+  username?: string | null
 }) {
   const selExec = selected?.executionId ?? null
   const selNode = selected?.nodeId ?? null
@@ -63,18 +68,26 @@ export function ApprovalsView({
   const [listLoading, setListLoading] = useState(true)
   const [listError, setListError] = useState('')
   const [flash, setFlash] = useState('')
-  const [cursor, setCursor] = useState(0)
+  const [cursorKey, setCursorKey] = useState<string | null>(null)
+  const cursor = Math.max(0, items.findIndex((item) => `${item.execution_id}/${item.node_id}` === cursorKey))
+  const [focusRequest, setFocusRequest] = useState(0)
+  const [lastDecision, setLastDecision] = useState<ApprovalSelection | null>(null)
   // ① listSeq:列表请求序号。快速连点时后发先至的陈旧响应必须丢弃。
   const listSeq = useRef(0)
 
-  const loadPage = useCallback(async (off: number) => {
+  const loadPage = useCallback(async (off: number, background = false) => {
     const seq = ++listSeq.current
     setListError('')
-    setListLoading(true)
+    if (!background) setListLoading(true)
     try {
       const data = await api.listPendingApprovals({ limit: PAGE_LIMIT, offset: off })
       if (seq !== listSeq.current) return // 陈旧响应:已被更新的请求取代
       const its = Array.isArray(data.items) ? data.items : []
+      // 只在被聚焦的待办移除时回退焦点；刷新不能抢走工具栏或输入框。
+      const focusedKey = document.activeElement instanceof HTMLElement
+        ? document.activeElement.closest<HTMLElement>('[data-approval-key]')?.dataset.approvalKey
+        : undefined
+      if (focusedKey !== undefined && !its.some((item) => `${item.execution_id}/${item.node_id}` === focusedKey)) setFocusRequest((n) => n + 1)
       setItems(its)
       setTotal(typeof data.page?.total === 'number' ? data.page.total : its.length)
     } catch (err) {
@@ -91,6 +104,16 @@ export function ApprovalsView({
 
   useEffect(() => {
     void loadPage(offset)
+    const refresh = () => { void loadPage(offset, true) }
+    const timer = window.setInterval(refresh, LIVE_REFRESH_MS)
+    window.addEventListener(CONSOLE_REFRESH, refresh)
+    window.addEventListener('focus', refresh)
+    return () => {
+      listSeq.current++
+      window.clearInterval(timer)
+      window.removeEventListener(CONSOLE_REFRESH, refresh)
+      window.removeEventListener('focus', refresh)
+    }
   }, [loadPage, offset])
 
   /** 旧实现语义:刷新按钮与决定成功后都 offset 归零重拉。 */
@@ -102,6 +125,8 @@ export function ApprovalsView({
   // ---- 详情 ----
   const [detail, setDetail] = useState<ApprovalDetailData | null>(null)
   const [detailLoading, setDetailLoading] = useState(false)
+  const [execution, setExecution] = useState<ExecutionDetail | null>(null)
+  const [contextError, setContextError] = useState('')
   // 错误带归属键:提交/读取失败可能落在"已经切走"的旧节点上 —— 归属当前
   // 选中才就近贴在表单,归属别处则退回队列错误条(不误挂到新节点头上)。
   const [decisionError, setDecisionError] = useState<{ key: string; text: string } | null>(null)
@@ -129,9 +154,11 @@ export function ApprovalsView({
     setComment('')
     setConfirmReject(false)
     setDetail(null)
+    setExecution(null)
+    setContextError('')
+    const seq = ++detailSeq.current
     if (selExec === null || selNode === null) return
     setDecisionError(null)
-    const seq = ++detailSeq.current
     const key = `${selExec}/${selNode}`
     setDetailLoading(true)
     api
@@ -150,6 +177,14 @@ export function ApprovalsView({
       .finally(() => {
         if (seq === detailSeq.current) setDetailLoading(false)
       })
+    void api.getExecution(selExec).then((data) => {
+      if (seq === detailSeq.current) setExecution(data)
+    }).catch((err: unknown) => {
+      if (seq !== detailSeq.current) return
+      if (err instanceof ApiError && err.status === 401) expired.current()
+      else setContextError(approvalErrorText(err))
+    })
+    return () => { detailSeq.current++ }
   }, [selExec, selNode])
 
   // 详情响应没有 definition_name(旧实现从列表行补):从上一条队列命中取,
@@ -159,7 +194,7 @@ export function ApprovalsView({
       ? undefined
       : items.find((it) => it.execution_id === selExec && it.node_id === selNode)?.definition_name
 
-  const actionable = detail !== null && detail.node_status === 'WAITING_APPROVAL'
+  const actionable = canDecide && username !== null && detail !== null && detail.node_status === 'WAITING_APPROVAL' && detail.pending_approvers.includes(username)
   const commentCount = approvalCommentCount(comment)
   const commentError = commentCount > COMMENT_MAX ? COMMENT_TOO_LONG : ''
   // 归属当前选中的错误 → 就近贴在表单;归属别处 → 队列错误条兜住(不静默吞)。
@@ -173,7 +208,7 @@ export function ApprovalsView({
 
   const submit = useCallback(
     async (decision: 'approve' | 'reject') => {
-      if (inFlight.current) return
+      if (inFlight.current || !actionable) return
       if (selExec === null || selNode === null) return
       const submittedKey = `${selExec}/${selNode}`
       if (approvalCommentCount(comment) > COMMENT_MAX) {
@@ -186,11 +221,14 @@ export function ApprovalsView({
       setDecisionError(null)
       try {
         const out = await api.decideApproval(selExec, selNode, decision, comment)
+        setLastDecision({ executionId: selExec, nodeId: selNode })
+        refreshConsole()
         // 还在同一条详情上才清备注/回队列 —— 用户若已切走,别动他的新输入。
         if (selKeyRef.current === submittedKey) {
           setComment('')
           setConfirmReject(false)
           onSelect(null)
+          setFocusRequest((n) => n + 1)
         }
         // 反馈挂在队列面板(列表级):在本条上提交成功会自动回列表,主路径
         // 即见;提交在飞时切走再回来的,回列表级补见(T21.4 ⑥ 两级视图)。
@@ -210,7 +248,7 @@ export function ApprovalsView({
         setBusy(false)
       }
     },
-    [selExec, selNode, comment, onSelect, reloadFromFirst],
+    [selExec, selNode, comment, onSelect, reloadFromFirst, actionable],
   )
 
   /** 决定唯一入口:按钮、确认层、快捷键都走这里(不绕过防抖与确认)。 */
@@ -228,16 +266,16 @@ export function ApprovalsView({
     [busy, selExec, selNode, actionable, confirmReject, submit],
   )
 
-  // 光标跟随队列:列表变化时夹回范围内;若当前选中的行在列表里,光标落到它
-  // 上面(j/k 从你正在看的那条继续)。
+  // 光标按稳定审批项身份保留，索引只在本次结果里推导；移除时回首项。
   useEffect(() => {
-    setCursor((c) => {
-      if (items.length === 0) return 0
+    setCursorKey((key) => {
+      if (items.length === 0) return null
       if (selExec !== null && selNode !== null) {
         const i = items.findIndex((it) => it.execution_id === selExec && it.node_id === selNode)
-        if (i >= 0) return i
+        if (i >= 0) return `${selExec}/${selNode}`
       }
-      return Math.min(c, items.length - 1)
+      if (items.some((item) => `${item.execution_id}/${item.node_id}` === key)) return key
+      return `${items[0].execution_id}/${items[0].node_id}`
     })
   }, [items, selExec, selNode])
 
@@ -253,13 +291,19 @@ export function ApprovalsView({
       if (isTypingTarget(ev.target)) return
 
       if (ev.key === 'j' || ev.key === 'k') {
-        if (items.length === 0) return
+        if (items.length === 0 || selExec !== null) return
         ev.preventDefault()
-        setCursor((c) => (ev.key === 'j' ? Math.min(c + 1, items.length - 1) : Math.max(c - 1, 0)))
+        setCursorKey((key) => {
+          const current = Math.max(0, items.findIndex((item) => `${item.execution_id}/${item.node_id}` === key))
+          const next = items[ev.key === 'j' ? Math.min(current + 1, items.length - 1) : Math.max(current - 1, 0)]
+          return `${next.execution_id}/${next.node_id}`
+        })
+        setFocusRequest((n) => n + 1)
         return
       }
       if (ev.key === 'Enter') {
         if (selExec !== null) return // 详情内 Enter 交给浏览器与确认层
+        if (ev.target instanceof HTMLElement && ev.target.closest('button, a') !== null) return
         const it = cursor >= 0 && cursor < items.length ? items[cursor] : undefined
         if (it === undefined) return
         ev.preventDefault()
@@ -281,6 +325,7 @@ export function ApprovalsView({
           return
         }
         onSelect(null)
+        setFocusRequest((n) => n + 1)
       }
     }
     document.addEventListener('keydown', onKey)
@@ -312,6 +357,9 @@ export function ApprovalsView({
           flash={flash}
           selected={selected}
           cursor={cursor}
+          onCursorChange={(sel) => setCursorKey(`${sel.executionId}/${sel.nodeId}`)}
+          focusRequest={focusRequest}
+          lastDecision={lastDecision}
           onOpen={open}
           onRefresh={reloadFromFirst}
           onPrev={prev}
@@ -320,6 +368,10 @@ export function ApprovalsView({
       ) : (
         <ApprovalDetail
           detail={detail}
+          execution={execution}
+          contextError={contextError}
+          canDecide={actionable}
+          decisionHint={!canDecide ? '当前角色不能提交决定；需要 approver/admin 角色，且账号必须在审批名单内。' : '当前账号已投票或不在本轮待投名单内。'}
           loading={detailLoading}
           error={detailErrorText}
           definitionName={definitionName}
@@ -330,7 +382,7 @@ export function ApprovalsView({
           onCommentChange={setComment}
           onRequestDecision={requestDecision}
           onCancelReject={() => setConfirmReject(false)}
-          onBack={() => onSelect(null)}
+          onBack={() => { onSelect(null); setFocusRequest((n) => n + 1) }}
         />
       )}
     </div>

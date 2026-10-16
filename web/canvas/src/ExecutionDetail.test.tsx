@@ -80,6 +80,34 @@ afterEach(() => {
 })
 
 describe('ExecutionDetail(执行详情)', () => {
+  it('终态审批保留决定全文/轮次/审批深链；只读角色没有执行写入口', async () => {
+    const comment = '已批准\n<script>保留文本</script>完整备注'
+    const fn = stubRoute([/^\/api\/v1\/executions\/7$/, /approvals\/gate$/, /\/audit/], (url) => {
+      if (url.endsWith('/approvals/gate')) return ok({ execution_id: '7', node_id: 'gate', node_status: 'SUCCEEDED', approvers: ['alice'], pending_approvers: [], deadline_at: null, decisions: [{ id: 'd1', round: 2, decision: 'approve', decided_by: 'alice', decided_at: '2026-10-16T00:00:00Z', comment }] })
+      if (url.includes('/audit')) return ok({ items: [], next_cursor: '' })
+      return ok({ ...baseDetail, status: 'SUCCEEDED', nodes: [nodeRow('gate', 0, 'SUCCEEDED', { type: 'approval' })] })
+    })
+    render(<ExecutionDetail canManage={false} execId="7" onAuthExpired={() => {}} />)
+    const panel = await screen.findByTestId(tid.approvalEntry('gate'))
+    expect(panel).toHaveTextContent('第 2 轮')
+    expect(panel).toHaveTextContent('<script>保留文本</script>完整备注')
+    expect(within(panel).getByRole('link', { name: '查看决定历史' })).toHaveAttribute('href', '/approvals/7/gate')
+    expect(panel.querySelector('script')).toBeNull()
+    expect(screen.queryByTestId(TID.resumeSubmit)).not.toBeInTheDocument()
+    expect(screen.queryByTestId(TID.rollbackSubmit)).not.toBeInTheDocument()
+    expect(fn.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false)
+  })
+
+  it('名单外403保留访问边界说明，不冒充“无决定”', async () => {
+    stubRoute([/^\/api\/v1\/executions\/7$/, /approvals\/gate$/, /\/audit/], (url) => {
+      if (url.endsWith('/approvals/gate')) return ok({ error: 'not_approver' }, 403)
+      if (url.includes('/audit')) return ok({ items: [], next_cursor: '' })
+      return ok({ ...baseDetail, status: 'SUCCEEDED', nodes: [nodeRow('gate', 0, 'SUCCEEDED', { type: 'approval' })] })
+    })
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
+    expect(await screen.findByText(/决定全文仅对审批名单内账号开放/)).toBeInTheDocument()
+    expect(screen.queryByText('暂无投票。')).not.toBeInTheDocument()
+  })
   it.each([
     ['rollback', 403], ['rollback', 0], ['cancel', 403], ['cancel', 0],
   ] as const)('%s 确认层已开后，读失败或在读期间 %i 均零POST且允许放弃', async (action, status) => {
@@ -94,7 +122,7 @@ describe('ExecutionDetail(执行详情)', () => {
       if (++reads > 1) return pending
       return ok({ ...baseDetail, status: action === 'cancel' ? 'RUNNING' : 'FAILED', nodes: [nodeRow('gate', 0, 'FAILED')] })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     const user = userEvent.setup()
     await screen.findByTestId(tid.nodeRow('gate', 0))
     if (action === 'rollback') {
@@ -131,7 +159,7 @@ describe('ExecutionDetail(执行详情)', () => {
       }
       return ok({ ...baseDetail, status: 'SUCCEEDED' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} onBack={onBack} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} onBack={onBack} />)
     const alert = await screen.findByRole('alert')
     expect(alert).toHaveTextContent('执行详情读取失败')
     expect(alert).toHaveTextContent(status === 404 ? '目标不存在' : status === 403 ? '角色权限' : '检查网络')
@@ -148,7 +176,7 @@ describe('ExecutionDetail(执行详情)', () => {
     const rejected = nodeRow('gate', 0, 'FAILED', { type: 'approval', error_code: 'approval_rejected', error_message: 'rejected by alice' })
     stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => url.includes('/audit') ? ok({ items: [], next_cursor: '' })
       : ok({ ...baseDetail, error_code: 'node_failed', error_message: 'node gate failed: approval_rejected: rejected by alice', nodes: [rejected] }))
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     const heading = await screen.findByText('审批驳回', { exact: true })
     expect(heading.closest('.alert')).toHaveAttribute('data-tone', 'neutral')
     expect(screen.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'FAILED')
@@ -160,7 +188,7 @@ describe('ExecutionDetail(执行详情)', () => {
     const rejected = nodeRow('old', 0, 'FAILED', { type: 'approval', error_code: 'approval_rejected' })
     stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => url.includes('/audit') ? ok({ items: [], next_cursor: '' })
       : ok({ ...baseDetail, error_code: 'new_failure_code', error_message: 'opaque reason', nodes: [rejected] }))
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     expect(await screen.findByRole('alert')).toHaveTextContent('new_failure_code')
     expect(screen.queryByText('审批驳回', { exact: true })).not.toBeInTheDocument()
   })
@@ -175,7 +203,7 @@ describe('ExecutionDetail(执行详情)', () => {
       if (url.includes('/nodes/fan?')) return ok({ node_id: 'fan', instance_no: 2, attempts: 0, attempts_base: 0, status: 'PENDING', input_snapshot: null, output: null })
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.nodeRow('gate', 0))
     expect(calls.filter((url) => url.includes('/nodes/'))).toHaveLength(0)
     await user.click(screen.getByTestId(tid.nodeRow('gate', 0)))
@@ -196,7 +224,7 @@ describe('ExecutionDetail(执行详情)', () => {
     const user = userEvent.setup()
     const trace = 'a'.repeat(32)
     stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => url === '/api/v1/executions/7' ? ok({ ...baseDetail, audit: { ...baseDetail.audit, trace_id: trace } }) : ok({ items: [], next_cursor: '' }))
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     const opener = await screen.findByRole('button', { name: `查询执行 trace ${trace}` })
     await user.click(opener)
     expect(await screen.findByRole('region', { name: 'Trace 审计' })).toHaveFocus()
@@ -214,7 +242,7 @@ describe('ExecutionDetail(执行详情)', () => {
       if (url === '/api/v1/executions/7') return ok({ ...baseDetail, audit: { ...baseDetail.audit, trace_id: a } })
       return ok({ items: url.includes(`trace_id=${b}`) ? [ev('2', b)] : [ev('1', a), ev('2', b)], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     const external = await screen.findByRole('button', { name: `查询执行 trace ${a}` })
     await user.click(external)
     let panel = await screen.findByRole('region', { name: 'Trace 审计' })
@@ -246,7 +274,7 @@ describe('ExecutionDetail(执行详情)', () => {
       }
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     expect(screen.getByTestId(TID.execDetail)).toBeInTheDocument()
     expect(screen.queryByTestId(TID.execStatus)).not.toBeInTheDocument()
 
@@ -264,7 +292,7 @@ describe('ExecutionDetail(执行详情)', () => {
       if (url === '/api/v1/executions/7') return ok(baseDetail)
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     const chip = await screen.findByTestId(TID.execStatus)
     expect(chip).toHaveAttribute('data-state', 'FAILED')
     expect(chip).toHaveTextContent('已失败')
@@ -295,7 +323,7 @@ describe('ExecutionDetail(执行详情)', () => {
       }
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     const panel = await screen.findByTestId(tid.approvalEntry('sign'))
     expect(panel).toHaveTextContent('会签')
     expect(panel).toHaveTextContent('alice')
@@ -324,7 +352,7 @@ describe('ExecutionDetail(执行详情)', () => {
       }
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     const row = await screen.findByTestId(tid.nodeRow('gate', 0))
     expect(screen.getByTestId(TID.rollbackSubmit)).toBeDisabled()
     expect(screen.getByTestId(TID.rollbackSubmit)).toHaveTextContent('先选节点')
@@ -349,7 +377,7 @@ describe('ExecutionDetail(执行详情)', () => {
       if (url === '/api/v1/executions/7') return ok({ ...baseDetail, nodes: [nodeRow('gate', 0, 'FAILED')] })
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     await user.click(await screen.findByTestId(tid.nodeRow('gate', 0)))
     // 单击只布防:请求未发,确认层在场且指名目标节点
     await user.click(screen.getByTestId(TID.rollbackSubmit))
@@ -381,7 +409,7 @@ describe('ExecutionDetail(执行详情)', () => {
       }
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     await user.click(await screen.findByTestId(tid.nodeRow('gate', 0)))
     // 决策 3 收敛后 Checkbox 由 Base UI 承载:label 同时关联隐藏 input 与
     // role=checkbox 的可见控件(label 断言保留,故按 role + 可及名取)。
@@ -404,7 +432,7 @@ describe('ExecutionDetail(执行详情)', () => {
       if (url === '/api/v1/executions/7') return ok({ ...baseDetail, nodes: [nodeRow('gate', 0, 'FAILED')] })
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     await user.click(await screen.findByTestId(tid.nodeRow('gate', 0)))
     await user.click(screen.getByTestId(TID.rollbackSubmit))
     await user.click(screen.getByTestId(TID.rollbackConfirm))
@@ -435,7 +463,7 @@ describe('ExecutionDetail(执行详情)', () => {
         next_cursor: '',
       })
     })
-    render(<ExecutionDetail execId="9" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="9" onAuthExpired={() => {}} />)
     expect(await screen.findByTestId(TID.resumeSubmit)).toBeEnabled()
     expect(screen.getByTestId(TID.rollbackSubmit)).toBeDisabled()
     expect(screen.getByTestId(TID.rollbackSubmit)).toHaveTextContent('先选节点')
@@ -474,7 +502,7 @@ describe('ExecutionDetail(执行详情)', () => {
       }
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="8" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="8" onAuthExpired={() => {}} />)
     expect(await screen.findByTestId(tid.nodeRow('a', 0))).toHaveAttribute('data-state', 'EXECUTING')
     expect(screen.queryByTestId(TID.cancelSubmit)).not.toBeInTheDocument()
 
@@ -500,7 +528,7 @@ describe('ExecutionDetail(执行详情)', () => {
       if (url === '/api/v1/executions/7') return ok(baseDetail)
       return ok({ items: [], next_cursor: '' })
     })
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     expect(await screen.findByTestId(TID.execRibbon)).toHaveTextContent('暂无节点执行记录')
   })
 
@@ -521,7 +549,7 @@ describe('ExecutionDetail(执行详情)', () => {
         return ok({ items: [], next_cursor: '' })
       },
     )
-    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.nodeRow('gate', 0))
     // 收起:标题带 name vX,且没有版本请求
     expect(screen.getByText('wf v1')).toBeInTheDocument()

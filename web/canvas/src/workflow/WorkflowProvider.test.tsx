@@ -76,6 +76,7 @@ beforeEach(() => {
   sessionStorage.clear()
   tokenStore.set('test-token')
   sessionStorage.setItem('braid_canvas_user', 'tester')
+  sessionStorage.setItem('braid_canvas_roles', JSON.stringify(['author']))
 })
 
 describe('WorkflowProvider(保存当前画布后发布,T23.5)', () => {
@@ -88,6 +89,20 @@ describe('WorkflowProvider(保存当前画布后发布,T23.5)', () => {
       wrapper: ({ children }) => <AuthProvider><WorkflowProvider>{children}</WorkflowProvider></AuthProvider>,
     })
   }
+
+  it('approver 与缺少角色信息会话不能通过 Provider 绕过只读入口', async () => {
+    sessionStorage.setItem('braid_canvas_roles', JSON.stringify(['approver']))
+    const fetcher = stubRoute(() => ok({ items: [] }))
+    const { result } = mountWorkspace()
+    await act(async () => {
+      result.current.newLocal()
+      await result.current.open('7')
+      await result.current.save(doc)
+      expect(await result.current.publish(doc)).toBe(false)
+    })
+    expect(result.current.ws).toBeNull()
+    expect(fetcher.mock.calls.some(([, init]) => init?.method === 'POST' || init?.method === 'PUT')).toBe(false)
+  })
 
   it('列表首读失败保留错误，重试失败不清上次列表，成功后清错误', async () => {
     const first = deferredResponse()

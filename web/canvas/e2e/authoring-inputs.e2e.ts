@@ -143,6 +143,8 @@ test('空白编排分支→存发与服务端DSL一致→缺必需字段就近�
   await testInfo.attach('canvas-and-server-dsl', { body: JSON.stringify({ canvas: current, server: stored.dsl }, null, 2), contentType: 'application/json' })
 
   await page.getByTestId(TID.viewPublished).click()
+  await expect(page.getByRole('heading', { name: '已发布与版本历史' })).toBeVisible()
+  await page.getByTestId(TID.navExecutions).click()
   await page.getByTestId(TID.triggerDefinition).click()
   await expect(page.getByRole('option', { name: '选择已发布工作流…', exact: true })).toBeDisabled()
   await page.getByRole('option', { name: `${name} v${version}`, exact: true }).click()

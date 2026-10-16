@@ -111,6 +111,8 @@ export interface LoginResponse {
   token: string
   token_type: string
   expires_at: string
+  username: string
+  roles: string[]
 }
 
 // ---- 契约面(T16.6 执行域:executionDTO / executionDetailDTO /
@@ -361,8 +363,17 @@ export const api = {
   listPublished(): Promise<{ items: DraftSummary[] }> {
     return listAllDefinitions('/api/v1/definitions?status=PUBLISHED').then((items) => ({ items }))
   },
+  listArchived(): Promise<{ items: DraftSummary[] }> {
+    return listAllDefinitions('/api/v1/definitions?status=ARCHIVED').then((items) => ({ items }))
+  },
+  listVersions(name: string): Promise<{ items: DraftSummary[] }> {
+    return call('GET', `/api/v1/definitions/${encodeURIComponent(name)}/versions`)
+  },
+  archiveVersion(name: string, version: number): Promise<DraftDetail> {
+    return call('POST', `/api/v1/definitions/${encodeURIComponent(name)}/versions/${version}/archive`)
+  },
   getVersion(name: string, version: number): Promise<DraftDetail> {
-    return call('GET', `/api/v1/definitions/${name}/versions/${version}`)
+    return call('GET', `/api/v1/definitions/${encodeURIComponent(name)}/versions/${version}`)
   },
   listExecutions(query?: { status?: string; name?: string; limit?: number; offset?: number }): Promise<{
     items: ExecutionSummary[]

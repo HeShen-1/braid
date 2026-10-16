@@ -53,7 +53,12 @@ test('修改画布后直接发布:先保存,服务端发布版本等于所见 DS
   await expect(page.getByTestId(TID.editor)).toHaveCount(0)
   await expect(page.getByTestId(TID.workflowFlash)).toContainText(`已发布 ${doc.name}`)
   await page.getByTestId(TID.viewPublished).click()
-  await expect(page).toHaveURL(/\/executions$/)
+  await expect(page).toHaveURL(/\/workflows\?view=versions$/)
+  await expect(page.getByRole('heading', { name: '已发布与版本历史' })).toBeVisible()
+  await page.getByLabel('工作流', { exact: true }).click()
+  await page.getByRole('option', { name: doc.name, exact: true }).click()
+  await page.getByRole('button', { name: `查看 v${version} 定义`, exact: true }).click()
+  await expect(page.getByLabel('版本定义')).toContainText('直接发布必须包含当前编辑')
 })
 
 test('保存失败零发布;新建/换稿/离开/刷新取消后仍有原编辑与焦点', async ({ page, request }) => {

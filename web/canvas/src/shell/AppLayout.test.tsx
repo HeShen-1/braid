@@ -19,7 +19,7 @@ function Harness() {
 }
 
 function mount() {
-  session.start('t', 'author')
+  session.start('t', 'author', ['author'])
   vi.stubGlobal('fetch', vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => new Response(
     JSON.stringify(init?.method === 'POST' ? { error: 'unauthorized' } : { items: [], page: { total: 0 } }),
     { status: init?.method === 'POST' ? 401 : 200, headers: { 'Content-Type': 'application/json' } },

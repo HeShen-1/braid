@@ -30,6 +30,7 @@ import { DECISION_LABEL, ON_TIMEOUT_LABEL, TRIGGER_LABEL } from './ui/status.ts'
 import { TID, tid } from './ui/testids.ts'
 import { Duration, Timestamp } from './ui/time.tsx'
 import { apiErrorText, executionFailureNode, executionFailureText } from './ui/errors.ts'
+import { refreshConsole } from './refresh.ts'
 
 const POLL_MS = 2500
 const FAILED_POLL_MS = 10_000
@@ -58,12 +59,12 @@ function nodeStatusIndex(rows: NodeExecution[]): Record<string, string> {
   return out
 }
 
-export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: string; onAuthExpired: () => void; onBack?: () => void }) {
+export function ExecutionDetail({ execId, onAuthExpired, onBack, canManage = false }: { execId: string; onAuthExpired: () => void; onBack?: () => void; canManage?: boolean }) {
   const [detail, setDetail] = useState<ExecutionDetailData | null>(null)
   const [readError, setReadError] = useState('')
   const [readLoading, setReadLoading] = useState(true)
   const readSeq = useRef(0)
-  const [approvals, setApprovals] = useState<Record<string, ApprovalDetail | null>>({})
+  const [approvals, setApprovals] = useState<Record<string, ApprovalDetail | string>>({})
   const [evidenceRevision, setEvidenceRevision] = useState(0)
   const [evidenceNode, setEvidenceNode] = useState<{ nodeId: string; instanceNo: number } | null>(null)
   const [trace, setTrace] = useState<string | null>(null)
@@ -118,12 +119,11 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
     } finally {
       if (seq === readSeq.current) setReadLoading(false)
     }
-    // 审批子资源:仅 WAITING_APPROVAL 的 approval 行;名单外 403 = 静默收起。
-    // 已离开挂起态的行同步剪枝(否则节点完成后残留「待投」幽灵帧)。
-    const waiting = (d.nodes ?? []).filter((n) => n.type === 'approval' && n.status === 'WAITING_APPROVAL')
+    // 已进入审批的节点收口后仍可回看决定；全文端点继续由快照名单执法。
+    const waiting = (d.nodes ?? []).filter((n) => n.type === 'approval' && (n.attempts > 0 || n.status === 'WAITING_APPROVAL'))
     const waitingIds = new Set(waiting.map((n) => n.node_id))
     setApprovals((prev) => {
-      const next: Record<string, ApprovalDetail | null> = {}
+      const next: Record<string, ApprovalDetail | string> = {}
       let changed = false
       for (const k of Object.keys(prev)) {
         if (waitingIds.has(k)) next[k] = prev[k]
@@ -142,7 +142,7 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
           onAuthExpired()
           return
         }
-        setApprovals((prev) => ({ ...prev, [n.node_id]: null }))
+        setApprovals((prev) => ({ ...prev, [n.node_id]: apiErrorText(err) }))
       }
     }
   }, [execId, onAuthExpired])
@@ -171,8 +171,8 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
     }
   }, [])
 
-  const canAct = detail !== null && TERMINAL_ACTIONABLE.includes(detail.status) && !busy && !readLoading && readError === ''
-  const canCancel = detail !== null && CANCELLABLE.includes(detail.status) && !busy && !readLoading && readError === ''
+  const canAct = canManage && detail !== null && TERMINAL_ACTIONABLE.includes(detail.status) && !busy && !readLoading && readError === ''
+  const canCancel = canManage && detail !== null && CANCELLABLE.includes(detail.status) && !busy && !readLoading && readError === ''
 
   const runCancel = useCallback(async () => {
     if (!canCancel) return
@@ -181,6 +181,7 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
     setFlash('')
     try {
       const ack = await api.cancelExecution(execId)
+      refreshConsole()
       setFlash(`已取消执行（停止 ${ack.cancelled_count} 个未结束节点）`)
       await load()
     } catch (err) {
@@ -203,6 +204,7 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
       setFlash('')
       try {
         const ack = await fn()
+        refreshConsole()
         setFlash(
           `${action === 'resume' ? '已续跑，从' : '已回滚到'} ${ack.target_node_id}（${ack.reset_count} 个节点恢复为待执行${ack.rerun_target ? '，目标节点重新执行' : ''}${
             ack.quiesced_count > 0 ? `，先停止 ${ack.quiesced_count} 个未结束节点` : ''
@@ -239,7 +241,7 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
   }
 
   const statusRows = detail.nodes ?? []
-  const approvalRows = statusRows.filter((n) => n.type === 'approval' && n.status === 'WAITING_APPROVAL' && approvals[n.node_id] != null)
+  const approvalRows = statusRows.filter((n) => n.type === 'approval' && (n.attempts > 0 || n.status === 'WAITING_APPROVAL'))
   const failedNode = executionFailureNode(detail)
   const rejected = failedNode?.type === 'approval' && failedNode.error_code === 'approval_rejected'
 
@@ -304,7 +306,7 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
       ) : null}
 
       {/* ③ 处置条 */}
-      <section className="panel exec-actions">
+      {canManage ? <section className="panel exec-actions">
         <div className="panel-body exec-actions-body">
           <div className="exec-target">
             <span className="micro">回滚目标</span>
@@ -372,7 +374,7 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
             )}
           </div>
         </div>
-      </section>
+      </section> : <p className="text-sm text-ink-2">当前角色只读；处置执行需要 author/admin 角色。</p>}
 
       {flash !== '' ? (
         <p className="exec-flash" role="status" data-testid={TID.execFlash}>
@@ -420,7 +422,8 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: str
       {/* ⑤ 会签中间态 */}
       {approvalRows.map((n) => {
         const ap = approvals[n.node_id]
-        return ap === undefined || ap === null ? null : <ApprovalPanel key={n.node_id} ap={ap} />
+        if (typeof ap === 'object' && ap.node_status === n.status) return <ApprovalPanel key={n.node_id} ap={ap} />
+        return <section className="panel" key={n.node_id} aria-label={`审批 ${n.node_id}`}><PanelHead title={`审批 · ${n.node_id}`} actions={<a className="btn btn-quiet btn-sm" href={`/approvals/${execId}/${encodeURIComponent(n.node_id)}`}>查看审批详情与决定</a>} /><div className="panel-body text-sm text-ink-2">{typeof ap === 'string' ? `审批详情未能读取：${ap}。决定全文仅对审批名单内账号开放。` : '正在读取审批详情…'}</div></section>
       })}
 
       {/* ⑥ 输出 */}
@@ -456,7 +459,7 @@ function ApprovalPanel({ ap }: { ap: ApprovalDetail }) {
       <PanelHead
         title={`审批 · ${ap.mode === 'all' ? '会签' : '或签'}`}
         sub={ap.node_id}
-        actions={<StatusChip status={ap.node_status} kind="node" />}
+        actions={<><StatusChip status={ap.node_status} kind="node" /><a className="btn btn-quiet btn-sm" href={`/approvals/${ap.execution_id}/${encodeURIComponent(ap.node_id)}`}>{ap.node_status === 'WAITING_APPROVAL' ? '前往审批处理' : '查看决定历史'}</a></>}
       />
       <div className="panel-body">
         <dl className="exec-kv">

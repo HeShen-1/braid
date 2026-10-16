@@ -1,7 +1,7 @@
 // 工作流面:左列表 + 右画布。URL 是地址(/workflows/:draftId),
 // 文档真相在 WorkflowProvider(离开路由不丢编辑)。
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { useNavigate, useParams } from 'react-router'
+import { useNavigate, useParams, useSearchParams } from 'react-router'
 import { Activity, FilePlus2, Rocket, Workflow } from 'lucide-react'
 import { CanvasEditor } from '../CanvasEditor.tsx'
 import { DraftList } from '../DraftList.tsx'
@@ -12,11 +12,16 @@ import { I } from '../ui/I.tsx'
 import { TID } from '../ui/testids.ts'
 import { ConfirmLayer } from '../ui/confirm.tsx'
 import type { WorkflowDoc } from '../model/dsl.ts'
+import { useAuth } from '../auth.tsx'
+import { PublishedVersions } from '../PublishedVersions.tsx'
 
 export function WorkflowsRoute() {
   const { drafts, loading, listError, refresh, ws, dirty, issues, flash, editorKey, open, newLocal, onDocChange, save, publish } = useWorkflow()
   const params = useParams()
   const navigate = useNavigate()
+  const [search] = useSearchParams()
+  const { canAuthor, logout } = useAuth()
+  const showVersions = !canAuthor || search.get('view') === 'versions'
   const urlId = params.draftId
   const workspaceRef = useRef(ws)
   workspaceRef.current = ws
@@ -32,13 +37,13 @@ export function WorkflowsRoute() {
   // URL → 状态:深链接与后退都走这一条。
   useEffect(() => {
     let active = true
-    if (urlId !== undefined) void open(urlId).then((opened) => {
+    if (urlId !== undefined && !showVersions) void open(urlId).then((opened) => {
       if (!active || opened) return
       const id = workspaceRef.current?.draftId
       void navigate(id == null ? '/workflows' : `/workflows/${id}`, { replace: true })
     })
     return () => { active = false }
-  }, [urlId, open, navigate])
+  }, [urlId, open, navigate, showVersions])
 
   // 状态 → URL:首次保存拿到 id 后把地址补上,刷新可回到同一张工作流。
   const previousId = useRef(ws?.draftId)
@@ -68,7 +73,12 @@ export function WorkflowsRoute() {
   }, [publish, navigate])
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="flex shrink-0 items-center gap-2 border-b border-line-0 px-4 py-2" aria-label="工作流视图">
+        {canAuthor ? <Button size="sm" variant="quiet" aria-pressed={!showVersions} onClick={() => void navigate(ws?.draftId == null ? '/workflows' : `/workflows/${ws.draftId}`)}>草稿</Button> : null}
+        <Button size="sm" variant="quiet" aria-pressed={showVersions} onClick={() => void navigate('/workflows?view=versions')}>已发布与版本历史</Button>
+      </div>
+      {showVersions ? <PublishedVersions canManage={canAuthor} onAuthExpired={logout} /> : <div className="flex min-h-0 flex-1">
       <DraftList
         drafts={drafts}
         activeId={ws?.draftId ?? null}
@@ -95,7 +105,7 @@ export function WorkflowsRoute() {
                 icon={Activity}
                 className="ml-auto shrink-0"
                 data-testid={TID.viewPublished}
-                onClick={() => void navigate('/executions')}
+                onClick={() => void navigate('/workflows?view=versions')}
               >
                 查看已发布
               </Button>
@@ -150,6 +160,7 @@ export function WorkflowsRoute() {
           <IssuesPanel issues={issues} />
         </div>
       )}
+      </div>}
     </div>
   )
 }
