@@ -42,7 +42,8 @@ async function overviewContrast(page: Page) {
     const style = getComputedStyle(active)
     const back = background(active)
     const bar = document.querySelector('.exec-overview-bar')!
-    return { samples, barRGB: over(rgba(getComputedStyle(bar).fill), background(bar)), focus: { visible: active.matches(':focus-visible'), style: style.outlineStyle, width: style.outlineWidth, ratio: ratio(rgba(style.outlineColor), back), rgb: over(rgba(style.outlineColor), back) } }
+    const axis = document.querySelector('.exec-overview-axis')!
+    return { samples, barRGB: over(rgba(getComputedStyle(bar).fill), background(bar)), axisRGB: over(rgba(getComputedStyle(axis).stroke), background(axis)), focus: { visible: active.matches(':focus-visible'), style: style.outlineStyle, width: style.outlineWidth, ratio: ratio(rgba(style.outlineColor), back), rgb: over(rgba(style.outlineColor), back) } }
   })
 }
 
@@ -128,7 +129,11 @@ test('执行总览：当前租户真实总数、最近100条创建分布、筛�
       const peak = bars.reduce((best, bar) => bar.getBoundingClientRect().height > best.getBoundingClientRect().height ? bar : best)
       const box = peak.getBBox(), matrix = peak.getScreenCTM()!
       const center = new DOMPoint(box.x + box.width / 2, box.y + box.height / 2).matrixTransform(matrix)
-      return { chart: chart.toJSON(), selected: peak.getBoundingClientRect().toJSON(), screenCTM: [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f], center: { x: center.x - chart.x, y: center.y - chart.y }, bars: bars.map((bar) => ({ svg: bar.getBBox().toJSON(), screen: bar.getBoundingClientRect().toJSON() })) }
+      const middle = Math.floor(bars.length / 2)
+      const left = bars[middle - 1].getBoundingClientRect(), right = bars[middle].getBoundingClientRect()
+      const axis = svg.querySelector<SVGLineElement>('.exec-overview-axis')!
+      const axisOrigin = new DOMPoint(axis.x1.baseVal.value, axis.y1.baseVal.value).matrixTransform(axis.getScreenCTM()!)
+      return { chart: chart.toJSON(), selected: peak.getBoundingClientRect().toJSON(), screenCTM: [matrix.a, matrix.b, matrix.c, matrix.d, matrix.e, matrix.f], center: { x: center.x - chart.x, y: center.y - chart.y }, gap: { left: left.right - chart.x, right: right.left - chart.x, x: (left.right + right.left) / 2 - chart.x, axisY: axisOrigin.y - chart.y }, bars: bars.map((bar) => { const rect = bar.getBBox(); return { svg: { x: rect.x, y: rect.y, width: rect.width, height: rect.height }, screen: bar.getBoundingClientRect().toJSON() } }) }
     })
     expect(chartGeometry.selected.width).toBeGreaterThan(4)
     expect(chartGeometry.selected.height).toBeGreaterThan(4)
@@ -142,10 +147,26 @@ test('执行总览：当前租户真实总数、最近100条创建分布、筛�
     expect(pixelCenter.y).toBeGreaterThan(chartGeometry.selected.top + 1)
     expect(pixelCenter.y).toBeLessThan(chartGeometry.selected.bottom - 1)
     for (let channel = 0; channel < 3; channel++) expect(Math.abs(paintedBar[channel] - contrast.barRGB[channel])).toBeLessThanOrEqual(3)
+    // 只在柱间隙扫轴的纵剖面；保留 AA 边缘，实体像素须真正达到 >=3，不能用柱色代替轴。
+    const gapX = Math.floor(chartGeometry.gap.x / chartGeometry.chart.width * chart.width)
+    const gapPixelCenter = (gapX + 0.5) / chart.width * chartGeometry.chart.width
+    expect(gapPixelCenter).toBeGreaterThan(chartGeometry.gap.left + 0.5)
+    expect(gapPixelCenter).toBeLessThan(chartGeometry.gap.right - 0.5)
+    const fromY = Math.max(0, Math.floor((chartGeometry.gap.axisY - 4) / chartGeometry.chart.height * chart.height))
+    const toY = Math.min(chart.height - 1, Math.ceil((chartGeometry.gap.axisY + 4) / chartGeometry.chart.height * chart.height))
+    const rawProfile = Array.from({ length: toY - fromY + 1 }, (_, offset) => { const y = fromY + offset; return { y, rgb: [...chart.data.subarray((y * chart.width + gapX) * 4, (y * chart.width + gapX) * 4 + 3)] } })
+    const luminance = (rgb: number[]) => rgb.map((value) => value / 255 <= 0.04045 ? value / 255 / 12.92 : ((value / 255 + 0.055) / 1.055) ** 2.4).reduce((sum, value, channel) => sum + value * [0.2126, 0.7152, 0.0722][channel], 0)
+    const background = rawProfile[0].rgb, backLuminance = luminance(background)
+    const profile = rawProfile.map((pixel) => { const light = luminance(pixel.rgb); return { ...pixel, ratio: (Math.max(light, backLuminance) + 0.05) / (Math.min(light, backLuminance) + 0.05), solid: pixel.rgb.every((value, channel) => Math.abs(value - contrast.axisRGB[channel]) <= 3) } })
+    const strongest = profile.reduce((best, pixel) => pixel.ratio > best.ratio ? pixel : best)
+    const axisEvidence = { x: gapX, gap: chartGeometry.gap, background, expected: contrast.axisRGB, profile, strongest }
+    await writeFile(info.outputPath(`overview-axis-gap-${theme}-${width}.json`), JSON.stringify(axisEvidence, null, 2))
+    expect(strongest.ratio).toBeGreaterThanOrEqual(3)
+    expect(strongest.solid).toBe(true)
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     expect((await list.boundingBox())!.width).toBeGreaterThan(620)
     await page.screenshot({ path: info.outputPath(`overview-${theme}-${width}.png`), fullPage: true })
-    const measurement = { width, theme, contrast, paintedFocus: [0, 1].map((y) => [...focus.data.subarray((y * focus.width + Math.floor(focus.width / 2)) * 4, (y * focus.width + Math.floor(focus.width / 2)) * 4 + 3)]), paintedBar, chartGeometry, buckets: await overview.locator('.exec-overview-buckets tbody tr').allTextContents(), dom: await overview.evaluate((element) => element.outerHTML) }
+    const measurement = { width, theme, contrast, paintedFocus: [0, 1].map((y) => [...focus.data.subarray((y * focus.width + Math.floor(focus.width / 2)) * 4, (y * focus.width + Math.floor(focus.width / 2)) * 4 + 3)]), paintedBar, chartGeometry, axisEvidence, buckets: await overview.locator('.exec-overview-buckets tbody tr').allTextContents(), dom: await overview.evaluate((element) => element.outerHTML) }
     await writeFile(info.outputPath(`overview-measure-${theme}-${width}.json`), JSON.stringify(measurement, null, 2))
     matrix.push(measurement)
   }
