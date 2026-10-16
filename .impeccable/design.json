@@ -383,7 +383,13 @@
         "verification": "docs/audits/UX-F1-a-VALIDATION.md",
         "focusContract": "accent remains canonical interaction blue; shadcn menu focus backgrounds use ground-3 through data-slot adapter, never a duplicate token alias",
         "focusOpacity": 0.85,
-        "primaryControlContract": "light primary-action #0d1319 / primary-ink #f7f9fb; usable primary boundary >=3, text >=4.5; existing disabled-state exemption only"
+        "primaryControlContract": "light primary-action #0d1319 / primary-ink #f7f9fb; usable primary boundary >=3, text >=4.5; existing disabled-state exemption only",
+        "selectKeyboardFocus": {
+          "selector": "[data-slot='select-item']:focus-visible",
+          "outline": "2px solid 85% accent",
+          "outlineOffset": "-2px",
+          "regression": "real author triggerDefinition Select, ArrowDown, both themes and 1440/1024"
+        }
       },
       "otherSurfaces": "n8n/Vercel/Temporal direction approved; delivery belongs to UX-F1-b/c/d"
     }

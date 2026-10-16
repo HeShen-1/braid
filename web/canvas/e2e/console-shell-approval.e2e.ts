@@ -80,7 +80,7 @@ async function contrast(page: Page) {
           fill: ratio(background(el), background(el.parentElement!)) }
       })
     const focused = document.activeElement
-    let focus: { width: string; ratio: number; color: string; ground: number[]; composite: number[] } | null = null
+    let focus: { width: string; style: string; offset: string; ratio: number; textRatio: number; color: string; ground: number[]; composite: number[] } | null = null
     if (focused instanceof HTMLElement && focused.matches(':focus-visible')) {
       const style = getComputedStyle(focused)
       // outline 含透明度：同样先落到相邻真实背景再取样。
@@ -88,7 +88,8 @@ async function contrast(page: Page) {
       ctx.fillStyle = `rgb(${ground.join(',')})`; ctx.fillRect(0, 0, 1, 1)
       ctx.fillStyle = style.outlineColor; ctx.fillRect(0, 0, 1, 1)
       const outline = [...ctx.getImageData(0, 0, 1, 1).data].slice(0, 3)
-      focus = { width: style.outlineWidth, ratio: ratio(outline, ground), color: style.outlineColor, ground, composite: outline }
+      focus = { width: style.outlineWidth, style: style.outlineStyle, offset: style.outlineOffset,
+        ratio: ratio(outline, ground), textRatio: ratio(rgb(style.color), ground), color: style.outlineColor, ground, composite: outline }
     }
     return { text, controls, focus, accent: getComputedStyle(document.documentElement).getPropertyValue('--color-accent').trim() }
   })
@@ -107,6 +108,7 @@ async function capture(page: Page, info: TestInfo, label: string) {
   expect(measured.text.filter((item) => item.ratio < 4.5)).toEqual([])
   expect(measured.controls.filter((item) => item.outer < 3 || (item.inner < 3 && item.fill < 3))).toEqual([])
   if (measured.focus !== null) {
+    expect(measured.focus.style).toBe('solid')
     expect(parseFloat(measured.focus.width)).toBeGreaterThanOrEqual(2)
     expect(measured.focus.ratio).toBeGreaterThanOrEqual(3)
   }
@@ -167,4 +169,59 @@ test('壳层与审批在两主题/桌面窄窗保持层级、对比度和键盘�
   await expect(page.getByTestId(TID.approvalFlash)).toContainText('批准')
   await expect(row).toHaveCount(0)
   await info.attach('real-approval', { body: JSON.stringify(item), contentType: 'application/json' })
+})
+
+test('作者触发面Select的真实ArrowDown焦点在两主题桌面窄窗都有独有内侧环', async ({ page, request }, info) => {
+  const login = await request.post('/api/v1/auth/login', { data: { username: 'author', password: 'e2e-author-pass-1' } })
+  expect(login.ok()).toBe(true)
+  const { token } = await login.json() as { token: string }
+  const headers = { Authorization: `Bearer ${token}` }
+  const stamp = Date.now()
+  for (const suffix of ['first', 'second']) {
+    const created = await request.post('/api/v1/definitions', { headers, data: {
+      dsl: '1.0', name: `ux_f1_a_select_${stamp}_${suffix}`,
+      nodes: [{ id: 'gate', type: 'approval', approvers: ['alice'], mode: 'any', instructions: 'UX-F1-a Select 自动化验收定义。', outputs: { decision: 'string' } }], edges: [],
+    } })
+    expect(created.ok()).toBe(true)
+    const { id } = await created.json() as { id: string }
+    expect((await request.post(`/api/v1/drafts/${id}/publish`, { headers })).ok()).toBe(true)
+  }
+  await page.emulateMedia({ reducedMotion: 'no-preference' })
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto('/login')
+  await page.getByTestId(TID.loginUsername).fill('author')
+  await page.getByTestId(TID.loginPassword).fill('e2e-author-pass-1')
+  await page.getByTestId(TID.loginSubmit).click()
+  await page.getByTestId(TID.navExecutions).click()
+  const trigger = page.getByTestId(TID.triggerDefinition)
+  for (const theme of ['dark', 'light'] as const) {
+    await page.getByTestId(tid.themeOption(theme)).click()
+    for (const width of [1440, 1024]) {
+      await page.setViewportSize({ width, height: 1000 })
+      await trigger.click()
+      const enabled = page.locator('[data-slot="select-item"]:not([data-disabled])')
+      await expect.poll(() => enabled.count()).toBeGreaterThanOrEqual(2)
+      await enabled.first().hover()
+      await page.keyboard.press('Home')
+      await page.keyboard.press('ArrowDown')
+      const focused = page.locator('[data-slot="select-item"]:focus-visible')
+      await expect(focused).toHaveCount(1)
+      await expect(focused).toBeFocused()
+      expect(await focused.evaluate((el) => el.matches(':hover'))).toBe(false)
+      const label = `${theme}-${width}-select-keyboard`
+      const path = info.outputPath(`${label}.png`)
+      await page.screenshot({ path, fullPage: true, animations: 'disabled' })
+      await info.attach(label, { path, contentType: 'image/png' })
+      const measured = await contrast(page)
+      await info.attach(`${label}-contrast`, { body: JSON.stringify(measured, null, 2), contentType: 'application/json' })
+      expect(measured.focus).not.toBeNull()
+      expect(measured.focus?.style).toBe('solid')
+      expect(parseFloat(measured.focus?.width ?? '0')).toBeGreaterThanOrEqual(2)
+      expect(parseFloat(measured.focus?.offset ?? '0')).toBeLessThan(0)
+      expect(measured.focus?.ratio).toBeGreaterThanOrEqual(3)
+      expect(measured.focus?.textRatio).toBeGreaterThanOrEqual(4.5)
+      await page.keyboard.press('Escape')
+      await expect(trigger).toBeFocused()
+    }
+  }
 })

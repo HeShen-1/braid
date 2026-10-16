@@ -1315,6 +1315,13 @@
   background: var(--color-ground-3);
 }
 
+/* 菜单高亮也会跟随鼠标，Select 的键盘焦点需有独有边界。
+   显式 solid 压过 registry 的 outline-hidden，内侧环避免 popup 裁切。 */
+[data-slot='select-item']:focus-visible {
+  outline: 2px solid color-mix(in oklab, var(--color-accent) 85%, transparent);
+  outline-offset: -2px;
+}
+
 /* ---- Checkbox:未选 = ground-2 + line-2(与输入框同),选中 = accent 实体 ---- */
 [data-slot='checkbox'] {
   width: 0.875rem;

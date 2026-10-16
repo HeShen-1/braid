@@ -384,7 +384,7 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 
 详情保持同页两级模型与 T23.10 的焦点/URL/决定逻辑。主阅读面最大 1056px，身份与六项元数据分组后，依次为执行上下文、审批说明、决定时间线、决定；分节使用 1px 结构线，无多个圆角盒。详情顶部外显 `Esc` 返回；只有可提交时外显 `a` / `r`。批准/驳回继续使用原本的防重、备注校验与驳回确认层。
 
-共享 shadcn 别名层不得覆盖已有语义 token。`accent` 始终是焦点蓝；菜单项的 `focus:bg-accent` 外观由 data-slot 适配层明确收回 `ground-3`，不把中性菜单底写成同名全局 token。全局、输入框、主题分段、Select 与 Checkbox 的焦点环统一为 85% `accent`，避免浅色相邻地面上的 70% 合成结果低于 3:1。主题测试与浏览器焦点实测共同约束这一点。
+共享 shadcn 别名层不得覆盖已有语义 token。`accent` 始终是焦点蓝；菜单项的 `focus:bg-accent` 外观由 data-slot 适配层明确收回 `ground-3`，不把中性菜单底写成同名全局 token。全局、输入框、主题分段、Select 与 Checkbox 的焦点环统一为 85% `accent`，避免浅色相邻地面上的 70% 合成结果低于 3:1。SelectItem 的键盘 `:focus-visible` 在 data-slot 适配层显式设为 2px solid、85% `accent`、offset -2px 的内侧环，覆盖 registry 的 `outline-hidden`；鼠标 hover 仍为中性底，键盘焦点有独有边界且不被 popup 裁切。主题测试与真实作者触发面 Select 浏览器回归共同约束这一点。
 
 全部颜色读取既有语义 token，新增 CSS 限于壳层与 `.appr-` 作用域。浅色主题继续通过同一批 token 覆盖，不在组件读取主题。真实浏览器矩阵由独立 e2e spec `console-shell-approval.e2e.ts` 维护。
 
