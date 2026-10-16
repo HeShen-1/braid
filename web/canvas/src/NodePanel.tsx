@@ -57,11 +57,14 @@ function ApproversInput({ spec, update }: Sec<Extract<DslNode, { type: 'approval
 
 export function NodePanel({
   spec,
+  targets = [],
   update,
   onDelete,
   deleteArmRef,
 }: {
   spec: DslNode
+  /** 分支可选目标(当前画布除自身以外的节点)。 */
+  targets?: DslNode[]
   update: (patch: (s: DslNode) => DslNode) => void
   /**
    * 删除该节点(T21.4 ④)。传入才渲染可见入口 —— 删除是危险动作,走画布的
@@ -121,7 +124,7 @@ export function NodePanel({
 
       {spec.type === 'llm' && <LlmSection spec={spec} update={update} />}
       {spec.type === 'tool' && <ToolSection spec={spec} update={update} />}
-      {spec.type === 'branch' && <BranchSection spec={spec} update={update} />}
+      {spec.type === 'branch' && <BranchSection spec={spec} update={update} targets={targets} />}
       {spec.type === 'approval' && <ApprovalSection spec={spec} update={update} />}
       {spec.type === 'parallel' && <ParallelSection spec={spec} update={update} />}
     </div>
@@ -172,6 +175,7 @@ function LlmSection({ spec, update }: Sec<Extract<DslNode, { type: 'llm' }>>) {
       <Section title="提示词">
         <AreaField
           label="system 指令"
+          hint="只写固定指令，不支持引用占位符。"
           value={prompt.system ?? ''}
           onChange={(v) =>
             update((s) => (s.type === 'llm' ? { ...s, prompt: { ...s.prompt, system: v === '' ? undefined : v } } : s))
@@ -179,6 +183,7 @@ function LlmSection({ spec, update }: Sec<Extract<DslNode, { type: 'llm' }>>) {
         />
         <AreaField
           label="提示词模板"
+          hint="模板只写固定指令，不支持 {{…}}；触发参数与节点输出请通过下方 user_data 传入。"
           rows={5}
           value={prompt.template}
           onChange={(v) => update((s) => (s.type === 'llm' ? { ...s, prompt: { ...s.prompt, template: v } } : s))}
@@ -187,6 +192,7 @@ function LlmSection({ spec, update }: Sec<Extract<DslNode, { type: 'llm' }>>) {
       </Section>
 
       <Section title="user_data" hint="数据通道：name + 纯引用">
+        <p className="field-hint">{'引用示例：{{inputs.text}} 或 {{nodes.parse.output.text}}（必须来自上游节点）。运行时会把每项以「名称: 数据」追加在模板后，无需在模板里放占位符。'}</p>
         <ListRows
           rowLabel="user_data 行"
           items={prompt.user_data ?? []}
@@ -204,7 +210,7 @@ function LlmSection({ spec, update }: Sec<Extract<DslNode, { type: 'llm' }>>) {
                 ariaLabel={`user_data 引用 ${i + 1}`}
                 value={u.ref}
                 onChange={(v) => patch({ ref: v })}
-                placeholder="{{nodes.x.output.y}}"
+                placeholder="{{inputs.text}}"
               />
             </>
           )}
@@ -267,10 +273,18 @@ function ToolSection({ spec, update }: Sec<Extract<DslNode, { type: 'tool' }>>) 
   )
 }
 
-function BranchSection({ spec, update }: Sec<Extract<DslNode, { type: 'branch' }>>) {
+function BranchSection({ spec, update, targets }: Sec<Extract<DslNode, { type: 'branch' }>> & { targets: DslNode[] }) {
+  const options = targets.map((n) => ({ value: n.id, label: n.title ? `${n.title} (${n.id})` : n.id }))
+  const targetOptions = (value: string) => [
+    { value: '', label: '选择目标节点…', disabled: true },
+    ...options,
+    ...(value !== '' && !targets.some((n) => n.id === value) ? [{ value, label: `不存在的节点 (${value})`, disabled: true }] : []),
+  ]
   return (
     <>
       <Section title="分支条件" hint="when 命中走 next">
+        <p className="field-hint">从条件或默认出口连线，也可在下方选择目标；连线与去向会同步更新。多个条件可指向同一节点。</p>
+        {targets.length === 0 ? <p className="field-hint">先在画布添加其他节点，再选择分支目标。</p> : null}
         <ListRows
           rowLabel="分支"
           items={spec.cases}
@@ -298,23 +312,28 @@ function BranchSection({ spec, update }: Sec<Extract<DslNode, { type: 'branch' }
                 onChange={(v) => patch({ when: { ...c.when, right: v === '' ? undefined : parseLiteral(v) } })}
                 placeholder="右值(exists 留空)"
               />
-              <TextField
-                ariaLabel={`条件去向 ${i + 1}`}
-                value={c.next}
-                onChange={(v) => patch({ next: v })}
-                placeholder="目标节点 id"
-              />
+              <div className="col-span-2">
+                <SelectField
+                  label={`条件去向 ${i + 1}`}
+                  value={c.next}
+                  onChange={(v) => patch({ next: v })}
+                  options={targetOptions(c.next)}
+                  error={c.next !== '' && !targets.some((n) => n.id === c.next) ? '目标节点不存在，请重新选择。' : undefined}
+                />
+              </div>
             </div>
           )}
         />
       </Section>
 
       <Section title="兜底">
-        <TextField
+        <SelectField
           label="默认去向"
           value={spec.default}
           onChange={(v) => update((s) => (s.type === 'branch' ? { ...s, default: v } : s))}
-          placeholder="未命中时走"
+          options={targetOptions(spec.default)}
+          hint="条件都未命中时走此节点。"
+          error={spec.default !== '' && !targets.some((n) => n.id === spec.default) ? '目标节点不存在，请重新选择。' : undefined}
         />
       </Section>
     </>
@@ -450,7 +469,8 @@ function ParallelSection({ spec, update }: Sec<Extract<DslNode, { type: 'paralle
                     : s,
                 )
               }
-              placeholder="元素绑定 {{item}}"
+              placeholder="受信作者指令"
+              hint="模板不支持 {{…}}；元素数据须在 DSL 的 body.prompt.user_data 中用 {{item}} 或 {{item.field}} 引用，运行时追加在模板后。"
             />
             <Group label="body 输出声明" hint="名 → 类型">
               <KVRows

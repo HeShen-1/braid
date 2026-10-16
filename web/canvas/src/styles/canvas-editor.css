@@ -78,6 +78,7 @@
   flex: 1;
   min-width: 0;
   min-height: 0;
+  container-type: size;
 }
 
 /* 删除确认层(T21.4 ④):入口在右栏、键盘在画布上 —— 两处触发看到同一条,
@@ -377,4 +378,11 @@
 
 .react-flow__minimap {
   overflow: hidden;
+}
+
+/* DSL 抽屉打开后画布可能只剩窄条;缩略图不能盖住可操作节点。 */
+@container (max-height: 20rem) {
+  .react-flow__minimap {
+    display: none;
+  }
 }

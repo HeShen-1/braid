@@ -22,7 +22,7 @@ let latestDoc: WorkflowDoc | undefined
 function NodeProbe({ initial }: { initial: DslNode }) {
   const [spec, setSpec] = useState(initial)
   latestNode = spec
-  return <NodePanel spec={spec} update={(p) => setSpec((s) => p(s))} />
+  return <NodePanel spec={spec} targets={loadBase('all-node-types').nodes.filter((n) => n.id !== spec.id)} update={(p) => setSpec((s) => p(s))} />
 }
 
 function DocProbe({ initial }: { initial: WorkflowDoc }) {
@@ -39,6 +39,26 @@ function nodeFrom(name: string, id: string): DslNode {
 }
 
 describe('NodePanel', () => {
+  it('提示词说明遵循固定指令与追加数据的现有契约', () => {
+    render(<NodeProbe initial={nodeFrom('all-node-types', 'parse')} />)
+    expect(screen.getByText(/模板只写固定指令，不支持/)).toHaveTextContent('触发参数与节点输出请通过下方 user_data 传入')
+    expect(screen.getByText(/运行时会把每项/)).toHaveTextContent('{{inputs.text}}')
+    expect(screen.getByText(/运行时会把每项/)).toHaveTextContent('{{nodes.parse.output.text}}')
+    expect(screen.getByText(/运行时会把每项/)).toHaveTextContent('必须来自上游节点')
+    expect(screen.getByText(/运行时会把每项/)).toHaveTextContent('无需在模板里放占位符')
+  })
+
+  it('分支没有其他节点时明确提示,缺失历史目标保留并要求重新选择', async () => {
+    const user = userEvent.setup()
+    const spec = nodeFrom('all-node-types', 'verdict')
+    render(<NodePanel spec={spec} update={() => {}} />)
+    expect(screen.getByText('先在画布添加其他节点，再选择分支目标。')).toBeInTheDocument()
+    expect(screen.getAllByRole('alert')).toHaveLength(2)
+    await user.click(screen.getByLabelText('条件去向 1'))
+    expect(await screen.findByRole('option', { name: '选择目标节点…' })).toHaveAttribute('aria-disabled', 'true')
+    expect(screen.getByRole('option', { name: '不存在的节点 (report)' })).toHaveAttribute('aria-disabled', 'true')
+  })
+
   it('公共字段:标题/描述/重试 immutable patch(原 spec 不被突变)', async () => {
     const user = userEvent.setup()
     const spec = nodeFrom('all-node-types', 'parse')
@@ -89,8 +109,7 @@ describe('NodePanel', () => {
     await user.click(screen.getAllByRole('button', { name: '添加' })[0])
     if (latestNode!.type !== 'branch') throw new Error('unreachable')
     expect(latestNode!.cases).toHaveLength(2)
-    await user.clear(screen.getByLabelText('默认去向'))
-    await user.type(screen.getByLabelText('默认去向'), 'report')
+    await chooseOption(user, screen.getByLabelText('默认去向'), '最终报告 (report)')
     expect(latestNode!.default).toBe('report')
   })
 
@@ -238,6 +257,19 @@ describe('NodePanel', () => {
 })
 
 describe('WorkflowPanel', () => {
+  it('required/说明保持原值并可在面板编辑,声明语义不靠真值判断', async () => {
+    const user = userEvent.setup()
+    render(<DocProbe initial={loadBase('all-node-types')} />)
+    expect(screen.getByRole('checkbox', { name: '参数必填 1' })).toBeChecked()
+    expect(screen.getByLabelText('参数说明 1')).toHaveValue('待处理文档路径')
+    await user.click(screen.getByRole('checkbox', { name: '参数必填 1' }))
+    await user.clear(screen.getByLabelText('参数说明 1'))
+    await user.type(screen.getByLabelText('参数说明 1'), '本次说明')
+    expect(latestDoc!.inputs![0]).toMatchObject({ required: false, description: '本次说明' })
+    await user.click(screen.getByRole('checkbox', { name: '参数必填 1' }))
+    expect(latestDoc!.inputs![0].required).toBe(true)
+  })
+
   it('name/description/inputs 编辑回写', async () => {
     const user = userEvent.setup()
     render(<DocProbe initial={loadBase('all-node-types')} />)

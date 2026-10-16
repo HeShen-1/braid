@@ -19,8 +19,19 @@ function ok(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
 }
 
-function stubRoute(responder: (url: string, init?: RequestInit) => Response | Promise<Response>) {
-  const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => responder(String(input), init))
+function stubRoute(
+  responder: (url: string, init?: RequestInit) => Response | Promise<Response>,
+  onVersion?: (url: string) => Response | Promise<Response>,
+) {
+  const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const url = String(input)
+    const version = url.match(/^\/api\/v1\/definitions\/([^/]+)\/versions\/(\d+)$/)
+    if (version !== null) return onVersion?.(url) ?? ok({
+      ...published[0], name: version[1], version: Number(version[2]),
+      dsl: { dsl: '1.0', name: version[1], nodes: [], inputs: [] },
+    })
+    return responder(url, init)
+  })
   vi.stubGlobal('fetch', fn)
   return fn
 }
@@ -83,6 +94,102 @@ afterEach(() => {
 })
 
 describe('ExecutionsView(执行面)', () => {
+  it('所选版本展示类型/必填/说明和JSON示例,缺字段先就地提示,零假值可提交', async () => {
+    const user = userEvent.setup()
+    const posted: unknown[] = []
+    const inputs = [
+      { name: 'enabled', type: 'boolean', required: true, description: '是否启用检查' },
+      { name: 'count', type: 'number', required: true },
+      { name: 'items', type: 'array', required: true },
+      { name: 'options', type: 'object', required: true },
+      { name: 'note', type: 'string', required: false },
+    ]
+    stubRoute((url, init) => {
+      if (pathOf(url) === '/api/v1/definitions') return ok({ items: published })
+      if (init?.method === 'POST') {
+        posted.push(JSON.parse(String(init.body)))
+        return ok({ id: '8' }, 201)
+      }
+      return ok({ items: [], page: { total: 0 } })
+    }, () => ok({ ...published[0], dsl: { inputs } }))
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
+    const contract = screen.getByLabelText('所选版本输入要求')
+    expect(contract).toHaveTextContent('输入要求 · wf v3')
+    expect(contract).toHaveTextContent('boolean · 必填')
+    expect(contract).toHaveTextContent('string · 选填')
+    expect(contract).toHaveTextContent('是否启用检查')
+    await user.click(screen.getByText('输入 JSON 示例'))
+    expect(contract.querySelector('pre')?.textContent).toContain('"enabled": false')
+    await user.click(screen.getByTestId(TID.triggerSubmit))
+    expect(await screen.findByRole('alert')).toHaveTextContent('缺少必填参数：enabled、count、items、options')
+    expect(posted).toEqual([])
+    fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: '{"enabled":false,"count":0,"items":[],"options":{}}' } })
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    await user.click(screen.getByTestId(TID.triggerSubmit))
+    await waitFor(() => expect(posted).toEqual([{ definition_name: 'wf', version: 3, input: { enabled: false, count: 0, items: [], options: {} } }]))
+  })
+
+  it('迟到的旧版输入契约不覆盖新选择;列表出现新版时不偷换契约', async () => {
+    const user = userEvent.setup()
+    let newest = 3
+    let finishOld!: (response: Response) => void
+    const pending = new Promise<Response>((resolve) => { finishOld = resolve })
+    const versions: string[] = []
+    stubRoute((url) => {
+      if (pathOf(url) === '/api/v1/definitions') return ok({ items: [{ ...published[0], id: String(newest), version: newest }] })
+      return ok({ items: [], page: { total: 0 } })
+    }, (url) => {
+      versions.push(url)
+      return url.endsWith('/3') ? pending : ok({ ...published[0], version: 4, dsl: { inputs: [{ name: 'new_field', type: 'string', required: true }] } })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
+    expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
+    expect(screen.getByRole('status')).toHaveTextContent('wf v3 的输入要求')
+    newest = 4
+    await user.click(screen.getByRole('button', { name: '刷新执行列表' }))
+    await waitFor(() => expect(versions).toEqual(['/api/v1/definitions/wf/versions/3']))
+    expect(screen.getByTestId(TID.triggerDefinition)).toHaveTextContent('wf v3')
+    await chooseOption(user, screen.getByTestId(TID.triggerDefinition), 'wf v4')
+    expect(await screen.findByText('new_field')).toBeInTheDocument()
+    finishOld(ok({ ...published[0], dsl: { inputs: [{ name: 'old_field', type: 'number', required: true }] } }))
+    await waitFor(() => expect(screen.getByTestId(TID.triggerSubmit)).toBeEnabled())
+    expect(screen.getByLabelText('所选版本输入要求')).toHaveTextContent('wf v4')
+    expect(screen.queryByText('old_field')).not.toBeInTheDocument()
+    expect(versions).toEqual(['/api/v1/definitions/wf/versions/3', '/api/v1/definitions/wf/versions/4'])
+  })
+
+  it('读取输入要求失败不冒充空契约,可重试且保留用户输入', async () => {
+    const user = userEvent.setup()
+    let failed = true
+    stubRoute((url) => pathOf(url) === '/api/v1/definitions' ? ok({ items: published }) : ok({ items: [], page: { total: 0 } }),
+      () => failed ? ok({ error: 'http_503' }, 503) : ok({ ...published[0], dsl: { inputs: [] } }))
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    fireEvent.change(screen.getByTestId(TID.triggerInput), { target: { value: '{"preserved":true}' } })
+    await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
+    expect(await screen.findByRole('alert')).toHaveTextContent('读取 wf v3 的输入要求失败，请重试后再触发')
+    expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
+    expect(screen.queryByText(/未声明触发参数/)).not.toBeInTheDocument()
+    failed = false
+    await user.click(screen.getByRole('button', { name: '重试读取输入要求' }))
+    expect(await screen.findByText(/此版本未声明触发参数/)).toBeInTheDocument()
+    expect(screen.getByTestId(TID.triggerInput)).toHaveValue('{"preserved":true}')
+    expect(screen.getByTestId(TID.triggerSubmit)).toBeEnabled()
+  })
+
+  it.each([401, 404])('输入契约读取 %i:登出或失效出口,不触发', async (status) => {
+    const user = userEvent.setup()
+    const expired = vi.fn()
+    stubRoute((url) => pathOf(url) === '/api/v1/definitions' ? ok({ items: published }) : ok({ items: [], page: { total: 0 } }),
+      () => ok({ error: status === 401 ? 'unauthorized' : 'not_found' }, status))
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={expired} />)
+    await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
+    if (status === 401) await waitFor(() => expect(expired).toHaveBeenCalledTimes(1))
+    else expect(await screen.findByRole('alert')).toHaveTextContent('wf v3 已失效或不存在，请刷新后重新选择')
+    expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
+  })
+
   it('执行表格化:状态芯片 + 工作流版本 + 时长/创建;点行把 id 交给路由', async () => {
     const user = userEvent.setup()
     const onSelect = vi.fn()
@@ -309,6 +416,7 @@ describe('ExecutionsView(执行面)', () => {
     render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
     await user.click(screen.getByTestId(TID.triggerSubmit))
+    expect(screen.getByTestId(TID.triggerSubmit)).toHaveTextContent('正在触发…')
     expect(screen.getByTestId(TID.triggerDefinition)).toBeDisabled()
     rejectTrigger(ok({ error: 'conflict' }, 409))
     expect(await screen.findByRole('alert')).toHaveTextContent('wf v3')
@@ -395,6 +503,7 @@ describe('ExecutionsView(执行面)', () => {
     await screen.findByRole('option', { name: 'wf-21 v1' })
     // 21 个工作流 + 占位项 = 弹层 22 个选项。
     expect(screen.getAllByRole('option')).toHaveLength(22)
+    expect(screen.getByRole('option', { name: '选择已发布工作流…' })).toHaveAttribute('aria-disabled', 'true')
   })
 
   it('无已发布工作流:触发禁用并给出下一步', async () => {
@@ -408,6 +517,7 @@ describe('ExecutionsView(执行面)', () => {
     await screen.findByTestId(TID.triggerDefinition)
     expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
     expect(screen.getByText(/尚无已发布工作流/)).toBeInTheDocument()
+    expect(screen.queryByText('先选一个已发布工作流')).not.toBeInTheDocument()
     // 无筛选且无数据:走「暂无执行」而不是筛选空态,筛选栏也不占位
     const empty = await screen.findByTestId(TID.execEmpty)
     expect(empty).toHaveTextContent('暂无执行')

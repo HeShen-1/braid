@@ -39,6 +39,50 @@
   gap: 0.6rem;
 }
 
+.trigger-contract {
+  min-width: 0;
+  padding-top: 0.6rem;
+  border-top: 1px solid var(--color-line-0);
+}
+
+.trigger-inputs {
+  margin: 0.35rem 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trigger-inputs li {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem 0.5rem;
+  padding-block: 0.35rem;
+  border-bottom: 1px solid var(--color-line-0);
+  color: var(--color-ink-1);
+  font-size: var(--text-xs);
+  overflow-wrap: anywhere;
+}
+
+.trigger-inputs .field-hint {
+  flex-basis: 100%;
+}
+
+.trigger-example {
+  color: var(--color-ink-2);
+  font-size: var(--text-xs);
+}
+
+.trigger-example summary {
+  cursor: pointer;
+}
+
+.trigger-example pre {
+  max-height: 12rem;
+  overflow: auto;
+  padding: 0.5rem;
+  background: var(--color-ground-0);
+  font-family: var(--font-mono);
+}
+
 .exec-table-wrap {
   overflow-x: auto;
 }
