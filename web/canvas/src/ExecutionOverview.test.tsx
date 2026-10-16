@@ -1,5 +1,6 @@
 import { StrictMode } from 'react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, api, type ExecutionSummary } from './api.ts'
 import { ExecutionOverview } from './ExecutionOverview.tsx'
@@ -19,7 +20,7 @@ describe('ExecutionOverview', () => {
   it('总数来自page.total，四次只读查询不携筛选或账号条件；图形明确样本和时间桶', async () => {
     const list = vi.spyOn(api, 'listExecutions').mockImplementation(async (query) => response(query?.status === 'RUNNING' ? 11 : query?.status === 'WAITING_APPROVAL' ? 7 : query?.status === 'FAILED' ? 3 : 1234))
     render(<ExecutionOverview onAuthExpired={() => {}} />)
-    await waitFor(() => expect(refreshButton()).toBeEnabled())
+    await waitFor(() => expect(refreshButton()).toHaveAttribute('aria-disabled', 'false'))
     expect(count('保留执行总数')).toHaveTextContent('1,234条')
     expect(count('执行中')).toHaveTextContent('11条')
     expect(count('等待审批')).toHaveTextContent('7条')
@@ -46,7 +47,7 @@ describe('ExecutionOverview', () => {
     first.unmount()
     vi.mocked(api.listExecutions).mockImplementation(async (query) => query?.status === undefined ? { items: rows, page: {} as ReturnType<typeof response>['page'] } : response(0, []))
     render(<ExecutionOverview onAuthExpired={() => {}} />)
-    await waitFor(() => expect(refreshButton()).toBeEnabled())
+    await waitFor(() => expect(refreshButton()).toHaveAttribute('aria-disabled', 'false'))
     expect(count('保留执行总数')).toHaveTextContent('—')
     expect(count('执行中')).toHaveTextContent('0条')
     expect(screen.getByText(/响应缺少有效总数/)).toBeInTheDocument()
@@ -60,7 +61,7 @@ describe('ExecutionOverview', () => {
       return response(failed ? 8 : 20)
     })
     render(<ExecutionOverview onAuthExpired={() => {}} />)
-    await waitFor(() => expect(refreshButton()).toBeEnabled())
+    await waitFor(() => expect(refreshButton()).toHaveAttribute('aria-disabled', 'false'))
     failed = true
     fireEvent.click(refreshButton())
     await screen.findByText(/创建分布读取失败/)
@@ -90,7 +91,7 @@ describe('ExecutionOverview', () => {
     await waitFor(() => expect(expired).toHaveBeenCalledTimes(1))
     expect(count('保留执行总数')).toHaveTextContent('—')
     expect(screen.getByText('样本未知，请刷新重试。')).toBeInTheDocument()
-    expect(refreshButton()).toBeEnabled()
+    expect(refreshButton()).toHaveAttribute('aria-disabled', 'false')
     expect(screen.queryByText(/暂无执行样本/)).not.toBeInTheDocument()
   })
   it('5秒刷新、操作事件、在途去重和卸载清理；不累积轮询历史', async () => {
@@ -114,6 +115,53 @@ describe('ExecutionOverview', () => {
     await act(async () => { vi.advanceTimersByTime(10_000); refreshConsole() })
     expect(list).toHaveBeenCalledTimes(12)
   })
+  it('Enter手动刷新自然保留焦点，忙态可聚焦但重复Enter和空格不增加请求', async () => {
+    const user = userEvent.setup()
+    const list = vi.spyOn(api, 'listExecutions').mockResolvedValue(response(2))
+    render(<ExecutionOverview onAuthExpired={() => {}} />)
+    await waitFor(() => expect(refreshButton()).toHaveAttribute('aria-disabled', 'false'))
+    const resolvers: Array<(value: ReturnType<typeof response>) => void> = []
+    list.mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve) }))
+    refreshButton().focus()
+    await user.keyboard('{Enter}')
+    expect(list).toHaveBeenCalledTimes(8)
+    expect(refreshButton()).not.toBeDisabled()
+    expect(refreshButton()).toHaveAttribute('aria-disabled', 'true')
+    expect(refreshButton()).toHaveFocus()
+    await user.keyboard('{Enter} ')
+    expect(list).toHaveBeenCalledTimes(8)
+    await act(async () => { resolvers.forEach((resolve) => resolve(response(3))) })
+    expect(refreshButton()).toHaveAttribute('aria-disabled', 'false')
+    expect(refreshButton()).toHaveFocus()
+  })
+  it('自动5秒刷新前后保留原焦点，用户转移到其他控件后不被抢回', async () => {
+    vi.useFakeTimers()
+    const list = vi.spyOn(api, 'listExecutions').mockResolvedValue(response(2))
+    render(<><ExecutionOverview onAuthExpired={() => {}} /><input aria-label="其他控件" /></>)
+    await act(async () => {})
+    const resolvers: Array<(value: ReturnType<typeof response>) => void> = []
+    list.mockImplementation(() => new Promise((resolve) => { resolvers.push(resolve) }))
+    refreshButton().focus()
+    await act(async () => { vi.advanceTimersByTime(5000) })
+    expect(list).toHaveBeenCalledTimes(8)
+    expect(refreshButton()).not.toBeDisabled()
+    expect(refreshButton()).toHaveAttribute('aria-disabled', 'true')
+    expect(refreshButton()).toHaveFocus()
+    await act(async () => { resolvers.splice(0).forEach((resolve) => resolve(response(3))) })
+    expect(refreshButton()).toHaveAttribute('aria-disabled', 'false')
+    expect(refreshButton()).toHaveFocus()
+    await act(async () => { vi.advanceTimersByTime(5000) })
+    expect(list).toHaveBeenCalledTimes(12)
+    const other = screen.getByRole('textbox', { name: '其他控件' })
+    other.focus()
+    await act(async () => { resolvers.splice(0).forEach((resolve) => resolve(response(4))) })
+    expect(other).toHaveFocus()
+    await act(async () => { vi.advanceTimersByTime(5000) })
+    expect(list).toHaveBeenCalledTimes(16)
+    expect(other).toHaveFocus()
+    await act(async () => { resolvers.splice(0).forEach((resolve) => resolve(response(5))) })
+    expect(other).toHaveFocus()
+  })
   it('StrictMode旧请求迟到不覆盖新挂载结果或触发旧401', async () => {
     const expired = vi.fn()
     const rejectOld: Array<(error: unknown) => void> = []
@@ -121,7 +169,7 @@ describe('ExecutionOverview', () => {
     vi.spyOn(api, 'listExecutions').mockImplementation(() => ++calls <= 4
       ? new Promise((_, reject) => { rejectOld.push(reject) }) : Promise.resolve(response(3)))
     render(<StrictMode><ExecutionOverview onAuthExpired={expired} /></StrictMode>)
-    await waitFor(() => expect(refreshButton()).toBeEnabled())
+    await waitFor(() => expect(refreshButton()).toHaveAttribute('aria-disabled', 'false'))
     await act(async () => { rejectOld.forEach((reject) => reject(new ApiError(401, 'unauthorized', []))) })
     expect(count('保留执行总数')).toHaveTextContent('3条')
     expect(expired).not.toHaveBeenCalled()

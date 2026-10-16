@@ -47,6 +47,62 @@ async function overviewContrast(page: Page) {
   })
 }
 
+async function overviewRefreshFocus(page: Page, outputPath: (name: string) => string, theme: string, width: number) {
+  const overview = page.getByRole('region', { name: '执行总览', exact: true })
+  const refresh = overview.getByRole('button', { name: '刷新执行总览' })
+  const nameInput = page.getByRole('region', { name: '执行列表', exact: true }).getByLabel('按名称', { exact: true })
+  type Reading = { at: string; busy: string | null; nativeDisabled: boolean; ariaDisabled: string | null; active: string }
+  type Probe = { events: Reading[]; observer: MutationObserver; read: () => Reading }
+  const phases = []
+  for (const phase of ['manual-enter', 'automatic', 'automatic-after-user-move']) {
+    await expect(refresh).toHaveAttribute('aria-disabled', 'false')
+    const target = phase === 'automatic-after-user-move' ? nameInput : refresh
+    if (phase === 'automatic-after-user-move') await nameInput.click()
+    else await refresh.focus()
+    await expect(target).toBeFocused()
+    const before = await overview.evaluate((element) => {
+      const button = element.querySelector<HTMLButtonElement>('[aria-label="刷新执行总览"]')!
+      const input = document.querySelector<HTMLInputElement>('.exec-list input')!
+      const read = () => ({ at: new Date().toISOString(), busy: element.getAttribute('aria-busy'), nativeDisabled: button.disabled, ariaDisabled: button.getAttribute('aria-disabled'), active: document.activeElement === button ? 'refresh' : document.activeElement === input ? 'name-input' : document.activeElement?.tagName ?? 'null' })
+      const events = [read()]
+      const observer = new MutationObserver(() => events.push(read()))
+      observer.observe(element, { attributes: true, attributeFilter: ['aria-busy'] })
+      Object.assign(element, { __uxf1cFocusProbe: { events, observer, read } })
+      return events[0]
+    })
+    let response: { url: string; status: number } | undefined
+    let recorded!: { events: Reading[]; after: Reading }
+    try {
+      const read = page.waitForResponse((response) => {
+        const url = new URL(response.url())
+        return response.request().method() === 'GET' && url.pathname === '/api/v1/executions' && url.searchParams.get('limit') === '100' && url.searchParams.get('offset') === '0' && !url.searchParams.has('status')
+      }, { timeout: 12_000 })
+      if (phase === 'manual-enter') await page.keyboard.press('Enter')
+      const actual = await read
+      response = { url: actual.url(), status: actual.status() }
+      expect(actual.ok()).toBe(true)
+      await expect(refresh).toHaveAttribute('aria-disabled', 'false')
+    } finally {
+      recorded = await overview.evaluate((element) => {
+        const probe = (element as HTMLElement & { __uxf1cFocusProbe: Probe }).__uxf1cFocusProbe
+        probe.observer.disconnect()
+        return { events: probe.events, after: probe.read() }
+      })
+      await writeFile(outputPath(`overview-refresh-focus-${theme}-${width}-${phase}.json`), JSON.stringify({ width, theme, phase, before, response, ...recorded }, null, 2))
+    }
+    const expected = phase === 'automatic-after-user-move' ? 'name-input' : 'refresh'
+    await expect(target).toBeFocused()
+    expect(recorded.events.some((event) => event.busy === 'true')).toBe(true)
+    for (const reading of [before, ...recorded.events, recorded.after]) {
+      expect(reading.active).toBe(expected)
+      expect(reading.nativeDisabled).toBe(false)
+      expect(reading.ariaDisabled).toBe(reading.busy)
+    }
+    phases.push({ phase, before, response, ...recorded })
+  }
+  return phases
+}
+
 test('执行总览：当前租户真实总数、最近100条创建分布、筛选独立与双主题键盘', async ({ page, request }, info) => {
   test.setTimeout(180_000)
   const auth = await request.post('/api/v1/auth/login', { data: AUTHOR })
@@ -83,7 +139,7 @@ test('执行总览：当前租户真实总数、最近100条创建分布、筛�
   await page.getByTestId(TID.navExecutions).click()
   const overview = page.getByRole('region', { name: '执行总览', exact: true })
   const refresh = overview.getByRole('button', { name: '刷新执行总览' })
-  await expect(refresh).toBeEnabled()
+  await expect(refresh).toHaveAttribute('aria-disabled', 'false')
   const reads = ['', 'RUNNING', 'WAITING_APPROVAL', 'FAILED'].map((status) => page.waitForResponse((response) => {
     const url = new URL(response.url())
     return url.pathname === '/api/v1/executions' && url.searchParams.get('limit') === (status === '' ? '100' : '1') && (url.searchParams.get('status') ?? '') === status
@@ -109,7 +165,7 @@ test('执行总览：当前租户真实总数、最近100条创建分布、筛�
     await page.setViewportSize({ width, height: 1000 })
     await page.getByTestId(tid.themeOption(theme)).click()
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
-    await expect(refresh).toBeEnabled()
+    await expect(refresh).toHaveAttribute('aria-disabled', 'false')
     await refresh.focus()
     await page.keyboard.press('Tab')
     await page.keyboard.press('Shift+Tab')
@@ -166,7 +222,8 @@ test('执行总览：当前租户真实总数、最近100条创建分布、筛�
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true)
     expect((await list.boundingBox())!.width).toBeGreaterThan(620)
     await page.screenshot({ path: info.outputPath(`overview-${theme}-${width}.png`), fullPage: true })
-    const measurement = { width, theme, contrast, paintedFocus: [0, 1].map((y) => [...focus.data.subarray((y * focus.width + Math.floor(focus.width / 2)) * 4, (y * focus.width + Math.floor(focus.width / 2)) * 4 + 3)]), paintedBar, chartGeometry, axisEvidence, buckets: await overview.locator('.exec-overview-buckets tbody tr').allTextContents(), dom: await overview.evaluate((element) => element.outerHTML) }
+    const refreshFocus = await overviewRefreshFocus(page, (name) => info.outputPath(name), theme, width)
+    const measurement = { width, theme, contrast, paintedFocus: [0, 1].map((y) => [...focus.data.subarray((y * focus.width + Math.floor(focus.width / 2)) * 4, (y * focus.width + Math.floor(focus.width / 2)) * 4 + 3)]), paintedBar, chartGeometry, axisEvidence, refreshFocus, buckets: await overview.locator('.exec-overview-buckets tbody tr').allTextContents(), dom: await overview.evaluate((element) => element.outerHTML) }
     await writeFile(info.outputPath(`overview-measure-${theme}-${width}.json`), JSON.stringify(measurement, null, 2))
     matrix.push(measurement)
   }

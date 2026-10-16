@@ -78,7 +78,7 @@ export function ExecutionOverview({ onAuthExpired }: { onAuthExpired: () => void
     <section className="exec-overview" aria-label="执行总览" aria-busy={refreshing}>
       <header className="exec-overview-head">
         <div><h2>执行总览</h2><p>当前租户 · 全部工作流 · 不受列表筛选影响</p></div>
-        <div className="exec-overview-refresh"><span>每 5 秒自动刷新</span><Button size="sm" variant="quiet" icon={RefreshCw} disabled={refreshing} onClick={() => void refresh()} aria-label="刷新执行总览">{refreshing ? '正在刷新…' : '刷新'}</Button></div>
+        <div className="exec-overview-refresh"><span>每 5 秒自动刷新</span><Button size="sm" variant="quiet" icon={RefreshCw} aria-disabled={refreshing} onClick={() => void refresh()} aria-label="刷新执行总览">{refreshing ? '正在刷新…' : '刷新'}</Button></div>
       </header>
       <div className="exec-overview-body">
         <dl className="exec-overview-metrics" aria-label="当前租户执行状态计数">
