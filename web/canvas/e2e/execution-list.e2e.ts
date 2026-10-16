@@ -1,7 +1,13 @@
 // UX-F1-d:真实 API 状态/name 过滤与列表键盘选择;视觉矩阵只覆盖执行列表。
 // 不以当前页推算状态计数,审批节点不调用模型。
 import { expect, test, type APIRequestContext, type Page } from '@playwright/test'
+import { createRequire } from 'node:module'
+// 使用已钉版 Playwright 随包导出的 PNG 解码器,不增依赖;核实实绘焦点像素。
 import { TID, tid } from '../src/ui/testids.ts'
+
+const { PNG } = createRequire(import.meta.url)('playwright-core/lib/utilsBundle') as {
+  PNG: { sync: { read: (buffer: Buffer) => { data: Uint8Array; width: number } } }
+}
 
 const AUTHOR = { username: 'author', password: 'e2e-author-pass-1' }
 
@@ -62,16 +68,33 @@ async function listContrast(page: Page) {
       const a = luminance(over(foreground, background)), b = luminance(background)
       return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05)
     }
-    const selectors = '.exec-list .tab, .exec-list .field-label, .exec-list .field-hint, .exec-list .input, .exec-table th, .exec-table .exec-row-id, .exec-row-name > span, .exec-table .chip, .exec-table time, .exec-table-hint'
-    return Array.from(document.querySelectorAll<HTMLElement>(selectors)).map((element) => {
+    const backgroundOf = (element: Element) => {
       const ancestors: Element[] = []
       for (let at: Element | null = element; at !== null; at = at.parentElement) ancestors.unshift(at)
-      const background = ancestors.reduce((base, at) => [...over(rgba(getComputedStyle(at).backgroundColor), base), 1], [255, 255, 255, 1])
+      return ancestors.reduce((base, at) => [...over(rgba(getComputedStyle(at).backgroundColor), base), 1], [255, 255, 255, 1])
+    }
+    const selectors = '.exec-list .tab, .exec-list .field-label, .exec-list .field-hint, .exec-list .input, .exec-table th, .exec-table .exec-row-id, .exec-row-name > span, .exec-table .chip, .exec-table .num, .exec-table .text-ink-3, .exec-table-hint, .exec-selection-mark svg'
+    const samples = Array.from(document.querySelectorAll<HTMLElement>(selectors)).map((element) => {
+      const background = backgroundOf(element)
       const style = getComputedStyle(element)
-      const samples = [{ kind: 'text', ratio: contrast(rgba(style.color), background) }]
-      if (element instanceof HTMLInputElement) samples.push({ kind: 'placeholder', ratio: contrast(rgba(getComputedStyle(element, '::placeholder').color), background) })
+      const samples = [{ kind: element.tagName.toLowerCase() === 'svg' ? 'graphic' : 'text', minimum: element.tagName.toLowerCase() === 'svg' ? 3 : 4.5, ratio: contrast(rgba(style.color), background) }]
+      if (element instanceof HTMLInputElement) samples.push({ kind: 'placeholder', minimum: 4.5, ratio: contrast(rgba(getComputedStyle(element, '::placeholder').color), background) })
       return { tag: element.tagName, text: element.textContent?.slice(0, 60), samples }
     })
+    const active = document.activeElement
+    let focus = null
+    if (active instanceof HTMLElement && active.closest('.exec-status-tabs') !== null && active.matches(':focus-visible')) {
+      const style = getComputedStyle(active), background = backgroundOf(active)
+      focus = { style: style.outlineStyle, width: style.outlineWidth, offset: style.outlineOffset, ratio: contrast(rgba(style.outlineColor), background), rgb: over(rgba(style.outlineColor), background) }
+    }
+    return { samples, focus }
+  })
+}
+
+async function settle(page: Page) {
+  await page.evaluate(async () => {
+    await document.fonts.ready
+    await Promise.all(document.getAnimations().filter((animation) => animation.effect?.getTiming().iterations !== Infinity).map((animation) => animation.finished.catch(() => null)))
   })
 }
 
@@ -115,14 +138,28 @@ test('执行列表:真实状态tab/精确name、双主题密表、窄窗与键�
     for (const theme of ['dark', 'light'] as const) {
       await page.getByTestId(tid.themeOption(theme)).click()
       await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
-      await page.evaluate(() => document.fonts.ready)
+      await settle(page)
       await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+      const all = list.getByRole('tab', { name: '全部执行' })
+      await all.focus()
+      await page.keyboard.press('Home') // 真实键盘进入 focus-visible,仍停在全部执行。
+      await expect(all).toBeFocused()
+      await settle(page)
       const contrast = await listContrast(page)
-      for (const sample of contrast) for (const value of sample.samples) expect(value.ratio, `${width}/${theme}/${sample.text}/${value.kind}`).toBeGreaterThanOrEqual(4.5)
+      for (const sample of contrast.samples) for (const value of sample.samples) expect(value.ratio, `${width}/${theme}/${sample.text}/${value.kind}`).toBeGreaterThanOrEqual(value.minimum)
+      expect(contrast.focus).not.toBeNull()
+      expect(contrast.focus!.style).toBe('solid')
+      expect(contrast.focus!.width).toBe('2px')
+      expect(contrast.focus!.offset).toBe('-2px')
+      expect(contrast.focus!.ratio).toBeGreaterThanOrEqual(3)
+      const tabImage = PNG.sync.read(await all.screenshot({ path: info.outputPath(`execution-tab-focus-${theme}-${width}.png`) }))
+      // 顶部两像素应实际画出内侧环;仅有底部选中下划线不能通过。
+      const painted = [0, 1].map((y) => Array.from(tabImage.data.subarray((y * tabImage.width + Math.floor(tabImage.width / 2)) * 4, (y * tabImage.width + Math.floor(tabImage.width / 2)) * 4 + 3)))
+      for (const pixel of painted) for (let channel = 0; channel < 3; channel++) expect(Math.abs(pixel[channel] - contrast.focus!.rgb[channel])).toBeLessThanOrEqual(3)
       const geometry = await list.boundingBox()
       expect(geometry!.width).toBeGreaterThan(620)
       await page.screenshot({ path: info.outputPath(`execution-list-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
-      matrix.push({ width, theme, geometry, contrast })
+      matrix.push({ width, theme, geometry, contrast, tabPainted: painted })
     }
   }
   await page.setViewportSize({ width: 1440, height: 1000 })
@@ -135,6 +172,20 @@ test('执行列表:真实状态tab/精确name、双主题密表、窄窗与键�
   await expect(row).toHaveAttribute('aria-selected', 'true')
   await expect(page.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'WAITING_APPROVAL')
   await expect(page.getByTestId(TID.execDetail)).toBeVisible()
-  await page.screenshot({ path: info.outputPath('execution-list-selected-dark-1440.png'), fullPage: true, animations: 'disabled' })
-  await info.attach('execution-list-real-evidence', { body: JSON.stringify({ name, ids, matrix }), contentType: 'application/json' })
+  const selectedMatrix: unknown[] = []
+  for (const width of [1440, 1024]) {
+    await page.setViewportSize({ width, height: 1000 })
+    for (const theme of ['dark', 'light'] as const) {
+      await page.getByTestId(tid.themeOption(theme)).click()
+      await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
+      await settle(page)
+      await expect(row).toHaveAttribute('aria-selected', 'true')
+      const contrast = await listContrast(page)
+      for (const sample of contrast.samples) for (const value of sample.samples) expect(value.ratio, `selected/${width}/${theme}/${sample.text}/${value.kind}`).toBeGreaterThanOrEqual(value.minimum)
+      await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+      await page.screenshot({ path: info.outputPath(`execution-list-selected-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
+      selectedMatrix.push({ width, theme, contrast })
+    }
+  }
+  await info.attach('execution-list-real-evidence', { body: JSON.stringify({ name, ids, matrix, selectedMatrix }), contentType: 'application/json' })
 })
