@@ -8,7 +8,7 @@
 // 刷新与深链天然一致,组件不持有第二份选中真源。筛选是**服务端**过滤
 // (api.listExecutions 既有 status/name/limit/offset 参数,零新端点),
 // 换筛选 = 重置 offset 重拉。401 统一上抛 App 登出。
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, FilterX, Inbox, Play, RefreshCw, TriangleAlert, X } from 'lucide-react'
 import { ApiError, api, type DraftSummary, type ExecutionSummary } from './api.ts'
 import { ExecutionDetail } from './ExecutionDetail.tsx'
@@ -18,6 +18,7 @@ import { EXEC_STATUS } from './ui/status.ts'
 import { TID, tid } from './ui/testids.ts'
 import { Duration, Timestamp } from './ui/time.tsx'
 import type { DslInput } from './model/dsl.ts'
+import { apiErrorText } from './ui/errors.ts'
 
 type InputContract = { definitionId: string; inputs: DslInput[]; error?: string }
 const INPUT_EXAMPLES: Record<string, unknown> = { string: '示例', number: 0, boolean: false, object: {}, array: [] }
@@ -56,6 +57,11 @@ export function ExecutionsView({
 }) {
   const [execs, setExecs] = useState<ExecutionSummary[]>([])
   const [defs, setDefs] = useState<DraftSummary[]>([])
+  const [listLoading, setListLoading] = useState(true)
+  const [listError, setListError] = useState('')
+  const [defsLoading, setDefsLoading] = useState(true)
+  const [defsError, setDefsError] = useState('')
+  const listSeq = useRef(0)
   const [selectedDef, setSelectedDef] = useState<DraftSummary | null>(null)
   // 初次只列每个工作流的最高已发布版本。选择后保留其快照,列表刷新发现
   // 新版/归档也不替换执行目标;旧选择保留在选项中,新版须主动重新选择。
@@ -118,33 +124,46 @@ export function ExecutionsView({
   }, [nameInput])
 
   const refresh = useCallback(async () => {
-    try {
-      const [ex, df] = await Promise.all([
-        api.listExecutions({ status, name: nameQuery, limit: PAGE_SIZE, offset }),
-        api.listPublished(),
-      ])
-      const items = Array.isArray(ex.items) ? ex.items : []
-      setExecs(items)
-      // page 是既有契约;缺字段时退化成"本页条数",不编总数。
-      setTotal(typeof ex.page?.total === 'number' ? ex.page.total : items.length)
-      setDefs(Array.isArray(df.items) ? df.items : [])
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 401) onAuthExpired()
-    }
+    const seq = ++listSeq.current
+    setListLoading(true)
+    setDefsLoading(true)
+    setListError('')
+    setDefsError('')
+    // 两个资源各自呈现结果；定义读取失败不能把已读到的执行装成空表。
+    await Promise.all([
+      api.listExecutions({ status, name: nameQuery, limit: PAGE_SIZE, offset }).then((ex) => {
+        if (seq !== listSeq.current) return
+        const items = Array.isArray(ex.items) ? ex.items : []
+        setExecs(items)
+        setTotal(typeof ex.page?.total === 'number' ? ex.page.total : items.length)
+      }).catch((err: unknown) => {
+        if (seq !== listSeq.current) return
+        if (err instanceof ApiError && err.status === 401) onAuthExpired()
+        else setListError(apiErrorText(err))
+      }).finally(() => { if (seq === listSeq.current) setListLoading(false) }),
+      api.listPublished().then((df) => {
+        if (seq === listSeq.current) setDefs(Array.isArray(df.items) ? df.items : [])
+      }).catch((err: unknown) => {
+        if (seq !== listSeq.current) return
+        if (err instanceof ApiError && err.status === 401) onAuthExpired()
+        else setDefsError(apiErrorText(err))
+      }).finally(() => { if (seq === listSeq.current) setDefsLoading(false) }),
+    ])
   }, [onAuthExpired, status, nameQuery, offset])
 
   useEffect(() => {
     void refresh()
+    return () => { listSeq.current++ }
   }, [refresh])
 
   // 筛选是一块"盯盘切片":带筛选时即使当前页没有活执行也保持自刷新
   // (否则筛 FAILED 时新失败永远不冒出来)。
   const hasLive = execs.some((e) => LIVE_STATUSES.includes(e.status))
   useEffect(() => {
-    if (!hasLive && !filtered) return
+    if (listLoading || defsLoading || listError !== '' || (!hasLive && !filtered)) return
     const t = window.setInterval(() => void refresh(), LIVE_LIST_MS)
     return () => window.clearInterval(t)
-  }, [hasLive, filtered, refresh])
+  }, [hasLive, filtered, listLoading, defsLoading, listError, refresh])
 
   /** 换筛选 = 回第一页(offset 是"上一次结果"的位置,不重置会读出空洞)。 */
   const changeFilter = useCallback((apply: () => void) => {
@@ -195,7 +214,7 @@ export function ExecutionsView({
         const reason = err.status === 409 ? '已归档或不可执行' : '已失效或不存在'
         setApiError(`所选版本 ${target} ${reason}，请刷新后重新选择 (${err.code})`)
       } else {
-        setApiError(err instanceof ApiError ? err.code : 'network_error')
+        setApiError(apiErrorText(err))
       }
     } finally {
       setBusy(false)
@@ -214,7 +233,7 @@ export function ExecutionsView({
             <Select
               label="已发布工作流"
               value={selectedDef?.id ?? ''}
-              disabled={busy}
+              disabled={busy || defsLoading || defsError !== ''}
               data-testid={TID.triggerDefinition}
               hint={selectedDef === null ? '按所选版本执行；发布新版本不会替换当前选择' : selectedDef.version === null ? '该版本无有效版本号，请刷新后重新选择' : `执行目标：${selectedDef.name} v${selectedDef.version}`}
               onChange={(id) => {
@@ -275,28 +294,34 @@ export function ExecutionsView({
                 variant="primary"
                 icon={Play}
                 data-testid={TID.triggerSubmit}
-                disabled={selectedDef === null || selectedDef.version === null || busy || !contractReady}
+                disabled={selectedDef === null || selectedDef.version === null || busy || !contractReady || defsLoading || defsError !== ''}
                 onClick={() => void trigger()}
               >
                 {busy ? '正在触发…' : '触发执行'}
               </Button>
               {selectedDef === null && defs.length > 0 ? <span className="text-xs text-ink-2">先选一个已发布工作流</span> : null}
             </div>
-            {defs.length === 0 ? (
+            {defsLoading ? <p className="field-hint" role="status">正在读取已发布工作流…</p> : null}
+            {defsError !== '' ? (
+              <Alert tone="error" icon={TriangleAlert}>
+                <div><strong>已发布工作流读取失败</strong><p>{defsError}</p><Button size="sm" onClick={() => void refresh()}>重试已发布工作流</Button></div>
+              </Alert>
+            ) : null}
+            {defs.length === 0 && !defsLoading && defsError === '' ? (
               <p className="field-hint">尚无已发布工作流，请先在工作流页发布一版，再回到这里触发。</p>
             ) : null}
             {apiError !== '' ? (
               <Alert tone="error" icon={TriangleAlert}>
-                触发失败:<code className="mono ml-1">{apiError}</code>
+                触发失败：{apiError}
               </Alert>
             ) : null}
           </div>
         </section>
 
-        <section className="panel">
+        <section className="panel" aria-label="执行列表" aria-busy={listLoading}>
           <PanelHead
             title="执行"
-            sub={`${execs.length}${total !== execs.length ? ` / ${total}` : ''} 条`}
+            sub={listLoading ? '加载中…' : listError !== '' ? '读取失败' : `${execs.length}${total !== execs.length ? ` / ${total}` : ''} 条`}
             actions={
               <Button
                 variant="quiet"
@@ -304,6 +329,7 @@ export function ExecutionsView({
                 iconOnly
                 icon={RefreshCw}
                 aria-label="刷新执行列表"
+                disabled={listLoading}
                 onClick={() => void refresh()}
               />
             }
@@ -326,7 +352,8 @@ export function ExecutionsView({
               </Select>
               <TextInput
                 label="按名称"
-                placeholder="工作流名称"
+                placeholder="完整工作流名称"
+                hint="精确匹配，须输入完整名称"
                 value={nameInput}
                 onChange={(e) => changeFilter(() => setNameInput(e.target.value))}
               />
@@ -338,7 +365,11 @@ export function ExecutionsView({
               ) : null}
             </div>
           ) : null}
-          {execs.length === 0 ? (
+          {listLoading ? <p className="panel-body text-sm text-ink-2" role="status">正在加载执行列表…</p> : listError !== '' ? (
+            <Alert tone="error" icon={TriangleAlert}>
+              <div><strong>执行列表读取失败</strong><p>{listError}</p><Button size="sm" onClick={() => void refresh()}>重试执行列表</Button></div>
+            </Alert>
+          ) : execs.length === 0 ? (
             <div data-testid={TID.execEmpty}>
               {filtered ? (
                 <EmptyState
@@ -433,7 +464,7 @@ export function ExecutionsView({
       </aside>
 
       {selectedId !== null ? (
-        <ExecutionDetail key={selectedId} execId={selectedId} onAuthExpired={onAuthExpired} />
+        <ExecutionDetail key={selectedId} execId={selectedId} onAuthExpired={onAuthExpired} onBack={() => onSelect(null)} />
       ) : (
         <main className="exec-empty-main">
           <EmptyState

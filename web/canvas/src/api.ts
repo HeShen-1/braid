@@ -16,9 +16,10 @@ export class ApiError extends Error {
   status: number
   code: string
   issues: Issue[]
-  /** 回滚 409 族(not_rollbackable/blocked_inflight/too_large)携带的补充说明。 */
+  /** 回滚/续跑 not_rollbackable/rollback_blocked_inflight/rollback_too_large/
+   * bad_node_id，以及取消 not_cancellable/cancel_too_large 携带的补充说明。 */
   detail?: string
-  /** blocked_inflight 的行清单("node_id:instance_no")。 */
+  /** rollback_blocked_inflight 的行清单("node_id:instance_no")。 */
   blocked?: string[]
 
   constructor(status: number, code: string, issues: Issue[], detail?: string, blocked?: string[]) {
@@ -400,7 +401,7 @@ export const api = {
   },
   rollbackExecution(id: string, nodeId: string, quiesce = false): Promise<RollbackAck> {
     // T19.6:quiesce=true → EXECUTING/WA 残留同事务楔停(缺省 false = 服务端
-    // 409 blocked_inflight 等后台收敛,等待保值语义)。
+    // 409 rollback_blocked_inflight 等后台收敛,等待保值语义)。
     return call(
       'POST',
       `/api/v1/executions/${id}/rollback`,
@@ -408,11 +409,13 @@ export const api = {
     )
   },
   resumeExecution(id: string, quiesce = false): Promise<RollbackAck> {
+    // 与回滚共用拒绝族，另有 400 no_resume_target；无单独 resume 状态。
     return quiesce
       ? call('POST', `/api/v1/executions/${id}/resume`, JSON.stringify({ quiesce: true }))
       : call('POST', `/api/v1/executions/${id}/resume`)
   },
   cancelExecution(id: string): Promise<CancelAck> {
+    // 409 not_cancellable/cancel_too_large；404 not_found；并发败者 conflict。
     return call('POST', `/api/v1/executions/${id}/cancel`)
   },
   getApproval(executionId: string, nodeId: string): Promise<ApprovalDetail> {

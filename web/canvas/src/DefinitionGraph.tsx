@@ -20,6 +20,7 @@ import { toCanvas } from './model/convert.ts'
 import type { WorkflowDoc } from './model/dsl.ts'
 import { nodeTypes } from './nodes/NodeViews.tsx'
 import { Alert, Button, PanelHead, Skeleton } from './ui/primitives.tsx'
+import { apiErrorText, errorCodeText } from './ui/errors.ts'
 
 export function DefinitionGraph({
   name,
@@ -49,7 +50,7 @@ export function DefinitionGraph({
         // 契约上 dsl 必在场;读回缺字段时按失败处理,不装死骨架。
         const loaded = d.dsl as WorkflowDoc | null | undefined
         if (loaded === null || loaded === undefined) {
-          setError('definition_empty')
+          setError(errorCodeText('definition_empty'))
           return
         }
         setDoc(loaded)
@@ -61,7 +62,7 @@ export function DefinitionGraph({
           onAuthExpired()
           return
         }
-        setError(err instanceof ApiError ? err.code : 'network_error')
+        setError(apiErrorText(err))
       })
     return () => {
       cancelled = true
@@ -131,7 +132,7 @@ export function DefinitionGraph({
                   </Button>
                 }
               >
-                定义版本图加载失败:<code className="mono ml-1">{error}</code>
+                定义版本图加载失败：{error}
               </Alert>
             ) : null}
             {doc === null && error === '' ? <Skeleton height={200} /> : null}

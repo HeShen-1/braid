@@ -14,7 +14,7 @@ import { ConfirmLayer } from '../ui/confirm.tsx'
 import type { WorkflowDoc } from '../model/dsl.ts'
 
 export function WorkflowsRoute() {
-  const { drafts, loading, ws, dirty, issues, flash, editorKey, open, newLocal, onDocChange, save, publish } = useWorkflow()
+  const { drafts, loading, listError, refresh, ws, dirty, issues, flash, editorKey, open, newLocal, onDocChange, save, publish } = useWorkflow()
   const params = useParams()
   const navigate = useNavigate()
   const urlId = params.draftId
@@ -74,10 +74,14 @@ export function WorkflowsRoute() {
         activeId={ws?.draftId ?? null}
         onOpen={(id) => void navigate(`/workflows/${id}`)}
         onNew={onNew}
+        loading={loading}
+        error={listError}
+        onRetry={() => void refresh()}
       />
 
       {ws === null ? (
         <div className="flex min-h-0 flex-1 flex-col">
+          <IssuesPanel issues={issues} />
           {/* 列表态成功条(F04):ws 关闭后编辑器不在了,反馈不能跟着走。
               flash 只在发布成功路径上与 ws===null 同帧出现(打开/新建/关闭
               都会清 flash),所以这条等价于「发布成功条」。 */}
@@ -104,6 +108,9 @@ export function WorkflowsRoute() {
                 <Skeleton width={420} height={12} />
                 <Skeleton width={360} height={12} />
               </div>
+            ) : listError !== '' ? (
+              <EmptyState icon={Workflow} title="工作流列表尚未读取成功" hint={listError}
+                action={<Button onClick={() => void refresh()}>重新读取工作流列表</Button>} />
             ) : (
               <EmptyState
                 icon={Workflow}

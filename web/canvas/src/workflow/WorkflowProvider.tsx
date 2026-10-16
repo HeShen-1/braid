@@ -7,6 +7,7 @@ import { useAuth } from '../auth.tsx'
 import { blankDoc } from '../defaults.ts'
 import { fromCanvas, serializeDoc, toCanvas } from '../model/convert.ts'
 import type { WorkflowDoc } from '../model/dsl.ts'
+import { apiErrorText } from '../ui/errors.ts'
 
 interface Workspace {
   key: number
@@ -28,6 +29,7 @@ function isDirty(ws: Workspace | null): boolean {
 interface WorkflowValue {
   drafts: DraftSummary[]
   loading: boolean
+  listError: string
   ws: Workspace | null
   dirty: boolean
   issues: Issue[]
@@ -51,7 +53,9 @@ const Ctx = createContext<WorkflowValue | null>(null)
 export function WorkflowProvider({ children }: { children: ReactNode }) {
   const { user, logout } = useAuth()
   const [drafts, setDrafts] = useState<DraftSummary[]>([])
-  const [loading, setLoading] = useState(false)
+  const [loading, setLoading] = useState(true)
+  const [listError, setListError] = useState('')
+  const listSeq = useRef(0)
   const [ws, setWs] = useState<Workspace | null>(null)
   const [issues, setIssues] = useState<Issue[]>([])
   const [flash, setFlash] = useState('')
@@ -95,20 +99,29 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
   )
 
   const refresh = useCallback(async () => {
+    const seq = ++listSeq.current
     setLoading(true)
+    setListError('')
     try {
       const { items } = await api.listDrafts()
+      if (seq !== listSeq.current) return
       setDrafts(items)
     } catch (err) {
-      if (!guard(err)) setDrafts([])
+      if (seq !== listSeq.current) return
+      if (!guard(err)) setListError(apiErrorText(err))
     } finally {
-      setLoading(false)
+      if (seq === listSeq.current) setLoading(false)
     }
   }, [guard])
 
   useEffect(() => {
     if (user !== null) void refresh()
-    else setDrafts([])
+    else {
+      listSeq.current++
+      setDrafts([])
+      setListError('')
+      setLoading(false)
+    }
   }, [user, refresh])
 
   const open = useCallback(
@@ -133,7 +146,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
         return true
       } catch (err) {
         if (guard(err) || seq !== openSeq.current) return false
-        setIssues([{ code: 'network_error', detail: '打开工作流失败，请稍后重试。' }])
+        setIssues([{ code: err instanceof ApiError ? err.code : 'network_error', detail: apiErrorText(err) }])
         return false
       }
     },
@@ -192,7 +205,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
         if (guard(err) || wsRef.current?.key !== cur.key) return null
         if (snapshot(wsRef.current.doc) !== saved) return null
         if (err instanceof ApiError) {
-          setIssues(err.issues.length > 0 ? err.issues : [{ code: err.code, detail: err.code }])
+          setIssues(err.issues.length > 0 ? err.issues : [{ code: err.code, detail: apiErrorText(err) }])
         } else {
           setIssues([{ code: 'network_error', detail: '网络异常，保存未完成。' }])
         }
@@ -256,7 +269,7 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
         return false
       }
       if (err instanceof ApiError) {
-        setIssues(err.issues.length > 0 ? err.issues : [{ code: err.code, detail: err.code }])
+        setIssues(err.issues.length > 0 ? err.issues : [{ code: err.code, detail: apiErrorText(err) }])
       } else {
         setIssues([{ code: 'network_error', detail: '网络异常，发布未完成。' }])
       }
@@ -268,8 +281,8 @@ export function WorkflowProvider({ children }: { children: ReactNode }) {
   }, [guard, refresh, saveDoc, setWorkspace])
 
   const value = useMemo<WorkflowValue>(
-    () => ({ drafts, loading, ws, dirty, issues, flash, setFlash, editorKey, refresh, open, newLocal, close, shouldConfirmLeave, onDocChange, save, publish }),
-    [drafts, loading, ws, dirty, issues, flash, editorKey, refresh, open, newLocal, close, shouldConfirmLeave, onDocChange, save, publish],
+    () => ({ drafts, loading, listError, ws, dirty, issues, flash, setFlash, editorKey, refresh, open, newLocal, close, shouldConfirmLeave, onDocChange, save, publish }),
+    [drafts, loading, listError, ws, dirty, issues, flash, editorKey, refresh, open, newLocal, close, shouldConfirmLeave, onDocChange, save, publish],
   )
 
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>

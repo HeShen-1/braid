@@ -2,7 +2,7 @@
 // 创建)受控选中(onSelect 由路由承载)、服务端筛选(状态 + 工作流名,换筛选
 // 重置 offset)、翻页、筛选专属空态与清除出口、触发面板(定义下拉 + JSON
 // 输入 + 幂等键头 + 就地校验)、401 上抛。fetch 全 stub 按 URL 路由。
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent, { type UserEvent } from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { ExecutionsView } from './ExecutionsView.tsx'
@@ -94,6 +94,65 @@ afterEach(() => {
 })
 
 describe('ExecutionsView(执行面)', () => {
+  it('首帧、翻页与名称筛选等待期间显示加载，不把未返回的数据称为空', async () => {
+    const user = userEvent.setup()
+    let finish!: (response: Response) => void
+    const requests: string[] = []
+    stubRoute((url) => {
+      requests.push(url)
+      return pathOf(url) === '/api/v1/definitions' ? ok({ items: published })
+        : new Promise<Response>((resolve) => { finish = resolve })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    expect(screen.getByRole('region', { name: '执行列表' })).toHaveAttribute('aria-busy', 'true')
+    expect(screen.queryByTestId(TID.execEmpty)).not.toBeInTheDocument()
+    finish(ok({ items: [exec('7', 'SUCCEEDED')], page: { total: 21 } }))
+    await screen.findByTestId(tid.execRow('7'))
+    await user.click(screen.getByRole('button', { name: '下一页' }))
+    expect(screen.getByText('正在加载执行列表…')).toBeInTheDocument()
+    expect(screen.queryByTestId(TID.execEmpty)).not.toBeInTheDocument()
+    finish(ok({ items: [exec('8', 'SUCCEEDED')], page: { total: 21 } }))
+    await screen.findByTestId(tid.execRow('8'))
+    expect(screen.getByText('精确匹配，须输入完整名称')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('按名称'), { target: { value: 'wf-exact' } })
+    await waitFor(() => expect(requests.some((url) => queryOf(url).get('name') === 'wf-exact')).toBe(true))
+    expect(screen.getByText('正在加载执行列表…')).toBeInTheDocument()
+    finish(ok({ items: [], page: { total: 0 } }))
+    await waitFor(() => expect(screen.getByTestId(TID.execEmpty)).toHaveTextContent('当前筛选下没有执行'))
+  })
+
+  it('执行列表读取失败有重试，定义读成功也不能伪装成暂无执行', async () => {
+    let failed = true
+    stubRoute((url) => pathOf(url) === '/api/v1/definitions' ? ok({ items: published })
+      : failed ? ok({ error: 'role_denied' }, 403) : ok({ items: [], page: { total: 0 } }))
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('当前账号没有执行此操作的角色权限')
+    expect(screen.queryByTestId(TID.execEmpty)).not.toBeInTheDocument()
+    failed = false
+    await userEvent.setup().click(screen.getByRole('button', { name: '重试执行列表' }))
+    expect(await screen.findByTestId(TID.execEmpty)).toHaveTextContent('暂无执行')
+  })
+
+  it('快速换筛选后，旧页迟到的失败不会覆盖新结果或触发旧401登出', async () => {
+    let finishOld!: (response: Response) => void
+    const onAuthExpired = vi.fn()
+    stubRoute((url) => {
+      if (pathOf(url) === '/api/v1/definitions') return ok({ items: published })
+      if (queryOf(url).get('status') === 'FAILED') return new Promise<Response>((resolve) => { finishOld = resolve })
+      return ok({ items: [exec('7', 'SUCCEEDED')], page: { total: 1 } })
+    })
+    render(<ExecutionsView selectedId={null} onSelect={() => {}} onAuthExpired={onAuthExpired} />)
+    await screen.findByTestId(tid.execRow('7'))
+    const user = userEvent.setup()
+    await chooseOption(user, screen.getByLabelText('按状态'), '已失败')
+    expect(screen.getByText('正在加载执行列表…')).toBeInTheDocument()
+    await chooseOption(user, screen.getByLabelText('按状态'), '已成功')
+    await screen.findByTestId(tid.execRow('7'))
+    await act(async () => { finishOld(ok({ error: 'invalid_credentials' }, 401)) })
+    expect(screen.getByTestId(tid.execRow('7'))).toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+    expect(onAuthExpired).not.toHaveBeenCalled()
+  })
   it('所选版本展示类型/必填/说明和JSON示例,缺字段先就地提示,零假值可提交', async () => {
     const user = userEvent.setup()
     const posted: unknown[] = []

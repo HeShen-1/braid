@@ -1,7 +1,7 @@
 // 执行详情(T21.1 Lane B 重做)—— 纵向分层,眼睛从上到下一次读完:
 //   ① 身份:状态芯片(色相 + 形状)+ 裸 ID/定义版本(与日志/审计同语言)
 //   ② 执行级错误:就近,不埋进表格
-//   ③ 处置条:回滚目标(在时间带上选点)/ 静默在飞 / 回滚 · 续跑 · 取消(行内确认)
+//   ③ 处置条:回滚目标(在时间带上选点)/ 先停止未结束节点 / 回滚 · 续跑 · 取消(行内确认)
 //   ④ 执行时间带(signature move):节点状态与"等了多久"的唯一真源
 //   ④′ 定义版本图(可折叠,展开才拉取):"当时声明的形状"——DAG 拓扑不可替代
 //   ⑤ 会签中间态:待投名单 + 决定时间线(名单外 403 静默收起)
@@ -9,9 +9,10 @@
 //
 // 轮询:非终态 2.5s;FAILED 保持 10s 慢速(可被本页回滚/续跑、他人操作、
 // reaper 兜底翻活,恒停会冻结在过期帧);SUCCEEDED/CANCELLED 停表。
+// 详情读取失败暂停轮询，保留上一帧；手动刷新成功后按当前状态恢复。
 // 零后端新端点:全部字段来自既有 executionDetailDTO / approvalDetailDTO / auditEventDTO。
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
-import { Ban, Play, RefreshCw, TriangleAlert, Undo2 } from 'lucide-react'
+import { ArrowLeft, Ban, Play, RefreshCw, TriangleAlert, Undo2, UserX } from 'lucide-react'
 import {
   ApiError,
   api,
@@ -28,6 +29,7 @@ import { Alert, Badge, Button, KV, Panel, PanelHead, StatusChip } from './ui/pri
 import { DECISION_LABEL, ON_TIMEOUT_LABEL, TRIGGER_LABEL } from './ui/status.ts'
 import { TID, tid } from './ui/testids.ts'
 import { Duration, Timestamp } from './ui/time.tsx'
+import { apiErrorText, executionFailureNode, executionFailureText } from './ui/errors.ts'
 
 const POLL_MS = 2500
 const FAILED_POLL_MS = 10_000
@@ -56,8 +58,11 @@ function nodeStatusIndex(rows: NodeExecution[]): Record<string, string> {
   return out
 }
 
-export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onAuthExpired: () => void }) {
+export function ExecutionDetail({ execId, onAuthExpired, onBack }: { execId: string; onAuthExpired: () => void; onBack?: () => void }) {
   const [detail, setDetail] = useState<ExecutionDetailData | null>(null)
+  const [readError, setReadError] = useState('')
+  const [readLoading, setReadLoading] = useState(true)
+  const readSeq = useRef(0)
   const [approvals, setApprovals] = useState<Record<string, ApprovalDetail | null>>({})
   const [evidenceRevision, setEvidenceRevision] = useState(0)
   const [evidenceNode, setEvidenceNode] = useState<{ nodeId: string; instanceNo: number } | null>(null)
@@ -72,10 +77,10 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
   }, [])
   const [target, setTarget] = useState<string | null>(null)
   // T19.6 quiesce 旗标:回滚/续跑时把 EXECUTING/等待审批的残留节点同事务
-  // 楔停(缺省不勾 = 服务端 409 等后台收敛,保值等待)。
+  // 停止(缺省不勾 = 服务端 rollback_blocked_inflight 等后台收敛,保值等待)。
   const [quiesce, setQuiesce] = useState(false)
   const [flash, setFlash] = useState('')
-  const [error, setError] = useState<{ text: string; blocked?: string[] } | null>(null)
+  const [error, setError] = useState<{ text: string; raw?: string; blocked?: string[] } | null>(null)
   const [busy, setBusy] = useState(false)
   // 取消确认层:布防即聚焦浮起层,Esc / 放弃收起后焦点回「取消执行」(T21.4 增项)。
   const {
@@ -96,14 +101,22 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
   } = useConfirmLayer()
 
   const load = useCallback(async () => {
+    const seq = ++readSeq.current
+    setReadLoading(true)
     let d: ExecutionDetailData | null = null
     try {
       d = await api.getExecution(execId)
+      if (seq !== readSeq.current) return
       setDetail(d)
+      setReadError('')
       setEvidenceRevision((n) => n + 1)
     } catch (err) {
+      if (seq !== readSeq.current) return
       if (err instanceof ApiError && err.status === 401) onAuthExpired()
-      return // 瞬态读失败:保留上一帧,下个轮询窗自愈
+      else setReadError(apiErrorText(err))
+      return
+    } finally {
+      if (seq === readSeq.current) setReadLoading(false)
     }
     // 审批子资源:仅 WAITING_APPROVAL 的 approval 行;名单外 403 = 静默收起。
     // 已离开挂起态的行同步剪枝(否则节点完成后残留「待投」幽灵帧)。
@@ -121,8 +134,10 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     for (const n of waiting) {
       try {
         const ap = await api.getApproval(execId, n.node_id)
+        if (seq !== readSeq.current) return
         setApprovals((prev) => ({ ...prev, [n.node_id]: ap }))
       } catch (err) {
+        if (seq !== readSeq.current) return
         if (err instanceof ApiError && err.status === 401) {
           onAuthExpired()
           return
@@ -134,9 +149,10 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
 
   useEffect(() => {
     void load()
+    return () => { readSeq.current++ }
   }, [load])
 
-  const stopPolling = detail !== null && ['SUCCEEDED', 'CANCELLED'].includes(detail.status)
+  const stopPolling = readLoading || readError !== '' || (detail !== null && ['SUCCEEDED', 'CANCELLED'].includes(detail.status))
   const pollMs = detail !== null && detail.status === 'FAILED' ? FAILED_POLL_MS : POLL_MS
   useEffect(() => {
     if (stopPolling) return
@@ -149,9 +165,9 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
 
   const faceError = useCallback((err: unknown) => {
     if (err instanceof ApiError) {
-      setError({ text: [err.code, err.detail].filter((x) => x !== undefined && x !== '').join(':'), blocked: err.blocked })
+      setError({ text: apiErrorText(err), raw: err.detail, blocked: err.blocked })
     } else {
-      setError({ text: 'network_error' })
+      setError({ text: apiErrorText(err) })
     }
   }, [])
 
@@ -161,7 +177,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
     setFlash('')
     try {
       const ack = await api.cancelExecution(execId)
-      setFlash(`已取消(楔停 ${ack.cancelled_count} 行)`)
+      setFlash(`已取消执行（停止 ${ack.cancelled_count} 个未结束节点）`)
       await load()
     } catch (err) {
       if (err instanceof ApiError && err.status === 401) {
@@ -176,16 +192,16 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
   }, [execId, load, onAuthExpired, faceError, disarmCancel])
 
   const runAction = useCallback(
-    async (fn: () => Promise<{ target_node_id: string; reset_count: number; rerun_target: boolean; quiesced_count: number }>) => {
+    async (action: 'rollback' | 'resume', fn: () => Promise<{ target_node_id: string; reset_count: number; rerun_target: boolean; quiesced_count: number }>) => {
       setBusy(true)
       setError(null)
       setFlash('')
       try {
         const ack = await fn()
         setFlash(
-          `已回滚到 ${ack.target_node_id}(重置 ${ack.reset_count} 行${ack.rerun_target ? ',目标节点重执行' : ''}${
-            ack.quiesced_count > 0 ? `,静默在飞 ${ack.quiesced_count} 行` : ''
-          })`,
+          `${action === 'resume' ? '已续跑，从' : '已回滚到'} ${ack.target_node_id}（${ack.reset_count} 个节点恢复为待执行${ack.rerun_target ? '，目标节点重新执行' : ''}${
+            ack.quiesced_count > 0 ? `，先停止 ${ack.quiesced_count} 个未结束节点` : ''
+          }）`,
         )
         await load()
       } catch (err) {
@@ -203,18 +219,26 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
 
   if (detail === null) {
     return (
-      <main className="exec-detail" data-testid={TID.execDetail}>
-        <p className="text-sm text-ink-2">
+      <main className="exec-detail" data-testid={TID.execDetail} aria-busy={readLoading}>
+        {readError === '' ? <p className="text-sm text-ink-2" role="status">
           加载执行 <code className="mono">#{execId}</code>…
-        </p>
+        </p> : <>
+          <Alert tone="error" icon={TriangleAlert}><strong>执行详情读取失败</strong><p>{readError}</p></Alert>
+          <div className="flex gap-2">
+            <Button size="sm" icon={RefreshCw} disabled={readLoading} onClick={() => void load()}>{readLoading ? '正在重试…' : '重试读取执行'}</Button>
+            {onBack !== undefined ? <Button size="sm" variant="quiet" icon={ArrowLeft} onClick={onBack}>返回执行列表</Button> : <a href="/executions">返回执行列表</a>}
+          </div>
+        </>}
       </main>
     )
   }
 
-  const canAct = TERMINAL_ACTIONABLE.includes(detail.status) && !busy
-  const canCancel = CANCELLABLE.includes(detail.status) && !busy
+  const canAct = TERMINAL_ACTIONABLE.includes(detail.status) && !busy && !readLoading && readError === ''
+  const canCancel = CANCELLABLE.includes(detail.status) && !busy && !readLoading && readError === ''
   const statusRows = detail.nodes ?? []
   const approvalRows = statusRows.filter((n) => n.type === 'approval' && n.status === 'WAITING_APPROVAL' && approvals[n.node_id] != null)
+  const failedNode = executionFailureNode(detail)
+  const rejected = failedNode?.type === 'approval' && failedNode.error_code === 'approval_rejected'
 
   return (
     <main className="exec-detail" data-testid={TID.execDetail}>
@@ -226,8 +250,8 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
             #{detail.id} · {detail.definition_name} v{detail.definition_version}
           </code>
           <span className="ml-auto flex items-center gap-2">
-            <Button ref={refreshOpener} variant="quiet" size="sm" icon={RefreshCw} disabled={busy} onClick={() => void load()}>
-              刷新
+            <Button ref={refreshOpener} variant="quiet" size="sm" icon={RefreshCw} disabled={busy || readLoading} onClick={() => void load()}>
+              {readLoading ? '正在读取…' : '刷新'}
             </Button>
           </span>
         </div>
@@ -250,6 +274,10 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
         </dl>
       </header>
 
+      {readError !== '' ? <Alert tone="error" icon={TriangleAlert}>
+        <strong>执行详情刷新失败</strong><p>{readError}</p><p>当前保留上次读取内容，自动刷新已暂停。请点击上方刷新后再操作。</p>
+      </Alert> : null}
+
       <Panel>
         <PanelHead title="触发输入" sub="执行创建时快照" />
         <div className="panel-body evidence-body">
@@ -264,12 +292,11 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
 
       {/* ② 执行级错误:就近呈现 */}
       {detail.error_code !== null ? (
-        <Alert tone="error" icon={TriangleAlert}>
-          <strong>执行错误</strong>
-          <code className="mono ml-2">{detail.error_code}</code>
-          {detail.error_message !== null && detail.error_message !== '' ? (
-            <span className="ml-2 text-ink-1">{detail.error_message}</span>
-          ) : null}
+        <Alert tone={rejected ? 'neutral' : 'error'} icon={rejected ? UserX : TriangleAlert}>
+          <strong>{rejected ? '审批驳回' : '执行错误'}</strong>
+          <p>{executionFailureText(detail, failedNode)}</p>
+          {rejected ? <p>服务端执行状态仍为“已失败”。</p> : null}
+          <details><summary>原始错误</summary><code>{detail.error_code}</code><p>{detail.error_message}</p></details>
         </Alert>
       ) : null}
 
@@ -286,8 +313,8 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
           </div>
           <div className="exec-actions-right">
             <Checkbox
-              label="静默在飞"
-              hint="勾选后回滚/续跑把在飞残留同事务楔停;不勾等后台收敛(409)"
+              label="先停止未结束节点"
+              hint="回滚或续跑前停止仍在执行、等待审批的节点；不勾选则等待后台确认这些节点已结束。"
               checked={quiesce}
               onCheckedChange={setQuiesce}
             />
@@ -295,11 +322,11 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
               <ConfirmLayer
                 layerRef={rollbackLayerRef}
                 label={`确认回滚到 ${target}`}
-                hint="回滚会重置目标下游节点,本执行定格为已回滚,不可撤销。"
+                hint="按所选目标恢复同一执行；需要重跑的节点会清除旧输出，已完成的外部操作不会撤销。"
                 confirmText={`确认回滚到 ${target}`}
                 confirmTestId={TID.rollbackConfirm}
                 busy={busy}
-                onConfirm={() => void runAction(() => api.rollbackExecution(execId, target, quiesce)).finally(disarmRollback)}
+                onConfirm={() => void runAction('rollback', () => api.rollbackExecution(execId, target, quiesce)).finally(disarmRollback)}
                 onDismiss={disarmRollback}
               />
             ) : (
@@ -318,7 +345,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
               data-testid={TID.resumeSubmit}
               disabled={!canAct}
               title="自动定位失败/取消点继续跑"
-              onClick={() => void runAction(() => api.resumeExecution(execId, quiesce))}
+              onClick={() => void runAction('resume', () => api.resumeExecution(execId, quiesce))}
             >
               续跑
             </Button>
@@ -326,7 +353,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
               <ConfirmLayer
                 layerRef={cancelLayerRef}
                 label="确认取消执行"
-                hint="取消会楔停全部在飞节点,不可撤销。"
+                hint="取消会停止全部未结束节点，已完成的外部操作不会撤销。"
                 confirmText="确认取消"
                 confirmTestId={TID.cancelSubmit}
                 busy={busy}
@@ -350,7 +377,8 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
       {error !== null ? (
         <Alert tone="error" icon={TriangleAlert}>
           <strong>操作未完成</strong>
-          <code className="mono ml-2">{error.text}</code>
+          <p>{error.text}</p>
+          {error.raw !== undefined && error.raw !== '' ? <details><summary>服务端补充说明</summary><p>{error.raw}</p></details> : null}
           {error.blocked !== undefined && error.blocked.length > 0 ? (
             <ul className="exec-blocked">
               {error.blocked.map((b) => (

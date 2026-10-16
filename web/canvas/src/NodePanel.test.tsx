@@ -236,7 +236,7 @@ describe('NodePanel', () => {
     render(<NodeProbe initial={nodeFrom('all-node-types', 'parse')} />)
     const retry = screen.getByLabelText('重试次数')
     await user.type(retry, '99')
-    expect(screen.getByRole('alert')).toHaveTextContent('超出 schema 允许范围（1–10）')
+    expect(screen.getByText('超出 schema 允许范围（1–10）')).toHaveAttribute('role', 'alert')
     expect(retry).toHaveAttribute('aria-invalid', 'true')
   })
 

@@ -74,11 +74,58 @@ function nodeRow(node_id: string, instance_no: number, status: string, over: Rec
 }
 
 afterEach(() => {
+  vi.restoreAllMocks()
   vi.unstubAllGlobals()
   tokenStore.clear()
 })
 
 describe('ExecutionDetail(执行详情)', () => {
+  it.each([403, 404, 0])('详情读取失败 %i 有明确原因、重试和返回出口，不启动轮询', async (status) => {
+    const intervals = vi.spyOn(globalThis, 'setInterval')
+    let failed = true
+    const onBack = vi.fn()
+    stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => {
+      if (url.includes('/audit')) return ok({ items: [], next_cursor: '' })
+      if (failed) {
+        if (status === 0) throw new TypeError('offline')
+        return ok({ error: status === 404 ? 'not_found' : 'role_denied' }, status)
+      }
+      return ok({ ...baseDetail, status: 'SUCCEEDED' })
+    })
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} onBack={onBack} />)
+    const alert = await screen.findByRole('alert')
+    expect(alert).toHaveTextContent('执行详情读取失败')
+    expect(alert).toHaveTextContent(status === 404 ? '目标不存在' : status === 403 ? '角色权限' : '检查网络')
+    expect(intervals.mock.calls.some(([, ms]) => ms === 2500 || ms === 10_000)).toBe(false)
+    await userEvent.setup().click(screen.getByRole('button', { name: '返回执行列表' }))
+    expect(onBack).toHaveBeenCalledTimes(1)
+    failed = false
+    await userEvent.setup().click(screen.getByRole('button', { name: '重试读取执行' }))
+    expect(await screen.findByTestId(TID.execStatus)).toHaveAttribute('data-state', 'SUCCEEDED')
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
+  })
+
+  it('只有当前执行错误明确指向审批驳回时用中性原因面，保持 FAILED 状态', async () => {
+    const rejected = nodeRow('gate', 0, 'FAILED', { type: 'approval', error_code: 'approval_rejected', error_message: 'rejected by alice' })
+    stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => url.includes('/audit') ? ok({ items: [], next_cursor: '' })
+      : ok({ ...baseDetail, error_code: 'node_failed', error_message: 'node gate failed: approval_rejected: rejected by alice', nodes: [rejected] }))
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    const heading = await screen.findByText('审批驳回', { exact: true })
+    expect(heading.closest('.alert')).toHaveAttribute('data-tone', 'neutral')
+    expect(screen.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'FAILED')
+    expect(screen.queryByText('执行错误', { exact: true })).not.toBeInTheDocument()
+    expect(screen.getByText('node gate failed: approval_rejected: rejected by alice')).toBeInTheDocument()
+  })
+
+  it('其他失败不能被历史驳回行改称人工驳回，未知错误保留原码', async () => {
+    const rejected = nodeRow('old', 0, 'FAILED', { type: 'approval', error_code: 'approval_rejected' })
+    stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => url.includes('/audit') ? ok({ items: [], next_cursor: '' })
+      : ok({ ...baseDetail, error_code: 'new_failure_code', error_message: 'opaque reason', nodes: [rejected] }))
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('new_failure_code')
+    expect(screen.queryByText('审批驳回', { exact: true })).not.toBeInTheDocument()
+  })
+
   it('查看实例证据是独立入口：默认不读节点，查看后不改变已有回滚选点', async () => {
     const user = userEvent.setup()
     const calls: string[] = []
@@ -248,7 +295,7 @@ describe('ExecutionDetail(执行详情)', () => {
     expect(screen.getByTestId(TID.rollbackSubmit)).toBeEnabled()
     await user.click(screen.getByTestId(TID.rollbackSubmit))
     await user.click(screen.getByTestId(TID.rollbackConfirm))
-    expect(await screen.findByTestId(TID.execFlash)).toHaveTextContent('重置 2 行')
+    expect(await screen.findByTestId(TID.execFlash)).toHaveTextContent('2 个节点恢复为待执行')
     expect(rolled).toBe(true)
   })
 
@@ -299,10 +346,10 @@ describe('ExecutionDetail(执行详情)', () => {
     await user.click(await screen.findByTestId(tid.nodeRow('gate', 0)))
     // 决策 3 收敛后 Checkbox 由 Base UI 承载:label 同时关联隐藏 input 与
     // role=checkbox 的可见控件(label 断言保留,故按 role + 可及名取)。
-    await user.click(screen.getByRole('checkbox', { name: '静默在飞' }))
+    await user.click(screen.getByRole('checkbox', { name: '先停止未结束节点' }))
     await user.click(screen.getByTestId(TID.rollbackSubmit))
     await user.click(screen.getByTestId(TID.rollbackConfirm))
-    expect(await screen.findByTestId(TID.execFlash)).toHaveTextContent('静默在飞 1 行')
+    expect(await screen.findByTestId(TID.execFlash)).toHaveTextContent('先停止 1 个未结束节点')
     expect(sawQuiesce).toBe(true)
   })
 
@@ -404,7 +451,7 @@ describe('ExecutionDetail(执行详情)', () => {
     await user.click(screen.getByRole('button', { name: '取消执行' }))
     await user.click(screen.getByTestId(TID.cancelSubmit))
 
-    expect(await screen.findByTestId(TID.execFlash)).toHaveTextContent('楔停 3 行')
+    expect(await screen.findByTestId(TID.execFlash)).toHaveTextContent('停止 3 个未结束节点')
     expect(posts).toBe(1)
     expect(screen.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'CANCELLED')
   })

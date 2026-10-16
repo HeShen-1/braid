@@ -2,13 +2,13 @@
 //   ① 列表请求序号守卫(陈旧响应丢弃)
 //   ② 进新详情清空上一条未提交备注
 //   ③ in-flight 防抖(提交期间双按钮禁用,双击/连按只落一笔 POST)
-//   ④ 错误码中文词表与旧 app.js 逐字一致
+//   ④ 共享错误词表保留已知原因与未知原码
 // 外加:决定成功的回队列 + offset 归零 + 成功反馈、键盘快捷键(输入框聚焦
 // 时让位)、401 统一登出、备注上限前置拦下。fetch 全 stub 按 URL 路由。
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { APPROVAL_ERR_TEXT, ApprovalsView } from './ApprovalsView.tsx'
+import { ApprovalsView } from './ApprovalsView.tsx'
 import { tokenStore, type ApprovalDecisionRow, type ApprovalDetail as ApprovalDetailData, type PendingApproval } from './api.ts'
 import { TID, tid } from './ui/testids.ts'
 
@@ -394,27 +394,13 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     expect(posts[0]).toEqual({ decision: 'approve', comment: '' })
   })
 
-  it('⑥ 错误词表:10 码逐字一致,后端码 → 中文文案(未知码不吞)', async () => {
-    expect(Object.keys(APPROVAL_ERR_TEXT)).toHaveLength(10)
-    expect(APPROVAL_ERR_TEXT).toEqual({
-      invalid_credentials: '用户名或密码错误。',
-      user_disabled: '账号已停用。',
-      not_approver: '你不是本节点的审批人。',
-      role_denied: '缺少审批角色(approver/admin)。',
-      not_waiting: '该审批已收口,无需再操作。',
-      not_approval: '目标节点不是审批节点。',
-      already_decided: '已有审批人投出决定(或签首票定局)。',
-      decision_conflict: '你已投过不同的决定,不可改判。',
-      execution_terminal: '执行已终结,该审批不再生效。',
-      bad_comment: '备注超过 2000 字上限。',
-    })
-
+  it('⑥ 共享错误词表:后端码 → 中文文案,未知码保留原码', async () => {
     const user = userEvent.setup()
     const cases: Array<[string, number, string]> = [
       ['not_approver', 403, '你不是本节点的审批人。'],
-      ['already_decided', 409, '已有审批人投出决定(或签首票定局)。'],
+      ['already_decided', 409, '已有审批人投出决定（或签首票定局）。'],
       ['bad_comment', 400, '备注超过 2000 字上限。'],
-      ['weird_code', 500, '请求失败(weird_code)。'],
+      ['weird_code', 500, '请求失败（weird_code）。'],
     ]
     for (const [code, status, text] of cases) {
       cleanup()
@@ -469,7 +455,7 @@ describe('ApprovalsView(审批台:队列 + 详情 + 键盘)', () => {
     const empty = await screen.findByTestId(TID.approvalEmpty)
     expect(empty).not.toHaveTextContent('当前没有待办审批')
     // 空态首帧就在场(items=[] + loading),错误条要等读失败落地 —— 取样点必须等它。
-    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('请求失败(http_500)。'))
+    await waitFor(() => expect(screen.getByRole('alert')).toHaveTextContent('请求失败（http_500）。'))
   })
 
   it('决定成功:POST body 逐字 + 回队列 + offset 归零重拉 + 成功反馈', async () => {

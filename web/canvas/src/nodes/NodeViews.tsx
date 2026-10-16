@@ -142,7 +142,7 @@ export function LlmView({ data }: NodeProps) {
   const template = firstLine(spec.prompt?.template)
   return (
     <NodeShell spec={spec} status={statusOf(data)} instanceNo={instanceOf(data)}>
-      <div className="bn-line">{spec.model || '默认模型'}</div>
+      <div className={cx('bn-line', (spec.model ?? '').trim() === '' ? 'bn-todo' : undefined)}>{(spec.model ?? '').trim() === '' ? '模型未配置' : spec.model}</div>
       <div className={cx('bn-line', template === '' ? 'bn-todo' : 'bn-dim')}>{template || '待填提示词'}</div>
     </NodeShell>
   )

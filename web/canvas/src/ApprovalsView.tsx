@@ -2,7 +2,7 @@
 // (原生三件套)并入统一 SPA 的组合根。两级视图(D-2026-10-09-console-v2
 // 决策 5:不改 token 载体、不加端点,故不做新标签页):未选中 = 队列列表
 // 占满全页;选中 = 详情占满全页,「返回队列」/ Esc 回列表。零后端新端点:
-// 端点、字段、错误词表与旧 app.js 逐字一致。
+// 端点、字段沿用既有协议，错误显示复用 ui/errors.ts。
 //
 // 三条对抗审计不变量(旧实现 app.js 的注释即契约,不得退化):
 //   ① 列表请求序号守卫(listSeq):快速连点时后发先至的陈旧响应丢弃,
@@ -20,27 +20,13 @@ import { ApprovalDetail, COMMENT_MAX, approvalCommentCount } from './ApprovalDet
 import { ApprovalQueue, PAGE_LIMIT, type ApprovalSelection } from './ApprovalQueue.tsx'
 import { decisionLabel } from './ui/status.ts'
 
-/** 后端错误码 → 中文(逐字取自旧 app.js 的 ERR_TEXT,共 10 个码)。
- *  未知码兜底 `请求失败(code)。` —— 不吞,回显即对账信号。 */
-export const APPROVAL_ERR_TEXT: Record<string, string> = {
-  invalid_credentials: '用户名或密码错误。',
-  user_disabled: '账号已停用。',
-  not_approver: '你不是本节点的审批人。',
-  role_denied: '缺少审批角色(approver/admin)。',
-  not_waiting: '该审批已收口,无需再操作。',
-  not_approval: '目标节点不是审批节点。',
-  already_decided: '已有审批人投出决定(或签首票定局)。',
-  decision_conflict: '你已投过不同的决定,不可改判。',
-  execution_terminal: '执行已终结,该审批不再生效。',
-  bad_comment: '备注超过 2000 字上限。',
-}
+import { apiErrorText, ERROR_TEXT } from './ui/errors.ts'
 
 /** 备注上限提示词(与后端 bad_comment 同文案;上限见 ApprovalDetail.COMMENT_MAX)。 */
-const COMMENT_TOO_LONG = APPROVAL_ERR_TEXT.bad_comment as string
+const COMMENT_TOO_LONG = ERROR_TEXT.bad_comment as string
 
 export function approvalErrorText(err: unknown): string {
-  if (err instanceof ApiError) return APPROVAL_ERR_TEXT[err.code] ?? `请求失败(${err.code})。`
-  return '请求失败(network_error)。'
+  return apiErrorText(err)
 }
 
 /** 焦点在可编辑控件里时,单键快捷键一律让位 —— 打字不是命令。 */

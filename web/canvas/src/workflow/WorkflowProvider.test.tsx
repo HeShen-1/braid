@@ -89,6 +89,42 @@ describe('WorkflowProvider(保存当前画布后发布,T23.5)', () => {
     })
   }
 
+  it('列表首读失败保留错误，重试失败不清上次列表，成功后清错误', async () => {
+    const first = deferredResponse()
+    let round = 0
+    const row = { id: '7', name: 'existing', status: 'DRAFT', version: null }
+    stubRoute(() => {
+      round++
+      if (round === 1) return first.promise
+      if (round === 3) return Promise.reject(new TypeError('offline'))
+      return ok({ items: [row] })
+    })
+    const { result } = mountWorkspace()
+    expect(result.current.loading).toBe(true)
+    await act(async () => { first.reject(new TypeError('offline')) })
+    expect(result.current.loading).toBe(false)
+    expect(result.current.listError).toContain('检查网络')
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.drafts).toEqual([row])
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.drafts).toEqual([row])
+    expect(result.current.listError).toContain('检查网络')
+    await act(async () => { await result.current.refresh() })
+    expect(result.current.listError).toBe('')
+  })
+
+  it('迟到的列表读取失败不覆盖已完成的新请求', async () => {
+    const old = deferredResponse()
+    let round = 0
+    stubRoute(() => ++round === 1 ? old.promise : ok({ items: [{ id: 'new' }] }))
+    const { result } = mountWorkspace()
+    await act(async () => { await result.current.refresh() })
+    await act(async () => { old.reject(new TypeError('late offline')) })
+    expect(result.current.drafts).toEqual([{ id: 'new' }])
+    expect(result.current.listError).toBe('')
+    expect(result.current.loading).toBe(false)
+  })
+
   it('直接发布先 PUT 当前画布,然后 POST publish;成功才关闭工作区', async () => {
     const writes: string[] = []
     let saved = doc

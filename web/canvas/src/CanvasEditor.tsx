@@ -34,7 +34,7 @@ import { NodePanel } from './NodePanel.tsx'
 import { WorkflowPanel } from './WorkflowPanel.tsx'
 import { defaultSpec } from './defaults.ts'
 import { PANEL_RIGHT_KEY, useCollapsed } from './prefs.ts'
-import { Button, EmptyState } from './ui/primitives.tsx'
+import { Alert, Button, EmptyState } from './ui/primitives.tsx'
 import { ConfirmLayer } from './ui/confirm.tsx'
 import { I } from './ui/I.tsx'
 import { TID } from './ui/testids.ts'
@@ -173,6 +173,7 @@ function Editor({
   )
 
   const doc = useMemo(() => fromCanvas({ nodes, edges, viewport }, base), [nodes, edges, viewport, base])
+  const missingModels = doc.nodes.filter((n) => n.type === 'llm' && (n.model ?? '').trim() === '')
   const selected = nodes.find((n) => n.id === selectedId)
   // 确认条文案:把「要删什么、连带什么」说清(危险动作的确认必须可核对)。
   const deleteHint =
@@ -265,6 +266,12 @@ function Editor({
           ) : null}
         </div>
       </header>
+
+      {missingModels.length > 0 ? (
+        <Alert tone="warn">
+          模型未配置：{missingModels.map((n) => n.id).join('、')}。草稿可保存；发布前请补齐，平台没有默认模型，执行这些节点会失败。
+        </Alert>
+      ) : null}
 
       <div className="editor-mid">
         <Palette onAdd={addNode} />
