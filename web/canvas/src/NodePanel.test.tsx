@@ -240,12 +240,16 @@ describe('NodePanel', () => {
     expect(retry).toHaveAttribute('aria-invalid', 'true')
   })
 
-  it('T21.4 ④ 删除入口:传了 onDelete 才渲染,点击只发请求(确认层归画布管)', async () => {
+  it('UX-F3 删除入口有明确可见文字,保留可及名与节点提示;点击只发请求', async () => {
     const user = userEvent.setup()
     const onDelete = vi.fn()
     render(<NodePanel spec={nodeFrom('all-node-types', 'parse')} update={() => {}} onDelete={onDelete} />)
     const entry = screen.getByTestId(TID.nodeDelete)
+    expect(entry).toHaveTextContent('删除节点')
+    expect(entry).toHaveAccessibleName('删除节点')
     expect(entry).toHaveAttribute('aria-label', '删除节点')
+    expect(entry).toHaveAttribute('title', '删除节点 parse')
+    expect(entry).not.toHaveClass('btn-icon')
     await user.click(entry)
     expect(onDelete).toHaveBeenCalledTimes(1)
   })
