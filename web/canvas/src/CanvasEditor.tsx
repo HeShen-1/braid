@@ -9,20 +9,24 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Background,
   BackgroundVariant,
+  applyEdgeChanges,
+  applyNodeChanges,
+  ControlButton,
   Controls,
   MiniMap,
   ReactFlow,
   ReactFlowProvider,
-  useEdgesState,
-  useNodesState,
   useReactFlow,
   type Connection,
+  type EdgeChange,
+  type NodeChange,
   type NodeTypes,
   type Viewport,
 } from '@xyflow/react'
-import { ChevronRight, Info, MousePointerClick, PanelRightClose, PanelRightOpen, Rocket, Save, Settings2, Workflow } from 'lucide-react'
-import { clampViewport, connectEdges, fromCanvas, nextNodeId, reconcileSourceHandles, serializeDoc, toCanvas } from './model/convert.ts'
+import { ChevronRight, Info, Map, MousePointerClick, PanelRightClose, PanelRightOpen, Rocket, Save, Settings2, Workflow } from 'lucide-react'
+import { clampViewport, fromCanvas, nextNodeId, serializeDoc, toCanvas } from './model/convert.ts'
 import type { FlowNode, FlowEdge } from './model/convert.ts'
+import { canConnect, connectGraph, removeGraphElements, updateGraphNode, type GraphState } from './model/authoring.ts'
 import type { DslNode, NodeType, WorkflowDoc } from './model/dsl.ts'
 import { nodeTypes } from './nodes/NodeViews.tsx'
 import { Palette } from './Palette.tsx'
@@ -60,11 +64,13 @@ function Editor({
   // (无 canvas meta 的既有草稿)→ fitView 首开自适应。zoom 边界对齐
   // schema 词域 0.1..4(RF 默认 0.5..2 会把合法 0.2 文档顶到 0.5 显示)。
   const hadStoredViewport = initialDoc.metadata?.canvas?.viewport !== undefined
-  const [nodes, setNodes, onNodesChange] = useNodesState<FlowNode>(initial.nodes)
-  const [edges, setEdges, onEdgesChange] = useEdgesState<FlowEdge>(initial.edges)
+  // 分支路由字段与连线属于同一次编辑,避免 setNodes/setEdges 各自上报半成品。
+  const [graph, setGraph] = useState<GraphState>({ nodes: initial.nodes, edges: initial.edges })
+  const { nodes, edges } = graph
   const [viewport, setViewport] = useState(initial.viewport)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [showWorkflowPanel, setShowWorkflowPanel] = useState(false)
+  const [showMinimap, setShowMinimap] = useState(true)
   // 右栏(属性面板)折叠态:跨会话 UI 偏好(prefs.ts),与左栏同一口径。
   const [sideCollapsed, setSideCollapsed] = useCollapsed(PANEL_RIGHT_KEY)
   const { screenToFlowPosition, deleteElements } = useReactFlow()
@@ -124,18 +130,27 @@ function Editor({
     [deleteElements],
   )
 
-  const onConnect = useCallback(
-    (c: Connection) => {
-      // 同一对节点只留一条边(重复边撞 T1.2 的 duplicate_edge);再从别的锚点
-      // 连一次 = 改绑该边的源锚点(T21.4 ③)。判定是纯函数,见 connectEdges。
-      setEdges((eds) => connectEdges(eds, c))
-    },
-    [setEdges],
-  )
+  const onNodesChange = useCallback((changes: NodeChange<FlowNode>[]) => {
+    setGraph((g) => {
+      const next = removeGraphElements(g, changes.filter((c) => c.type === 'remove').map((c) => c.id), [])
+      return { ...next, nodes: applyNodeChanges(changes, next.nodes) }
+    })
+  }, [])
+  const onEdgesChange = useCallback((changes: EdgeChange<FlowEdge>[]) => {
+    setGraph((g) => {
+      const next = removeGraphElements(g, [], changes.filter((c) => c.type === 'remove').map((c) => c.id))
+      return { ...next, edges: applyEdgeChanges(changes, next.edges) }
+    })
+  }, [])
+  const onConnect = useCallback((c: Connection) => setGraph((g) => connectGraph(g, c)), [])
   const onMoveEnd = useCallback((_: unknown, vp: Viewport) => setViewport(clampViewport(vp)), [])
   const onSelectionChange = useCallback(({ nodes: sel }: { nodes: FlowNode[] }) => {
-    setShowWorkflowPanel(false)
+    if (sel.length > 0) setShowWorkflowPanel(false)
     setSelectedId(sel.length === 1 ? sel[0].id : null)
+  }, [])
+  const onNodeClick = useCallback((_: unknown, node: FlowNode) => {
+    setShowWorkflowPanel(false)
+    setSelectedId(node.id)
   }, [])
 
   const addNode = useCallback(
@@ -143,25 +158,19 @@ function Editor({
       // 视口中心落点;palette 基名 llm/tool/branch/approval/fan 均合规。
       const position = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
       const id = nextNodeId(type === 'parallel' ? 'fan' : type, nodes.map((n) => n.id))
-      setNodes((nds) => [...nds, { id, type, position, data: { spec: defaultSpec(type, id) } }])
+      setGraph((g) => ({ ...g, nodes: [...g.nodes, { id, type, position, data: { spec: defaultSpec(type, id) } }] }))
     },
-    [nodes, screenToFlowPosition, setNodes],
+    [nodes, screenToFlowPosition],
   )
 
   // immutable patch:换 spec/data 引用触发 RF 节点重渲(直接改字段会被
   // 节点组件 memo 吞掉)。
   const updateSpec = useCallback(
     (id: string, patch: (s: DslNode) => DslNode) => {
-      setNodes((nds) => nds.map((n) => (n.id === id ? { ...n, data: { spec: patch(n.data.spec) } } : n)))
+      setGraph((g) => updateGraphNode(g, id, patch))
     },
-    [setNodes],
+    [],
   )
-
-  // 锚点对账(spec 变 → 锚点集合变):清掉绑在已消失锚点上的边(T21.4 ③),
-  // 否则它们会被 React Flow 静默丢掉(按 id 找不到手柄就不画)。
-  useEffect(() => {
-    setEdges((eds) => reconcileSourceHandles(nodes, eds) ?? eds)
-  }, [nodes, setEdges])
 
   const doc = useMemo(() => fromCanvas({ nodes, edges, viewport }, base), [nodes, edges, viewport, base])
   const selected = nodes.find((n) => n.id === selectedId)
@@ -202,6 +211,7 @@ function Editor({
     setSideCollapsed(false)
     setShowWorkflowPanel((v) => !v)
     setSelectedId(null)
+    setGraph((g) => ({ ...g, nodes: g.nodes.map((n) => ({ ...n, selected: false })) }))
   }, [setSideCollapsed])
 
   return (
@@ -211,8 +221,8 @@ function Editor({
         <span className="mono min-w-0 truncate text-xs text-ink-0" title={base.name}>
           {base.name}
         </span>
-        <span className="num shrink-0 text-micro text-ink-3">{draftId === null ? '未建档' : `#${draftId}`}</span>
-        {dirty ? <span className="shrink-0 text-micro text-ink-2">未保存</span> : null}
+        <span className="num shrink-0 text-micro text-ink-3">{draftId === null ? '未保存' : `#${draftId}`}</span>
+        {dirty && draftId !== null ? <span className="shrink-0 text-micro text-ink-2">未保存</span> : null}
         {flash !== undefined && flash !== '' ? (
           <span
             className="flex min-w-0 items-center gap-1.5 border-l border-line-0 pl-3 text-xs text-ink-1"
@@ -267,8 +277,10 @@ function Editor({
             onNodesChange={onNodesChange}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
+            isValidConnection={(c) => canConnect(graph, c)}
             onMoveEnd={onMoveEnd}
             onSelectionChange={onSelectionChange}
+            onNodeClick={onNodeClick}
             onBeforeDelete={onBeforeDelete}
             deleteKeyCode={['Backspace', 'Delete']}
             minZoom={0.1}
@@ -278,8 +290,12 @@ function Editor({
           >
             {/* 地面 = 近黑 + 发丝线网格(未点亮的荧光屏),不铺点阵噪点。 */}
             <Background variant={BackgroundVariant.Lines} gap={28} lineWidth={1} color="var(--color-line-0)" />
-            <Controls />
-            <MiniMap pannable zoomable nodeColor="var(--color-line-2)" ariaLabel="画布缩略图" />
+            <Controls>
+              <ControlButton title={showMinimap ? '隐藏缩略图' : '显示缩略图'} aria-label={showMinimap ? '隐藏缩略图' : '显示缩略图'} aria-pressed={showMinimap} onClick={() => setShowMinimap((v) => !v)}>
+                <I glyph={Map} size={14} />
+              </ControlButton>
+            </Controls>
+            {showMinimap ? <MiniMap pannable zoomable nodeColor="var(--color-line-2)" ariaLabel="画布缩略图" /> : null}
           </ReactFlow>
           {nodes.length === 0 ? (
             <div className="pointer-events-none absolute inset-0 grid place-items-center">
@@ -316,6 +332,7 @@ function Editor({
               <NodePanel
                 key={selected.id}
                 spec={selected.data.spec}
+                targets={nodes.map((n) => n.data.spec).filter((n) => n.id !== selected.id)}
                 update={(patch) => updateSpec(selected.id, patch)}
                 onDelete={() => requestDelete(selected.id)}
                 deleteArmRef={deleteArmRef}

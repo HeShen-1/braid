@@ -28,7 +28,7 @@ export function Palette({ onAdd }: { onAdd: (type: NodeType) => void }) {
               onClick={() => onAdd(t)}
             >
               <I glyph={meta.glyph} size={16} />
-              <span className="micro">{meta.label}</span>
+              <span className="micro">{t === 'approval' ? '审批节点' : meta.label}</span>
             </button>
           )
         })}

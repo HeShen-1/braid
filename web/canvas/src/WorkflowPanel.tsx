@@ -2,9 +2,10 @@
 // 由画布拖拽产生)。name 落库后只读:后端语义「改名 = 新建工作流」
 // (UpdateDraft 对 name 不一致返回 name_mismatch),可编辑只会让保存必红。
 import { Workflow } from 'lucide-react'
-import type { WorkflowDoc } from './model/dsl.ts'
+import type { DslInput, WorkflowDoc } from './model/dsl.ts'
 import { KVRows, ListRows, Section, SelectField, TextField } from './fields.tsx'
 import { I } from './ui/I.tsx'
+import { Checkbox } from './ui/field.tsx'
 
 const INPUT_TYPES = ['string', 'number', 'boolean', 'object', 'array']
 
@@ -27,7 +28,7 @@ export function WorkflowPanel({
 
       <Section title="身份">
         <TextField
-          label={nameLocked ? '名称(已建档,改名 = 新建工作流)' : '名称'}
+          label={nameLocked ? '名称(已保存,改名 = 新建工作流)' : '名称'}
           value={doc.name}
           readOnly={nameLocked}
           onChange={(v) => update((d) => ({ ...d, name: v }))}
@@ -36,7 +37,8 @@ export function WorkflowPanel({
       </Section>
 
       <Section title="触发参数" hint="inputs">
-        <ListRows
+        <p className="field-hint">声明触发时提供的字段、类型和是否必填；执行页会显示所选发布版本的参数要求。</p>
+        <ListRows<DslInput>
           rowLabel="参数"
           items={doc.inputs ?? []}
           make={() => ({ name: '', type: 'string' })}
@@ -54,6 +56,13 @@ export function WorkflowPanel({
                 value={inp.type}
                 onChange={(v) => patch({ type: v })}
                 options={INPUT_TYPES.map((t) => ({ value: t, label: t }))}
+              />
+              <Checkbox label={`参数必填 ${i + 1}`} checked={inp.required === true} onCheckedChange={(required) => patch({ required })} />
+              <TextField
+                ariaLabel={`参数说明 ${i + 1}`}
+                value={inp.description ?? ''}
+                placeholder="用途或填写示例（可选）"
+                onChange={(description) => patch({ description })}
               />
             </>
           )}

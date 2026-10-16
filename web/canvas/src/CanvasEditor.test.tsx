@@ -9,6 +9,53 @@ import { PANEL_RIGHT_KEY } from './prefs.ts'
 import { TID, tid } from './ui/testids.ts'
 
 describe('CanvasEditor(画布 UI)', () => {
+  it('打开工作流设置清掉节点选中环,再次点击同一节点切回其属性', async () => {
+    localStorage.clear()
+    const user = userEvent.setup()
+    render(<CanvasEditor initialDoc={loadBase('with-positions')} />)
+    const card = screen.getByTestId(tid.nodeCard('verdict'))
+    fireEvent.click(card)
+    expect(await screen.findByTestId(TID.nodePanel)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '工作流设置' }))
+    expect(screen.getByText('触发参数')).toBeInTheDocument()
+    expect(screen.queryByTestId(TID.nodePanel)).not.toBeInTheDocument()
+    await waitFor(() => expect(card.closest('.react-flow__node')).not.toHaveClass('selected'))
+    fireEvent.click(card)
+    expect(await screen.findByTestId(TID.nodePanel)).toBeInTheDocument()
+    expect(screen.getByLabelText('条件去向 1')).toHaveTextContent('最终报告 (report)')
+    expect(screen.getByRole('button', { name: '工作流设置' })).toHaveAttribute('aria-pressed', 'false')
+  })
+
+  it('属性下拉选择分支目标同步导出路由与连线,删除目标后清除去向', async () => {
+    const user = userEvent.setup()
+    render(<CanvasEditor initialDoc={loadBase('with-positions')} />)
+    fireEvent.click(screen.getByTestId(tid.nodeCard('verdict')))
+    await user.click(await screen.findByLabelText('默认去向'))
+    await user.click(await screen.findByRole('option', { name: '最终报告 (report)' }))
+    let doc = JSON.parse(screen.getByTestId(TID.editorJson).textContent ?? '{}') as WorkflowDoc
+    expect(doc.nodes.find((n) => n.id === 'verdict')).toMatchObject({ default: 'report' })
+    expect(doc.edges?.filter((e) => e.from === 'verdict')).toEqual([{ from: 'verdict', to: 'report' }])
+    fireEvent.click(screen.getByTestId(tid.nodeCard('report')))
+    await user.click(await screen.findByTestId(TID.nodeDelete))
+    await user.click(screen.getByTestId(TID.deleteConfirmSubmit))
+    doc = JSON.parse(screen.getByTestId(TID.editorJson).textContent ?? '{}') as WorkflowDoc
+    expect(doc.nodes.find((n) => n.id === 'verdict')).toMatchObject({ cases: [expect.objectContaining({ next: '' })], default: '' })
+    expect(doc.edges?.filter((e) => e.from === 'verdict')).toEqual([])
+  })
+
+  it('缩略图可显式收起/找回,未保存与审批节点文案明确', async () => {
+    const user = userEvent.setup()
+    const { container } = render(<CanvasEditor initialDoc={blankDoc()} dirty />)
+    expect(container.querySelector('.react-flow__minimap')).not.toBeNull()
+    await user.click(screen.getByRole('button', { name: '隐藏缩略图' }))
+    expect(container.querySelector('.react-flow__minimap')).toBeNull()
+    await user.click(screen.getByRole('button', { name: '显示缩略图' }))
+    expect(container.querySelector('.react-flow__minimap')).not.toBeNull()
+    expect(screen.getAllByText('未保存')).toHaveLength(1)
+    expect(screen.queryByText('未建档')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '审批节点' })).toBeInTheDocument()
+  })
+
   it('按 DSL 渲染节点与类型摘要(approval/parallel/tool/branch 全到场)', () => {
     render(<CanvasEditor initialDoc={loadBase('all-node-types')} />)
     // approval:审批人 + 或签/时长

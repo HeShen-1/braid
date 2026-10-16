@@ -108,7 +108,7 @@ export function WorkflowsRoute() {
               <EmptyState
                 icon={Workflow}
                 title={drafts.length === 0 ? '新建你的第一条工作流' : '从左侧打开一条工作流'}
-                hint="画布上编排节点与连线，服务端按 JSON DSL 校验；发布后即可在执行面触发。"
+                hint="画布上编排节点与连线，服务端按 JSON DSL 校验；发布后即可在执行页触发。"
                 action={
                   <Button icon={FilePlus2} onClick={onNew}>
                     新建工作流

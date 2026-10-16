@@ -17,6 +17,10 @@ import { Alert, Button, EmptyState, PanelHead, StatusChip } from './ui/primitive
 import { EXEC_STATUS } from './ui/status.ts'
 import { TID, tid } from './ui/testids.ts'
 import { Duration, Timestamp } from './ui/time.tsx'
+import type { DslInput } from './model/dsl.ts'
+
+type InputContract = { definitionId: string; inputs: DslInput[]; error?: string }
+const INPUT_EXAMPLES: Record<string, unknown> = { string: '示例', number: 0, boolean: false, object: {}, array: [] }
 
 /** 非终态执行 → 列表自刷新(夜班盯盘:不点刷新也能看到新执行)。 */
 const LIVE_LIST_MS = 5000
@@ -71,6 +75,33 @@ export function ExecutionsView({
   const [inputError, setInputError] = useState('')
   const [apiError, setApiError] = useState('')
   const [busy, setBusy] = useState(false)
+  const [contract, setContract] = useState<InputContract | null>(null)
+  const [contractRetry, setContractRetry] = useState(0)
+  const currentContract = contract?.definitionId === selectedDef?.id ? contract : null
+  const contractReady = currentContract !== null && currentContract.error === undefined
+
+  useEffect(() => {
+    if (selectedDef === null || selectedDef.version === null) return
+    let active = true
+    setContract(null)
+    const target = `${selectedDef.name} v${selectedDef.version}`
+    void api.getVersion(selectedDef.name, selectedDef.version).then((detail) => {
+      if (!active) return
+      setContract({
+        definitionId: selectedDef.id,
+        inputs: detail.dsl.inputs ?? [],
+        ...(detail.status !== 'PUBLISHED' ? { error: `所选版本 ${target} 已归档或不可执行，请刷新后重新选择。` } : {}),
+      })
+    }).catch((err: unknown) => {
+      if (!active) return
+      if (err instanceof ApiError && err.status === 401) { onAuthExpired(); return }
+      const error = err instanceof ApiError && err.status === 404
+        ? `所选版本 ${target} 已失效或不存在，请刷新后重新选择。`
+        : `读取 ${target} 的输入要求失败，请重试后再触发。`
+      setContract({ definitionId: selectedDef.id, inputs: [], error })
+    })
+    return () => { active = false }
+  }, [selectedDef, contractRetry, onAuthExpired])
 
   // 筛选:status/nameQuery 驱动请求;nameInput 是输入框现值(防抖后进 nameQuery)。
   const [status, setStatus] = useState('')
@@ -129,7 +160,7 @@ export function ExecutionsView({
   }, [])
 
   const trigger = useCallback(async () => {
-    if (selectedDef === null || selectedDef.version === null || busy) return
+    if (selectedDef === null || selectedDef.version === null || busy || !contractReady) return
     let input: unknown
     try {
       input = JSON.parse(inputRaw)
@@ -139,6 +170,12 @@ export function ExecutionsView({
     }
     if (input === null || typeof input !== 'object' || Array.isArray(input)) {
       setInputError('输入顶层必须是 JSON 对象')
+      return
+    }
+    // required 指字段存在,不能把 false/0/空数组/空对象当成缺失。
+    const missing = currentContract.inputs.filter((field) => field.required && !Object.prototype.hasOwnProperty.call(input, field.name))
+    if (missing.length > 0) {
+      setInputError(`缺少必填参数：${missing.map((field) => field.name).join('、')}。请在输入 JSON 中补齐。`)
       return
     }
     setBusy(true)
@@ -163,7 +200,7 @@ export function ExecutionsView({
     } finally {
       setBusy(false)
     }
-  }, [selectedDef, inputRaw, busy, refresh, onSelect, onAuthExpired])
+  }, [selectedDef, inputRaw, busy, contractReady, currentContract, refresh, onSelect, onAuthExpired])
 
   const showFilters = execs.length > 0 || filtered
   const showPager = execs.length > 0 && (total > PAGE_SIZE || offset > 0)
@@ -186,6 +223,7 @@ export function ExecutionsView({
                 if (next === undefined) return
                 setSelectedDef(next)
                 setApiError('')
+                setInputError('')
               }}
             >
               <option value="" disabled>选择已发布工作流…</option>
@@ -195,6 +233,34 @@ export function ExecutionsView({
                 </option>
               ))}
             </Select>
+            {selectedDef !== null && selectedDef.version !== null ? (
+              <div className="trigger-contract" aria-label="所选版本输入要求" aria-live="polite">
+                {currentContract === null ? <p className="field-hint" role="status">正在读取 {selectedDef.name} v{selectedDef.version} 的输入要求…</p>
+                  : currentContract.error !== undefined ? (
+                    <>
+                      <p className="field-error" role="alert">{currentContract.error}</p>
+                      <Button size="sm" variant="quiet" onClick={() => { setContract(null); setContractRetry((v) => v + 1) }}>重试读取输入要求</Button>
+                    </>
+                  ) : currentContract.inputs.length === 0 ? <p className="field-hint">此版本未声明触发参数，可提交空对象 {'{}'}。</p> : (
+                    <>
+                      <p className="field-label">输入要求 · {selectedDef.name} v{selectedDef.version}</p>
+                      <ul className="trigger-inputs">
+                        {currentContract.inputs.map((field) => (
+                          <li key={field.name}>
+                            <code className="mono">{field.name}</code>
+                            <span>{field.type} · {field.required ? '必填' : '选填'}</span>
+                            {field.description ? <p className="field-hint">{field.description}</p> : null}
+                          </li>
+                        ))}
+                      </ul>
+                      <details className="trigger-example">
+                        <summary>输入 JSON 示例</summary>
+                        <pre>{JSON.stringify(Object.fromEntries(currentContract.inputs.map((field) => [field.name, INPUT_EXAMPLES[field.type]])), null, 2)}</pre>
+                      </details>
+                    </>
+                  )}
+              </div>
+            ) : null}
             <TextArea
               label="输入 JSON"
               rows={4}
@@ -202,22 +268,22 @@ export function ExecutionsView({
               error={inputError}
               hint="顶层必须是 JSON 对象;幂等键由界面每次提交新生成"
               data-testid={TID.triggerInput}
-              onChange={(e) => setInputRaw(e.target.value)}
+              onChange={(e) => { setInputRaw(e.target.value); setInputError('') }}
             />
             <div className="flex items-center gap-2">
               <Button
                 variant="primary"
                 icon={Play}
                 data-testid={TID.triggerSubmit}
-                disabled={selectedDef === null || selectedDef.version === null || busy}
+                disabled={selectedDef === null || selectedDef.version === null || busy || !contractReady}
                 onClick={() => void trigger()}
               >
-                触发执行
+                {busy ? '正在触发…' : '触发执行'}
               </Button>
-              {selectedDef === null ? <span className="text-xs text-ink-2">先选一个已发布工作流</span> : null}
+              {selectedDef === null && defs.length > 0 ? <span className="text-xs text-ink-2">先选一个已发布工作流</span> : null}
             </div>
             {defs.length === 0 ? (
-              <p className="field-hint">尚无已发布工作流 —— 先在工作流面发布一版,再回到这里触发。</p>
+              <p className="field-hint">尚无已发布工作流，请先在工作流页发布一版，再回到这里触发。</p>
             ) : null}
             {apiError !== '' ? (
               <Alert tone="error" icon={TriangleAlert}>
