@@ -25,6 +25,10 @@ function stubRoute(
 ) {
   const fn = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = String(input)
+    // 总览有独立专项回归；本组列表/触发夹具仅响应 limit=20 的列表查询。
+    if (pathOf(url) === '/api/v1/executions' && init?.method !== 'POST' && queryOf(url).get('limit') !== '20') {
+      return ok({ items: [], page: { total: 0 } })
+    }
     const version = url.match(/^\/api\/v1\/definitions\/([^/]+)\/versions\/(\d+)$/)
     if (version !== null) return onVersion?.(url) ?? ok({
       ...published[0], name: version[1], version: Number(version[2]),
@@ -84,7 +88,7 @@ function listStub(onList: (q: URLSearchParams) => Response) {
     if (path === '/api/v1/definitions') return ok({ items: published })
     return ok({ items: [], next_cursor: '' })
   })
-  const listUrls = () => fn.mock.calls.map(([u]) => String(u)).filter((u) => pathOf(u) === '/api/v1/executions')
+  const listUrls = () => fn.mock.calls.map(([u]) => String(u)).filter((u) => pathOf(u) === '/api/v1/executions' && queryOf(u).get('limit') === '20')
   return { fn, listUrls }
 }
 
@@ -217,7 +221,7 @@ describe('ExecutionsView(执行面)', () => {
     render(<ExecutionsView canManage selectedId={null} onSelect={() => {}} onAuthExpired={() => {}} />)
     await chooseOption(user, await screen.findByTestId(TID.triggerDefinition), 'wf v3')
     expect(screen.getByTestId(TID.triggerSubmit)).toBeDisabled()
-    expect(screen.getByRole('status')).toHaveTextContent('wf v3 的输入要求')
+    expect(within(screen.getByLabelText('所选版本输入要求')).getByRole('status')).toHaveTextContent('wf v3 的输入要求')
     newest = 4
     await user.click(screen.getByRole('button', { name: '刷新执行列表' }))
     await waitFor(() => expect(versions).toEqual(['/api/v1/definitions/wf/versions/3']))

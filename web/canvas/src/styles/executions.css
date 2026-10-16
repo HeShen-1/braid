@@ -11,10 +11,15 @@
 .exec-view {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: minmax(0, 1fr) auto;
+  grid-template-rows: auto auto auto;
   flex: 1 1 auto;
   min-width: 0;
   min-height: 0;
+}
+
+.exec-view[data-detail='false'] {
+  align-content: start;
+  overflow-y: auto;
 }
 
 .exec-rail {
