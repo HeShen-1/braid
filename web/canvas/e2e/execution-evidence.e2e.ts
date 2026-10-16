@@ -181,6 +181,7 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
     await expect.poll(async () => calls.length, { timeout: 30_000 }).toBe(2)
     await expect(page.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'SUCCEEDED', { timeout: 60_000 })
     await page.getByRole('button', { name: '刷新证据', exact: true }).click()
+    await expect(page.getByTestId(tid.nodeRow('model', 0))).toContainText('累计 2 轮')
     await expect(page.getByTestId(tid.attemptRow(2))).toContainText('当前轮代')
     await expect(page.getByTestId(tid.attemptRow(1))).toContainText('历史轮次')
     await page.getByRole('button', { name: '第 2 轮', exact: true }).click()

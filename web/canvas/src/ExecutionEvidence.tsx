@@ -259,7 +259,7 @@ export function AuditEvidence({ executionId, traceId, partition, refreshKey, onA
   }, [refreshKey])
 
   return (
-    <section ref={panelRef} tabIndex={traceId !== undefined ? -1 : undefined} className="panel evidence-focus" aria-label={traceId !== undefined ? 'Trace 审计' : undefined}>
+    <section ref={panelRef} tabIndex={traceId !== undefined ? -1 : undefined} className="panel evidence-focus" data-trace-evidence={traceId !== undefined ? 'true' : undefined} aria-label={traceId !== undefined ? 'Trace 审计' : undefined}>
       <PanelHead title={traceId === undefined ? '审计事件' : 'Trace 审计'} sub={
         <span data-testid={traceId === undefined ? TID.auditCount : undefined}>已加载 {items.length} 条{cursor ? ' · 仍有更多' : loading || error ? '' : ' · 已到末页'}{partition ? ` · 分区 ${partition}` : ''}</span>
       } actions={<><Button size="sm" disabled={loading} onClick={() => setRetry((n) => n + 1)}>刷新审计</Button>{onClose ? <Button size="sm" variant="quiet" onClick={onClose}>收起 Trace</Button> : null}</>} />

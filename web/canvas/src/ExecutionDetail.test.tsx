@@ -120,6 +120,32 @@ describe('ExecutionDetail(执行详情)', () => {
     expect(await screen.findByRole('region', { name: 'Trace 审计' })).toHaveFocus()
   })
 
+  it('Trace内重查同链或跨链A→B，收起仍返回有效外部入口', async () => {
+    const user = userEvent.setup()
+    const a = 'a'.repeat(32), b = 'b'.repeat(32)
+    const ev = (id: string, trace_id: string) => ({ id, event_type: 'execution.triggered', node_id: null, trace_id, payload: {}, row_hash: null, prev_hash: '', actor_type: 'user', actor_id: 'author', event_at: baseDetail.created_at })
+    stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => {
+      if (url === '/api/v1/executions/7') return ok({ ...baseDetail, audit: { ...baseDetail.audit, trace_id: a } })
+      return ok({ items: url.includes(`trace_id=${b}`) ? [ev('2', b)] : [ev('1', a), ev('2', b)], next_cursor: '' })
+    })
+    render(<ExecutionDetail execId="7" onAuthExpired={() => {}} />)
+    const external = await screen.findByRole('button', { name: `查询执行 trace ${a}` })
+    await user.click(external)
+    let panel = await screen.findByRole('region', { name: 'Trace 审计' })
+    await user.click(await within(panel).findByRole('button', { name: `查询 trace ${a}` }))
+    await user.click(within(panel).getByRole('button', { name: '收起 Trace' }))
+    expect(external).toHaveFocus()
+    await user.keyboard('{Enter}')
+    panel = await screen.findByRole('region', { name: 'Trace 审计' })
+    const internal = await within(panel).findByRole('button', { name: `查询 trace ${b}` })
+    await user.click(internal)
+    panel = await screen.findByRole('region', { name: 'Trace 审计' })
+    await within(panel).findByRole('button', { name: `查询 trace ${b}` })
+    expect(internal.isConnected).toBe(false)
+    await user.click(within(panel).getByRole('button', { name: '收起 Trace' }))
+    expect(external).toHaveFocus()
+  })
+
   it('加载态就给 exec-detail(不带假状态);数据到达后行级 data-state + 失败原因可见', async () => {
     stubRoute([/^\/api\/v1\/executions\/7$/, /\/audit/], (url) => {
       if (url === '/api/v1/executions/7') {

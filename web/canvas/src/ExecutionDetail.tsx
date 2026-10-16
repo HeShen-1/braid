@@ -64,8 +64,10 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
   const [trace, setTrace] = useState<string | null>(null)
   const evidenceOpener = useRef<HTMLButtonElement | null>(null)
   const traceOpener = useRef<HTMLButtonElement | null>(null)
+  const refreshOpener = useRef<HTMLButtonElement | null>(null)
   const inspectTrace = useCallback((id: string, opener: HTMLButtonElement) => {
-    traceOpener.current = opener
+    // Trace面内继续查询时保留外部入口；内部按钮会随切链/收起卸载。
+    if (opener.closest('[data-trace-evidence]') === null) traceOpener.current = opener
     setTrace(id)
   }, [])
   const [target, setTarget] = useState<string | null>(null)
@@ -224,7 +226,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
             #{detail.id} · {detail.definition_name} v{detail.definition_version}
           </code>
           <span className="ml-auto flex items-center gap-2">
-            <Button variant="quiet" size="sm" icon={RefreshCw} disabled={busy} onClick={() => void load()}>
+            <Button ref={refreshOpener} variant="quiet" size="sm" icon={RefreshCw} disabled={busy} onClick={() => void load()}>
               刷新
             </Button>
           </span>
@@ -398,7 +400,7 @@ export function ExecutionDetail({ execId, onAuthExpired }: { execId: string; onA
 
       {/* ⑥ 审计链 */}
       <AuditEvidence key={execId} executionId={execId} partition={detail.audit.exec_date} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={inspectTrace} />
-      {trace !== null ? <AuditEvidence key={`${execId}:${trace}`} traceId={trace} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={inspectTrace} onClose={() => { setTrace(null); traceOpener.current?.focus() }} /> : null}
+      {trace !== null ? <AuditEvidence key={`${execId}:${trace}`} traceId={trace} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={inspectTrace} onClose={() => { setTrace(null); (traceOpener.current?.isConnected ? traceOpener.current : refreshOpener.current)?.focus() }} /> : null}
     </main>
   )
 }

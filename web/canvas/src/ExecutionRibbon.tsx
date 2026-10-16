@@ -373,9 +373,9 @@ function RibbonRowView({
         <span className="mono truncate text-ink-0">{row.nodeId}</span>
         <Badge icon={type.glyph}>{type.label}</Badge>
         <span className="num text-ink-2">#{row.instanceNo}</span>
-        {row.maxAttempts > 1 ? (
-          <span className="num text-ink-2" title="尝试次数 / 最大尝试次数">
-            试 {row.attempts}/{row.maxAttempts}
+        {row.maxAttempts > 1 || row.attempts > 1 ? (
+          <span className="num text-ink-2" title={`跨回滚累计轮次；单轮代最大尝试次数 ${row.maxAttempts}`}>
+            累计 {row.attempts} 轮
           </span>
         ) : null}
         {row.durationMs !== null ? <span className="num ml-auto text-ink-2" title="投影墙钟，可能含跨轮间隔；本轮时长见节点证据">{fmtDuration(row.durationMs)}</span> : null}
