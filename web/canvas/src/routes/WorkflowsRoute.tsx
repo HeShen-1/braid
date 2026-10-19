@@ -73,12 +73,12 @@ export function WorkflowsRoute() {
   }, [publish, navigate])
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col">
+    <div className="flex min-w-0 min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 items-center gap-2 border-b border-line-0 px-4 py-2" aria-label="工作流视图">
         {canAuthor ? <Button size="sm" variant="quiet" aria-pressed={!showVersions} onClick={() => void navigate(ws?.draftId == null ? '/workflows' : `/workflows/${ws.draftId}`)}>草稿</Button> : null}
         <Button size="sm" variant="quiet" aria-pressed={showVersions} onClick={() => void navigate('/workflows?view=versions')}>已发布与版本历史</Button>
       </div>
-      {showVersions ? <PublishedVersions canManage={canAuthor} onAuthExpired={logout} /> : <div className="flex min-h-0 flex-1">
+      {showVersions ? <PublishedVersions canManage={canAuthor} onAuthExpired={logout} /> : <div className="flex min-w-0 min-h-0 flex-1">
       <DraftList
         drafts={drafts}
         activeId={ws?.draftId ?? null}

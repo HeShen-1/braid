@@ -66,6 +66,13 @@ async function selectedPanel(page: Page, id: string) {
   await expect(page.getByTestId(TID.nodeDelete)).toHaveAttribute('title', `删除节点 ${id}`)
 }
 
+async function assertEditorShellFitsWindow(page: Page) {
+  await expect.poll(() => page.evaluate(() => {
+    const rightEdges = ['.editor', '.editor-mid'].map((selector) => document.querySelector<HTMLElement>(selector)?.getBoundingClientRect().right ?? Number.POSITIVE_INFINITY)
+    return rightEdges.every((right) => right <= window.innerWidth + 0.5)
+  }), { message: '编辑器外壳不得超出视口右边界' }).toBe(true)
+}
+
 async function addNode(
   page: Page,
   testInfo: TestInfo,
@@ -252,6 +259,7 @@ test('远距旧节点不牵走新增节点:1024双栏、长分支、真实视口
     const addedId = await addNode(page, testInfo, 'tool', 'outlier')
     await selectedPanel(page, addedId)
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await assertEditorShellFitsWindow(page)
     const card = await page.getByTestId(tid.nodeCard(addedId)).boundingBox()
     expect(card).not.toBeNull()
     expect(card!.x).toBeGreaterThanOrEqual(0)
@@ -284,6 +292,7 @@ test('远距旧节点不牵走新增节点:1024双栏、长分支、真实视口
     expect(server).toEqual(expected)
     await expect(page.getByTestId(TID.editorFlash)).toContainText('已保存')
     await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    await assertEditorShellFitsWindow(page)
   } finally {
     await attachJson(testInfo, 'outlier-after', { dsl: await canvasDoc(page), server, actualViewport: await actualViewport(), geometry: await geometry(page), window: await page.evaluate(() => ({ innerWidth, innerHeight, scrollWidth: document.documentElement.scrollWidth })) })
     await screenshot(page, testInfo, 'outlier-after')
