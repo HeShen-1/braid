@@ -136,7 +136,7 @@ export function WorkflowsRoute() {
           </div>
         </div>
       ) : (
-        <div className="flex min-h-0 flex-1 flex-col">
+        <div className="flex min-w-0 min-h-0 flex-1 flex-col">
           {confirmNew ? (
             <ConfirmLayer
               layerRef={newLayerRef}
