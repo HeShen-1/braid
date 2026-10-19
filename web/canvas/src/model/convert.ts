@@ -16,6 +16,7 @@ import type {
   CanvasMeta,
   DslEdge,
   DslNode,
+  EdgeSide,
   LlmNode,
   ParallelBody,
   Point,
@@ -23,7 +24,7 @@ import type {
   Viewport,
   WorkflowDoc,
 } from './dsl.ts'
-import { DEFAULT_SOURCE_ANCHOR, caseAnchorId } from './dsl.ts'
+import { DEFAULT_SOURCE_ANCHOR, EDGE_SIDES, caseAnchorId } from './dsl.ts'
 
 export interface FlowNode {
   id: string
@@ -36,7 +37,7 @@ export interface FlowEdge {
   id: string
   source: string
   target: string
-  /** T21.4 ③:源锚点 id(缺省 = 节点缺省手柄;branch 为 case_<i>/default)。 */
+  /** branch 为 case_<i>/default;普通节点为 source_<side>,缺省 bottom 无 id。 */
   sourceHandle?: string
   targetHandle?: string
   label?: string
@@ -46,6 +47,17 @@ export interface CanvasState {
   nodes: FlowNode[]
   edges: FlowEdge[]
   viewport: Viewport
+}
+
+/** 默认源 bottom / 目标 top 保留无 id 手柄且 DOM 首位,旧边无需迁移。 */
+export function sideHandle(type: 'source' | 'target', side: unknown): string | undefined {
+  const fallback = type === 'source' ? 'bottom' : 'top'
+  return EDGE_SIDES.some((s) => s === side) && side !== fallback ? `${type}_${side}` : undefined
+}
+
+/** 只识别实际存在的非默认物理手柄;未知/过期 id 不冒充方向落盘。 */
+export function handleSide(type: 'source' | 'target', handle: string | undefined): EdgeSide | undefined {
+  return handle === undefined ? undefined : EDGE_SIDES.find((s) => sideHandle(type, s) === handle)
 }
 
 /** 节点出口上的一个可连点(id 进 schema $defs/sourceAnchor 词域)。 */
@@ -62,7 +74,8 @@ export interface SourceAnchor {
  *   - 其余四类节点:DSL 语义上只有一个出口(approval 的通过/驳回不是路由,
  *     驳回即执行失败)→ 空集 = 单缺省手柄,不虚构锚点。
  * 集合推导而不落盘:锚点是 spec 的函数,写进 metadata 只会造出第二个真源;
- * metadata.canvas.edges 只持久化「哪条边接在哪个锚点上」这一个事实。
+ * metadata.canvas.edges 的 source_anchor 只持久化语义绑定;物理方向由
+ * source_side/target_side 分开承载,不改变本集合。
  */
 export function sourceAnchors(spec: DslNode): SourceAnchor[] {
   if (spec.type !== 'branch') return []
@@ -90,10 +103,14 @@ function hasAnchor(spec: DslNode | undefined, id: string): boolean {
 export function reconcileSourceHandles(nodes: FlowNode[], edges: FlowEdge[]): FlowEdge[] | null {
   if (!edges.some((e) => typeof e.sourceHandle === 'string')) return null
   // 锚点 id 集合一次算齐:本函数挂在节点变更(拖动每帧也走)上,别按边重算 spec。
+  const specs = new Map(nodes.map((n) => [n.id, n.data.spec]))
   const anchorIds = new Map(nodes.map((n) => [n.id, new Set(sourceAnchors(n.data.spec).map((a) => a.id))]))
   let dirty = false
   const next = edges.map((e) => {
-    if (typeof e.sourceHandle !== 'string' || anchorIds.get(e.source)?.has(e.sourceHandle) === true) return e
+    const spec = specs.get(e.source)
+    const valid = spec?.type === 'branch' ? anchorIds.get(e.source)?.has(e.sourceHandle ?? '') :
+      spec !== undefined && handleSide('source', e.sourceHandle) !== undefined
+    if (typeof e.sourceHandle !== 'string' || valid) return e
     dirty = true
     const cleared: FlowEdge = { ...e }
     delete cleared.sourceHandle
@@ -212,19 +229,17 @@ export function toCanvas(doc: WorkflowDoc): CanvasState {
   // 否则按 cases[].next/default 推导 —— 老文档/外部文档因此也能开出锚点连线。
   // 「有没有记录」本身是信息:记录在场 = 作者表过态,省略 source_anchor 即显式
   // 未绑定(不推导),见 resolveSourceHandle。
-  const records = new Map<string, { present: boolean; anchor: string | undefined }>()
-  for (const a of doc.metadata?.canvas?.edges ?? []) {
-    const anchor = typeof a.source_anchor === 'string' && a.source_anchor !== '' ? a.source_anchor : undefined
-    records.set(edgeKey(a.from, a.to), { present: true, anchor })
-  }
+  const records = new Map((doc.metadata?.canvas?.edges ?? []).map((a) => [edgeKey(a.from, a.to), a]))
   const specs = new Map(doc.nodes.map((n) => [n.id, n]))
   const edges: FlowEdge[] = (doc.edges ?? []).map((e) => {
-    const sourceHandle = resolveSourceHandle(
-      specs.get(e.from),
-      e.to,
-      records.get(edgeKey(e.from, e.to)) ?? { present: false, anchor: undefined },
-    )
-    return { id: edgeId(e), source: e.from, target: e.to, sourceHandle, label: e.label }
+    const record = records.get(edgeKey(e.from, e.to))
+    const spec = specs.get(e.from)
+    const sourceHandle = spec?.type === 'branch' ? resolveSourceHandle(spec, e.to, {
+      present: record !== undefined,
+      anchor: typeof record?.source_anchor === 'string' && record.source_anchor !== '' ? record.source_anchor : undefined,
+    }) : sideHandle('source', record?.source_side)
+    const targetHandle = sideHandle('target', record?.target_side)
+    return { id: edgeId(e), source: e.from, target: e.to, sourceHandle, targetHandle, label: e.label }
   })
   return { nodes, edges, viewport: clampViewport(doc.metadata?.canvas?.viewport) }
 }
@@ -261,22 +276,30 @@ export function connectEdges(edges: FlowEdge[], c: EdgeConnection): FlowEdge[] {
 export function fromCanvas(state: CanvasState, base: WorkflowDoc): WorkflowDoc {
   const nodes = state.nodes.map((n) => n.data.spec)
   const specs = new Map(state.nodes.map((n) => [n.id, n.data.spec]))
-  // 只有多锚点节点(有出口锚点的 branch)需要记绑定状态:单出口节点恒缺省手柄,
-  // 记了只是噪声。
-  const multiAnchor = new Set(state.nodes.filter((n) => sourceAnchors(n.data.spec).length > 0).map((n) => n.id))
-  // T21.4 ③:多锚点节点的每条出边都落一条记录(锚点绑定,或省略 source_anchor =
-  // 显式未绑定);带 id 却不在锚点集内的 handle = 悬空(画布内部态,改过 cases /
-  // 换过节点类型),不冒充 DSL 语义落盘,下次导入按语义推导。
+  // branch 保留 T21.4 ③ 的「记录在场 = 已表态」;普通节点仅在非默认
+  // 方向时落记录。默认 bottom/top 不冗余写,语义锚点不重载为物理方向。
   const anchors: CanvasEdgeAnchor[] = []
   const edges: DslEdge[] = state.edges.map((e) => {
     const out: DslEdge = { from: e.source, to: e.target }
     if (typeof e.label === 'string' && e.label !== '') out.label = e.label
     const spec = specs.get(e.source)
-    if (spec !== undefined && multiAnchor.has(e.source)) {
+    const sourceSide = spec?.type === 'branch' ? undefined : handleSide('source', e.sourceHandle)
+    const targetSide = handleSide('target', e.targetHandle)
+    const record: CanvasEdgeAnchor = { from: e.source, to: e.target }
+    if (spec?.type === 'branch') {
       const h = e.sourceHandle
-      if (typeof h === 'string' && hasAnchor(spec, h)) anchors.push({ from: e.source, to: e.target, source_anchor: h })
-      else if (h === undefined) anchors.push({ from: e.source, to: e.target })
+      if (h !== undefined && hasAnchor(spec, h)) record.source_anchor = h
+      else if (h !== undefined) {
+        // 陈旧锚点原本省整条记录,下次导入按路由推导。若要保留新目标方向,
+        // 需在同一记录中写回原应推导的语义锚,不能误变「显式未绑定」。
+        if (targetSide === undefined) return out
+        const derived = derivedAnchor(spec, e.target)
+        if (derived !== undefined) record.source_anchor = derived
+      }
     }
+    if (sourceSide !== undefined) record.source_side = sourceSide
+    if (targetSide !== undefined) record.target_side = targetSide
+    if (spec?.type === 'branch' || sourceSide !== undefined || targetSide !== undefined) anchors.push(record)
     return out
   })
   const canvas: CanvasMeta = {
@@ -285,7 +308,7 @@ export function fromCanvas(state: CanvasState, base: WorkflowDoc): WorkflowDoc {
     ),
     viewport: clampViewport(state.viewport),
   }
-  // 空绑定不落键:无锚点文档(全单出口节点)导出字节不变。
+  // 无绑定/自定义方向不落 edges 键:旧缺省文档导出字节不变。
   if (anchors.length > 0) canvas.edges = anchors
   return {
     dsl: base.dsl,
@@ -422,7 +445,7 @@ function orderDoc(doc: WorkflowDoc): Record<string, unknown> {
           edges:
             (canvas.edges ?? []).length > 0
               ? (canvas.edges ?? []).map((a) =>
-                  defined([['from', a.from], ['to', a.to], ['source_anchor', a.source_anchor]]),
+                  defined([['from', a.from], ['to', a.to], ['source_anchor', a.source_anchor], ['source_side', a.source_side], ['target_side', a.target_side]]),
                 )
               : undefined,
         },

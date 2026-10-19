@@ -55,7 +55,7 @@
             "edges": {
               "type": "array",
               "maxItems": 512,
-              "description": "画布连线锚点绑定(引擎忽略,与 nodes/viewport 同层)。每条记录以 (from,to) 标识顶层 edges 的一条 —— 边唯一性由 T1.2 语义校验保证(IssueDuplicateEdge),故二元组即身份;source_anchor 指 from 节点的源锚点。锚点集合不由本层声明,而是按节点语义推导(branch = 每条 case 一个 case_<i> + default),本层只持久化「哪条边接在哪个锚点上」。**记录在场即表态**:省略 source_anchor = 作者显式把该边落在节点的缺省/兜底手柄上(导入时不做语义推导,否则显式解绑重开就被改回去);整个 (from,to) 无记录 = 从未表态,导入时按 cases[].next/default 推导(老文档开箱即有锚点连线);记录里的锚点已不存在 = 悬空,退回推导。**已知边界**:case_<i> 下标对齐 cases 数组序,cases 增删/重排后既有绑定按新下标解释(不做自动迁移);锚点整个消失时画布侧清掉绑定(边回退兜底手柄),不写悬空记录。画布导出时全表重写;未知锚点/悬空记录不承载语义(引擎忽略,画布导入时丢弃)。",
+              "description": "画布连线锚点绑定(引擎忽略,与 nodes/viewport 同层)。每条记录以 (from,to) 标识顶层 edges 的一条 —— 边唯一性由 T1.2 语义校验保证(IssueDuplicateEdge),故二元组即身份;source_anchor 指 from 节点的源锚点。锚点集合不由本层声明,而是按节点语义推导(branch = 每条 case 一个 case_<i> + default),source_anchor 只持久化语义绑定;source_side/target_side 独立承载端点物理方向(缺省 bottom/top,不保存手柄集合/自由坐标)。branch 源仍固定下沿,不使用 source_side。**记录在场即表态**:省略 source_anchor = 作者显式把该边落在节点的缺省/兜底手柄上(导入时不做语义推导,否则显式解绑重开就被改回去);整个 (from,to) 无记录 = 从未表态,导入时按 cases[].next/default 推导(老文档开箱即有锚点连线);记录里的锚点已不存在 = 悬空,退回推导。**已知边界**:case_<i> 下标对齐 cases 数组序,cases 增删/重排后既有绑定按新下标解释(不做自动迁移);锚点整个消失时画布侧清掉绑定(边回退兜底手柄),不写悬空记录。画布导出时全表重写;未知锚点/悬空记录不承载语义(引擎忽略,画布导入时丢弃)。",
               "items": {
                 "type": "object",
                 "additionalProperties": false,
@@ -63,7 +63,9 @@
                 "properties": {
                   "from": { "$ref": "#/$defs/identifier" },
                   "to": { "$ref": "#/$defs/identifier" },
-                  "source_anchor": { "$ref": "#/$defs/sourceAnchor" }
+                  "source_anchor": { "$ref": "#/$defs/sourceAnchor" },
+                  "source_side": { "$ref": "#/$defs/edgeSide", "description": "普通源节点的物理方向,缺省 bottom;branch 源固定下沿,画布忽略并清理其 source_side。" },
+                  "target_side": { "$ref": "#/$defs/edgeSide", "description": "目标节点的物理方向,缺省 top;不改变业务路由。" }
                 }
               }
             }
@@ -120,6 +122,11 @@
     "identifier": {
       "type": "string",
       "pattern": "^[a-z][a-z0-9_]{0,63}$"
+    },
+    "edgeSide": {
+      "type": "string",
+      "enum": ["top", "right", "bottom", "left"],
+      "description": "边端点物理方向(D-2026-10-16-ux-f2-edge-sides),与 sourceAnchor 的分支语义独立;固定手柄集合仍由节点推导,缺省方向不冗余导出。"
     },
     "sourceAnchor": {
       "type": "string",

@@ -46,7 +46,7 @@ test('空白编排分支→存发与服务端DSL一致→缺必需字段就近�
   await expect(page.getByTestId(TID.navExecutions)).toBeVisible()
   await page.getByTestId(TID.draftNew).click()
   await expect(page.getByText('空白画布', { exact: true })).toBeVisible()
-  // 使用现有移动手势绕开 #228 的同坐标新建边界,不在本票改落点。
+  // 用移动手势安排本分支旅程的固定测试布局;连续新增的自然落位由独立旅程覆盖。
   await page.getByTestId(TID.panelLeftToggle).click()
   const canvas = await page.locator('.editor-canvas').boundingBox()
   expect(canvas).not.toBeNull()

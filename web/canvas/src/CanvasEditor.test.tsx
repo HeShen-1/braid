@@ -1,5 +1,6 @@
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { StrictMode } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { CanvasEditor } from './CanvasEditor.tsx'
 import { blankDoc } from './defaults.ts'
@@ -84,6 +85,70 @@ describe('CanvasEditor(画布 UI)', () => {
     expect(screen.getAllByText('模型未配置', { exact: true })).toHaveLength(2)
   })
 
+  it('连加四种节点会分别选中并联动属性,原节点位置不变且每次编辑正常上报', async () => {
+    localStorage.clear()
+    const user = userEvent.setup()
+    const onDocChange = vi.fn<(doc: WorkflowDoc) => void>()
+    const initial = loadBase('with-positions')
+    render(<CanvasEditor initialDoc={initial} onDocChange={onDocChange} />)
+    await user.click(screen.getByRole('button', { name: '工作流设置' }))
+    const types = ['llm', 'tool', 'branch', 'approval'] as const
+    for (const type of types) {
+      const add = screen.getByTestId(tid.paletteBtn(type))
+      await user.click(add)
+      const panel = await screen.findByTestId(TID.nodePanel)
+      expect(within(panel).getByText(type, { selector: 'code' })).toBeInTheDocument()
+      expect(screen.getByTestId(tid.nodeCard(type)).closest('.react-flow__node')).toHaveClass('selected')
+      expect(document.querySelectorAll('.react-flow__node.selected')).toHaveLength(1)
+      expect(screen.getByRole('button', { name: '工作流设置' })).toHaveAttribute('aria-pressed', 'false')
+      expect(add).toHaveFocus()
+    }
+    const doc = JSON.parse(screen.getByTestId(TID.editorJson).textContent ?? '{}') as WorkflowDoc
+    const positions = doc.metadata?.canvas?.nodes ?? {}
+    for (const [id, point] of Object.entries(initial.metadata?.canvas?.nodes ?? {})) expect(positions[id]).toEqual(point)
+    expect(new Set(types.map((id) => JSON.stringify(positions[id]))).size).toBe(4)
+    expect(onDocChange.mock.calls.at(-1)?.[0]).toEqual(doc)
+  })
+
+  it('StrictMode 同一事件内快速连加四次不重复 id/落点,仅最后新节点选中', async () => {
+    localStorage.clear()
+    render(<StrictMode><CanvasEditor initialDoc={blankDoc()} /></StrictMode>)
+    const add = screen.getByTestId(tid.paletteBtn('llm'))
+    act(() => { for (let i = 0; i < 4; i++) add.click() })
+    await screen.findByTestId(TID.nodePanel)
+    const doc = JSON.parse(screen.getByTestId(TID.editorJson).textContent ?? '{}') as WorkflowDoc
+    expect(doc.nodes.map((n) => n.id)).toEqual(['llm', 'llm_n2', 'llm_n3', 'llm_n4'])
+    expect(new Set(Object.values(doc.metadata?.canvas?.nodes ?? {}).map((p) => JSON.stringify(p))).size).toBe(4)
+    expect(document.querySelectorAll('.react-flow__node.selected')).toHaveLength(1)
+    expect(screen.getByTestId(tid.nodeCard('llm_n4')).closest('.react-flow__node')).toHaveClass('selected')
+    expect(within(screen.getByTestId(TID.nodePanel)).getByText('llm_n4', { selector: 'code' })).toBeInTheDocument()
+  })
+
+  it('新节点落位取实际画布区域,保留折叠偏好并在重新展开时显示新属性', async () => {
+    localStorage.clear()
+    localStorage.setItem(PANEL_RIGHT_KEY, '1')
+    const originalRect = HTMLElement.prototype.getBoundingClientRect
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return this.classList.contains('editor-canvas')
+        ? { x: 100, y: 150, left: 100, top: 150, width: 800, height: 600, right: 900, bottom: 750, toJSON: () => ({}) }
+        : originalRect.call(this)
+    })
+    try {
+      const user = userEvent.setup()
+      render(<CanvasEditor initialDoc={blankDoc()} />)
+      await user.click(screen.getByTestId(tid.paletteBtn('tool')))
+      expect(screen.queryByLabelText('属性面板')).not.toBeInTheDocument()
+      expect(localStorage.getItem(PANEL_RIGHT_KEY)).toBe('1')
+      const doc = JSON.parse(screen.getByTestId(TID.editorJson).textContent ?? '{}') as WorkflowDoc
+      expect(doc.metadata?.canvas?.nodes?.tool.position).toEqual({ x: 360, y: 370 })
+      await user.click(screen.getByLabelText('展开属性面板'))
+      expect(within(await screen.findByTestId(TID.nodePanel)).getByText('tool', { selector: 'code' })).toBeInTheDocument()
+    } finally {
+      rect.mockRestore()
+      localStorage.clear()
+    }
+  })
+
   it('palette 加并行节点:基名 fan(词域合规)', async () => {
     const user = userEvent.setup()
     render(<CanvasEditor initialDoc={loadBase('minimal-llm')} />)
@@ -135,6 +200,29 @@ describe('CanvasEditor(画布 UI)', () => {
     expect(screen.getByTestId(TID.editor)).toBeInTheDocument()
   })
 
+  it('UX-F2:普通节点四向输入/输出都可达,branch 保语义源锚与四向目标', () => {
+    localStorage.clear()
+    render(<CanvasEditor initialDoc={loadBase('all-node-types')} />)
+    for (const id of ['read_doc', 'parse', 'fan', 'review']) {
+      const card = screen.getByTestId(tid.nodeCard(id))
+      const source = card.querySelectorAll('.source[data-side]')
+      const target = card.querySelectorAll('.target[data-side]')
+      expect([...source].map((h) => h.getAttribute('data-side')).sort()).toEqual(['bottom', 'left', 'right', 'top'])
+      expect([...target].map((h) => h.getAttribute('data-side')).sort()).toEqual(['bottom', 'left', 'right', 'top'])
+      expect(source[0]).toHaveAttribute('data-side', 'bottom')
+      expect(source[0]).not.toHaveAttribute('data-handleid')
+      expect(target[0]).toHaveAttribute('data-side', 'top')
+      expect(target[0]).not.toHaveAttribute('data-handleid')
+      expect(card.querySelector('.source[data-side="right"]')).toHaveAttribute('data-handleid', 'source_right')
+      expect(card.querySelector('.target[data-side="left"]')).toHaveAttribute('data-handleid', 'target_left')
+    }
+    const branch = screen.getByTestId(tid.nodeCard('verdict'))
+    const sources = branch.querySelectorAll('.source')
+    expect([...sources].map((h) => h.getAttribute('data-anchor'))).toEqual(['fallback', 'case_0', 'default'])
+    for (const h of sources) expect(h).toHaveAttribute('data-side', 'bottom')
+    expect(branch.querySelectorAll('.target[data-side]')).toHaveLength(4)
+  })
+
   it('branch 多锚点(T21.4 ③):每个出口一个可连手柄,单出口节点不虚构锚点', () => {
     render(<CanvasEditor initialDoc={loadBase('all-node-types')} />)
     const verdict = screen.getByTestId(tid.nodeCard('verdict'))
@@ -147,7 +235,7 @@ describe('CanvasEditor(画布 UI)', () => {
     const handles = verdict.querySelectorAll('[data-anchor]')
     expect(handles[0].getAttribute('data-anchor')).toBe('fallback')
     expect(handles[1].getAttribute('data-anchor')).toBe('case_0')
-    // 单出口节点(approval)= 单缺省手柄,没有锚点属性
+    // 单出口节点(approval)= 四向物理手柄,没有分支锚点属性
     expect(screen.getByTestId(tid.nodeCard('review')).querySelector('[data-anchor]')).toBeNull()
   })
 

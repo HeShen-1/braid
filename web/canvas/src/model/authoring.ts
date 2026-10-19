@@ -1,5 +1,5 @@
 // 画布编辑事务:分支的路由字段与出边一起改,导入/导出仍保持原 DSL 契约。
-import { connectEdges, type CanvasState, type EdgeConnection, type FlowEdge } from './convert.ts'
+import { connectEdges, handleSide, type CanvasState, type EdgeConnection, type FlowEdge } from './convert.ts'
 import { caseAnchorId, DEFAULT_SOURCE_ANCHOR, type BranchNode, type DslNode } from './dsl.ts'
 
 export type GraphState = Pick<CanvasState, 'nodes' | 'edges'>
@@ -42,9 +42,11 @@ export function updateGraphNode(graph: GraphState, id: string, patch: (spec: Dsl
 /** 无名兜底出口只可绑定已有路由;新增分支目标必须明确选择条件/默认出口。 */
 export function canConnect(graph: GraphState, c: EdgeConnection): boolean {
   if (c.source === c.target || !graph.nodes.some((n) => n.id === c.target)) return false
+  if (c.targetHandle != null && handleSide('target', c.targetHandle) === undefined) return false
   const spec = graph.nodes.find((n) => n.id === c.source)?.data.spec
   if (spec === undefined) return false
-  return spec.type !== 'branch' || routes(spec).some((r) => c.sourceHandle ? r.handle === c.sourceHandle : r.target === c.target)
+  if (spec.type !== 'branch') return c.sourceHandle == null || handleSide('source', c.sourceHandle) !== undefined
+  return routes(spec).some((r) => c.sourceHandle == null ? r.target === c.target : r.handle === c.sourceHandle)
 }
 
 export function connectGraph(graph: GraphState, c: EdgeConnection): GraphState {

@@ -368,6 +368,22 @@
   stroke: none;
 }
 
+/* 输入方点 / 输出圆点;同侧错位,保留旧缺省 top/bottom 的中心落点。 */
+.bn-direction-handle.target {
+  border-radius: 2px;
+}
+
+.bn-direction-handle.source[data-side='top'] { left: 75%; }
+.bn-direction-handle.target[data-side='bottom'] { left: 25%; }
+.bn-direction-handle.source[data-side='left'],
+.bn-direction-handle.source[data-side='right'] { top: 65%; }
+.bn-direction-handle.target[data-side='left'],
+.bn-direction-handle.target[data-side='right'] { top: 35%; }
+
+/* branch 的下沿出口均分且兜底在右角;底部输入在左角外移 12px,
+   cases 密集时也不遮首个语义出口,原源锚位置不变。 */
+.bn[data-type='branch'] .bn-direction-handle.target[data-side='bottom'] { left: 0; bottom: -12px; }
+
 /* 无 id 的兜底手柄(仅多锚点节点有):sourceHandle 缺省的边 —— 外部/历史
    文档里目标不在 cases∪{default} 内的那条 —— 的落点。React Flow 对 null
    handleId 取**第一个**源手柄(DOM 序即语义,见 NodeViews.SourceHandles),
