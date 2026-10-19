@@ -24,7 +24,7 @@ async function moveNode(page: Page, id: string, x: number, y: number) {
 
 async function connect(page: Page, handle: string, target: string) {
   const source = await page.getByTestId(tid.nodeCard('branch')).locator(`[data-anchor="${handle}"]`).boundingBox()
-  const dest = await page.getByTestId(tid.nodeCard(target)).locator('.react-flow__handle.target').boundingBox()
+  const dest = await page.getByTestId(tid.nodeCard(target)).locator('.react-flow__handle.target[data-side="top"]').boundingBox()
   expect(source).not.toBeNull()
   expect(dest).not.toBeNull()
   await page.mouse.move(source!.x + source!.width / 2, source!.y + source!.height / 2)

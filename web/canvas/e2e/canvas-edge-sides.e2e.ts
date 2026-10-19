@@ -54,6 +54,41 @@ function edgeSelector(connection: Connection): string {
   return `.react-flow__edge[data-id="e:${connection.source.node}:${connection.target.node}"] .react-flow__edge-path`
 }
 
+async function handleVisibility(page: Page, endpoint: Endpoint, kind: 'source' | 'target') {
+  return page.locator(handleSelector(endpoint, kind)).evaluate((element) => {
+    const rect = element.getBoundingClientRect()
+    const canvas = element.closest('.editor-canvas')!.getBoundingClientRect()
+    const windowBounds = { left: 0, top: 0, right: innerWidth, bottom: innerHeight }
+    // IntersectionObserver 的 ratio=1 会受缩放浮点误差影响;仍要求完整入界。
+    const epsilon = 0.001
+    const inside = (bounds: { left: number; top: number; right: number; bottom: number }) =>
+      rect.left >= bounds.left - epsilon && rect.top >= bounds.top - epsilon &&
+      rect.right <= bounds.right + epsilon && rect.bottom <= bounds.bottom + epsilon
+    let cssVisible = true
+    let opacity = 1
+    for (let el: Element | null = element; el !== null; el = el.parentElement) {
+      const style = getComputedStyle(el)
+      cssVisible &&= style.display !== 'none' && style.visibility === 'visible'
+      opacity *= Number.parseFloat(style.opacity)
+    }
+    const insideWindow = inside(windowBounds)
+    const insideCanvas = inside(canvas)
+    return {
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      canvas: { left: canvas.left, top: canvas.top, right: canvas.right, bottom: canvas.bottom },
+      windowBounds, epsilon, cssVisible, opacity, insideWindow, insideCanvas,
+      visible: rect.width > 0 && rect.height > 0 && cssVisible && opacity > 0 && insideWindow && insideCanvas,
+    }
+  })
+}
+
+async function assertHandleVisible(page: Page, endpoint: Endpoint, kind: 'source' | 'target') {
+  await expect.poll(async () => (await handleVisibility(page, endpoint, kind)).visible, {
+    message: `${endpoint.node} ${kind} ${endpoint.side}: 手柄须完整位于窗口及画布内`,
+  }).toBe(true)
+  return handleVisibility(page, endpoint, kind)
+}
+
 async function edgeGeometry(page: Page, connection: Connection) {
   return page.locator(edgeSelector(connection)).evaluate((element, selectors) => {
     const edge = element as SVGPathElement
@@ -80,10 +115,48 @@ async function edgeGeometry(page: Page, connection: Connection) {
     }
     const source = handle(selectors.source)
     const target = handle(selectors.target)
+    const length = edge.getTotalLength()
     const start = point(0)
-    const end = point(edge.getTotalLength())
+    const end = point(length)
+    const style = getComputedStyle(edge)
+    const colorAlpha = style.stroke === 'transparent' ? 0 : style.stroke.startsWith('rgba(')
+      ? Number.parseFloat(style.stroke.slice(style.stroke.lastIndexOf(',') + 1))
+      : style.stroke.includes('/') ? Number.parseFloat(style.stroke.slice(style.stroke.lastIndexOf('/') + 1)) : 1
+    let cssVisible = true
+    let opacity = Number.parseFloat(style.strokeOpacity) * colorAlpha
+    for (let el: Element | null = edge; el !== null; el = el.parentElement) {
+      const css = getComputedStyle(el)
+      cssVisible &&= css.display !== 'none' && css.visibility === 'visible'
+      opacity *= Number.parseFloat(css.opacity)
+    }
+    const canvas = edge.closest('.editor-canvas')!
+    const bounds = canvas.getBoundingClientRect()
+    const obstacles = Array.from(canvas.querySelectorAll('.react-flow__node, .react-flow__minimap, .react-flow__controls'))
+      .map((element) => element.getBoundingClientRect())
+    const scale = Math.max(Math.hypot(matrix.a, matrix.b), Math.hypot(matrix.c, matrix.d))
+    const sampleCount = Math.min(4096, Math.max(64, Math.ceil(length * scale / 2)))
+    const samples = Array.from({ length: sampleCount + 1 }, (_, i) => {
+      const p = point(length * i / sampleCount)
+      const inCanvas = p.x >= Math.max(0, bounds.left) && p.y >= Math.max(0, bounds.top) &&
+        p.x <= Math.min(innerWidth, bounds.right) && p.y <= Math.min(innerHeight, bounds.bottom)
+      const obscured = obstacles.some((r) => p.x >= r.left && p.x <= r.right && p.y >= r.top && p.y <= r.bottom)
+      return { ...p, exposed: inCanvas && !obscured }
+    })
+    const exposedSegments = samples.slice(1).filter((p, i) => p.exposed && samples[i].exposed &&
+      Math.hypot(p.x - samples[i].x, p.y - samples[i].y) > 0.001).length
+    const strokeWidth = Number.parseFloat(style.strokeWidth)
+    const rect = edge.getBoundingClientRect()
+    // 有 stroke 的直线可合法零宽/零高。核实际可见线段,不要求填充包围盒有面积。
+    const paint = {
+      length, stroke: style.stroke, strokeWidth, screenStrokeWidth: strokeWidth * scale,
+      cssVisible, opacity, sampleCount, exposedSegments,
+      rect: { x: rect.x, y: rect.y, width: rect.width, height: rect.height },
+      exposedSamples: samples.filter((p) => p.exposed).slice(0, 16),
+      visible: Number.isFinite(length) && length > 0 && style.stroke !== 'none' && strokeWidth * scale > 0 &&
+        cssVisible && opacity > 0 && exposedSegments > 0 && samples.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y)),
+    }
     return {
-      d: edge.getAttribute('d'), start, end, source, target,
+      d: edge.getAttribute('d'), start, end, source, target, paint,
       sourceError: Math.hypot(start.x - source.point.x, start.y - source.point.y),
       targetError: Math.hypot(end.x - target.point.x, end.y - target.point.y),
     }
@@ -93,16 +166,15 @@ async function edgeGeometry(page: Page, connection: Connection) {
 async function verifyEdges(page: Page, connections: Connection[], testInfo: TestInfo, phase: string) {
   const measured = []
   for (const connection of connections) {
-    await expect(page.locator(handleSelector(connection.source, 'source'))).toBeInViewport({ ratio: 1 })
-    await expect(page.locator(handleSelector(connection.target, 'target'))).toBeInViewport({ ratio: 1 })
-    await expect(page.locator(edgeSelector(connection))).toBeVisible()
+    const sourceVisibility = await assertHandleVisible(page, connection.source, 'source')
+    const targetVisibility = await assertHandleVisible(page, connection.target, 'target')
     try {
       await expect.poll(async () => {
         const current = await edgeGeometry(page, connection)
-        return current.d !== null && current.sourceError <= 2 && current.targetError <= 2
+        return current.d !== null && current.paint.visible && current.sourceError <= 2 && current.targetError <= 2
       }, { message: `${phase}: SVG 两端必须落在所选手柄`, timeout: 10_000 }).toBe(true)
     } finally {
-      await attachJson(testInfo, `${phase}-${connection.source.node}-${connection.target.node}`, { connection, geometry: await edgeGeometry(page, connection) })
+      await attachJson(testInfo, `${phase}-${connection.source.node}-${connection.target.node}`, { connection, sourceVisibility, targetVisibility, geometry: await edgeGeometry(page, connection) })
     }
     measured.push(await edgeGeometry(page, connection))
   }
@@ -131,8 +203,8 @@ async function verifyEdges(page: Page, connections: Connection[], testInfo: Test
 async function dragConnect(page: Page, connection: Connection) {
   const source = page.locator(handleSelector(connection.source, 'source'))
   const target = page.locator(handleSelector(connection.target, 'target'))
-  await expect(source).toBeInViewport({ ratio: 1 })
-  await expect(target).toBeInViewport({ ratio: 1 })
+  await assertHandleVisible(page, connection.source, 'source')
+  await assertHandleVisible(page, connection.target, 'target')
   const from = await source.boundingBox()
   const to = await target.boundingBox()
   expect(from).not.toBeNull()
@@ -143,7 +215,7 @@ async function dragConnect(page: Page, connection: Connection) {
   await page.mouse.up()
   await expect.poll(async () => {
     const current = await edgeGeometry(page, connection)
-    return current.sourceError <= 2 && current.targetError <= 2
+    return current.paint.visible && current.sourceError <= 2 && current.targetError <= 2
   }, { message: '真实拖线后 SVG 必须改绑到选定端点' }).toBe(true)
 }
 
