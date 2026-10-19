@@ -3,7 +3,7 @@
 // innerHTML(同审批台 textContent 契约,D-t44)。
 //
 // 编码分工(与执行面共用同一张卡片):
-//   - 类型 = 形状:nodeTypeMeta() 的图标 + 微标签;branch 另给折角轮廓。
+//   - 类型 = 彩型 + 形状:nodeTypeMeta() 的图标 + 微标签;branch 另给折角轮廓。
 //   - 状态 = 色相 + 形状:data.status 在场(执行面注入)时渲染
 //     <StatusChip kind="node">(状态图标 + 状态色相 1px 边框 + 挂起斜纹);
 //     编辑面不注入 status,因此不虚构执行状态。

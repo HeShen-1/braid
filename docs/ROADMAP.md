@@ -55,7 +55,7 @@
 
 - [ ] UX-F1 控制台视觉整备(参照系已拍板 2026-10-15:n8n/Linear/Vercel/Temporal 分面取长,D-2026-10-15-console-references)— issue #227(父票)— 四子项:
   - [x] UX-F1-a 壳层/审批 Linear 化 — M — issue #243 — 依赖 T23.10；F08/F27 视觉与层级，F25 焦点行为归 T23.10；紧凑导航/路由标题/审批队列与可见快捷键已落地。334 项 vitest、完整 dist 门、真栈三件套（2954 通过/仅显式 drill 跳过）、21/21 官方浏览器旅程通过；独立六视角开放 C/H/M/L=0，双主题桌面/窄窗与正常动效真实 Select 补测通过。各 revision、复用边界及失败保留见 [UX-F1-a-VALIDATION](audits/UX-F1-a-VALIDATION.md)；最终头七门与合并由主会话核对，勾选随本 PR 合并生效。
-  - [ ] UX-F1-b 画布 n8n 化 — M — issue #244 — 依赖 T23.4/T23.5/T23.7 与 #228/#229；亮色默认、彩色类型节点，DSL 无损与两主题对比度验收
+  - [x] UX-F1-b 画布 n8n 化 — M — issue #244 — 依赖 T23.4/T23.5/T23.7 与 #228/#229；无偏好工作流路由浅色默认、点阵地面、彩色类型节点、DSL 无损与双主题对比度均已验证。证据见 [UX-F1-b-VALIDATION](audits/UX-F1-b-VALIDATION.md)；勾选随本任务 PR 合并生效。
   - [x] UX-F1-c 执行总览 Vercel 化 — M — issue #245 — 依赖 T23.9；先定真实指标/时间窗/采样，禁止用快照伪造 sparkline 历史
   - [x] UX-F1-d 执行列表 Temporal 化 — M — issue #246 — 依赖 T23.8/T23.10；真实 ID/工作流版本/状态/时长/创建密表、状态 tab 与精确名称过滤已落地，保留诚实加载/错误、URL 选中与键盘可达。335 项 vitest、完整 dist 门、真栈三件套（2954 通过/仅显式 drill 跳过）、22/22 官方浏览器旅程通过；双主题桌面/窄窗正常动效真实 UI、tab 实绘像素门与独立六视角开放 C/H/M/L=0。诊断/失败保留、R1 缺值静态边界与证据见 [UX-F1-d-VALIDATION](audits/UX-F1-d-VALIDATION.md)；最终纯 MD 独审、头七门与合并由主会话核对，勾选随本 PR 合并生效。
 - [x] UX-F2 画布连线不灵活 + 初始排版堆叠 — M-L — issue #228 — 四向普通端点与可选 `source_side`/`target_side` 已按获批 D-2026-10-16-ux-f2-edge-sides 落盘；新节点防堆叠、自动选中、长 branch 视口与窄窗硬门已验证。证据见 [UX-F2-VALIDATION](audits/UX-F2-VALIDATION.md)，勾选随本任务 PR 合并生效。

@@ -335,8 +335,8 @@ function Editor({
             defaultViewport={hadStoredViewport ? initial.viewport : undefined}
             fitView={!hadStoredViewport}
           >
-            {/* 地面 = 近黑 + 发丝线网格(未点亮的荧光屏),不铺点阵噪点。 */}
-            <Background variant={BackgroundVariant.Lines} gap={28} lineWidth={1} color="var(--color-line-0)" />
+            {/* 地面 = n8n 风格点阵;颜色跟随路由主题,不写入 DSL。 */}
+            <Background variant={BackgroundVariant.Dots} gap={24} size={1.5} color="var(--color-line-1)" />
             <Controls>
               <ControlButton title={showMinimap ? '隐藏缩略图' : '显示缩略图'} aria-label={showMinimap ? '隐藏缩略图' : '显示缩略图'} aria-pressed={showMinimap} onClick={() => setShowMinimap((v) => !v)}>
                 <I glyph={Map} size={14} />

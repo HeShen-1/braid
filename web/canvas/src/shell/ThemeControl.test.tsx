@@ -19,6 +19,13 @@ describe('ThemeControl(三态)', () => {
     expect(document.documentElement.dataset.theme).toBe('dark')
   })
 
+  it('工作流画布无明确偏好时默认浅色', () => {
+    render(<ThemeControl defaultTheme="light" />)
+    expect(screen.getByTestId(tid.themeOption('light'))).toHaveAttribute('aria-pressed', 'true')
+    expect(document.documentElement.dataset.theme).toBe('light')
+    expect(localStorage.getItem(THEME_KEY)).toBeNull()
+  })
+
   it('点浅色:data-theme 与 localStorage 同时变', async () => {
     const user = userEvent.setup()
     render(<ThemeControl />)

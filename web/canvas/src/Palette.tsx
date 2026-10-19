@@ -1,5 +1,5 @@
-// palette 工具条:添加节点的唯一入口。类型靠图标形状 + 中文微标签辨认,
-// 交互靠亮度(悬停升一档),不占状态色相——色相在这个界面上只讲状态。
+// palette 工具条:添加节点的唯一入口。类型靠彩色线索、图标形状 + 中文微标签辨认,
+// 交互靠亮度(悬停升一档),类型色只讲类型,不把执行状态画进编辑面。
 import { NODE_TYPES, type NodeType } from './model/dsl.ts'
 import { nodeTypeMeta } from './ui/status.ts'
 import { I } from './ui/I.tsx'
@@ -23,6 +23,7 @@ export function Palette({ onAdd }: { onAdd: (type: NodeType) => void }) {
               key={t}
               type="button"
               className="palette-btn"
+              data-type={t}
               data-testid={tid.paletteBtn(t)}
               title={`添加${meta.label}节点`}
               onClick={() => onAdd(t)}

@@ -10,8 +10,10 @@ import { Skeleton } from './ui/primitives.tsx'
 import { applyTheme, readTheme } from './theme.ts'
 
 // 主题先于挂载落定:index.html 的启动脚本已做过一次(无闪烁),这里兜住
-// 「启动脚本被策略拦掉 / 直接 import 本模块」的入口,幂等。
-applyTheme(readTheme())
+// 「启动脚本被策略拦掉 / 直接 import 本模块」的入口,幂等。无明确偏好时
+// 画布深链也必须沿用浅色缺省,不能被全局运营面缺省深色覆盖。
+const routeDefaultTheme = window.location.pathname.indexOf('/workflows') === 0 ? 'light' : 'dark'
+applyTheme(readTheme(routeDefaultTheme))
 
 // 路由级代码分割:画布(xyflow)是最重的一块,不该让只看审批或执行面的人先下载它。
 const WorkflowsRoute = lazy(() =>
