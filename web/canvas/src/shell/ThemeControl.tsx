@@ -16,8 +16,8 @@ const OPTIONS: readonly { value: Theme; label: string; icon: LucideIcon }[] = [
   { value: 'dark', label: '深色', icon: Moon },
 ]
 
-export function ThemeControl({ className }: { className?: string }) {
-  const { theme, setTheme } = useTheme()
+export function ThemeControl({ className, defaultTheme }: { className?: string; defaultTheme?: Theme }) {
+  const { theme, setTheme } = useTheme(defaultTheme)
   return (
     <div className={cx('seg', className)} role="group" aria-label="主题" data-testid={TID.themeControl}>
       {OPTIONS.map(({ value, label, icon }) => {

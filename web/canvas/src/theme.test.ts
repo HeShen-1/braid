@@ -7,6 +7,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { DEFAULT_THEME, THEME_KEY, applyTheme, isTheme, readTheme, writeTheme } from './theme.ts'
 
 const css = readFileSync(resolve(import.meta.dirname, 'styles/index.css'), 'utf8')
+const main = readFileSync(resolve(import.meta.dirname, 'main.tsx'), 'utf8')
 
 beforeEach(() => {
   localStorage.clear()
@@ -29,6 +30,12 @@ describe('主题载体(决策 6:UI 偏好走 localStorage,与认证 token 分离
     expect(readTheme()).toBe('dark')
     expect(isTheme('sepia')).toBe(false)
     expect(isTheme(null)).toBe(false)
+  })
+
+  it('分面可以提供未持久化的缺省;用户选择仍优先', () => {
+    expect(readTheme('light')).toBe('light')
+    localStorage.setItem(THEME_KEY, 'dark')
+    expect(readTheme('light')).toBe('dark')
   })
 
   it('applyTheme 只落 data-theme —— 三态解析归 CSS,组件层不分支', () => {
@@ -116,7 +123,8 @@ describe('启动脚本与 theme.ts 同源(public/assets/theme-boot.js)', () => {
     expect(boot).toContain('document.documentElement.dataset.theme')
     // 三态口径也要钉:只留 light/dark(丢了 auto)会让首绘闪一下深色,
     // 而上面三行仍然绿 —— 对抗审计 LOW#1 就是这么绕过去的。
-    expect(boot).toContain("t === 'light' || t === 'auto' ? t : 'dark'")
+    expect(boot).toContain("t === 'light' || t === 'auto' || t === 'dark' ? t : routeDefault")
+    expect(boot).toContain("location.pathname.indexOf('/workflows') === 0 ? 'light' : 'dark'")
   })
 
   it('index.html 引它,且不引入内联脚本(CSP 是 script-src self,内联在生产不执行)', () => {
@@ -127,5 +135,10 @@ describe('启动脚本与 theme.ts 同源(public/assets/theme-boot.js)', () => {
       (m) => m[1].trim() !== '',
     )
     expect(inline).toHaveLength(0)
+  })
+
+  it('React 入口兜底也按工作流路径传浅色缺省,不覆盖启动脚本', () => {
+    expect(main).toContain("window.location.pathname.indexOf('/workflows') === 0 ? 'light' : 'dark'")
+    expect(main).toContain('applyTheme(readTheme(routeDefaultTheme))')
   })
 })

@@ -10,11 +10,12 @@
 // registerWeb),其余路径一律走 SPA 入口;public/assets/ 里的文件由 vite 原样
 // 拷到 dist 的 assets/(不哈希,故 index.html 可以静态引用)。
 //
-// 键与取值口径见 src/theme.ts(用户无偏好或值非法 → dark,默认世界);
+// 键与取值口径见 src/theme.ts(用户无偏好时按分面缺省:画布浅色、运营面深色);
 // src/theme.test.ts 钉住两处同源。
 try {
   var t = localStorage.getItem('braid.theme')
-  document.documentElement.dataset.theme = t === 'light' || t === 'auto' ? t : 'dark'
+  var routeDefault = location.pathname.indexOf('/workflows') === 0 ? 'light' : 'dark'
+  document.documentElement.dataset.theme = t === 'light' || t === 'auto' || t === 'dark' ? t : routeDefault
 } catch (e) {
-  document.documentElement.dataset.theme = 'dark'
+  document.documentElement.dataset.theme = location.pathname.indexOf('/workflows') === 0 ? 'light' : 'dark'
 }

@@ -127,7 +127,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
 
           <div className="shell-account">
-            <ThemeControl />
+            <ThemeControl defaultTheme={domain === 'workflows' ? 'light' : 'dark'} />
             <span className="shell-identity text-xs text-ink-1" data-testid={TID.whoami} title={`当前账号：${user} · ${roles.length > 0 ? roles.join(' / ') : '角色未知'}`}>
               <span className="mono shell-user">{user}</span><span className="shell-roles">{roles.length > 0 ? roles.join(' / ') : '角色未知'}</span>
             </span>

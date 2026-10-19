@@ -3,7 +3,7 @@
 
    本文件只承载三类东西:
    1) 编辑器骨架(palette 工具条 / 画布 / 属性面板 / DSL 抽屉)的几何;
-   2) 节点卡片的 data-* 变体——类型形状、状态色相、未配置态;
+   2) 节点卡片的 data-* 变体——彩型/形状、状态色相、未配置态;
    3) 深色地面上的 xyflow 内建件落色。 */
 
 /* ---------------- 骨架 ---------------- */
@@ -15,6 +15,61 @@
   min-width: 0;
   min-height: 0;
   background: var(--color-ground-0);
+
+  /* 画布类型色:每一档都用不透明底 + 对侧墨色,避免状态色相与节点类型混义。 */
+  --canvas-type-llm-bg: #163b36;
+  --canvas-type-llm-fg: #d8f7ef;
+  --canvas-type-llm-line: #52c7b1;
+  --canvas-type-tool-bg: #432c10;
+  --canvas-type-tool-fg: #ffe9bb;
+  --canvas-type-tool-line: #e0a84d;
+  --canvas-type-branch-bg: #2f2454;
+  --canvas-type-branch-fg: #eee6ff;
+  --canvas-type-branch-line: #9a7cf0;
+  --canvas-type-approval-bg: #4b202a;
+  --canvas-type-approval-fg: #ffdfe3;
+  --canvas-type-approval-line: #f07b89;
+  --canvas-type-parallel-bg: #1f3156;
+  --canvas-type-parallel-fg: #e1ebff;
+  --canvas-type-parallel-line: #7fa6f2;
+}
+
+:root[data-theme='light'] .editor {
+  --canvas-type-llm-bg: #dff4ef;
+  --canvas-type-llm-fg: #124f44;
+  --canvas-type-llm-line: #2a8977;
+  --canvas-type-tool-bg: #fff0d9;
+  --canvas-type-tool-fg: #6a3d00;
+  --canvas-type-tool-line: #b96a00;
+  --canvas-type-branch-bg: #ede5ff;
+  --canvas-type-branch-fg: #3c2675;
+  --canvas-type-branch-line: #7353c7;
+  --canvas-type-approval-bg: #ffe3e4;
+  --canvas-type-approval-fg: #741f2b;
+  --canvas-type-approval-line: #ba4452;
+  --canvas-type-parallel-bg: #e0eaff;
+  --canvas-type-parallel-fg: #1f3d75;
+  --canvas-type-parallel-line: #4f78c9;
+}
+
+:root[data-theme='auto'] .editor {
+  @media (prefers-color-scheme: light) {
+    --canvas-type-llm-bg: #dff4ef;
+    --canvas-type-llm-fg: #124f44;
+    --canvas-type-llm-line: #2a8977;
+    --canvas-type-tool-bg: #fff0d9;
+    --canvas-type-tool-fg: #6a3d00;
+    --canvas-type-tool-line: #b96a00;
+    --canvas-type-branch-bg: #ede5ff;
+    --canvas-type-branch-fg: #3c2675;
+    --canvas-type-branch-line: #7353c7;
+    --canvas-type-approval-bg: #ffe3e4;
+    --canvas-type-approval-fg: #741f2b;
+    --canvas-type-approval-line: #ba4452;
+    --canvas-type-parallel-bg: #e0eaff;
+    --canvas-type-parallel-fg: #1f3d75;
+    --canvas-type-parallel-line: #4f78c9;
+  }
 }
 
 /* 顶栏:身份(工作流名 + 建档号)、状态文案(flash)、动作。
@@ -56,7 +111,7 @@
   border: 1px solid transparent;
   border-radius: var(--radius-control);
   background: transparent;
-  color: var(--color-ink-1);
+  color: var(--palette-color, var(--color-ink-1));
   cursor: pointer;
   transition:
     background-color 120ms var(--ease-in-out-quiet),
@@ -64,10 +119,17 @@
     color 120ms var(--ease-in-out-quiet);
 }
 
+/* 工具条把类型色作为可识别线索,悬停只抬升地面亮度。 */
+.palette-btn[data-type='llm'] { --palette-color: var(--canvas-type-llm-fg); --palette-line: var(--canvas-type-llm-line); --palette-bg: var(--canvas-type-llm-bg); }
+.palette-btn[data-type='tool'] { --palette-color: var(--canvas-type-tool-fg); --palette-line: var(--canvas-type-tool-line); --palette-bg: var(--canvas-type-tool-bg); }
+.palette-btn[data-type='branch'] { --palette-color: var(--canvas-type-branch-fg); --palette-line: var(--canvas-type-branch-line); --palette-bg: var(--canvas-type-branch-bg); }
+.palette-btn[data-type='approval'] { --palette-color: var(--canvas-type-approval-fg); --palette-line: var(--canvas-type-approval-line); --palette-bg: var(--canvas-type-approval-bg); }
+.palette-btn[data-type='parallel'] { --palette-color: var(--canvas-type-parallel-fg); --palette-line: var(--canvas-type-parallel-line); --palette-bg: var(--canvas-type-parallel-bg); }
+
 .palette-btn:hover {
-  background: var(--color-ground-3);
-  border-color: var(--color-line-1);
-  color: var(--color-ink-0);
+  background: color-mix(in oklab, var(--palette-bg, var(--color-ground-3)) 24%, var(--color-ground-1));
+  border-color: var(--palette-line, var(--color-line-1));
+  color: var(--palette-color, var(--color-ink-0));
 }
 
 .palette-btn:active {
@@ -179,7 +241,7 @@
 
 /* ---------------- 节点卡片 ----------------
    编码分工(与执行面共用同一套语法):
-   - 类型 = 形状:head 里的类型图标 + 微标签;branch 另给折角轮廓。
+   - 类型 = 彩型 + 形状:head 里的类型图标 + 微标签;branch 另给折角轮廓。
    - 状态 = 色相 + 形状:仅当执行面注入 status 时出现(StatusChip 自带
      状态图标,1px 边框取状态色相);编辑器不虚构执行状态。
    - 未配置 = 亮度/发丝线:虚线边框 + 待填占位文案,不占状态色相。 */
@@ -188,19 +250,28 @@
   position: relative;
   min-width: 12.5rem;
   max-width: 17.5rem;
-  border: 1px solid var(--color-line-2);
+  --node-bg: var(--color-ground-1);
+  --node-fg: var(--color-ink-0);
+  --node-line: var(--color-line-2);
+  border: 1px solid var(--node-line);
   border-radius: var(--radius-panel);
-  background: var(--color-ground-1);
-  color: var(--color-ink-0);
+  background: var(--node-bg);
+  color: var(--node-fg);
   font-size: var(--text-sm);
   transition:
     background-color 120ms var(--ease-in-out-quiet),
     border-color 120ms var(--ease-in-out-quiet);
 }
 
+.editor .bn[data-type='llm'] { --node-bg: var(--canvas-type-llm-bg); --node-fg: var(--canvas-type-llm-fg); --node-line: var(--canvas-type-llm-line); }
+.editor .bn[data-type='tool'] { --node-bg: var(--canvas-type-tool-bg); --node-fg: var(--canvas-type-tool-fg); --node-line: var(--canvas-type-tool-line); }
+.editor .bn[data-type='branch'] { --node-bg: var(--canvas-type-branch-bg); --node-fg: var(--canvas-type-branch-fg); --node-line: var(--canvas-type-branch-line); }
+.editor .bn[data-type='approval'] { --node-bg: var(--canvas-type-approval-bg); --node-fg: var(--canvas-type-approval-fg); --node-line: var(--canvas-type-approval-line); }
+.editor .bn[data-type='parallel'] { --node-bg: var(--canvas-type-parallel-bg); --node-fg: var(--canvas-type-parallel-fg); --node-line: var(--canvas-type-parallel-line); }
+
 .bn:hover {
-  background: var(--color-ground-2);
-  border-color: var(--color-ink-3);
+  background: color-mix(in oklab, var(--node-bg) 82%, var(--color-ground-2));
+  border-color: var(--node-line);
 }
 
 /* 决策节点:右上折角(唯一为类型引入的轮廓差异——分叉有几何语义)。 */
@@ -223,7 +294,7 @@
 }
 
 .bn-type {
-  color: var(--color-ink-2);
+  color: var(--node-fg);
   font-size: var(--text-micro);
   font-weight: 600;
   letter-spacing: 0.08em;
@@ -243,7 +314,7 @@
 .bn-id {
   padding-top: 0.1rem;
   padding-inline: 0.5rem;
-  color: var(--color-ink-3);
+  color: var(--node-fg);
   font-family: var(--font-mono);
   font-size: var(--text-micro);
   overflow: hidden;
@@ -283,16 +354,16 @@
 }
 
 .bn-dim {
-  color: var(--color-ink-2);
+  color: var(--node-fg);
 }
 
 /* 待填占位:与节点自身的虚线边框同一套语言(虚线 = 还没填)。
    收尾评审 R1:ink-2/ink-3 抬到过线后档距收窄,"已填 vs 待填"不能再
    只靠一个微弱的亮度差承担 —— 改由**形态**通道承担,亮度只作辅助。 */
 .bn-todo {
-  color: var(--color-ink-3);
+  color: var(--node-fg);
   text-decoration: underline dashed;
-  text-decoration-color: color-mix(in oklab, var(--color-ink-3) 70%, transparent);
+  text-decoration-color: color-mix(in oklab, var(--node-fg) 70%, transparent);
   text-underline-offset: 3px;
 }
 
@@ -339,8 +410,8 @@
 
 /* 选中 = 亮度台阶 + 1px 偏移环;accent 只留给焦点环,不与状态色相抢。 */
 .react-flow__node.selected .bn {
-  background: var(--color-ground-2);
-  outline: 1px solid var(--color-ink-2);
+  background: color-mix(in oklab, var(--node-bg) 74%, var(--color-ground-4));
+  outline: 1px solid var(--node-fg);
   outline-offset: 2px;
 }
 
