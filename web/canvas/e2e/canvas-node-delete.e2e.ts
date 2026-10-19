@@ -21,14 +21,18 @@ test('画布节点删除:文字入口 + 确认层;Delete/Backspace 同路;取消
   await page.goto('/workflows')
   await page.getByTestId(TID.draftNew).click()
   await expect(page.getByTestId(TID.editor)).toBeVisible()
+  // 空画布尚无选中节点,删除入口不虚设。
+  await expect(page.getByTestId(TID.nodeDelete)).toHaveCount(0)
   await page.getByTestId(tid.paletteBtn('branch')).click()
   const branchCard = page.getByTestId(tid.nodeCard('branch'))
   await expect(branchCard).toBeVisible()
 
-  // ③ 未选中节点:没有删除入口(入口挂在属性面板上,不虚设)
-  await expect(page.getByTestId(TID.nodeDelete)).toHaveCount(0)
+  // ③ UX-F2/F64:新增节点自动选中,属性面板与删除入口一起联动。
+  await expect(page.locator('.react-flow__node[data-id="branch"]')).toHaveClass(/selected/)
+  await expect(page.getByTestId(TID.nodePanel).locator('code')).toHaveText('branch')
+  await expect(page.getByTestId(TID.nodeDelete)).toBeVisible()
 
-  // ④ 选中节点 → 可见入口在场 → 第一下只布防(危险动作第二下才生效)
+  // ④ 可见入口第一下只布防(危险动作第二下才生效)
   await branchCard.click()
   const deleteEntry = page.getByTestId(TID.nodeDelete)
   await expect(deleteEntry).toHaveText('删除节点')

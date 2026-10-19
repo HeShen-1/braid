@@ -17,6 +17,7 @@ import {
   ReactFlow,
   ReactFlowProvider,
   useReactFlow,
+  useNodesInitialized,
   type Connection,
   type EdgeChange,
   type NodeChange,
@@ -33,6 +34,7 @@ import { Palette } from './Palette.tsx'
 import { NodePanel } from './NodePanel.tsx'
 import { WorkflowPanel } from './WorkflowPanel.tsx'
 import { defaultSpec } from './defaults.ts'
+import { containsRect, newNodePosition, nodeSize, type Rect } from './placement.ts'
 import { PANEL_RIGHT_KEY, useCollapsed } from './prefs.ts'
 import { Alert, Button, EmptyState } from './ui/primitives.tsx'
 import { ConfirmLayer } from './ui/confirm.tsx'
@@ -73,7 +75,38 @@ function Editor({
   const [showMinimap, setShowMinimap] = useState(true)
   // 右栏(属性面板)折叠态:跨会话 UI 偏好(prefs.ts),与左栏同一口径。
   const [sideCollapsed, setSideCollapsed] = useCollapsed(PANEL_RIGHT_KEY)
-  const { screenToFlowPosition, deleteElements } = useReactFlow()
+  const { screenToFlowPosition, deleteElements, getNodes, getZoom, fitView } = useReactFlow()
+  const nodesInitialized = useNodesInitialized()
+  const canvasRef = useRef<HTMLDivElement | null>(null)
+  const visibleCanvas = useCallback((): Rect => {
+    const bounds = canvasRef.current?.getBoundingClientRect()
+    const left = bounds?.left ?? 0
+    const top = bounds?.top ?? 0
+    const width = bounds?.width || window.innerWidth
+    const height = bounds?.height || window.innerHeight
+    const start = screenToFlowPosition({ x: left + 24, y: top + 24 })
+    const end = screenToFlowPosition({ x: left + width - 24, y: top + height - 24 })
+    return { ...start, width: Math.max(1, end.x - start.x), height: Math.max(1, end.y - start.y) }
+  }, [screenToFlowPosition])
+
+  // 等新卡片完成实际尺寸测量后才核可见性。只显露本次新增节点,
+  // 不移动旧节点,也不改变用户已收起的属性面板偏好。
+  const knownNodeIds = useRef(new Set(initial.nodes.map((n) => n.id)))
+  const pendingReveal = useRef(new Set<string>())
+  useEffect(() => {
+    for (const n of nodes) if (!knownNodeIds.current.has(n.id)) pendingReveal.current.add(n.id)
+    knownNodeIds.current = new Set(nodes.map((n) => n.id))
+    pendingReveal.current = new Set([...pendingReveal.current].filter((id) => knownNodeIds.current.has(id)))
+    if (!nodesInitialized || pendingReveal.current.size === 0) return
+    const added = pendingReveal.current
+    const visible = visibleCanvas()
+    const measured = getNodes()
+    const addedNodes = measured.filter((n) => added.has(n.id))
+    if (addedNodes.length !== added.size || addedNodes.some((n) => !n.measured?.width || !n.measured?.height)) return
+    const outside = measured.some((n) => added.has(n.id) && !containsRect(visible, { ...n.position, ...nodeSize(n as FlowNode) }))
+    pendingReveal.current = new Set()
+    if (outside) void fitView({ nodes: addedNodes, padding: 0.15, minZoom: 0.1, maxZoom: getZoom() })
+  }, [nodes, nodesInitialized, visibleCanvas, getNodes, getZoom, fitView])
 
   // 节点删除(T21.4 ④):危险动作只留一条漏斗 —— 面板「删除节点」入口与
   // 键盘 Delete/Backspace 都先落到 onBeforeDelete,布防确认层;确认后才真删。
@@ -155,12 +188,19 @@ function Editor({
 
   const addNode = useCallback(
     (type: NodeType) => {
-      // 视口中心落点;palette 基名 llm/tool/branch/approval/fan 均合规。
-      const position = screenToFlowPosition({ x: window.innerWidth / 2, y: window.innerHeight / 2 })
-      const id = nextNodeId(type === 'parallel' ? 'fan' : type, nodes.map((n) => n.id))
-      setGraph((g) => ({ ...g, nodes: [...g.nodes, { id, type, position, data: { spec: defaultSpec(type, id) } }] }))
+      const visible = visibleCanvas()
+      const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
+      // id 与落点都从同一次最新 graph 计算,同一事件内快速连加也不重复。
+      // selected 经现有 onSelectionChange 联动右栏,updater 保持无副作用。
+      setGraph((g) => {
+        const id = nextNodeId(type === 'parallel' ? 'fan' : type, g.nodes.map((n) => n.id))
+        const node = { id, type, position: { x: 0, y: 0 }, data: { spec: defaultSpec(type, id) }, selected: true }
+        const occupied = g.nodes.map((n) => ({ ...n.position, ...nodeSize(n, rem) }))
+        node.position = newNodePosition(visible, nodeSize(node, rem), occupied)
+        return { ...g, nodes: [...g.nodes.map((n) => ({ ...n, selected: false })), node] }
+      })
     },
-    [nodes, screenToFlowPosition],
+    [visibleCanvas],
   )
 
   // immutable patch:换 spec/data 引用触发 RF 节点重渲(直接改字段会被
@@ -276,7 +316,7 @@ function Editor({
       <div className="editor-mid">
         <Palette onAdd={addNode} />
 
-        <div className="editor-canvas">
+        <div className="editor-canvas" ref={canvasRef}>
           <ReactFlow
             nodes={nodes}
             edges={edges}

@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"braid/internal/engine/dsl"
@@ -119,6 +120,7 @@ func TestCanvasExportFixturesPreserveMinSuccess(t *testing.T) {
 		minSuccess int
 	}{
 		{fixture: "parallel-min-success", minSuccess: 2},
+		{fixture: "edge-sides", minSuccess: 2},
 		{fixture: "all-node-types", minSuccess: 0},
 	}
 	for _, tt := range tests {
@@ -151,5 +153,35 @@ func TestCanvasExportFixturesPreserveMinSuccess(t *testing.T) {
 			}
 			t.Fatal("fixture is missing fan node")
 		})
+	}
+}
+
+// UX-F2:同一份前端导出 fixture 必须实际承载方向与语义绑定,不能仅靠
+// schema 接受新增键来宣称导出已保存;全量 fixture 测试另走发布解析口径。
+func TestCanvasExportFixturesPreserveEdgeSides(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("..", "..", "web", "canvas", "testdata", "exports", "edge-sides.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var doc struct {
+		Metadata struct {
+			Canvas struct {
+				Edges []map[string]string `json:"edges"`
+			} `json:"canvas"`
+		} `json:"metadata"`
+	}
+	if err := json.Unmarshal(raw, &doc); err != nil {
+		t.Fatal(err)
+	}
+	want := []map[string]string{
+		{"from": "read_doc", "to": "parse", "source_side": "right", "target_side": "left"},
+		{"from": "parse", "to": "fan", "source_side": "top", "target_side": "bottom"},
+		{"from": "fan", "to": "review", "source_side": "left", "target_side": "right"},
+		{"from": "review", "to": "verdict", "source_side": "right", "target_side": "left"},
+		{"from": "verdict", "to": "report", "source_anchor": "case_0", "target_side": "right"},
+		{"from": "verdict", "to": "revise", "target_side": "bottom"},
+	}
+	if !reflect.DeepEqual(doc.Metadata.Canvas.Edges, want) {
+		t.Fatalf("canvas semantic anchors / directions lost or changed: got %v, want %v", doc.Metadata.Canvas.Edges, want)
 	}
 }

@@ -1,4 +1,4 @@
-// 五类节点的画布视图:共享外壳(类型 + 标题 + 上下 Handle)+ 各类型摘要行。
+// 五类节点的画布视图:共享外壳(类型 + 标题 + 方向/语义 Handle)+ 各类型摘要行。
 // 渲染纪律:全部走 React 文本节点(自动转义),标题等作者自由文本绝不进
 // innerHTML(同审批台 textContent 契约,D-t44)。
 //
@@ -10,14 +10,14 @@
 //   - 未配置 = 亮度/发丝线:虚线边框 + 更暗的待填占位,不占状态色相。
 //   - 出口 = 锚点(T21.4 ③):多出口节点(branch)每个锚点一个可连手柄,
 //     沿卡片下沿均分排布,id 与卡片内的端口行一一对应;单出口节点保持
-//     单缺省手柄。锚点集合由 model/convert.sourceAnchors() 从 spec 推导。
+//     四向物理手柄,不扩业务出口。锚点集合由 sourceAnchors() 从 spec 推导。
 //
 // 执行面注入契约(可选字段,缺省 = 编辑面形态):
 //   data: { spec: DslNode; status?: string; instanceNo?: number }
 import { Handle, Position, type NodeProps } from '@xyflow/react'
 import type { ReactNode } from 'react'
 import type { DslNode } from '../model/dsl.ts'
-import { sourceAnchors, type SourceAnchor } from '../model/convert.ts'
+import { sideHandle, sourceAnchors, type SourceAnchor } from '../model/convert.ts'
 import { nodeStatus, nodeTypeMeta } from '../ui/status.ts'
 import { StatusChip } from '../ui/primitives.tsx'
 import { I } from '../ui/I.tsx'
@@ -49,8 +49,28 @@ function isUnconfigured(spec: DslNode): boolean {
   }
 }
 
+const SIDE_LABELS = { top: '上侧', right: '右侧', bottom: '下侧', left: '左侧' } as const
+
+/** 同一侧输入/输出错位,避免两个可拖点覆盖;缺省手柄仍排在各自类型首位。 */
+function DirectionHandles({ type }: { type: 'source' | 'target' }) {
+  const sides = type === 'source' ? [Position.Bottom, Position.Top, Position.Right, Position.Left] :
+    [Position.Top, Position.Right, Position.Bottom, Position.Left]
+  return sides.map((side) => (
+    <Handle
+      key={side}
+      id={sideHandle(type, side)}
+      type={type}
+      position={side}
+      className="bn-direction-handle"
+      data-side={side}
+      title={`${SIDE_LABELS[side]}${type === 'source' ? '输出' : '输入'}连接点`}
+      aria-label={`${SIDE_LABELS[side]}${type === 'source' ? '输出' : '输入'}连接点`}
+    />
+  ))
+}
+
 /**
- * 源锚点手柄:空集 = 单缺省手柄(单出口节点,保持原形态);
+ * 源锚点手柄:空集 = 普通单出口节点的四向物理手柄;
  * 非空 = 一个无 id 兜底手柄 + 每个锚点一个带 id 的手柄,沿下沿均分。
  *
  * **DOM 顺序有语义**:React Flow 解析边端点时,`sourceHandle` 缺省(null)取的是
@@ -62,10 +82,10 @@ function isUnconfigured(spec: DslNode): boolean {
  * 视觉位置与 DOM 顺序解耦(端点按测量坐标画):兜底点仍钉在最右端,不与均分位重叠。
  */
 function SourceHandles({ anchors }: { anchors: SourceAnchor[] }) {
-  if (anchors.length === 0) return <Handle type="source" position={Position.Bottom} />
+  if (anchors.length === 0) return <DirectionHandles type="source" />
   return (
     <>
-      <Handle type="source" position={Position.Bottom} style={{ left: '100%' }} data-anchor="fallback" />
+      <Handle type="source" position={Position.Bottom} style={{ left: '100%' }} data-anchor="fallback" data-side="bottom" />
       {anchors.map((a, i) => (
         <Handle
           key={a.id}
@@ -74,6 +94,7 @@ function SourceHandles({ anchors }: { anchors: SourceAnchor[] }) {
           position={Position.Bottom}
           style={{ left: `${((i + 1) * 100) / (anchors.length + 1)}%` }}
           data-anchor={a.id}
+          data-side="bottom"
         />
       ))}
     </>
@@ -120,7 +141,7 @@ export function NodeShell({
         <div className="bn-id">{spec.id}</div>
       ) : null}
       {children !== undefined ? <div className="bn-body">{children}</div> : null}
-      <Handle type="target" position={Position.Top} />
+      <DirectionHandles type="target" />
       <SourceHandles anchors={sourceAnchors(spec)} />
     </div>
   )

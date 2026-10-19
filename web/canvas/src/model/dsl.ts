@@ -29,12 +29,20 @@ export function caseAnchorId(index: number): string {
 /** branch 默认去向的源锚点 id。 */
 export const DEFAULT_SOURCE_ANCHOR = 'default'
 
-/** schema metadata.canvas.edges 元素:边 → 源锚点绑定(引擎忽略)。 */
+/** D-2026-10-16-ux-f2-edge-sides:物理方向词域,与 schema $defs/edgeSide 对拍。 */
+export const EDGE_SIDES = ['top', 'right', 'bottom', 'left'] as const
+export type EdgeSide = (typeof EDGE_SIDES)[number]
+
+/** schema metadata.canvas.edges 元素:语义源锚点与物理方向分开,引擎忽略。 */
 export interface CanvasEdgeAnchor {
   from: string
   to: string
   /** 缺省 = 未绑定,该边落 from 节点的缺省手柄。 */
   source_anchor?: string
+  /** 普通源节点缺省 bottom;branch 源仍按语义锚点固定在下沿。 */
+  source_side?: EdgeSide
+  /** 全部节点缺省 top。 */
+  target_side?: EdgeSide
 }
 
 /** schema $defs/point:画布坐标(取整后落盘)。 */

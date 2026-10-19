@@ -1029,3 +1029,17 @@
 - 触发器：明确出现只靠审计链判定执行成功/失败的导出、合规消费或验收需求，或用户要求逐轮终态事件；先裁定覆盖状态、原码、payload、actor 与轮次/trace 语义。
 - 候选取舍：保留词表而使用执行详情会保留链内缺口；成功/失败专属事件直读但扩词；通用终态事件形状统一，但需裁定与已有取消事件的关系及双计数。三案均未选定。
 - 生效边界：登记可闭环；能力继续延期。未确认前不扩词、不改配置/DTO/engine/迁移；未来须覆盖全部收口来源、CAS 胜者同事务落行、回滚与重复收口，继续遵守 append-only、锁序/fence 及 engine 不内嵌审计。证据、取舍和后续验收见 [T23.12 登记](designs/t23.12-deferred-decisions.md#execution-终态审计事件f66)。
+
+## D-2026-10-16-ux-f2-edge-sides
+- 状态：**用户于 2026-10-19 明确批准，按本条最小兼容扩展实施**。UX-F2 / #228；依据本会话对该 D- 的明确选择；最终人工合并保护规则保留。
+- 证据与必要性：T21.4③（ROADMAP）既定锚点集合按 spec 推导不落盘。现有 `metadata.canvas.edges[]` 只接受 `from`、`to`、`source_anchor`，对象 `additionalProperties: false`；`source_anchor` 仅表示 `case_N/default` 分支语义，不能重载为物理方向。普通边的 sourceHandle/targetHandle 经导出再导入均丢失；按相对位置重算方向不能还原作者任意选择的端点。
+- 提请确认的范围：在现有边元数据上增加可选 `source_side` / `target_side`，枚举 `top/right/bottom/left`；仅保存选定端点的方向，不保存锚点集合、自由坐标、控制点或手工路由，不增加依赖或自动布局机制。执行 `nodes/edges/spec` 及 branch 路由语义不变。
+- 最小形状示例：`{"from":"review","to":"verdict","source_side":"right","target_side":"left"}`；依旧以 `(from,to)` 标识边，不扩多重边语义。字段规范序为 `from,to,source_anchor,source_side,target_side`，缺省方向不冗余落盘。
+- 普通节点：四边均可作为源或目标；未指定方向兼容为源 bottom、目标 top。普通边仅在存在非默认方向时创建边元数据记录。固定锚点由节点类型推导，作者选择的方向作为边的显示属性落盘。
+- 分支节点：保留由 spec 推导的 case/default 与无 id 兜底源锚、原 DOM 顺序及下沿布局；本票不为各语义出口复制四套手柄。分支可接收四向目标连线；它作为源时仍保留已有语义锚和默认下沿。不能把 `source_side` 解释为 case/default，也不由物理方向修改 branch `next/default`。
+- 兼容：旧文档无记录仍按原规则推导语义 source_anchor；显式边记录没有 source_anchor 仍表示明确未绑定，不回推 case；已有 case/default 记录与方向并存时仍以原语义判定。陈旧/非法语义锚按现有清理规则处理，不借方向绑定改变执行目标。缺方向字段按上述旧上下行为；非法方向在后端 schema 校验中拒绝，前端导入不得留下不存在的物理 handle。分支源上不适用的非默认 source_side 不使用、不继续导出。
+- 保存/删除：边或节点删除时同步清理相应元数据，仍走既有删除确认漏斗；保存、发布、关闭重开及执行只读图共享转换语义，保持 min_success 与既有受支持业务字段往返。共享转换 fixtures 由前后端双消费核验。
+- 升级与回滚限制：新版本能读取旧文档；旧 schema 会拒绝新增方向字段，故不能声称新文档可直接回滚旧二进制。启用新字段落盘前四入口须部署同一兼容版本；优先回滚到保留扩展 schema 的兼容构建。若必须降到旧 schema，另行确认含该字段的存量定义及相关快照备份、兼容转换与 hash 校验方案；本票不执行 DB 迁移、不改已发布历史或业务快照。
+- 写入面：前端 CanvasEditor/NodeViews/model dsl+convert+authoring 及必要 CSS、回归测试、共享 fixtures；后端 `internal/engine/dsl/schema.json` 与必要校验测试、`internal/api/canvas_contract_test.go`；完整重建 `internal/api/web/`；ROADMAP、本 D- 与验证/独审记录。零新 API、零迁移、零 go.mod/CI/认证/审计词表。实际最小 diff 由实现与独审核准。
+- 验收：连续至少四个新节点无重叠、自动选中及属性联动；四向普通端点真实拖线、服务端保存读回、关闭重开端点/布局一致；旧无记录/显式未绑定/branch case/default/陈旧锚点/删除与发布回归；前后端转换与 schema 双消费、正式 dist、真栈三件套、正常动效深浅主题桌面/窄窗、独审与最终准确 head/base 七门。
+- 保护面：修改 `internal/engine/` 属 AGENTS 的人工合并保护面，即便只改 schema。完成验证、独审、PR 与最终七门后保留用户在 GitHub 人工 merge；确认本 D- 本身不取消该规则。不得为自动合并绕开后端 schema。
