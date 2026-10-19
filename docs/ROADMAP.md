@@ -53,7 +53,7 @@
 
 ### M22-2 用户体感反馈(2026-10-15；方向保留，按 M23 前置关系后排)
 
-- [ ] UX-F1 控制台视觉整备(参照系已拍板 2026-10-15:n8n/Linear/Vercel/Temporal 分面取长,D-2026-10-15-console-references)— issue #227(父票)— 四子项:
+- [x] UX-F1 控制台视觉整备(参照系已拍板 2026-10-15:n8n/Linear/Vercel/Temporal 分面取长,D-2026-10-15-console-references)— issue #227(父票)— 四子项已完成，跨页主题/导航/焦点与画布契约已核对；证据见 [UX-F1-VALIDATION](audits/UX-F1-VALIDATION.md):
   - [x] UX-F1-a 壳层/审批 Linear 化 — M — issue #243 — 依赖 T23.10；F08/F27 视觉与层级，F25 焦点行为归 T23.10；紧凑导航/路由标题/审批队列与可见快捷键已落地。334 项 vitest、完整 dist 门、真栈三件套（2954 通过/仅显式 drill 跳过）、21/21 官方浏览器旅程通过；独立六视角开放 C/H/M/L=0，双主题桌面/窄窗与正常动效真实 Select 补测通过。各 revision、复用边界及失败保留见 [UX-F1-a-VALIDATION](audits/UX-F1-a-VALIDATION.md)；最终头七门与合并由主会话核对，勾选随本 PR 合并生效。
   - [x] UX-F1-b 画布 n8n 化 — M — issue #244 — 依赖 T23.4/T23.5/T23.7 与 #228/#229；无偏好工作流路由浅色默认、点阵地面、彩色类型节点、DSL 无损与双主题对比度均已验证。证据见 [UX-F1-b-VALIDATION](audits/UX-F1-b-VALIDATION.md)；勾选随本任务 PR 合并生效。
   - [x] UX-F1-c 执行总览 Vercel 化 — M — issue #245 — 依赖 T23.9；先定真实指标/时间窗/采样，禁止用快照伪造 sparkline 历史
