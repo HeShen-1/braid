@@ -89,7 +89,7 @@ function Editor({
     return { ...start, width: Math.max(1, end.x - start.x), height: Math.max(1, end.y - start.y) }
   }, [screenToFlowPosition])
 
-  // 等新卡片完成实际尺寸测量后才核可见性。满视口时扩大显示范围,
+  // 等新卡片完成实际尺寸测量后才核可见性。只显露本次新增节点,
   // 不移动旧节点,也不改变用户已收起的属性面板偏好。
   const knownNodeIds = useRef(new Set(initial.nodes.map((n) => n.id)))
   const pendingReveal = useRef(new Set<string>())
@@ -105,7 +105,7 @@ function Editor({
     if (addedNodes.length !== added.size || addedNodes.some((n) => !n.measured?.width || !n.measured?.height)) return
     const outside = measured.some((n) => added.has(n.id) && !containsRect(visible, { ...n.position, ...nodeSize(n as FlowNode) }))
     pendingReveal.current = new Set()
-    if (outside) void fitView({ padding: 0.15, minZoom: 0.1, maxZoom: getZoom() })
+    if (outside) void fitView({ nodes: addedNodes, padding: 0.15, minZoom: 0.1, maxZoom: getZoom() })
   }, [nodes, nodesInitialized, visibleCanvas, getNodes, getZoom, fitView])
 
   // 节点删除(T21.4 ④):危险动作只留一条漏斗 —— 面板「删除节点」入口与

@@ -352,6 +352,36 @@ test('四向普通端点:真实拖线、保存读回、关闭重开、改绑、�
   await attachJson(testInfo, 'ordinary-published-server', detail.dsl)
 })
 
+async function panLegacyCanvasForEditing(page: Page, testInfo: TestInfo, phase: string) {
+  const before = await canvasDoc(page)
+  const readViewport = () => page.locator('.editor-canvas .react-flow__viewport').evaluate((element) => {
+    const matrix = new DOMMatrix(getComputedStyle(element).transform)
+    return { x: matrix.e, y: matrix.f, zoom: matrix.a }
+  })
+  const originalViewport = await readViewport()
+  const pane = page.locator('.editor-canvas .react-flow__pane')
+  const start = await pane.evaluate((element) => {
+    const rect = element.getBoundingClientRect()
+    const point = { x: rect.x + rect.width / 2, y: rect.y + rect.height * 0.55 }
+    if (document.elementFromPoint(point.x, point.y) !== element) throw new Error('平移起点必须是真实空白画布')
+    return point
+  })
+  await page.mouse.move(start.x, start.y)
+  await page.mouse.down()
+  await page.mouse.move(start.x, start.y + 120, { steps: 12 })
+  await page.mouse.up()
+  await expect.poll(async () => (await readViewport()).y - originalViewport.y).toBeCloseTo(120, 0)
+  const actualViewport = await readViewport()
+  const after = await canvasDoc(page)
+  expect(actualViewport.zoom).toBeCloseTo(originalViewport.zoom)
+  expect(after.nodes).toEqual(before.nodes)
+  expect(after.edges).toEqual(before.edges)
+  expect(after.metadata?.canvas?.nodes).toEqual(before.metadata?.canvas?.nodes)
+  expect(after.metadata?.canvas?.edges).toEqual(before.metadata?.canvas?.edges)
+  expect(after.metadata?.canvas?.viewport?.y).not.toBe(before.metadata?.canvas?.viewport?.y)
+  await attachJson(testInfo, `${phase}-user-pan`, { before: before.metadata?.canvas, after: after.metadata?.canvas, originalViewport, actualViewport, start, deltaY: 120 })
+}
+
 test('分支旧文档兼容:无记录推导、显式未绑定、case/default 与四向目标 (1024 light)', async ({ page, request }, testInfo) => {
   let editor = page
   await editor.setViewportSize({ width: 1024, height: 900 })
@@ -382,6 +412,8 @@ test('分支旧文档兼容:无记录推导、显式未绑定、case/default 与
     expect(before.metadata?.canvas?.edges).toContainEqual(mode === 'no-record'
       ? { from: 'verdict', to: 'report', source_anchor: 'case_0' }
       : { from: 'verdict', to: 'report' })
+    // 真实用户先把旧图移离自动平移边区;保持低缩放及全部端点门。
+    await panLegacyCanvasForEditing(editor, testInfo, `${mode}-before-edit`)
     const edited: Connection[] = [
       { source: { node: 'review', side: 'right' }, target: { node: 'verdict', side: 'left' } },
       { source: { node: 'verdict', side: 'bottom', anchor: 'case_0' }, target: { node: 'report', side: 'left' } },

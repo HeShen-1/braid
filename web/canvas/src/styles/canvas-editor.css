@@ -12,6 +12,7 @@
   display: flex;
   flex: 1;
   flex-direction: column;
+  min-width: 0;
   min-height: 0;
   background: var(--color-ground-0);
 }

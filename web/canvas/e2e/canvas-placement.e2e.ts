@@ -2,6 +2,7 @@
 // 被测面由正式 e2e 栈提供,本文件不改动浏览器动效、DOM 或画布内部状态。
 import { expect, test, type Page, type TestInfo } from '@playwright/test'
 import { writeFile } from 'node:fs/promises'
+import { resolve } from 'node:path'
 import type { NodeType, WorkflowDoc } from '../src/model/dsl.ts'
 import { TID, tid } from '../src/ui/testids.ts'
 
@@ -203,3 +204,88 @@ for (const width of [1440, 1024]) {
     })
   }
 }
+
+test('远距旧节点不牵走新增节点:1024双栏、长分支、真实视口与保存一致', async ({ page, request }, testInfo) => {
+  // 仅 API setup 使用合法旧格式文档;新增/配置/保存均经真实 UI。
+  const fixturePath = resolve(process.cwd(), 'e2e/fixtures/files/a.txt')
+  const setup: WorkflowDoc = {
+    dsl: '1.0', name: `ux-f2-outlier-${Date.now()}`,
+    metadata: { canvas: { nodes: { branch: { position: { x: 24, y: 24 } }, far: { position: { x: 100000, y: 24 } } }, viewport: { x: 0, y: 0, zoom: 1 } } },
+    inputs: [{ name: 'value', type: 'number', required: true }],
+    edges: [{ from: 'branch', to: 'far' }],
+    nodes: [
+      { id: 'branch', type: 'branch', title: '长分支占位', cases: Array.from({ length: 32 }, (_, i) => ({ when: { left: '{{inputs.value}}', op: 'eq', right: i }, next: 'far' })), default: 'far' },
+      { id: 'far', type: 'tool', title: '远处旧节点', tool: 'file_read', inputs: { path: fixturePath }, outputs: { content: 'string' } },
+    ],
+    outputs: { content: '{{nodes.far.output.content}}' },
+  }
+  const login = await request.post('/api/v1/auth/login', { data: AUTHOR })
+  expect(login.ok()).toBe(true)
+  const { token } = await login.json() as { token: string }
+  const headers = { Authorization: `Bearer ${token}` }
+  const created = await request.post('/api/v1/definitions', { headers, data: setup })
+  expect(created.ok(), await created.text()).toBe(true)
+  const { id } = await created.json() as { id: string }
+
+  await page.setViewportSize({ width: 1024, height: 900 })
+  await page.goto('/')
+  await page.getByTestId(TID.loginUsername).fill(AUTHOR.username)
+  await page.getByTestId(TID.loginPassword).fill(AUTHOR.password)
+  await page.getByTestId(TID.loginSubmit).click()
+  await expect(page.getByTestId(TID.navWorkflows)).toBeVisible()
+  await page.getByTestId(tid.themeOption('dark')).click()
+  await page.goto(`/workflows/${id}`)
+  await expect(page.getByTestId(TID.editor)).toBeVisible()
+  await expect(page.locator('.react-flow__node')).toHaveCount(2)
+  await expect(page.getByTestId(TID.panelLeftToggle)).toHaveAccessibleName('收起工作流列表')
+  await expect(page.getByTestId(TID.panelRightToggle)).toHaveAccessibleName('收起属性面板')
+  const before = await canvasDoc(page)
+  const actualViewport = () => page.locator('.react-flow__viewport').evaluate((el) => {
+    const matrix = new DOMMatrixReadOnly(getComputedStyle(el).transform)
+    return { x: matrix.e, y: matrix.f, zoom: matrix.a }
+  })
+  expect(await actualViewport()).toEqual({ x: 0, y: 0, zoom: 1 })
+  await attachJson(testInfo, 'outlier-before', { setup, dsl: before, geometry: await geometry(page) })
+  await screenshot(page, testInfo, 'outlier-before')
+  let server: WorkflowDoc | undefined
+  try {
+    const addedId = await addNode(page, testInfo, 'tool', 'outlier')
+    await selectedPanel(page, addedId)
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+    const card = await page.getByTestId(tid.nodeCard(addedId)).boundingBox()
+    expect(card).not.toBeNull()
+    expect(card!.x).toBeGreaterThanOrEqual(0)
+    expect(card!.y).toBeGreaterThanOrEqual(0)
+    expect(card!.x + card!.width).toBeLessThanOrEqual(1024)
+    expect(card!.y + card!.height).toBeLessThanOrEqual(900)
+
+    // 填合法工具配置再经可见保存入口,不触发或执行任何节点。
+    await page.getByTestId(TID.nodePanel).getByLabel('工具名', { exact: true }).fill('file_read')
+    const args = page.getByTestId(TID.nodePanel).locator('.panel-section').filter({ has: page.getByRole('heading', { name: '工具入参', exact: true }) })
+    await args.getByRole('button', { name: '添加', exact: true }).click()
+    await page.getByLabel('入参名 1', { exact: true }).fill('path')
+    await page.getByLabel('值 1', { exact: true }).fill(fixturePath)
+    await expect.poll(async () => {
+      const actual = await actualViewport()
+      const stored = (await canvasDoc(page)).metadata?.canvas?.viewport
+      return stored?.x === Math.round(actual.x) && stored?.y === Math.round(actual.y) && Math.abs(stored.zoom - actual.zoom) < 0.000001
+    }, { message: 'DSL 视口应对应真实呈现的视口' }).toBe(true)
+    const expected = await canvasDoc(page)
+    expect(expected.nodes.filter((node) => node.id !== addedId)).toEqual(before.nodes)
+    for (const old of before.nodes) expect(expected.metadata?.canvas?.nodes[old.id]).toEqual(before.metadata?.canvas?.nodes[old.id])
+    const saved = page.waitForResponse((response) => new URL(response.url()).pathname === `/api/v1/drafts/${id}` && response.request().method() === 'PUT')
+    await page.getByTestId(TID.editorSave).click()
+    const response = await saved
+    expect(response.ok(), await response.text()).toBe(true)
+    expect(response.request().postDataJSON()).toEqual(expected)
+    const read = await request.get(`/api/v1/drafts/${id}`, { headers })
+    expect(read.ok()).toBe(true)
+    server = (await read.json() as { dsl: WorkflowDoc }).dsl
+    expect(server).toEqual(expected)
+    await expect(page.getByTestId(TID.editorFlash)).toContainText('已保存')
+    await expect.poll(() => page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
+  } finally {
+    await attachJson(testInfo, 'outlier-after', { dsl: await canvasDoc(page), server, actualViewport: await actualViewport(), geometry: await geometry(page), window: await page.evaluate(() => ({ innerWidth, innerHeight, scrollWidth: document.documentElement.scrollWidth })) })
+    await screenshot(page, testInfo, 'outlier-after')
+  }
+})
