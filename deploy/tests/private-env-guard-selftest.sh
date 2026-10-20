@@ -56,6 +56,26 @@ must_reject 'missing Docker exclusions'
 cp "$probe/dockerignore" "$probe/repo/.dockerignore"
 CI=true bash "$guard"
 
+# Git errors must stop the guard, rather than look like an empty safe result.
+mkdir "$probe/bin"
+real_git=$(command -v git)
+cat > "$probe/bin/git" <<'MOCK_GIT'
+#!/usr/bin/env bash
+if [[ "$1" == "$GUARD_FAIL_GIT_COMMAND" ]]; then
+  exit 79
+fi
+exec "$GUARD_REAL_GIT" "$@"
+MOCK_GIT
+chmod +x "$probe/bin/git"
+for git_command in ls-files log; do
+  if PATH="$probe/bin:$PATH" GUARD_REAL_GIT="$real_git" \
+     GUARD_FAIL_GIT_COMMAND="$git_command" CI=true bash "$guard" >"$probe/rejection.log" 2>&1; then
+    echo "private env self-test: accepted Git $git_command error" >&2
+    exit 1
+  fi
+  echo "private env self-test: rejected Git $git_command error"
+done
+
 # Exercise Docker's own ignore parser, including rule ordering/negations.
 mkdir -p "$probe/context/deploy"
 cp .dockerignore "$probe/context/"
@@ -66,8 +86,11 @@ for suffix in '' .bak .local '~'; do
 done
 printf 'local-only dummy marker\n' > "$probe/context/deploy/.t23.13-glm.env.swp"
 build_context() {
-  docker build --network none --no-cache --provenance=false \
-    --output "type=local,dest=$1" "$probe/context" >"$probe/docker.log" 2>&1
+  if ! docker build --network none --no-cache --provenance=false \
+    --output "type=local,dest=$1" "$probe/context" >"$probe/docker.log" 2>&1; then
+    cat "$probe/docker.log" >&2
+    return 1
+  fi
 }
 build_context "$probe/ignored"
 test -f "$probe/ignored/public-marker"

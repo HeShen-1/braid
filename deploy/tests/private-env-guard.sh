@@ -26,13 +26,15 @@ for rule in "$local_env*" "$hidden_env*"; do
   fi
 done
 
-if tracked=$(git ls-files "$local_env*" "$hidden_env*"); [[ -n "$tracked" ]]; then
+tracked=$(git ls-files "$local_env*" "$hidden_env*")
+if [[ -n "$tracked" ]]; then
   echo "private env guard: tracked private env path(s): $tracked" >&2
   exit 1
 fi
 
 # Also reject add-then-delete commits before push, without reading their content.
-if history=$(git log --all --format='%H' -- "$local_env*" "$hidden_env*"); [[ -n "$history" ]]; then
+history=$(git log --all --format='%H' -- "$local_env*" "$hidden_env*")
+if [[ -n "$history" ]]; then
   echo "private env guard: private path found in reachable Git history" >&2
   exit 1
 fi
