@@ -7,6 +7,8 @@
 .handoff
 deploy/.env
 deploy/prod.env
+deploy/t23.13-glm.env*
+deploy/.t23.13-glm.env*
 deploy/tool-data
 **/.testenv
 docs

@@ -27,8 +27,8 @@ dist/
 # 交付栈配置(prod-up.sh 管理态;与 dev 的 .env 物理分离)
 deploy/prod.env
 # T23.13 GLM local-only credentials/config; never commit or upload.
-deploy/t23.13-glm.env
-deploy/t23.13-glm.env.*
+deploy/t23.13-glm.env*
+deploy/.t23.13-glm.env*
 # file_read 交付挂载目录：仅空目录占位入库，业务文件留宿主。
 deploy/tool-data/*
 !deploy/tool-data/.gitkeep

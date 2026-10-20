@@ -90,6 +90,8 @@ jobs:
           fetch-depth: 0 # 全历史可达,增量提交逐个扫
       - name: private env guard
         run: deploy/tests/private-env-guard.sh
+      - name: private env guard self-test
+        run: deploy/tests/private-env-guard-selftest.sh
       - uses: gitleaks/gitleaks-action@v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
