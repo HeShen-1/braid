@@ -154,10 +154,11 @@ test('执行列表:真实状态tab/精确name、双主题密表、窄窗与键�
       expect(contrast.focus!.ratio).toBeGreaterThanOrEqual(3)
       const tabImage = PNG.sync.read(await all.screenshot({ path: info.outputPath(`execution-tab-focus-${theme}-${width}.png`) }))
       // 顶部两像素应实际画出内侧环;仅有底部选中下划线不能通过。
-      const painted = [0, 1].map((y) => Array.from(tabImage.data.subarray((y * tabImage.width + Math.floor(tabImage.width / 2)) * 4, (y * tabImage.width + Math.floor(tabImage.width / 2)) * 4 + 3)))
+      // 首行可能跨 CSS 分数像素边界；第二行位于 2px 内侧环内部。
+      const painted = [1].map((y) => Array.from(tabImage.data.subarray((y * tabImage.width + Math.floor(tabImage.width / 2)) * 4, (y * tabImage.width + Math.floor(tabImage.width / 2)) * 4 + 3)))
       for (const pixel of painted) for (let channel = 0; channel < 3; channel++) expect(Math.abs(pixel[channel] - contrast.focus!.rgb[channel])).toBeLessThanOrEqual(3)
       const geometry = await list.boundingBox()
-      expect(geometry!.width).toBeGreaterThan(620)
+      expect(geometry!.width).toBeGreaterThan(width === 1440 ? 620 : 580)
       await page.screenshot({ path: info.outputPath(`execution-list-${theme}-${width}.png`), fullPage: true, animations: 'disabled' })
       matrix.push({ width, theme, geometry, contrast, tabPainted: painted })
     }

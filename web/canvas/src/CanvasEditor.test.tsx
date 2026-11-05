@@ -124,7 +124,7 @@ describe('CanvasEditor(画布 UI)', () => {
     expect(within(screen.getByTestId(TID.nodePanel)).getByText('llm_n4', { selector: 'code' })).toBeInTheDocument()
   })
 
-  it('新节点落位取实际画布区域,保留折叠偏好并在重新展开时显示新属性', async () => {
+  it('新节点落位取实际画布区域,自动打开新节点属性', async () => {
     localStorage.clear()
     localStorage.setItem(PANEL_RIGHT_KEY, '1')
     const originalRect = HTMLElement.prototype.getBoundingClientRect
@@ -137,11 +137,10 @@ describe('CanvasEditor(画布 UI)', () => {
       const user = userEvent.setup()
       render(<CanvasEditor initialDoc={blankDoc()} />)
       await user.click(screen.getByTestId(tid.paletteBtn('tool')))
-      expect(screen.queryByLabelText('属性面板')).not.toBeInTheDocument()
-      expect(localStorage.getItem(PANEL_RIGHT_KEY)).toBe('1')
+      expect(screen.getByLabelText('属性面板')).toBeInTheDocument()
+      expect(localStorage.getItem(PANEL_RIGHT_KEY)).toBe('0')
       const doc = JSON.parse(screen.getByTestId(TID.editorJson).textContent ?? '{}') as WorkflowDoc
       expect(doc.metadata?.canvas?.nodes?.tool.position).toEqual({ x: 360, y: 370 })
-      await user.click(screen.getByLabelText('展开属性面板'))
       expect(within(await screen.findByTestId(TID.nodePanel)).getByText('tool', { selector: 'code' })).toBeInTheDocument()
     } finally {
       rect.mockRestore()
@@ -243,13 +242,15 @@ describe('CanvasEditor(画布 UI)', () => {
     localStorage.clear()
     const user = userEvent.setup()
     render(<CanvasEditor initialDoc={loadBase('minimal-llm')} />)
+    expect(screen.queryByLabelText('属性面板')).not.toBeInTheDocument()
+    await user.click(screen.getByLabelText('展开属性面板'))
     expect(screen.getByLabelText('属性面板')).toBeInTheDocument()
-    expect(screen.getByLabelText('收起属性面板')).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByLabelText('收起属性面板')).toHaveAttribute('aria-expanded', 'true')
 
     await user.click(screen.getByTestId(TID.panelRightToggle))
     expect(screen.queryByLabelText('属性面板')).not.toBeInTheDocument()
     // 收起后画布仍在,开关换成展开语义(不靠悬浮按钮找回)。
-    expect(screen.getByLabelText('展开属性面板')).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByLabelText('展开属性面板')).toHaveAttribute('aria-expanded', 'false')
     expect(screen.getByTestId(TID.editor)).toBeInTheDocument()
     // 折叠态是跨会话偏好,不是一次性状态。
     expect(localStorage.getItem(PANEL_RIGHT_KEY)).toBe('1')
@@ -359,6 +360,7 @@ describe('CanvasEditor(画布 UI)', () => {
     expect(screen.queryByLabelText('属性面板')).not.toBeInTheDocument()
 
     fireEvent.click(screen.getByTestId(tid.nodeCard('verdict')))
+    fireEvent.click(screen.getByLabelText('收起属性面板'))
     fireEvent.keyDown(document, { key: 'Delete' })
     await waitFor(() => expect(screen.getByTestId(TID.deleteConfirm)).toBeInTheDocument())
     fireEvent.keyDown(document.body, { key: 'Escape' })

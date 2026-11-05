@@ -78,8 +78,8 @@ export function WorkflowsRoute() {
         {canAuthor ? <Button size="sm" variant="quiet" aria-pressed={!showVersions} onClick={() => void navigate(ws?.draftId == null ? '/workflows' : `/workflows/${ws.draftId}`)}>草稿</Button> : null}
         <Button size="sm" variant="quiet" aria-pressed={showVersions} onClick={() => void navigate('/workflows?view=versions')}>已发布与版本历史</Button>
       </div>
-      {showVersions ? <PublishedVersions canManage={canAuthor} onAuthExpired={logout} /> : <div className="flex min-w-0 min-h-0 flex-1">
-      <DraftList
+      {showVersions ? <PublishedVersions canManage={canAuthor} onAuthExpired={logout} /> : <div className="workflow-workspace flex min-w-0 min-h-0 flex-1">
+      <DraftList key={ws?.draftId ?? 'list'}
         drafts={drafts}
         activeId={ws?.draftId ?? null}
         onOpen={(id) => void navigate(`/workflows/${id}`)}

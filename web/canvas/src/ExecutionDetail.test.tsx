@@ -19,6 +19,7 @@ function stubRoute(routes: (string | RegExp)[], responder: (url: string, init?: 
     for (const r of routes) {
       if (typeof r === 'string' ? url === r : r.test(url)) return responder(url, init)
     }
+    if (url.endsWith('/definitions/wf/versions/1')) return ok({ dsl: DOC })
     return ok({ error: 'unexpected_url', url })
   })
   vi.stubGlobal('fetch', fn)
@@ -91,6 +92,7 @@ describe('ExecutionDetail(执行详情)', () => {
     const panel = await screen.findByTestId(tid.approvalEntry('gate'))
     expect(panel).toHaveTextContent('第 2 轮')
     expect(panel).toHaveTextContent('<script>保留文本</script>完整备注')
+    await userEvent.setup().click(screen.getByRole('tab', { name: '节点详情' }))
     expect(within(panel).getByRole('link', { name: '查看决定历史' })).toHaveAttribute('href', '/approvals/7/gate')
     expect(panel.querySelector('script')).toBeNull()
     expect(screen.queryByTestId(TID.resumeSubmit)).not.toBeInTheDocument()
@@ -215,7 +217,7 @@ describe('ExecutionDetail(执行详情)', () => {
     expect(screen.getByTestId(TID.rollbackSubmit)).toHaveTextContent('回滚到 gate')
     expect(calls).toContain('/api/v1/executions/7/nodes/fan?instance_no=2')
     await user.click(screen.getByRole('button', { name: '收起证据' }))
-    expect(screen.getByTestId(tid.nodeEvidence('fan', 2))).toHaveFocus()
+    await waitFor(() => expect(screen.getByTestId(tid.nodeEvidence('fan', 2))).toHaveFocus())
     await user.keyboard('{Enter}')
     expect(await screen.findByTestId(TID.nodeEvidence)).toHaveFocus()
   })
@@ -532,7 +534,7 @@ describe('ExecutionDetail(执行详情)', () => {
     expect(await screen.findByTestId(TID.execRibbon)).toHaveTextContent('暂无节点执行记录')
   })
 
-  it('定义版本图:默认收起零请求;展开才拉钉版定义,并把执行状态注入图上', async () => {
+  it('定义版本图:默认打开即拉钉版定义,并把执行状态注入图上', async () => {
     const user = userEvent.setup()
     const fetchMock = stubRoute(
       [/^\/api\/v1\/executions\/7$/, /\/definitions\/wf\/versions\/1$/, /\/audit/],
@@ -552,10 +554,9 @@ describe('ExecutionDetail(执行详情)', () => {
     render(<ExecutionDetail canManage execId="7" onAuthExpired={() => {}} />)
     await screen.findByTestId(tid.nodeRow('gate', 0))
     // 收起:标题带 name vX,且没有版本请求
-    expect(screen.getByText('wf v1')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '收起定义版本图' })).toBeInTheDocument()
     const versionCalls = () => fetchMock.mock.calls.filter(([u]) => String(u).includes('/versions/')).length
-    expect(versionCalls()).toBe(0)
-
+    await user.click(screen.getByRole('button', { name: '收起定义版本图' }))
     await user.click(screen.getByRole('button', { name: '展开定义版本图' }))
     // 状态注入:定义里的 gate 节点直接显示当前执行的聚合状态
     expect(await screen.findByTestId(tid.nodeCard('gate'))).toHaveAttribute('data-state', 'FAILED')

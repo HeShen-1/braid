@@ -1,17 +1,6 @@
-// 执行详情(T21.1 Lane B 重做)—— 纵向分层,眼睛从上到下一次读完:
-//   ① 身份:状态芯片(色相 + 形状)+ 裸 ID/定义版本(与日志/审计同语言)
-//   ② 执行级错误:就近,不埋进表格
-//   ③ 处置条:回滚目标(在时间带上选点)/ 先停止未结束节点 / 回滚 · 续跑 · 取消(行内确认)
-//   ④ 执行时间带(signature move):节点状态与"等了多久"的唯一真源
-//   ④′ 定义版本图(可折叠,展开才拉取):"当时声明的形状"——DAG 拓扑不可替代
-//   ⑤ 会签中间态:待投名单 + 决定时间线(名单外 403 静默收起)
-//   ⑥ 终态输出 → 审计链(append-only,逐行可数)
-//
-// 轮询:非终态 2.5s;FAILED 保持 10s 慢速(可被本页回滚/续跑、他人操作、
-// reaper 兜底翻活,恒停会冻结在过期帧);SUCCEEDED/CANCELLED 停表。
-// 详情读取失败暂停轮询，保留上一帧；手动刷新成功后按当前状态恢复。
-// 零后端新端点:全部字段来自既有 executionDetailDTO / approvalDetailDTO / auditEventDTO。
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
+// 执行详情：固定版本图在上，节点/时间线/输入输出/审计证据以标签切换。
+// 权限、轮询、处置确认及错误暂停仍复用既有契约，零新后端端点。
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from 'react'
 import { ArrowLeft, Ban, Play, RefreshCw, TriangleAlert, Undo2, UserX } from 'lucide-react'
 import {
   ApiError,
@@ -20,6 +9,8 @@ import {
   type ExecutionDetail as ExecutionDetailData,
   type NodeExecution,
 } from './api.ts'
+import { EVIDENCE_KEY, useCollapsed } from './prefs.ts'
+import { SectionTabs } from './ui/SectionTabs.tsx'
 import { DefinitionGraph } from './DefinitionGraph.tsx'
 import { ExecutionRibbon } from './ExecutionRibbon.tsx'
 import { AuditEvidence, EvidenceJSON, EvidenceRaw, NodeEvidence } from './ExecutionEvidence.tsx'
@@ -67,6 +58,9 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack, canManage = fal
   const [approvals, setApprovals] = useState<Record<string, ApprovalDetail | string>>({})
   const [evidenceRevision, setEvidenceRevision] = useState(0)
   const [evidenceNode, setEvidenceNode] = useState<{ nodeId: string; instanceNo: number } | null>(null)
+  const tabsId = useId()
+  const [tab, setTab] = useState('timeline')
+  const [evidenceCollapsed, setEvidenceCollapsed] = useCollapsed(EVIDENCE_KEY)
   const [trace, setTrace] = useState<string | null>(null)
   const evidenceOpener = useRef<HTMLButtonElement | null>(null)
   const traceOpener = useRef<HTMLButtonElement | null>(null)
@@ -75,7 +69,9 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack, canManage = fal
     // Trace面内继续查询时保留外部入口；内部按钮会随切链/收起卸载。
     if (opener.closest('[data-trace-evidence]') === null) traceOpener.current = opener
     setTrace(id)
-  }, [])
+    setTab('audit')
+    setEvidenceCollapsed(false)
+  }, [setEvidenceCollapsed])
   const [target, setTarget] = useState<string | null>(null)
   // T19.6 quiesce 旗标:回滚/续跑时把 EXECUTING/等待审批的残留节点同事务
   // 停止(缺省不勾 = 服务端 rollback_blocked_inflight 等后台收敛,保值等待)。
@@ -255,6 +251,7 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack, canManage = fal
             #{detail.id} · {detail.definition_name} v{detail.definition_version}
           </code>
           <span className="ml-auto flex items-center gap-2">
+            {onBack ? <Button size="sm" variant="quiet" icon={ArrowLeft} onClick={onBack}>返回执行列表</Button> : null}
             <Button ref={refreshOpener} variant="quiet" size="sm" icon={RefreshCw} disabled={busy || readLoading} onClick={() => void load()}>
               {readLoading ? '正在读取…' : '刷新'}
             </Button>
@@ -283,18 +280,6 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack, canManage = fal
         <strong>执行详情刷新失败</strong><p>{readError}</p><p>当前保留上次读取内容，自动刷新已暂停。请点击上方刷新后再操作。</p>
       </Alert> : null}
 
-      <Panel>
-        <PanelHead title="触发输入" sub="执行创建时快照" />
-        <div className="panel-body evidence-body">
-          <details className="evidence-disclosure" open>
-            <summary>查看触发 input</summary>
-            <EvidenceJSON value={detail.input} testId={TID.execInput} />
-          </details>
-          <details className="evidence-disclosure"><summary>定义内容 hash</summary><code>{detail.definition_hash}</code></details>
-          <EvidenceRaw value={detail} label="执行详情服务端响应原文" />
-        </div>
-      </Panel>
-
       {/* ② 执行级错误:就近呈现 */}
       {detail.error_code !== null ? (
         <Alert tone={rejected ? 'neutral' : 'error'} icon={rejected ? UserX : TriangleAlert}>
@@ -302,6 +287,28 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack, canManage = fal
           <p>{executionFailureText(detail, failedNode)}</p>
           {rejected ? <p>服务端执行状态仍为“已失败”。</p> : null}
           <details><summary>原始错误</summary><code>{detail.error_code}</code><p>{detail.error_message}</p></details>
+        </Alert>
+      ) : null}
+
+      {flash !== '' ? (
+        <p className="exec-flash" role="status" data-testid={TID.execFlash}>
+          {flash}
+        </p>
+      ) : null}
+      {error !== null ? (
+        <Alert tone="error" icon={TriangleAlert}>
+          <strong>操作未完成</strong>
+          <p>{error.text}</p>
+          {error.raw !== undefined && error.raw !== '' ? <details><summary>服务端补充说明</summary><p>{error.raw}</p></details> : null}
+          {error.blocked !== undefined && error.blocked.length > 0 ? (
+            <ul className="exec-blocked">
+              {error.blocked.map((b) => (
+                <li key={b}>
+                  <code>{b}</code>
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </Alert>
       ) : null}
 
@@ -376,28 +383,19 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack, canManage = fal
         </div>
       </section> : <p className="text-sm text-ink-2">当前角色只读；处置执行需要 author/admin 角色。</p>}
 
-      {flash !== '' ? (
-        <p className="exec-flash" role="status" data-testid={TID.execFlash}>
-          {flash}
-        </p>
-      ) : null}
-      {error !== null ? (
-        <Alert tone="error" icon={TriangleAlert}>
-          <strong>操作未完成</strong>
-          <p>{error.text}</p>
-          {error.raw !== undefined && error.raw !== '' ? <details><summary>服务端补充说明</summary><p>{error.raw}</p></details> : null}
-          {error.blocked !== undefined && error.blocked.length > 0 ? (
-            <ul className="exec-blocked">
-              {error.blocked.map((b) => (
-                <li key={b}>
-                  <code>{b}</code>
-                </li>
-              ))}
-            </ul>
-          ) : null}
-        </Alert>
-      ) : null}
+      {/* ④′ 当时声明的形状(默认展开，可收起) */}
+      <DefinitionGraph defaultOpen
+        name={detail.definition_name}
+        version={detail.definition_version}
+        statuses={nodeStatusIndex(statusRows)}
+        onAuthExpired={onAuthExpired}
+      />
 
+      <SectionTabs id={tabsId} label="执行证据" items={[{value: 'node', label: '节点详情'}, {value: 'timeline', label: '时间线'}, {value: 'io', label: '输入与输出'}, {value: 'audit', label: '审计记录'}]} value={tab}
+        onChange={(value) => { setTab(value); setEvidenceCollapsed(false) }}
+        actions={<Button variant="quiet" size="sm" aria-expanded={!evidenceCollapsed} aria-controls={`${tabsId}-evidence`} onClick={() => setEvidenceCollapsed(!evidenceCollapsed)}>{evidenceCollapsed ? '展开面板' : '收起面板'}</Button>} />
+      <div className="exec-evidence-pane" id={`${tabsId}-evidence`} hidden={evidenceCollapsed}>
+      <section role="tabpanel" id={`${tabsId}-panel-timeline`} aria-labelledby={`${tabsId}-tab-timeline`} hidden={tab !== 'timeline'} tabIndex={0}>
       {/* ④ 时间带 */}
       <ExecutionRibbon
         nodes={statusRows}
@@ -406,25 +404,36 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack, canManage = fal
         live={LIVE.includes(detail.status)}
         selectedNodeId={target}
         onSelectNode={setTarget}
-        onInspectNode={(nodeId, instanceNo, opener) => { evidenceOpener.current = opener; setEvidenceNode({ nodeId, instanceNo }) }}
+        onInspectNode={(nodeId, instanceNo, opener) => { evidenceOpener.current = opener; setEvidenceNode({ nodeId, instanceNo }); setTab('node') }}
       />
 
-      {evidenceNode !== null ? <NodeEvidence key={`${execId}:${evidenceNode.nodeId}:${evidenceNode.instanceNo}`} execId={execId} nodeId={evidenceNode.nodeId} instanceNo={evidenceNode.instanceNo} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onClose={() => { setEvidenceNode(null); evidenceOpener.current?.focus() }} /> : null}
 
-      {/* ④′ 当时声明的形状(可折叠:默认收起 = 零请求) */}
-      <DefinitionGraph
-        name={detail.definition_name}
-        version={detail.definition_version}
-        statuses={nodeStatusIndex(statusRows)}
-        onAuthExpired={onAuthExpired}
-      />
 
+      </section>
+      <section role="tabpanel" id={`${tabsId}-panel-node`} aria-labelledby={`${tabsId}-tab-node`} hidden={tab !== 'node'} tabIndex={0}>
+      {evidenceNode !== null ? <NodeEvidence key={`${execId}:${evidenceNode.nodeId}:${evidenceNode.instanceNo}`} execId={execId} nodeId={evidenceNode.nodeId} instanceNo={evidenceNode.instanceNo} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onClose={() => { setEvidenceNode(null); setTab('timeline'); requestAnimationFrame(() => evidenceOpener.current?.focus()) }} /> : null}
+
+      {evidenceNode === null ? <p className="evidence-empty">在时间线中选择节点的“详情”，查看单次执行证据。</p> : null}
       {/* ⑤ 会签中间态 */}
       {approvalRows.map((n) => {
         const ap = approvals[n.node_id]
         if (typeof ap === 'object' && ap.node_status === n.status) return <ApprovalPanel key={n.node_id} ap={ap} />
         return <section className="panel" key={n.node_id} aria-label={`审批 ${n.node_id}`}><PanelHead title={`审批 · ${n.node_id}`} actions={<a className="btn btn-quiet btn-sm" href={`/approvals/${execId}/${encodeURIComponent(n.node_id)}`}>查看审批详情与决定</a>} /><div className="panel-body text-sm text-ink-2">{typeof ap === 'string' ? `审批详情未能读取：${ap}。决定全文仅对审批名单内账号开放。` : '正在读取审批详情…'}</div></section>
       })}
+
+      </section>
+      <section role="tabpanel" id={`${tabsId}-panel-io`} aria-labelledby={`${tabsId}-tab-io`} hidden={tab !== 'io'} tabIndex={0}>
+      <Panel>
+        <PanelHead title="触发输入" sub="执行创建时快照" />
+        <div className="panel-body evidence-body">
+          <details className="evidence-disclosure" open>
+            <summary>查看触发 input</summary>
+            <EvidenceJSON value={detail.input} testId={TID.execInput} />
+          </details>
+          <details className="evidence-disclosure"><summary>定义内容 hash</summary><code>{detail.definition_hash}</code></details>
+          <EvidenceRaw value={detail} label="执行详情服务端响应原文" />
+        </div>
+      </Panel>
 
       {/* ⑥ 输出 */}
       {detail.outputs !== null && detail.outputs !== undefined ? (
@@ -434,9 +443,13 @@ export function ExecutionDetail({ execId, onAuthExpired, onBack, canManage = fal
         </Panel>
       ) : null}
 
+      </section>
+      <section role="tabpanel" id={`${tabsId}-panel-audit`} aria-labelledby={`${tabsId}-tab-audit`} hidden={tab !== 'audit'} tabIndex={0}>
       {/* ⑥ 审计链 */}
       <AuditEvidence key={execId} executionId={execId} partition={detail.audit.exec_date} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={inspectTrace} />
       {trace !== null ? <AuditEvidence key={`${execId}:${trace}`} traceId={trace} refreshKey={evidenceRevision} onAuthExpired={onAuthExpired} onTrace={inspectTrace} onClose={() => { setTrace(null); (traceOpener.current?.isConnected ? traceOpener.current : refreshOpener.current)?.focus() }} /> : null}
+      </section>
+      </div>
     </main>
   )
 }

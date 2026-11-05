@@ -45,6 +45,28 @@ function renderDetail(over: Partial<Parameters<typeof ApprovalDetail>[0]> = {}) 
 }
 
 describe('ApprovalDetail(审批详情)', () => {
+  it('内容/记录互斥显示，方向键切换，折叠处理栏不丢备注，驳回确认强制可见', async () => {
+    localStorage.clear()
+    const props = { detail: detail(), canDecide: true, loading: false, error: '', comment: '保留这条备注', commentError: '', busy: false, confirmReject: false, onCommentChange: vi.fn(), onRequestDecision: vi.fn(), onCancelReject: vi.fn(), onBack: vi.fn() }
+    const { rerender } = render(<ApprovalDetail {...props} />)
+    const user = userEvent.setup()
+    expect(screen.getByRole('tabpanel', { name: '审批内容' })).toBeVisible()
+    expect(screen.queryByRole('tabpanel', { name: '审批记录' })).toBeNull()
+    await user.click(screen.getByRole('tab', { name: '审批内容' }))
+    await user.keyboard('{ArrowRight}')
+    expect(screen.getByRole('tab', { name: '审批记录' })).toHaveFocus()
+    expect(screen.getByRole('tabpanel', { name: '审批记录' })).toBeVisible()
+    expect(screen.getByTestId(TID.approvalInstructions)).not.toBeVisible()
+    await user.click(screen.getByRole('button', { name: '收起处理栏' }))
+    expect(screen.getByTestId(TID.approvalComment)).not.toBeVisible()
+    await user.click(screen.getByRole('button', { name: '展开处理栏' }))
+    expect(screen.getByTestId(TID.approvalComment)).toHaveValue('保留这条备注')
+    await user.click(screen.getByRole('button', { name: '收起处理栏' }))
+    rerender(<ApprovalDetail {...props} confirmReject />)
+    expect(screen.getByRole('group', { name: '确认驳回' })).toBeVisible()
+    localStorage.clear()
+  })
+
   it('元数据六项:执行 ID / 节点 / 审批模式 / 审批人 / 待投名单 / 截止时间', () => {
     renderDetail()
     const meta = screen.getByTestId(TID.approvalMeta)
@@ -110,7 +132,7 @@ describe('ApprovalDetail(审批详情)', () => {
     expect(ul).toHaveTextContent('同意')
     expect(ul).toHaveTextContent('bob')
     expect(ul).toHaveTextContent('驳回')
-    expect(ul.querySelectorAll('li')).toHaveLength(2)
+    expect(ul.querySelectorAll('tbody tr')).toHaveLength(2)
   })
 
   it('WAITING_APPROVAL:决定表单在场(备注 + 批准 + 驳回)', () => {

@@ -60,9 +60,11 @@ test('空白编排分支→存发与服务端DSL一致→缺必需字段就近�
     await page.getByRole('checkbox', { name: `参数必填 ${i}`, exact: true }).click()
     await page.getByLabel(`参数说明 ${i}`, { exact: true }).fill(description)
   }
+  if (!await page.locator('.editor-palette').evaluate((el) => (el as HTMLDetailsElement).open)) await page.getByText('添加节点', { exact: true }).click()
   await page.getByTestId(tid.paletteBtn('branch')).click()
   await moveNode(page, 'branch', canvas!.x + 300, canvas!.y + 65)
   for (const [id, title, x] of [['tool', '条件命中读取', 75], ['tool_n2', '默认读取', 580]] as const) {
+    if (!await page.locator('.editor-palette').evaluate((el) => (el as HTMLDetailsElement).open)) await page.getByText('添加节点', { exact: true }).click()
     await page.getByTestId(tid.paletteBtn('tool')).click()
     await moveNode(page, id, canvas!.x + x, canvas!.y + 360)
     await page.getByTestId(tid.nodeCard(id)).click()
@@ -168,6 +170,7 @@ test('空白编排分支→存发与服务端DSL一致→缺必需字段就近�
   const docPath = path.resolve(process.cwd(), 'e2e/fixtures/files/a.txt')
   const content = readFileSync(docPath, 'utf8')
   for (const [route, active, skipped] of [['approved', 'tool', 'tool_n2'], ['other', 'tool_n2', 'tool']] as const) {
+    if (await page.getByRole('button', { name: '返回执行列表', exact: true }).count()) await page.getByRole('button', { name: '返回执行列表', exact: true }).click()
     await page.getByTestId(TID.triggerInput).fill(JSON.stringify({ route, doc_path: docPath }))
     const triggered = page.waitForResponse((r) => r.request().method() === 'POST' && new URL(r.url()).pathname === '/api/v1/executions')
     await page.getByTestId(TID.triggerSubmit).click()

@@ -366,7 +366,7 @@ export function ApprovalsView({
           onNext={next}
         />
       ) : (
-        <ApprovalDetail
+        <ApprovalDetail key={`${selected.executionId}:${selected.nodeId}`}
           detail={detail}
           execution={execution}
           contextError={contextError}

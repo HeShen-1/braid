@@ -74,6 +74,7 @@ test('工作流列表断网不冒充空态，重试与保存后的刷新保留�
   await page.getByRole('button', { name: '重试工作流列表' }).click()
   await page.getByTestId(tid.draftItem(id)).click()
   await expect(page.getByTestId(TID.editor)).toBeVisible()
+  await page.getByRole('button', { name: '展开工作流列表' }).click()
   offline = true
   await page.getByTestId(TID.editorSave).click()
   await expect(page.getByTestId(TID.draftList).getByRole('alert')).toContainText('保留上次读取')

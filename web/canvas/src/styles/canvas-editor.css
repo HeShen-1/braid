@@ -17,20 +17,20 @@
   background: var(--color-ground-0);
 
   /* 画布类型色:每一档都用不透明底 + 对侧墨色,避免状态色相与节点类型混义。 */
-  --canvas-type-llm-bg: #163b36;
-  --canvas-type-llm-fg: #d8f7ef;
+  --canvas-type-llm-bg: #24262a;
+  --canvas-type-llm-fg: #eeeff1;
   --canvas-type-llm-line: #52c7b1;
-  --canvas-type-tool-bg: #432c10;
-  --canvas-type-tool-fg: #ffe9bb;
+  --canvas-type-tool-bg: #24262a;
+  --canvas-type-tool-fg: #eeeff1;
   --canvas-type-tool-line: #e0a84d;
-  --canvas-type-branch-bg: #2f2454;
-  --canvas-type-branch-fg: #eee6ff;
+  --canvas-type-branch-bg: #24262a;
+  --canvas-type-branch-fg: #eeeff1;
   --canvas-type-branch-line: #9a7cf0;
-  --canvas-type-approval-bg: #4b202a;
-  --canvas-type-approval-fg: #ffdfe3;
+  --canvas-type-approval-bg: #24262a;
+  --canvas-type-approval-fg: #eeeff1;
   --canvas-type-approval-line: #f07b89;
-  --canvas-type-parallel-bg: #1f3156;
-  --canvas-type-parallel-fg: #e1ebff;
+  --canvas-type-parallel-bg: #24262a;
+  --canvas-type-parallel-fg: #eeeff1;
   --canvas-type-parallel-line: #7fa6f2;
 }
 
@@ -263,11 +263,11 @@
     border-color 120ms var(--ease-in-out-quiet);
 }
 
-.editor .bn[data-type='llm'] { --node-bg: var(--canvas-type-llm-bg); --node-fg: var(--canvas-type-llm-fg); --node-line: var(--canvas-type-llm-line); }
-.editor .bn[data-type='tool'] { --node-bg: var(--canvas-type-tool-bg); --node-fg: var(--canvas-type-tool-fg); --node-line: var(--canvas-type-tool-line); }
-.editor .bn[data-type='branch'] { --node-bg: var(--canvas-type-branch-bg); --node-fg: var(--canvas-type-branch-fg); --node-line: var(--canvas-type-branch-line); }
-.editor .bn[data-type='approval'] { --node-bg: var(--canvas-type-approval-bg); --node-fg: var(--canvas-type-approval-fg); --node-line: var(--canvas-type-approval-line); }
-.editor .bn[data-type='parallel'] { --node-bg: var(--canvas-type-parallel-bg); --node-fg: var(--canvas-type-parallel-fg); --node-line: var(--canvas-type-parallel-line); }
+.editor .bn[data-type='llm'] { --node-bg: var(--canvas-type-llm-bg); --node-fg: var(--canvas-type-llm-fg); --node-line: var(--color-line-2); }
+.editor .bn[data-type='tool'] { --node-bg: var(--canvas-type-tool-bg); --node-fg: var(--canvas-type-tool-fg); --node-line: var(--color-line-2); }
+.editor .bn[data-type='branch'] { --node-bg: var(--canvas-type-branch-bg); --node-fg: var(--canvas-type-branch-fg); --node-line: var(--color-line-2); }
+.editor .bn[data-type='approval'] { --node-bg: var(--canvas-type-approval-bg); --node-fg: var(--canvas-type-approval-fg); --node-line: var(--color-line-2); }
+.editor .bn[data-type='parallel'] { --node-bg: var(--canvas-type-parallel-bg); --node-fg: var(--canvas-type-parallel-fg); --node-line: var(--color-line-2); }
 
 .bn:hover {
   background: color-mix(in oklab, var(--node-bg) 82%, var(--color-ground-2));
@@ -411,7 +411,7 @@
 /* 选中 = 亮度台阶 + 1px 偏移环;accent 只留给焦点环,不与状态色相抢。 */
 .react-flow__node.selected .bn {
   background: color-mix(in oklab, var(--node-bg) 74%, var(--color-ground-4));
-  outline: 1px solid var(--node-fg);
+  outline: 2px solid var(--color-accent);
   outline-offset: 2px;
 }
 
@@ -473,4 +473,38 @@
   .react-flow__minimap {
     display: none;
   }
+}
+
+.workflow-workspace { position: relative; }
+.workflow-list-restore { position: absolute; z-index: 8; top: 4rem; right: 1rem; }
+.editor-palette { position: absolute; z-index: 9; top: 1rem; left: 1rem; max-height: calc(100% - 2rem); overflow-y: auto; }
+.editor-palette > summary { color: var(--color-accent); background: var(--color-ground-1); border-color: var(--color-accent); cursor: pointer; }
+.editor-palette > [role='toolbar'] { margin-top: 0.5rem; padding: 0.5rem; min-width: 11rem; background: var(--color-ground-1); border: 1px solid var(--color-line-1); border-radius: var(--radius-control); }
+.editor-palette .palette-btn { width: 100%; flex-direction: row; gap: 0.75rem; justify-content: flex-start; padding: 0.625rem; }
+.editor-palette .palette-btn .micro { font-size: var(--text-sm); }
+.editor-bar { flex-wrap: wrap; height: auto; min-height: 3.25rem; padding-block: 0.5rem; }
+.editor .bn { --node-line: var(--color-line-2); }
+.editor .bn[data-type] { border-radius: 8px; }
+
+@media (max-width: 900px) {
+  .editor-side { width: min(20rem, 48vw); }
+  .editor-bar > .ml-auto { flex-wrap: wrap; gap: 0.375rem; }
+  .workflow-list-restore { top: 6rem; }
+}
+
+/* 类型由图标形状、文字与小面积色彩共同标识，卡片保持中性。 */
+.editor .bn[data-type='llm'] .bn-head > svg { color: #8fb8ff; }
+.editor .bn[data-type='tool'] .bn-head > svg { color: #65d6c2; }
+.editor .bn[data-type='branch'] .bn-head > svg { color: #be9df8; }
+.editor .bn[data-type='approval'] .bn-head > svg { color: #e6b876; }
+.editor .bn[data-type='parallel'] .bn-head > svg { color: #9bb9e5; }
+.workflow-workspace:has(.editor-side) .workflow-list-restore { right: 23.5rem; }
+@media (max-width: 760px) {
+  .workflow-workspace { flex-direction: column; overflow-y: auto; }
+  .workflow-workspace > nav { width: 100%; max-height: 12rem; }
+  .editor { overflow-y: auto; }
+  .editor-mid { flex-direction: column; flex: 1 0 auto; }
+  .editor-canvas { min-height: 22rem; }
+  .editor-side { width: 100%; max-height: 22rem; border-left: 0; border-top: 1px solid var(--color-line-0); }
+  .workflow-workspace:has(.editor-side) .workflow-list-restore { right: 0.75rem; }
 }

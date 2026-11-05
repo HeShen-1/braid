@@ -1,31 +1,31 @@
 ---
 name: braid 控制台
-description: "分面参照——壳层与审批采用 Linear 中性近黑、细线与紧凑行；双主题保留同一语义 token 和对比度门"
+description: "B 风格布局 v2：柔和近黑地面、青绿动作、可折叠导航与按需展开的工作区"
 colors:
   # 以下为深色(默认)世界的值；浅色档见 Colors 节(同一批键，另一套值)
-  ground-0: "#08090a"
-  ground-1: "#101113"
-  ground-2: "#18191c"
-  ground-3: "#232428"
-  ground-4: "#2b2d31"
-  line-0: "#222428"
-  line-1: "#303237"
+  ground-0: "#161719"
+  ground-1: "#1c1d20"
+  ground-2: "#232529"
+  ground-3: "#2b2e32"
+  ground-4: "#34383d"
+  line-0: "#303338"
+  line-1: "#41454b"
   line-2: "#72767d"
   ink-0: "#eeeff1"
   ink-1: "#b2b5bc"
-  ink-2: "#969ba5"
-  ink-3: "#888e99"
+  ink-2: "#a8adb6"
+  ink-3: "#a0a5ae"
   sig-idle: "#3a4a5a"
   sig-run: "#2ed3c6"
   sig-ok: "#57d06a"
   sig-wait: "#f0b429"
-  sig-fail: "#f4575e"
+  sig-fail: "#ff747b"
   sig-fail-hi: "#ff8a8f"
   sig-stop: "#8296ab"
-  accent: "#6e9bf5"
-  accent-soft: "#1b2a44"
-  primary-action: "#eeeff1"
-  primary-ink: "#08090a"
+  accent: "#2ed3b2"
+  accent-soft: "#173c35"
+  primary-action: "#2ed3b2"
+  primary-ink: "#161719"
 typography:
   micro:
     fontSize: "0.656rem"
@@ -37,11 +37,11 @@ typography:
     lineHeight: "1rem"
     fontWeight: 400
   sm:
-    fontSize: "0.781rem"
+    fontSize: "0.813rem"
     lineHeight: "1.125rem"
     fontWeight: 400
   base:
-    fontSize: "0.844rem"
+    fontSize: "0.875rem"
     lineHeight: "1.25rem"
     fontWeight: 400
   md:
@@ -126,16 +126,16 @@ components:
     height: "1.375rem"
     typography: "{typography.micro}"
   chip-running:
-    backgroundColor: "color-mix(in oklab, #2ed3c6 12%, transparent)"
+    backgroundColor: "color-mix(in oklab, var(--color-sig-run) 12%, var(--color-ground-1))"
     textColor: "{colors.sig-run}"
   chip-succeeded:
-    backgroundColor: "color-mix(in oklab, #57d06a 12%, transparent)"
+    backgroundColor: "color-mix(in oklab, var(--color-sig-ok) 12%, var(--color-ground-1))"
     textColor: "{colors.sig-ok}"
   chip-waiting-approval:
-    backgroundColor: "color-mix(in oklab, #f0b429 14%, transparent)"
+    backgroundColor: "color-mix(in oklab, var(--color-sig-wait) 14%, var(--color-ground-1))"
     textColor: "{colors.sig-wait}"
   chip-failed:
-    backgroundColor: "color-mix(in oklab, #f4575e 12%, transparent)"
+    backgroundColor: "color-mix(in oklab, var(--color-sig-fail) 12%, var(--color-ground-1))"
     textColor: "{colors.sig-fail}"
   chip-quiet:
     backgroundColor: "{colors.ground-2}"
@@ -154,11 +154,12 @@ components:
     padding: "1rem"
   nav-tab:
     backgroundColor: "transparent"
-    textColor: "{colors.ink-1}"
+    textColor: "{colors.ink-2}"
     padding: "0 0.75rem"
-    height: "2.25rem"
+    height: "2.375rem"
   nav-tab-active:
-    textColor: "{colors.ink-0}"
+    backgroundColor: "{colors.accent-soft}"
+    textColor: "{colors.accent}"
 ---
 
 # Design System: braid 控制台
@@ -167,96 +168,51 @@ components:
 
 **Creative North Star: 分面取长，运营面安静而紧凑**
 
-D-2026-10-15-console-references 已批准分面参照：壳层/导航/审批取 Linear 的中性近黑与紧凑行；画布取 n8n、执行总览取 Vercel、执行列表取 Temporal。UX-F1-a 交付壳层与审批；UX-F1-b 交付画布的浅色默认、点阵地面和彩型节点。
+2026-11-05 用户批准的 B 风格布局 v2 延续密集、可读的控制台，改用更柔和的近黑地面与青绿动作。主导航、工作流列表、属性栏、执行列表、证据区与审批处理栏按各自任务收展，让正在阅读或编辑的内容取得主要空间。用户明确选择的主题与折叠偏好优先。
 
-运营面以 #08090a 为应用地面、#101113 为表面，1px 细线与亮度台阶负责分组。审批待办是完整行式队列，详情是同一阅读面的分节；不让圆角盒子的边界盖过内容顺序。
+三个角色（author 编排、approver 审批、operator 值班）共用桌面工作区，长时间驻留与夜间值班要求清楚的文字层级、细线分组、可见焦点与状态双编码。状态色、动作色和节点类型色分别有语义，不能仅凭相近色相判断业务状态。
 
-三个角色(author 编排、approver 审批、operator 值班)共用同一块 24–27 寸桌面屏幕,单次驻留 20 分钟到数小时,夜间值班是常态。所以这个世界没有装饰性亮度:每一级亮度差要么在回答"现在是什么状态、卡了多久",要么在说"这里可以动手"。密度按仪器读数组织——小字号、等宽数字、1px 发丝分割;留白只用来分组,不用来装饰。深色不是"科技感"品类默认,而是取自使用场景(长时间驻留 + 夜间低环境光)。
-
-两条法则把色板的自由度收窄,反而让密集控制台可读:运营面**色相只承担状态语义**(idle / run / ok / wait / fail / stop 六态),**交互一律靠亮度**(主操作 = 暗色亮实体/浅色深实体,永不与状态色相竞争)。画布另有五类节点色,只承担类型辨识,不表示执行状态。焦点蓝 `accent` 是唯一全局交互色,只做焦点与"当前所在"。状态一律色相 + 形状双编码,色盲可达。
-
-T21.3 起这个世界有**两套形态、一条验收线**:运营面无偏好时以深色为默认,画布路由无偏好时以浅色为默认;浅色是同一世界的日间形态,不是第二套视觉语言。两套的每一档都按它真正落地的**最不利地面**重新定档(正文 ≥4.5:1、非文本图形 ≥3:1),六态色相在浅色地面重配(深色原值在近白地面上只有 1.87–3.30:1,五态全部低于线)。切主题 = 换一套 token 值,组件层零分支:`<html data-theme>` 承载 auto / light / dark 三态,auto 由 CSS 媒体查询解析,偏好存 localStorage(与认证 token 的 sessionStorage 载体分离)。用户明确选择后全局沿用该偏好。
-
-本档以 UX-F1-a 为当前壳层/审批规范，T21.1/T21.3 的历史实现与测量继续保留归属。构建路径为 code-led，**没有 approved comp、没有像素级 comp-diff**。当前验收记录见 `docs/audits/UX-F1-a-VALIDATION.md`；静态 token 对与真实浏览器渲染的证明分开记录。不含 benchmark 数字、客户案例、定价或第三方 logo——产品真源 `PRODUCT.md` 已明确这些不存在,界面不得编造。
+本档由当前 `web/canvas/src/styles/` 与相关 TSX 提取。视觉依据是 `.impeccable/mocks/20261105/layout-v2/` 的 `workflow.png`、`execution.png`、`approval-content.png`、`approval-history.png`；图中的样例文字、数据和流程不构成业务契约。这里记录已实现结构，不代表前后端联调、浏览器验收或用户最终验收已通过。旧 UX-F1-a / T21.3 测量仅属于原版本，不能证明本次 token 与布局。
 
 **Key Characteristics:**
 
-- 四段亮度台阶(`ground-0`…`ground-4`)+ 三档发丝线(`line-0/1/2`)承担全部层级;**零发光、零投影**。两套世界各持一套值,同一条定档线。
-- 六态状态色相只做状态,每个状态同时有图标形状与中文标签。
-- 自托管 Geist / Geist Mono 承担拉丁与数字面;CJK 由系统字体栈回落(用户拍板的有意取舍)。
-- 一切 ID、计数、时长、时间戳走 tabular numerals;时间同时给相对与绝对两面。
-- 签名动作 = **执行时间带**:审批挂起段用 135° 斜纹——等待是有长度、有纹理的时刻,不是转圈。
-- 组件层只有一套语言:14 个基础原语自研,shadcn/ui 只进 8 个复合交互组件(`dialog`/`select`/`dropdown-menu`/`tabs`/`tooltip`/`popover`/`checkbox`/`switch`),其中 Select/Checkbox 是**自研外壳 + shadcn 底层**的单点收敛;registry 自带的外观 utility 由一层适配 CSS 收回自研词汇(行为归 shadcn,外观归 token)。
+- 五级近黑地面与三档细线承担层级，不使用装饰性光晕。
+- 青绿标识主动作、焦点与当前所在；状态继续配中文标签与图标形状。
+- 工作流以宽画布为主，添加节点与属性按需展开。
+- 执行详情上方是定义版本图，下方是可收起的证据标签区。
+- 审批内容与审批记录同页互斥切换，处理栏可以收起。
+- 自托管 Geist / Geist Mono、系统 CJK 回退与等宽数字保持既有阅读习惯。
 
 ## Colors
 
-运营面的无彩地面 + 被严格看管的色相:一块尚未点亮的荧光屏上,只有状态被点亮,蓝色只表示"焦点在这里"。画布在同一地面上增加五类低饱和节点底/字/描边,颜色只标识节点类型。颜色键 = CSS 变量去掉 `--color-` 前缀(`ground-2` ↔ `var(--color-ground-2)`)。
+中性近黑地面配青绿交互，状态保持独立语义。默认深色值以 frontmatter 为准，对应 `styles/index.css` 的 `@theme`；浅色沿用同名 token 覆盖，值与元数据同步在 sidecar。
 
-### Primary(焦点蓝)
+### Primary
 
-| 键 | 深色(默认) | 浅色 | 落点 |
-|---|---|---|---|
-| `accent` | `#6e9bf5` | `#3764bf` | 焦点环(`:focus-visible` 2px outline、85% 混透明、offset 1px)、当前页签 2px 下划线、链接文字与 3px 下划线偏移、DAG 连线/把手选中态、框选边框、文本选区、caret 与 `accent-color` |
-| `accent-soft` | `#1b2a44` | `#dbe5f7` | 时间带选中行底色(55% 混透明落在地面上) |
-| `primary-action` | `#eeeff1` | `#0d1319` | 主操作实体:亮主题取最暗实体、暗主题取最亮实体,同一句规则两态成立 |
-| `primary-ink` | `#08090a` | `#f7f9fb` | 主操作文字 |
+- **动作青绿**（`accent` / `primary-action`）：深色主操作、焦点环、链接、当前导航与局部标签。`accent-soft` 是当前导航与选中时间带的低亮底。
+- **主操作文字**（`primary-ink`）：与实体按钮配对。浅色仍使用深实体浅字；浅色 `accent` 为深青绿，不把浅色主题当第二套布局。
 
-浅色 accent 走到 `#3764bf` 是两次收紧的结果:`#6e9bf5` → `#3b68c4`(对白 ≥4.5)→ `#3764bf`(T21.3 把口径从「对白」改成「最不利地面」:选中行 `ground-3` 上 4.34 → 4.60)。
+### Secondary
 
-### Secondary(状态色相六态)
-
-| 词表 | 深色(默认) | 浅色 | 说明 |
-|---|---|---|---|
-| `sig-run` 执行中 | `#2ed3c6` | `#006961` | `RUNNING` / `EXECUTING` |
-| `sig-ok` 成功 | `#57d06a` | `#186b2a` | `SUCCEEDED` |
-| `sig-wait` 等待 | `#f0b429` | `#795400` | `WAITING_APPROVAL`——braid 的招牌状态,也是整屏唯一暖色 |
-| `sig-fail` 失败 | `#f4575e` | `#ac2834` | `FAILED` / `ROLLED_BACK`,兼作破坏性动作与错误文案 |
-| `sig-fail-hi` 失败提亮 | `#ff8a8f` | `#a03339` | 破坏性动作悬停时的字色 |
-| `sig-stop` 取消 | `#8296ab` | `#516171` | `CANCELLED` / `SKIPPED` |
-| `sig-idle` 未开始 | `#3a4a5a` | `#5a6675` | 六态里最暗的一档,只做底色与边框基;**两套世界都永不做文字色**——深色下它落在自身 tint 上只有 1.9:1,`IDLE`/`PENDING` 芯片的文字改用 `ink-2` |
-
-浅色六态在 T21.3 被**重配过两次**:阶段 2 按「对白 ≥4.5」定档,阶段 3 实测发现标签还会落在选中行(`ground-3`)与其自色 tint 上,那一面只有 3.2–4.0:1,故逐态再压亮度,自色 tint 上最紧 **5.48:1**(同一口径下 `accent` 落在 `ground-3` 上走到 4.60:1)。深色档原值未动 —— 唯一例外是 `line-2`(见下)。
+- **状态六态**（`sig-idle/run/ok/wait/fail/stop`）：未开始、执行中、成功、等待审批、失败、取消或跳过。状态芯片与时间带消费真实状态；`sig-fail-hi` 用于破坏性动作悬停。
+- 未开始状态的文字使用 `ink-2`，不直接用暗的 `sig-idle`。等待使用琥珀及斜纹；失败使用红色及文字/图标。
+- 编辑画布的类型色用于图标、类型识别，不能推断执行结果；深色节点主体为中性色，浅色仍保留已有类型底色。
 
 ### Neutral
 
-| 键 | 深色(默认) | 浅色 | 说明 |
-|---|---|---|---|
-| `ground-0` 应用底 | `#08090a` | `#f7f9fb` | 应用底、画布地面、JSON/DSL 只读底 |
-| `ground-1` 面板 | `#101113` | `#ffffff` | 面板、弹层、芯片底色基 |
-| `ground-2` 抬升 | `#18191c` | `#eef1f5` | 输入框、表头、次级按钮 |
-| `ground-3` 悬停/选中行 | `#232428` | `#e4e9ef` | 行悬停、行选中、幽灵按钮悬停 |
-| `ground-4` 按下/选中 | `#2b2d31` | `#d8dfe7` | 按下、分段控件选中、滚动条拇指 |
-| `line-0` / `line-1` / `line-2` | `#222428` / `#303237` / `#72767d` | `#dde3ea` / `#c9d2db` / `#808d95` | 结构分割 / 可见分隔 / 可辨描边;一律 1px,`line-2` 是交互控件描边与 DAG 连线的唯一来源。T21.3 曾将深色 `line-2` 从 `#556a7e` 提到 `#5b7185`，UX-F1-a 当前取 `#72767d`，内外邻接最紧 3.85:1 |
-| `ink-0`…`ink-3` | `#eeeff1` / `#b2b5bc` / `#969ba5` / `#888e99` | `#0d1319` / `#3d4a57` / `#4e5a68` / `#5f6a71` | 主读数 / 次读数 / 三级标签 / 待填,每一级按它真正落地的最不利地面定档 |
+- `ground-0` 是应用与画布地面，`ground-1` 是导航与面板；`ground-2/3/4` 依次承担输入/次级控件、悬停、按下或选中。
+- `ink-0/1/2/3` 分别承担主文本、次文本、标签提示与占位。三级及占位文字已随新地面调整。
+- `line-0/1/2` 分别承担结构分割、可见分隔及交互控件/连线描边；结构细线与可操作边界分开判定。
 
 ### Named Rules
 
-**The Hue-Is-State Rule / 色相即状态.** 六态色相只允许出现在状态本身与由状态派生的图形上(状态芯片、时间带段、节点卡描边、告警边框、脉冲圆点)。悬停、按下、选中、禁用一律走亮度台阶与发丝线,永不借状态色相。
+**The Semantic-Color Rule / 色彩分工.** 青绿交互 token 表达可操作与当前所在；`sig-*` 表达真实状态；画布类型色表达节点类型。即使色相相近，也必须用标签、图标与上下文区分。
 
-**The Focus-Hue Rule / 焦点色独占.** `accent` 蓝只做"焦点、当前所在、可交互线索";它一旦出现在状态芯片或时间带段上就是错误,反之状态色相也不得用来画焦点环。
+**The One-Line-Two-Worlds Rule / 同一语义 token，两套主题.** 颜色先在默认深色 `@theme` 定义，浅色只覆盖同名 token；组件不另建主题色板。无明确偏好时所有路由默认深色，用户选择 auto / light / dark 后全局沿用。
 
-**The One-Line-Two-Worlds Rule / 同一语义 token，两套主题.** 任何颜色 token 都必须先在默认(深色)`@theme` 里有值,浅色档只做覆盖;只活在浅色档的 token = 默认世界直接落空(T21.3 真踩过:`primary-action`/`primary-ink`/`sig-fail-hi` 曾只存在于深色覆盖块,默认世界改成 `@theme` 后主操作背景变透明)。`src/theme.test.ts` 有锚:浅色档声明的键必须全部在 `@theme` 里。改任一 `ground`/`ink`/`line`/`accent`/`sig-*` 必须用 `.impeccable/contrast.mjs`(契约面)与 `.impeccable/contrast-render.mjs`(渲染面)重跑两套世界,数值抄进下表。
+**The Measured-Grade Rule / 定档规则.** 正文与占位文本要求至少 4.5:1，非文本必要图形至少 3:1；按实际最不利地面、状态底与焦点合成测量。token 对与真实浏览器分别验证；本次尚不能引用旧版本测量宣称通过。
 
-**The Measured-Grade Rule / 定档规则.** 每档都按它真正落地的**最不利地面**定档,不留"看起来更安静"的欠对比档。口径:不透明对按 WCAG 2.x 相对亮度公式;正文与占位文本 ≥4.5:1,非文本图形 ≥3:1。禁用态不参与定档(靠背景与 `cursor: not-allowed` 区分;深色 `ink-3`/`ground-3` 恰是禁用主操作，UX-F1-a 为 4.71:1，继续保留原禁用态登记口径)。
-
-契约面(token 对，`.impeccable/contrast.mjs`，UX-F1-a 于 2026-10-16 重测；两套各 15 对全过，另 1 对禁用态登记豁免)：
-
-| 对 | 深色 | 浅色 | 线 |
-|---|---|---|---|
-| 正文 `ink-0` / `ground-0` · `ground-1` | 17.32 · 16.42 | 17.70 · 18.68 | 4.5 |
-| 次文本 `ink-1` / `ground-1` · `ground-2` | 9.20 · 8.56 | 9.07 · 8.01 | 4.5 |
-| 三级 `ink-2` / `ground-2` · `ground-3` | 6.30 · 5.56 | 6.21 · 5.76 | 4.5 |
-| 占位 `ink-3` / `ground-2` · `ground-3` | 5.34 · 4.71(禁用态登记) | 4.90 · 4.54(禁用态登记) | 4.5 |
-| 交互描边 `line-2` / `ground-0` · `ground-1` · `ground-2` | 4.37 · 4.14 · 3.85 | 3.23 · 3.41 · 3.01 | 3 |
-| 焦点 `accent` / `ground-0` · `ground-1` | 7.28 · 6.90 | 5.32 · 5.62 | 4.5 |
-| 主操作 `primary-ink` / `primary-action` | 17.32 | 17.70 | 4.5 |
-| 分段控件选中 `ink-0` / `ground-4` | 11.99 | 13.90 | 4.5 |
-| 勾选框 `ground-1` / `accent` | 6.90 | 5.62 | 3 |
-| 六态芯片标签 / 自色 tint(sRGB 近似) | 5.06–8.25 | 5.48–5.55 | 4.5 |
-
-T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contrast-render.mjs`,背景按真实合成取 1×1 canvas 像素,欠档即 exit 1):最紧正文比 = 深色 **4.85:1**(工作流面的三级时间戳)/ 浅色 **5.49:1**(等待审批芯片),**欠档 0 条**。交互描边 `line-2` 的内、外邻接都入样(外 = 页面地面,内 = 控件自身填充):深色实测 外 `ground-1` 3.56 / 内 `ground-2` 3.25、外 `ground-0` 3.82 / 内 `ground-1` 3.56;浅色 外 3.41 / 内 3.01 —— 两面均过 3:1。结构发丝线(`line-0/1`)是分隔性图形,不适用 1.4.11,不计。
-
-**The Chip-Background-Is-Opaque Rule / 芯片底色不透明.** 状态芯片的底 = 同色相 10–14% **不透明**盖 `ground-1`,不是半透明落在所在行上:半透明让标签对比度随行状态漂移(T21.3 实测:选中行 `ground-3` 上浅色 3.2–4.0:1、深色 `FAILED` 3.88:1);改不透明后两套世界的最紧值 4.80 / 5.48。
+**The Chip-Background-Is-Opaque Rule / 芯片底色不透明.** 状态芯片用同色相混合不透明 `ground-1` 作底，防止标签对比度随所在行变化。
 
 ## Typography
 
@@ -270,8 +226,8 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 
 - **micro**(10.5px / 14px / 600 / +0.09em / 大写):微标签——表头、字段名、分节标题、图例、芯片文字。字距随场景 0.06–0.09em(芯片 0.07em、中性芯片 0.06em、节点类型 0.08em),默认 0.09em。
 - **xs**(11.5px / 16px / 400):时间带的节点标签与时间轴、审计行、字段提示。
-- **sm**(12.5px / 18px / 400–500):密集正文——表格、按钮、输入框、面板正文;按钮 500,主操作 600。
-- **base**(13.5px / 20px / 400):默认 UI 字号(`body` 上 13.5px、行高 1.5)。
+- **sm**(13px / 18px / 400–500):密集正文——表格、按钮、输入框、面板正文;按钮 500,主操作 600。
+- **base**(14px / 20px / 400):默认 UI 字号(`body` 上 14px、行高 1.5)。
 - **md**(15px / 22px / 600):面板头标题。
 - **lg**(18px / 26px / 600 / −0.02em):路由页标题。
 - **xl**(22px / 28px / 600 / −0.03em):登录页产品名。
@@ -289,29 +245,25 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 
 ## Layout
 
-单 SPA、单套壳、单处登录。壳层只有一条顶栏,导航只有一处。
+单 SPA、单套壳、单处登录。B v2 以可收起的左主导航加右侧工作区组织三个业务面。
 
-- **壳**:顶栏 52px(`h-13`),ground-1 底 + 1px `line-1` 下边;左起字标(17px 自绘 SVG + "braid")、域导航(工作流 / 执行 / 审批)、运行脉冲(执行中 / 待审批 / 失败三计数,`xl` 1280px 起显示)、账号与登出。页头 56px(`h-14`):h1 + 计数 + 动作,下边 `line-0`。
-- **工作流面**:左列草稿列表 256px(`w-64`,右发丝线 `line-1`)+ 编辑器。编辑器横档 48px,工具条 72px(`4.5rem`,左发丝线),画布自适应,属性面板常驻 360px(`22.5rem`,左发丝线),DSL 抽屉折叠态 32px。
-- **执行面**:两列网格 `minmax(20rem, 26rem) | minmax(0, 1fr)`;左轨内边距 12px + 右发丝线;右详情纵向分层:`gap 12px`、内边距 `12px 16px 32px`,超长内容滚动而不是被压扁。
-- **审批面**(与执行面同构):两列网格 `minmax(22rem, 34rem) | minmax(0, 1fr)` —— 左列上限必须容得下队列表的「处理」动作列(收到 30rem 时它会落进无提示的横向滚动);左轨内边距 12px + 右发丝线;右详情纵向分层(meta / 审批说明 / 决定时间线 / 决定表单)。
-  - 键盘:`j`/`k` 移动、`Enter` 打开、`a` 批准、`r` 驳回(布防一次 + 确认一次)、`Esc` 收起确认层或回队列;**输入框/文本域聚焦时整段让位,`ev.repeat`(长按 auto-repeat)一律忽略** —— 否则长按 `r` 等于布防即定局,而驳回落库不可改判。
-  - 驳回确认层是**一次性浮起层**:布防即把焦点移进去,与执行面「取消执行」确认条同契约。
-- **执行时间带**:行 = 两列网格 `minmax(12rem, 18rem) | minmax(0, 1fr)`;行高 ≥28px(`min-height: 1.75rem`);段上下各内缩 4.8px(`0.3rem`)、圆角 3px、亚像素段保底 2px;底部一条共享时间轴,5 刻度时另给 25/50/75 三条网格发丝线。
-- **刻度密度双向自适应**:区间 <2 分钟或 ≥6 小时给 3 刻度(端 + 中),其间给 5 刻度;区间 <10 秒刻度补毫秒;跨天刻度带月-日;完整时刻始终进 `title`。
-- **密度节奏**:4px 基步。组内 4/6/8px,组间 12/16px,区块之间 24px;分节内边距 `14px 16px`;表格单元格 `7.2px 12px`;空态 `40px 24px`。标题上方留白 ≥ 下方。
-- **响应**:桌面优先。全站只有两处断点差异(`lg` 1024px 显示字标副题、`xl` 1280px 显示脉冲计数);不做移动端布局,窄窗只保证不横向溢出(仅收尾截图复核,未做逐宽度扫描)。
-- 列宽稳定:属性面板常驻而不是按需插入;表格与列表用固定列宽 + `truncate`,数字列等宽对齐。
+- **壳层**：主导航展开宽 12rem；折叠后由顶栏「展开侧栏」恢复。顶栏包含路由标题、上下文、运行脉冲、主题与账号；品牌区与路由头最小高度 3.25rem。当前主域使用青绿文字与低亮底。
+- **工作流**：无已有偏好时，已有活动草稿的工作流列表收起，无活动草稿时展开；右侧属性栏默认收起；展开后的属性栏宽 22.5rem。添加节点位于画布左上角的 disclosure 工具中；选中或添加节点可打开属性。DSL 保留底部可展开区域，工具不占常驻竖栏。
+- **执行**：未选记录时显示总览与列表；详情态可收起 16rem 上下文列表，主体按「执行身份 → 处置区 → 定义版本图 → 证据标签区」排列。处置区保留回滚目标、先停止未结束节点（quiesce）、回滚/续跑/取消及原权限与确认流程，独立于证据标签和证据区折叠。版本图默认展开，高度 `clamp(18rem, 38vh, 30rem)`。下方节点详情、时间线、输入与输出、审计记录互斥显示；证据区整体可收起，选择标签重新展开。
+- **审批**：队列与详情保持现有同页导航；详情头之下分为主阅读区和 19rem 处理栏。「审批内容 / 审批记录」切换阅读内容；处理栏单独收起。驳回确认激活时保持处理栏可见，防止确认过程被隐藏。
+- **执行时间带**：节点标签与真实时间轨道并排，共享时间轴；等待斜纹与真实时长保持原契约，不将长度解释为完成百分比。
+- **密度**：4px 基步，组内 4/6/8px，组间 12/16px，区块间 24px。主要阅读区横向内边距 1.5rem，使用细线分节而不是反复嵌套卡片。
+- **窄窗适配**：仍以桌面为目标。900px 以下审批处理栏转到阅读区下方、属性栏限宽；760px 以下工作流和执行详情改纵向排列、顶栏换行、长标识可换行，表格与标签在自身区域滚动。主导航无偏好时按初始窗口小于 900px 默认收起。具体窗口表现仍需浏览器验证。
 
 ### Named Rules
 
-**The No-Layout-Jump Rule / 布局不动.** 悬停、选中、加载、错误都不改变主要列宽与面板位置;控制台不该边看边晃。
+**The Deliberate-Disclosure Rule / 主动收展.** 布局变化来自明确的展开、收起或选择动作；悬停、加载与错误不应无故挤动画布或阅读区。所有被收起的区域都有可见恢复入口。
 
-**The Axis-Only-When-There-Is-Time Rule / 无时间不画轴.** 执行还没开始(没有任何 `started_at`)时,时间带只给空轨与状态芯片,不画坐标轴、不编时间;`PENDING` 节点不画段。
+**The Axis-Only-When-There-Is-Time Rule / 无时间不画轴.** 执行未开始且没有 `started_at` 时只给空轨与状态，不编时间；`PENDING` 不画时间段。
 
 ## Elevation & Depth
 
-这个系统没有投影。前端源码里 `box-shadow` 出现 **0 次**,第三方 xyflow 自带的节点悬停/选中投影与控件条投影被显式置 `none`。深度由两样东西承担:**四段亮度台阶**(`ground-0`→`ground-4`)+ **1px 发丝线**。需要"更近"就抬亮度,需要"分开"就画线,没有第三种手段。
+这个系统没有投影。第三方 xyflow 自带的节点悬停/选中投影与控件条投影被显式置 `none`。深度由两样东西承担:**五级亮度台阶**(`ground-0`→`ground-4`)+ **1px 发丝线**。需要"更近"就抬亮度,需要"分开"就画线,没有第三种手段。
 
 粘顶层(表头、面板头、列表头)用不透明地面色盖住滚动内容,而不是投影:`position: sticky` + `background: var(--color-ground-1)`。投影只留给真正浮起的层,而 T21.1 的现实是**没有任何一层用到投影**:唯一需要第二下确认的取消确认条是原地内联展开的,不是浮层。
 
@@ -327,7 +279,7 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 
 圆角只有两档加三个特例:控件 **8px**(`--radius-control`)、面板 **12px**(`--radius-panel`);芯片 999px 胶囊、时间带段 3px、焦点环 4px。
 
-- **分支节点**右上角 24px(`1.5rem`)折角——唯一为类型引入的轮廓差异,有几何语义(分叉)。
+- **编辑节点**统一 8px 圆角；分支类型通过图标与文字识别，不再以编辑卡片折角承担类型差异。
 - **未配置节点**:虚线 1px `line-1` 边框(不是状态色),扫一眼就能找出还没填的节点。
 - **选中节点**:亮度台阶 `ground-2` + 1px `outline`(`ink-2`,offset 2px)——不用彩色粗边。
 - **图标**:统一 stroke 1.75、默认 14px(小件 11–13px),全部来自 lucide-react 的 React 内联 SVG(`<svg>` 元素而非图标字体或 `<img>`,同时满足 CSP `img-src 'self'` 与"不用 emoji 当图标");图标默认装饰性 `aria-hidden`,语义由相邻文字或 `aria-label` 承担。
@@ -342,8 +294,8 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 
 ### Buttons
 
-- **Shape**:高 32px(`2rem`);小号 26px(`1.625rem`)且字号降一档;圆角 8px;横向内边距 12px(小号 8px);图标与文字间距 6.4px(`0.4rem`);文字 12.5px/500,主操作 600;图标按钮见方(32 / 26px),必须给 `aria-label`。
-- **Primary**:暗色亮实体深字、浅色深实体浅字——`background: var(--color-primary-action)`、文字 `var(--color-primary-ink)`、边框同底色;悬停/按下 = `color-mix(in oklab, primary-action 88% / 76%, primary-ink)`;禁用 `ground-3` 底 + `ink-3` 字。这是"主操作 = 该世界里亮度对比最大的实体"的执行:亮主题取最暗实体、暗主题取最亮实体,两套世界正文实测 17.70:1 / 17.32:1；实体对相邻地面同样须 ≥3:1。
+- **Shape**:高 32px(`2rem`);小号 26px(`1.625rem`)且字号降一档;圆角 8px;横向内边距 12px(小号 8px);图标与文字间距 6.4px(`0.4rem`);文字 13px/500,主操作 600;图标按钮见方(32 / 26px),必须给 `aria-label`。
+- **Primary**：深色青绿实体配深字，浅色深实体配浅字；使用 `primary-action` / `primary-ink`。悬停和按下分别混合 88% / 76% 主操作色，禁用使用 `ground-3` 底与 `ink-3` 字。当前配色的对比度需独立验证，不能沿用旧近白按钮的数值。
 - **Default(次级)**:`ground-2` 底 + 1px `line-2` 边框 + `ink-0` 字;悬停 `ground-3` + 边框 `ink-3`;按下 `ground-4`;禁用 `ground-1` 底 + `line-0` 边框 + `ink-3` 字 + `cursor: not-allowed`。
 - **Quiet(幽灵/图标)**:透明底、`ink-1` 字;悬停 `ground-3` + `ink-0`;小号常与图标组合(新建、添加、删除行)。
 - **Danger(破坏性)**:透明底 + `color-mix(fail 55%)` 边框 + `fail` 字;悬停 14% 红 tint + 实边框 + 提亮字 `sig-fail-hi`(深色 `#ff8a8f` / 浅色 `#a03339`)。不可逆动作(取消执行)走 danger 并给第二下确认。
@@ -358,10 +310,10 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 
 ### Inputs / Fields
 
-- **Style**:`ground-2` 底、1px `line-2` 边框、8px 圆角、内边距 `4.8px 8px`、12.5px 字;标签永远在控件上方(11.5px `ink-1`),错误紧贴控件下方并优先于提示(11.5px `fail`,`role="alert"` + `aria-invalid`)。
+- **Style**:`ground-2` 底、1px `line-2` 边框、8px 圆角、内边距 `4.8px 8px`、13px 字;标签永远在控件上方(11.5px `ink-1`),错误紧贴控件下方并优先于提示(11.5px `fail`,`role="alert"` + `aria-invalid`)。
 - **Hover**:边框 `ink-3`。**Focus**:边框 `accent` + 底色降回 `ground-1` + 2px `accent` 85% 焦点环。**Disabled**:`ground-1` 底 + `line-0` 边框 + `ink-3` 字。**Invalid**:边框 `sig-fail`。
-- **Placeholder**:`ink-3`(实测 深色 4.52:1 / 浅色 4.90:1)。`textarea` 允许纵向 resize、行高 1.55;数值输入带 `min`/`max` 镜像 schema,越界就地报错。
-- **Select / Checkbox(T21.3 单点收敛)**:外壳仍是自研(`ui/field.tsx` 的标签/hint/错误布局与 id 绑定,调用点继续写原生 `<option>`),内部控制与键盘行为交给 shadcn 的 `select`/`checkbox`(Base UI):焦点管理、弹层 Portal、列表键盘导航、`role="checkbox"`。外观由一层适配 CSS 收回自研词汇——`[data-slot='select-trigger'].select` 与 `.input` 同形(同高、同底、同描边、同焦点环),弹层 = `ground-1` + 1px `line-1` 且**无投影**;勾选框未选 = `ground-2` + `line-2`,选中 = `accent` 实体 + 对侧地面色勾(实测 5.62–6.58:1)。全仓只有这一处实现,不存在两套。
+- **Placeholder**:`ink-3`。`textarea` 允许纵向 resize、行高 1.55;数值输入带 `min`/`max` 镜像 schema,越界就地报错。
+- **Select / Checkbox(T21.3 单点收敛)**:外壳仍是自研(`ui/field.tsx` 的标签/hint/错误布局与 id 绑定,调用点继续写原生 `<option>`),内部控制与键盘行为交给 shadcn 的 `select`/`checkbox`(Base UI):焦点管理、弹层 Portal、列表键盘导航、`role="checkbox"`。外观由一层适配 CSS 收回自研词汇——`[data-slot='select-trigger'].select` 与 `.input` 同形(同高、同底、同描边、同焦点环),弹层 = `ground-1` + 1px `line-1` 且**无投影**;勾选框未选 = `ground-2` + `line-2`,选中 = `accent` 实体 + 对侧地面色勾。全仓只有这一处实现,不存在两套。
 
 ### Panels
 
@@ -370,23 +322,25 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 
 ### Tables
 
-12.5px、`border-collapse: separate` + `border-spacing: 0`。表头粘顶:`ground-2` 底、`line-1` 下边、10.5px/600/大写 `ink-2`(实测 5.48:1);单元格内边距 `7.2px 12px`、下边 `line-0`;行悬停 `ground-3` 60% 混透明;选中行 `ground-3` + `ink-0`;末行去线;数字列 tabular-nums。
+13px、`border-collapse: separate` + `border-spacing: 0`。表头粘顶:`ground-2` 底、`line-1` 下边、10.5px/600/大写 `ink-2`;单元格内边距 `7.2px 12px`、下边 `line-0`;行悬停 `ground-3` 60% 混透明;选中行 `ground-3` + `ink-0`;末行去线;数字列 tabular-nums。
 
 ### Navigation
 
-壳层高 48px：紧凑 braid 标识、主域导航、运行脉冲、主题与身份。域导航高 30px，当前域用 `ground-3` 实体与 `ink-0` 标识，悬停用 `ground-2`；不再复用局部页签的下划线样式。次行路由条高 46px，包含全路由唯一可见 `h1` 与当前队列/详情上下文。它始终位于内容之上；各分面继续用 `h2`，不得新增第二个 `h1`。
+主域导航在左侧，工作流、执行记录与审批待办各有图标及文字；链接以 `aria-current="page"` 表示当前域。侧栏内链接高 2.375rem，当前域使用 `accent` / `accent-soft`，悬停使用中性地面。顶栏保留唯一可见路由 `h1`、当前上下文、主题与账号；主导航收起后恢复键仍可达；收起时焦点交给「展开侧栏」，展开时焦点交给侧栏内收起按钮。
 
-1440px 显示真实租户脉冲，1024px 隐去脉冲、保留完整主域导航、主题与身份操作。长账号省略展示并在 title 保留全名。运行脉冲未知、失败与保留上次值的行为沿用 T23.10，不把读取失败画成零。
+运行脉冲展示真实租户计数，未知与读取失败不画成零；窄窗隐藏脉冲与部分次要身份信息。主域导航和详情标签分工明确，避免把内容切换误认为页面跳转。
 
-### Approval Queue and Detail(UX-F1-a)
+### Section Tabs
 
-队列是无外框的单一行式表面：24px 页边、固定列的六列表格、44px 紧凑行、细线分隔。工作流与版本并列，执行/节点标识省略时可查看完整 title；截止时间逾期仍有明确文字。刷新按钮带可见文案。`j` / `k` 移动与 `Enter` 打开提示在表格上方，不把详情命令放进队列。
+同页标签高至少 2.75rem，当前标签使用青绿文字和 2px 下划线。`tablist` / `tab` / `tabpanel` 成对绑定；左右方向键循环切换，Home / End 到首尾，只有当前标签进入 Tab 顺序。非当前内容使用 `hidden`，证据或处理栏的控制键通过 `aria-expanded` / `aria-controls` 说明收展对象。
 
-详情保持同页两级模型与 T23.10 的焦点/URL/决定逻辑。主阅读面最大 1056px，身份与六项元数据分组后，依次为执行上下文、审批说明、决定时间线、决定；分节使用 1px 结构线，无多个圆角盒。详情顶部外显 `Esc` 返回；只有可提交时外显 `a` / `r`。批准/驳回继续使用原本的防重、备注校验与驳回确认层。
+### Approval Queue and Detail
 
-共享 shadcn 别名层不得覆盖已有语义 token。`accent` 始终是焦点蓝；菜单项的 `focus:bg-accent` 外观由 data-slot 适配层明确收回 `ground-3`，不把中性菜单底写成同名全局 token。全局、输入框、主题分段、Select 与 Checkbox 的焦点环统一为 85% `accent`，避免浅色相邻地面上的 70% 合成结果低于 3:1。SelectItem 的键盘 `:focus-visible` 在 data-slot 适配层显式设为 2px solid、85% `accent`、offset -2px 的内侧环，覆盖 registry 的 `outline-hidden`；鼠标 hover 仍为中性底，键盘焦点有独有边界且不被 popup 裁切。主题测试与真实作者触发面 Select 浏览器回归共同约束这一点。
+队列保持无外框的行式表面、六列表格与细线分隔，工作流/版本、执行/节点和截止时间依真实数据展示；逾期同时显示文字。`j` / `k` 移动及 Enter 打开仍属于队列操作。
 
-全部颜色读取既有语义 token，新增 CSS 限于壳层与 `.appr-` 作用域。浅色主题继续通过同一批 token 覆盖，不在组件读取主题。真实浏览器矩阵由独立 e2e spec `console-shell-approval.e2e.ts` 维护。
+详情头保留身份与元信息，下面通过「审批内容 / 审批记录」互斥切换；记录使用表格呈现已读到的决定、处理人、备注与时间，空记录明确留空态。正文说明保留换行、行高 1.8；既有执行上下文与说明按细线分节。右侧处理栏保留备注、批准、驳回及原防重/校验/确认行为，收起处理栏不改变审批权限与后端契约。处理栏已收起时按 r 布防驳回会显示确认区；Esc 取消后恢复收起状态，焦点回「展开处理栏」。
+
+共享 shadcn 适配继续使用语义 token，菜单焦点底保持中性地面。全局及 Select 等控件保留可见焦点环；键盘回归和真实浏览器证据需在本次布局上验证，不能由文档同步代替。
 
 ### Theme Control(主题三态分段)
 
@@ -394,20 +348,21 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 - 语义是**设定偏好**而不是开关:当前档用 `aria-pressed`,`title` 与 `sr-only` 给中文名(仅图标必须有无障碍名);三颗等宽,切换时右侧不位移(布局不动)。
 - 落点只有 `<html data-theme>` 一个属性;偏好存 `localStorage`(`braid.theme`),首绘前由 `assets/theme-boot.js`(同源外部脚本——CSP 是 `script-src 'self'`,内联脚本在生产不执行)落定,浅色用户不会先看到一闪的深色。
 
-### Collapsible Panels(可收起两栏)
+### Collapsible Panels
 
-- 工作流面左栏(工作流列表)与右栏(属性面板)可各自收起:左栏收起后留一条 2rem 窄栏 + 展开键(画布不贴边,"这里本来有个面板"不丢);右栏开关常驻编辑器顶栏,收起后仍可达。
-- 折叠态是跨会话 UI 偏好(`localStorage`,`src/prefs.ts`),与主题同一条载体纪律。收起只让位,不改列宽规则:展开态的面板宽度是常量,不随选中态跳动。
+- 主导航、工作流列表、属性栏、执行上下文列表、执行证据区和审批处理栏分别保存收展偏好。工作流列表收起后用画布内恢复键，属性栏开关保留在编辑器顶栏；没有常驻的空白侧轨。
+- 偏好使用 `localStorage`（`src/prefs.ts`），与主题偏好一样允许存储失败后在本次会话继续使用。认证 token 仍仅在 `sessionStorage`，两种载体分开。
+- 主题默认深色并尊重已有 auto / light / dark；工作流列表无偏好时按是否已有活动草稿决定收起，属性栏默认收起。添加节点的 disclosure 与详情标签属于当前交互状态，不宣称跨会话保存。
 
 ### Alerts / Empty / Skeleton
 
-- **alert**:12px 圆角、`ground-2` 底、`line-1` 边框、12.5px `ink-1`;`data-tone="error"` 换 `fail` 45% 边框 + 10% 底 + `ink-0` 字;`warn` 换 `wait` 45% 边框 + 10% 底。
-- **空态**:居中,内边距 `40px 24px`;22px `ink-3` 图标 + 15px/600 标题 + 12.5px 提示(≤72ch),必要时给一个动作——空态回答"下一步做什么",不是感叹号。
+- **alert**:12px 圆角、`ground-2` 底、`line-1` 边框、13px `ink-1`;`data-tone="error"` 换 `fail` 45% 边框 + 10% 底 + `ink-0` 字;`warn` 换 `wait` 45% 边框 + 10% 底。
+- **空态**:居中,内边距 `40px 24px`;22px `ink-3` 图标 + 15px/600 标题 + 13px 提示(≤72ch),必要时给一个动作——空态回答"下一步做什么",不是感叹号。
 - **骨架**:`ground-2`↔`ground-3` 的 1.4s 横向扫掠、圆角 4px;`prefers-reduced-motion: reduce` 下全站动效压到 0.01ms。
 
 ### Execution Overview(UX-F1-c)
 
-- 未选择执行时，总览位于执行页上方；选择后让位给现有节点时间带与审计详情，列表/触发区保持原有密度。Vercel 参照落在 Geist 大数字、相邻的 1px 读数格和真实创建分布，不引入新色板、图表依赖或装饰曲线。
+- 未选择执行时，总览位于执行页上方；选择后进入定义版本图与证据标签的上下分区，左侧保留可收起的紧凑上下文列表。Vercel 参照落在 Geist 大数字、相邻的 1px 读数格和真实创建分布，不引入新色板、图表依赖或装饰曲线。
 - 四个读数是**当前租户、全部工作流、当前保留执行**的总数与 `RUNNING` / `WAITING_APPROVAL` / `FAILED` 计数，均消费既有列表 API 的 `page.total`；与列表的名称、状态和分页筛选无关，也不是当前账号的待办数。四次查询分别读取，不承诺原子同刻。
 - 创建分布仅使用 `limit=100, offset=0` 的最近样本中真实 `created_at`。明示实际样本条数、有效/缺失时间、UTC 样本起止、等宽桶宽与「条/桶」；按 UTC epoch 对齐的桶含起点、不含终点，完整桶表可键盘展开。它描述本次样本，不是固定 24 小时时间窗，也不从轮询快照推导状态历史。
 - 初载显示未知；零条响应才显示 0 与空样本。缺总数不回退到 `items.length`，缺失/无效时间不计入图；不足两个不同有效时间时说明原因并不绘图。每 5 秒自动刷新、操作后刷新及手动刷新共用在途去重；单项失败保留其最近成功值/样本并标明失败与旧读取时间，其他成功项仍更新。
@@ -426,10 +381,9 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 
 ### Canvas Node Card
 
-- 12px 圆角、类型专属不透明低饱和底、1px 类型描边、12.5px 字;悬停在原类型色上抬一档。
-- **类型 = 彩型 + 形状**:头部类型图标 + 大写微标签;`branch` 另给右上折角。LLM/工具/分支/审批/并行分别使用青绿/琥珀/紫/玫红/蓝色,每类底字对比度 ≥4.5:1。
-- **状态 = 色相 + 形状**:仅当执行面注入 `status` 时出现——状态色相 55–65% 的 1px 边框 + 状态芯片;挂起节点另加 3px 斜纹顶边。编辑器不虚构执行状态。
-- **未配置 = 亮度/发丝线**:虚线 `line-1` 边框 + `ink-3` 待填占位,不占状态色相。
+- 编辑卡片统一 8px 圆角、1px 中性描边；默认深色节点使用中性不透明底，图标以小面积颜色区分 LLM、工具、分支、审批和并行，配合类型文字。浅色保留现有类型底/字色。
+- 只有真实执行状态注入时才展示状态芯片与状态描边；等待节点仍有斜纹顶边。编辑器不虚构执行状态。
+- 未配置节点使用虚线及待填占位，选中使用细 outline；工具提示、把手与方向信息继续承担编辑语义。
 
 ### Named Rules
 
@@ -444,7 +398,7 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 ### Do:
 
 - **Do** 先问"现在是什么状态、卡了多久、下一步谁动",再决定画什么。
-- **Do** 用亮度表达交互:主操作 = 对比最强实体(`primary-action` 底 + `primary-ink` 字),悬停/按下/选中走 `ground-2→ground-4`。
+- **Do** 用语义 token 表达交互：深色主动作使用青绿实体，普通悬停/按下使用中性地面，保留清楚的焦点与选中标识。
 - **Do** 每个状态同时给色相与形状(11px 图标 + 中文标签),`WAITING_APPROVAL` 给最暖的琥珀。
 - **Do** 让等待有长度:挂起段按真实时间铺开并给「挂起 X · 未占 worker」。
 - **Do** 所有数字等宽(tabular numerals),时间同时给相对与绝对两面。
@@ -454,13 +408,13 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 - **Do** 图标统一 1.75 笔画、默认 14px、`aria-hidden`,语义交给相邻文字或 `aria-label`。
 - **Do** 尊重 `prefers-reduced-motion`,并且贴边层用不透明地面色而不是投影。
 - **Do** 主题只落 `data-theme` 一个属性:组件不读主题、不分支,切主题 = 换一套 token 值;偏好走 `localStorage`,首绘前由同源外部启动脚本落定。
-- **Do** 把跨会话 UI 偏好(主题三态、两栏折叠)放 `localStorage`,认证 token 留 `sessionStorage`——两种载体分离,互不引用。
+- **Do** 把跨会话 UI 偏好(主题三态、区域折叠)放 `localStorage`,认证 token 留 `sessionStorage`——两种载体分离,互不引用。
 - **Do** 状态芯片底色不透明:标签对比度不能随所在行/悬停状态变化。
 
 ### Don't:
 
 - **Don't** 用投影或发光。本世界零 `box-shadow`;投影只留给真正浮起的层,而 T21.1 没有任何一层用到。
-- **Don't** 把运营面的状态色相当交互色或装饰色,也别让 `accent` 蓝表达状态(运营面色相只做状态,交互靠亮度);画布类型色只能标识类型。
+- **Don't** 把青绿动作、执行状态和画布类型混为同一语义；状态必须来自真实数据并配文字与形状。
 - **Don't** 只靠色相编码状态——色盲可达是产品硬约束,色相必须配形状。
 - **Don't** 卡片套卡片:面板内用发丝线 + 微标题分节,不做描边小卡片;也不做同尺寸"图标 + 标题 + 文字"卡片阵列当页面结构。
 - **Don't** 用彩色 `border-left`/`border-right`(>1px)当选中态或强调;选中 = 亮度台阶 + 1px 偏移环。
@@ -472,7 +426,7 @@ T21.3 历史渲染面(浏览器实测,三面 × 两套世界;`.impeccable/contra
 - **Don't** 在时间数据不存在时画时间:无 `started_at` 不画坐标轴,`PENDING` 节点不画段。
 - **Don't** 用进度条、进度环或 sparkline 表达执行进度——DSL 里没有"完成百分比",时间带的长度就是进度信息。
 - **Don't** 给标题加 kicker/eyebrow;微标签只做字段名、列名、分节名,不许出现在标题上方。
-- **Don't** 把浅色做成第二套视觉语言:浅色是同一世界的日间形态(同一批 token 键、同一套类词汇、同一批色相),不是新主题;运营面深色和画布面浅色只是无偏好时的分面缺省,用户明确选择后全局沿用。
+- **Don't** 把浅色做成第二套视觉语言:浅色是同一世界的日间形态(同一批 token 键、同一套类词汇、同一批色相),不是新主题;全部路由无偏好时默认深色，用户明确选择后全局沿用。
 - **Don't** 在组件层引第二套语言:shadcn 只到 8 个复合交互组件,基础原语与 Select/Checkbox 外壳保持自研;registry 自带的外观 utility 必须被适配层收回(`styles/index.css` 末节),不许两套并存。
 - **Don't** 用半透明底承载状态标签:对比度会随所在行漂移(T21.3 实测曾掉到 3.2:1)。
 - **Don't** 做移动端布局:桌面优先,窄窗只保证不横向溢出。

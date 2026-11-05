@@ -74,7 +74,7 @@ function Editor({
   const [showWorkflowPanel, setShowWorkflowPanel] = useState(false)
   const [showMinimap, setShowMinimap] = useState(true)
   // 右栏(属性面板)折叠态:跨会话 UI 偏好(prefs.ts),与左栏同一口径。
-  const [sideCollapsed, setSideCollapsed] = useCollapsed(PANEL_RIGHT_KEY)
+  const [sideCollapsed, setSideCollapsed] = useCollapsed(PANEL_RIGHT_KEY, true)
   const { screenToFlowPosition, deleteElements, getNodes, getZoom, fitView } = useReactFlow()
   const nodesInitialized = useNodesInitialized()
   const canvasRef = useRef<HTMLDivElement | null>(null)
@@ -184,10 +184,12 @@ function Editor({
   const onNodeClick = useCallback((_: unknown, node: FlowNode) => {
     setShowWorkflowPanel(false)
     setSelectedId(node.id)
-  }, [])
+    setSideCollapsed(false)
+  }, [setSideCollapsed])
 
   const addNode = useCallback(
     (type: NodeType) => {
+      setSideCollapsed(false)
       const visible = visibleCanvas()
       const rem = Number.parseFloat(getComputedStyle(document.documentElement).fontSize) || 16
       // id 与落点都从同一次最新 graph 计算,同一事件内快速连加也不重复。
@@ -200,7 +202,7 @@ function Editor({
         return { ...g, nodes: [...g.nodes.map((n) => ({ ...n, selected: false })), node] }
       })
     },
-    [visibleCanvas],
+    [visibleCanvas, setSideCollapsed],
   )
 
   // immutable patch:换 spec/data 引用触发 RF 节点重渲(直接改字段会被
@@ -278,13 +280,12 @@ function Editor({
           <Button
             size="sm"
             variant="quiet"
-            iconOnly
             icon={sideCollapsed ? PanelRightOpen : PanelRightClose}
             aria-label={sideCollapsed ? '展开属性面板' : '收起属性面板'}
-            aria-pressed={!sideCollapsed}
+            aria-expanded={!sideCollapsed}
             data-testid={TID.panelRightToggle}
             onClick={() => setSideCollapsed(!sideCollapsed)}
-          />
+          >节点设置</Button>
           <Button
             size="sm"
             variant={showWorkflowPanel ? 'default' : 'quiet'}
@@ -295,12 +296,12 @@ function Editor({
             工作流设置
           </Button>
           {onSave !== undefined ? (
-            <Button size="sm" variant="primary" icon={Save} data-testid={TID.editorSave} disabled={busy} onClick={run(() => onSave(doc))}>
+            <Button size="sm" icon={Save} data-testid={TID.editorSave} disabled={busy} onClick={run(() => onSave(doc))}>
               保存草稿
             </Button>
           ) : null}
           {onPublish !== undefined && draftId !== null ? (
-            <Button size="sm" icon={Rocket} data-testid={TID.editorPublish} disabled={busy} onClick={run(() => onPublish(doc))}>
+            <Button size="sm" variant="primary" icon={Rocket} data-testid={TID.editorPublish} disabled={busy} onClick={run(() => onPublish(doc))}>
               发布
             </Button>
           ) : null}
@@ -314,9 +315,8 @@ function Editor({
       ) : null}
 
       <div className="editor-mid">
-        <Palette onAdd={addNode} />
-
-        <div className="editor-canvas" ref={canvasRef}>
+                <div className="editor-canvas" ref={canvasRef}>
+          <Palette onAdd={addNode} />
           <ReactFlow
             nodes={nodes}
             edges={edges}

@@ -10,9 +10,11 @@
 // 他人自由文本 —— 一律走 React 文本节点(禁 innerHTML 家族)。
 // 决定表单只在 node_status === 'WAITING_APPROVAL' 时在场(收口节点只读,
 // 前置免无效提交;后端同样 409)。备注上限在提交前就近拦下。
-import { useRef } from 'react'
+import { useId, useRef, useState } from 'react'
 import { ArrowLeft, Ban, Check, TriangleAlert } from 'lucide-react'
 import type { ApprovalDetail as ApprovalDetailData, ExecutionDetail } from './api.ts'
+import { DECISION_KEY, useCollapsed } from './prefs.ts'
+import { SectionTabs } from './ui/SectionTabs.tsx'
 import { TextArea } from './ui/field.tsx'
 import { ConfirmLayer, useFocusReturn } from './ui/confirm.tsx'
 import { Alert, Button, KV, Panel, PanelHead, StatusChip } from './ui/primitives.tsx'
@@ -70,6 +72,10 @@ export function ApprovalDetail({
 }: ApprovalDetailProps) {
   // 确认层契约本体在 ui/confirm.tsx(挂载即聚焦);布防状态由组合根
   // (ApprovalsView)持有,这里只补「收起后焦点回入口按钮」(T21.4 增项)。
+  const tabsId = useId()
+  const [tab, setTab] = useState('content')
+  const [decisionCollapsed, setDecisionCollapsed] = useCollapsed(DECISION_KEY)
+  const decisionVisible = !decisionCollapsed || confirmReject
   const rejectArmRef = useFocusReturn<HTMLButtonElement>(confirmReject)
   const confirmRef = useRef<HTMLDivElement | null>(null)
 
@@ -112,7 +118,8 @@ export function ApprovalDetail({
           <div className="appr-head-title">
             <h2 className="text-md font-semibold text-ink-0">{title}</h2>
             <StatusChip kind="node" status={detail.node_status} />
-            <span className="ml-auto">
+            <span className="ml-auto flex flex-wrap items-center gap-2">
+              <a className="btn btn-quiet btn-sm" href={`/executions/${detail.execution_id}`}>查看执行详情与审计</a>
               <Button variant="quiet" size="sm" icon={ArrowLeft} onClick={onBack}>
                 返回队列
               </Button>
@@ -142,17 +149,14 @@ export function ApprovalDetail({
               </span>
             </KV>
           </dl>
-          <a className="btn btn-quiet btn-sm" href={`/executions/${detail.execution_id}`}>查看执行详情与审计</a>
         </div>
       </header>
 
-      <Panel><PanelHead title="执行上下文" sub={execution == null ? undefined : `${execution.definition_name} v${execution.definition_version}`} />
-        <div className="panel-body appr-context">
-          {execution != null ? <><p className="text-sm text-ink-1">触发人：<span className="mono">{execution.triggered_by}</span></p><p className="micro mt-3">触发输入</p><p className="text-xs text-ink-2">解析后展示；精确值可在执行详情的原始响应核对。</p><pre className="mt-2 overflow-x-auto text-xs text-ink-1">{JSON.stringify(execution.input, null, 2)}</pre></>
-            : <p className="text-sm text-ink-2">{contextError !== '' ? `执行上下文未能读取：${contextError}` : '正在读取执行上下文…'}</p>}
-        </div>
-      </Panel>
-
+      <SectionTabs id={tabsId} label="审批详情视图" items={[{ value: 'content', label: '审批内容' }, { value: 'history', label: '审批记录' }]} value={tab} onChange={setTab}
+        actions={actionable ? <Button ref={decisionCollapsed ? rejectArmRef : undefined} size="sm" variant="quiet" aria-expanded={decisionVisible} aria-controls={`${tabsId}-decision`} onClick={() => setDecisionCollapsed(decisionVisible)} disabled={confirmReject}>{decisionVisible ? '收起处理栏' : '展开处理栏'}</Button> : undefined} />
+      <div className="appr-workarea" data-decision-visible={actionable && decisionVisible}>
+      <div className="appr-reader">
+      <section role="tabpanel" id={`${tabsId}-panel-content`} aria-labelledby={`${tabsId}-tab-content`} hidden={tab !== 'content'} tabIndex={0}>
       {/* ② 审批说明(自由文本,文本节点) */}
       <Panel>
         <PanelHead title="审批说明" />
@@ -165,38 +169,46 @@ export function ApprovalDetail({
         </div>
       </Panel>
 
-      {/* ③ 决定时间线 */}
-      <Panel>
-        <PanelHead title="决定时间线" sub={decisions.length > 0 ? `${decisions.length} 票` : '尚无决定'} />
-        {decisions.length === 0 ? (
-          <div className="panel-body">
-            <p className="text-sm text-ink-2">还没有人投出决定 —— 你是第一个。</p>
-          </div>
-        ) : (
-          <ul className="appr-decisions" data-testid={TID.approvalTimeline}>
-            {decisions.map((dec) => (
-              <li key={dec.id}>
-                <span className="num text-ink-2">第 {dec.round} 轮</span>
-                <span className="num text-ink-2">{fmtDateTime(dec.decided_at)}</span>
-                <span className="mono text-ink-0">{dec.decided_by}</span>
-                <span className={dec.decision === 'reject' ? 'appr-decision-reject' : 'appr-decision-approve'}>
-                  {decisionLabel(dec.decision)}
-                </span>
-                {dec.comment !== null && dec.comment !== '' ? <span className="text-ink-1">{dec.comment}</span> : null}
-              </li>
-            ))}
-          </ul>
-        )}
+      <Panel><PanelHead title="执行上下文" sub={execution == null ? undefined : `${execution.definition_name} v${execution.definition_version}`} />
+        <div className="panel-body appr-context">
+          {execution != null ? <><p className="text-sm text-ink-1">触发人：<span className="mono">{execution.triggered_by}</span></p><details className="mt-3"><summary>原始输入</summary><p className="text-xs text-ink-2">解析后展示；精确值可在执行详情的原始响应核对。</p><pre className="mt-2 overflow-x-auto text-xs text-ink-1">{JSON.stringify(execution.input, null, 2)}</pre></details></>
+            : <p className="text-sm text-ink-2">{contextError !== '' ? `执行上下文未能读取：${contextError}` : '正在读取执行上下文…'}</p>}
+        </div>
       </Panel>
 
+      </section>
+      <section role="tabpanel" id={`${tabsId}-panel-history`} aria-labelledby={`${tabsId}-tab-history`} hidden={tab !== 'history'} tabIndex={0}>
+      {/* ③ 审批记录 */}
+      <Panel>
+        <PanelHead title="审批记录" sub={decisions.length > 0 ? `${decisions.length} 票` : '尚无决定'} />
+        <div className="appr-history-scroll">
+          <table className="table appr-history-table" data-testid={TID.approvalTimeline}>
+            <caption className="sr-only">审批决定记录</caption>
+            <thead><tr><th>处理人</th><th>决定</th><th>处理意见</th><th>时间</th><th>轮次</th></tr></thead>
+            <tbody>{decisions.length === 0
+              ? <tr><td colSpan={5} className="appr-history-empty">尚无审批决定，等待审批人处理。</td></tr>
+              : decisions.map((dec) => <tr key={dec.id}>
+                <td className="mono">{dec.decided_by}</td>
+                <td className={dec.decision === 'reject' ? 'appr-decision-reject' : 'appr-decision-approve'}>{decisionLabel(dec.decision)}</td>
+                <td className="appr-history-comment">{dec.comment || '—'}</td>
+                <td className="num">{fmtDateTime(dec.decided_at)}</td>
+                <td className="num">第 {dec.round} 轮</td>
+              </tr>)}</tbody>
+          </table>
+        </div>
+      </Panel>
+
+      </section>
+      </div>
+      <aside className="appr-decision-aside" id={`${tabsId}-decision`} aria-label="审批处理" hidden={actionable && !decisionVisible}>
       {/* ④ 决定 */}
       {actionable ? (
         <Panel className="appr-decision-panel">
-          <PanelHead title="决定" sub="提交即续跑挂起的执行" />
+          <PanelHead title="审批决定" sub="备注选填；驳回前将再次确认" />
           <div className="panel-body appr-decide">
             <TextArea
               label="备注(可选,≤2000 字)"
-              rows={3}
+              rows={7}
               value={comment}
               error={commentError}
               hint={commentError === '' ? `${approvalCommentCount(comment)} / ${COMMENT_MAX} 字` : undefined}
@@ -217,7 +229,7 @@ export function ApprovalDetail({
                 批准
               </Button>
               <Button
-                ref={rejectArmRef}
+                ref={decisionCollapsed ? undefined : rejectArmRef}
                 variant="danger"
                 icon={Ban}
                 data-testid={TID.approvalReject}
@@ -259,6 +271,8 @@ export function ApprovalDetail({
           </span>
         </Alert>
       )}
+      </aside>
+      </div>
     </article>
   )
 }
