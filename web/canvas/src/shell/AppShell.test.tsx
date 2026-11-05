@@ -1,4 +1,4 @@
-import { act, render, screen, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, within } from '@testing-library/react'
 import { createMemoryRouter, RouterProvider } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AuthProvider, RequireAuth } from '../auth.tsx'
@@ -21,6 +21,21 @@ function mount(path = '/workflows') {
 afterEach(() => { session.clear(); vi.unstubAllGlobals(); vi.useRealTimers() })
 
 describe('运行脉冲与会话提示', () => {
+  it('收起导航释放侧栏并保留恢复按钮，跨路由和刷新共享偏好', async () => {
+    localStorage.clear()
+    session.start('t', 'reader', ['approver'])
+    vi.stubGlobal('fetch', vi.fn(async () => response({ items: [], page: { total: 0 } })))
+    mount('/executions')
+    await act(async () => {})
+    fireEvent.click(screen.getByRole('button', { name: '收起侧栏' }))
+    expect(screen.queryByRole('navigation', { name: '主域导航' })).toBeNull()
+    expect(localStorage.getItem('braid.panel.nav.collapsed')).toBe('1')
+    fireEvent.click(screen.getByRole('button', { name: '展开侧栏' }))
+    expect(screen.getByRole('navigation', { name: '主域导航' })).toBeVisible()
+    expect(localStorage.getItem('braid.panel.nav.collapsed')).toBe('0')
+    localStorage.clear()
+  })
+
   it.each([
     ['/workflows', '工作流', '编排工作区'],
     ['/executions', '执行', '执行记录'],
@@ -34,8 +49,8 @@ describe('运行脉冲与会话提示', () => {
     await act(async () => {})
     expect(screen.getAllByRole('heading', { level: 1 })).toHaveLength(1)
     expect(screen.getByRole('heading', { level: 1, name: title })).toBeVisible()
-    expect(screen.getByText(context)).toBeVisible()
-    expect(within(screen.getByRole('navigation', { name: '主域导航' })).getByRole('link', { name: title })).toHaveAttribute('aria-current', 'page')
+    expect(screen.getByText(context, { selector: '.shell-route-context' })).toBeVisible()
+    expect(within(screen.getByRole('navigation', { name: '主域导航' })).getByRole('link', { name: title === '执行' ? '执行记录' : title === '审批' ? '审批待办' : title })).toHaveAttribute('aria-current', 'page')
   })
 
   it('500保留上次真实计数，事件立即刷新；计数说明明确个人队列与租户执行不同', async () => {

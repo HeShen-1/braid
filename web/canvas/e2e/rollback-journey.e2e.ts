@@ -210,6 +210,7 @@ test('回滚-重跑全旅程:驳回翻活 → 并行实例 → 会签中间态 �
   await aliceCanvas.getByTestId(TID.navExecutions).click()
   await aliceCanvas.getByTestId(tid.execRow(execId)).click()
   await expect(aliceCanvas.getByTestId(TID.execDetail)).toBeVisible({ timeout: 15_000 })
+  await aliceCanvas.getByRole('tab', { name: '节点详情', exact: true }).click()
   const signPanel = aliceCanvas.getByTestId(tid.approvalEntry('sign'))
   await expect(signPanel).toBeVisible({ timeout: 15_000 })
   await expect(signPanel).toContainText('会签')
@@ -221,8 +222,10 @@ test('回滚-重跑全旅程:驳回翻活 → 并行实例 → 会签中间态 �
   // ⑨ bob 终票 → 终态 + 输出 + 审计链(reaper flush 后 node 级事件到场)。
   await approvalDecide(bob, 'sign', execId, 'approve')
   await expect(author.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'SUCCEEDED', { timeout: 30_000 })
+  await author.getByRole('tab', { name: '输入与输出', exact: true }).click()
   await expect(author.getByTestId(TID.execOutputs)).toContainText('approved')
 
+  await author.getByRole('tab', { name: '审计记录', exact: true }).click()
   await expect(author.getByTestId(tid.auditRow('execution.triggered'))).toBeVisible({ timeout: 20_000 })
   expect(await author.getByTestId(tid.auditRow('execution.rolled_back')).count()).toBeGreaterThanOrEqual(2)
   expect(await author.getByTestId(tid.auditRow('approval.decided')).count()).toBeGreaterThanOrEqual(6)

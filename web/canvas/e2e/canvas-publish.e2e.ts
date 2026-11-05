@@ -82,6 +82,7 @@ test('保存失败零发布;新建/换稿/离开/刷新取消后仍有原编辑�
   expect(detail.status).toBe('DRAFT')
   expect(detail.dsl).toEqual(first.doc)
 
+  if (await page.getByRole('button', { name: '展开工作流列表' }).count()) await page.getByRole('button', { name: '展开工作流列表' }).click()
   await page.getByTestId(TID.draftNew).click()
   await expect(page.getByRole('group', { name: '新建前确认' })).toBeFocused()
   await page.keyboard.press('Escape')

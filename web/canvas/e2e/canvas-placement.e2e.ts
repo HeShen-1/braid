@@ -82,6 +82,7 @@ async function addNode(
   panelVisible = true,
 ): Promise<string> {
   const before = await canvasDoc(page)
+  if (!await page.locator('.editor-palette').evaluate((el) => (el as HTMLDetailsElement).open)) await page.getByText('添加节点', { exact: true }).click()
   const button = page.getByTestId(tid.paletteBtn(type))
   if (activation === 'click') {
     await button.click()
@@ -174,12 +175,11 @@ for (const width of [1440, 1024]) {
       const toggle = page.getByTestId(TID.panelRightToggle)
       await toggle.click()
       await expect(toggle).toHaveAccessibleName('展开属性面板')
-      await expect(toggle).toHaveAttribute('aria-pressed', 'false')
-      const collapsedId = await addNode(page, testInfo, 'tool', 'collapsed', 'click', false)
-      await expect(toggle).toHaveAccessibleName('展开属性面板')
-      await expect(toggle).toHaveAttribute('aria-pressed', 'false')
-      await screenshot(page, testInfo, 'add-while-collapsed')
-      await toggle.click()
+      await expect(toggle).toHaveAttribute('aria-expanded', 'false')
+      const collapsedId = await addNode(page, testInfo, 'tool', 'collapsed', 'click', true)
+      await expect(toggle).toHaveAccessibleName('收起属性面板')
+      await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+      await screenshot(page, testInfo, 'add-opens-properties')
       await selectedPanel(page, collapsedId)
       await editSelectedTitle(page, collapsedId)
       expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
@@ -244,7 +244,9 @@ test('远距旧节点不牵走新增节点:1024双栏、长分支、真实视口
   await page.goto(`/workflows/${id}`)
   await expect(page.getByTestId(TID.editor)).toBeVisible()
   await expect(page.locator('.react-flow__node')).toHaveCount(2)
+  if (await page.getByRole('button', { name: '展开工作流列表' }).count()) await page.getByRole('button', { name: '展开工作流列表' }).click()
   await expect(page.getByTestId(TID.panelLeftToggle)).toHaveAccessibleName('收起工作流列表')
+  if (await page.getByRole('button', { name: '展开属性面板' }).count()) await page.getByRole('button', { name: '展开属性面板' }).click()
   await expect(page.getByTestId(TID.panelRightToggle)).toHaveAccessibleName('收起属性面板')
   const before = await canvasDoc(page)
   const actualViewport = () => page.locator('.react-flow__viewport').evaluate((el) => {

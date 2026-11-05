@@ -37,7 +37,8 @@ describe('DraftList(可收起左栏)', () => {
     rerender(<DraftList {...props} drafts={drafts} loading />)
     expect(screen.getByTestId(tid.draftItem('1'))).toBeInTheDocument()
   })
-  it('默认展开:列表与动作在场,收起键可达', () => {
+  it('显式展开偏好:列表与动作在场,收起键可达', () => {
+    localStorage.setItem(PANEL_LEFT_KEY, '0')
     mount()
     expect(screen.getByTestId(TID.draftList)).toHaveAttribute('aria-label', '工作流列表')
     expect(screen.getByTestId(tid.draftItem('1'))).toBeInTheDocument()
@@ -45,12 +46,13 @@ describe('DraftList(可收起左栏)', () => {
     expect(screen.getByTestId(TID.panelLeftToggle)).toHaveAccessibleName('收起工作流列表')
   })
 
-  it('点收起:列表让位给窄栏,展开键留在原地,偏好落盘', async () => {
+  it('点收起:列表释放宽度,保留展开入口,偏好落盘', async () => {
     const user = userEvent.setup()
+    localStorage.setItem(PANEL_LEFT_KEY, '0')
     mount()
     await user.click(screen.getByTestId(TID.panelLeftToggle))
     expect(screen.queryByTestId(tid.draftItem('1'))).not.toBeInTheDocument()
-    expect(screen.getByTestId(TID.draftList)).toHaveClass('side-rail')
+    expect(screen.getByTestId(TID.draftList)).toHaveClass('workflow-list-restore')
     expect(screen.getByTestId(TID.draftList)).not.toHaveAttribute('aria-label', '工作流列表')
     expect(screen.getByTestId(TID.panelLeftToggle)).toHaveAccessibleName('展开工作流列表')
     expect(localStorage.getItem(PANEL_LEFT_KEY)).toBe('1')

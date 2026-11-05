@@ -1,44 +1,46 @@
 {
   "schemaVersion": 2,
-  "generatedAt": "2026-10-16T13:45:00+08:00",
+  "generatedAt": "2026-11-05T11:03:18.146479+00:00",
   "title": "Design System: braid 控制台",
   "extensions": {
     "colorMeta": {
       "accent": {
         "role": "primary",
-        "displayName": "焦点蓝 Interaction Blue",
-        "canonical": "#6e9bf5",
-        "purpose": "焦点环、链接与可交互线索；壳层当前域使用中性亮度，不借状态色。",
+        "displayName": "动作青绿 Interaction Teal",
+        "canonical": "#2ed3b2",
+        "purpose": "焦点、链接、当前导航和标签；深色主动作共享青绿色值。",
         "tonalRamp": [
-          "#00052c",
-          "#001965",
-          "#163b8c",
-          "#345cb1",
-          "#547fd7",
-          "#75a3fd",
-          "#adcaff",
-          "#e6efff"
+          "oklch(15.00% 0.13767 175.11)",
+          "oklch(26.43% 0.13767 175.11)",
+          "oklch(37.86% 0.13767 175.11)",
+          "oklch(49.29% 0.13767 175.11)",
+          "oklch(60.71% 0.13767 175.11)",
+          "oklch(72.14% 0.13767 175.11)",
+          "oklch(83.57% 0.13767 175.11)",
+          "oklch(95.00% 0.13767 175.11)"
         ],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#3764bf"
+        "rampKind": "synthesized-oklch-preview-only",
+        "lightCanonical": "#096b58",
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05"
       },
       "accent-soft": {
         "role": "primary",
-        "displayName": "焦点蓝暗底 Focus Blue, Sunken",
-        "canonical": "#1b2a44",
-        "purpose": "执行时间带选中行的底色(55% 混透明落在地面上)。",
+        "displayName": "青绿低亮底 Teal Surface",
+        "canonical": "#173c35",
+        "purpose": "当前导航与选中时间带的低亮底。",
         "tonalRamp": [
-          "#010a21",
-          "#16253e",
-          "#32425e",
-          "#50627f",
-          "#7183a2",
-          "#93a6c6",
-          "#b6caec",
-          "#e5efff"
+          "oklch(15.00% 0.04433 179.20)",
+          "oklch(26.43% 0.04433 179.20)",
+          "oklch(37.86% 0.04433 179.20)",
+          "oklch(49.29% 0.04433 179.20)",
+          "oklch(60.71% 0.04433 179.20)",
+          "oklch(72.14% 0.04433 179.20)",
+          "oklch(83.57% 0.04433 179.20)",
+          "oklch(95.00% 0.04433 179.20)"
         ],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#dbe5f7"
+        "rampKind": "synthesized-oklch-preview-only",
+        "lightCanonical": "#dbe5f7",
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05"
       },
       "sig-idle": {
         "role": "secondary",
@@ -46,17 +48,18 @@
         "canonical": "#3a4a5a",
         "purpose": "IDLE / PENDING 的底与边;六态里最暗的一档,永不做文字色(在自身 tint 上 1.9:1)。",
         "tonalRamp": [
-          "#020c19",
-          "#182635",
-          "#344453",
-          "#526374",
-          "#738496",
-          "#95a7ba",
-          "#b9ccdf",
-          "#e2f0ff"
+          "oklch(15.00% 0.03391 248.68)",
+          "oklch(26.43% 0.03391 248.68)",
+          "oklch(37.86% 0.03391 248.68)",
+          "oklch(49.29% 0.03391 248.68)",
+          "oklch(60.71% 0.03391 248.68)",
+          "oklch(72.14% 0.03391 248.68)",
+          "oklch(83.57% 0.03391 248.68)",
+          "oklch(95.00% 0.03391 248.68)"
         ],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#5a6675"
+        "rampKind": "synthesized-oklch-preview-only",
+        "lightCanonical": "#5a6675",
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05"
       },
       "sig-run": {
         "role": "secondary",
@@ -64,17 +67,18 @@
         "canonical": "#2ed3c6",
         "purpose": "RUNNING / EXECUTING:芯片、时间带段、节点卡描边、脉冲圆点。",
         "tonalRamp": [
-          "#000f0d",
-          "#002c29",
-          "#004d48",
-          "#007169",
-          "#00968d",
-          "#00beb2",
-          "#48e4d7",
-          "#b5fff6"
+          "oklch(15.00% 0.12894 186.66)",
+          "oklch(26.43% 0.12894 186.66)",
+          "oklch(37.86% 0.12894 186.66)",
+          "oklch(49.29% 0.12894 186.66)",
+          "oklch(60.71% 0.12894 186.66)",
+          "oklch(72.14% 0.12894 186.66)",
+          "oklch(83.57% 0.12894 186.66)",
+          "oklch(95.00% 0.12894 186.66)"
         ],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#006961"
+        "rampKind": "synthesized-oklch-preview-only",
+        "lightCanonical": "#006961",
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05"
       },
       "sig-ok": {
         "role": "secondary",
@@ -82,17 +86,18 @@
         "canonical": "#57d06a",
         "purpose": "SUCCEEDED。",
         "tonalRamp": [
-          "#001002",
-          "#002f0a",
-          "#005117",
-          "#007626",
-          "#0f9d38",
-          "#47c25c",
-          "#70e780",
-          "#c8ffcc"
+          "oklch(15.00% 0.17837 146.59)",
+          "oklch(26.43% 0.17837 146.59)",
+          "oklch(37.86% 0.17837 146.59)",
+          "oklch(49.29% 0.17837 146.59)",
+          "oklch(60.71% 0.17837 146.59)",
+          "oklch(72.14% 0.17837 146.59)",
+          "oklch(83.57% 0.17837 146.59)",
+          "oklch(95.00% 0.17837 146.59)"
         ],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#186b2a"
+        "rampKind": "synthesized-oklch-preview-only",
+        "lightCanonical": "#186b2a",
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05"
       },
       "sig-wait": {
         "role": "secondary",
@@ -100,35 +105,37 @@
         "canonical": "#f0b429",
         "purpose": "WAITING_APPROVAL——braid 的招牌状态,整屏唯一暖色;135° 斜纹即由它派生。",
         "tonalRamp": [
-          "#120a00",
-          "#322200",
-          "#563d00",
-          "#7d5b00",
-          "#a77a00",
-          "#d29a00",
-          "#fbbe38",
-          "#ffecc9"
+          "oklch(15.00% 0.15576 82.54)",
+          "oklch(26.43% 0.15576 82.54)",
+          "oklch(37.86% 0.15576 82.54)",
+          "oklch(49.29% 0.15576 82.54)",
+          "oklch(60.71% 0.15576 82.54)",
+          "oklch(72.14% 0.15576 82.54)",
+          "oklch(83.57% 0.15576 82.54)",
+          "oklch(95.00% 0.15576 82.54)"
         ],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#795400"
+        "rampKind": "synthesized-oklch-preview-only",
+        "lightCanonical": "#795400",
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05"
       },
       "sig-fail": {
         "role": "secondary",
         "displayName": "失败红 Failed Red",
-        "canonical": "#f4575e",
+        "canonical": "#ff747b",
         "purpose": "FAILED / ROLLED_BACK,兼作破坏性动作与错误文案。",
         "tonalRamp": [
-          "#1f0002",
-          "#4d000b",
-          "#80001a",
-          "#b50e2b",
-          "#de424c",
-          "#ff7173",
-          "#ffb2af",
-          "#ffe8e7"
+          "oklch(15.00% 0.16963 19.22)",
+          "oklch(26.43% 0.16963 19.22)",
+          "oklch(37.86% 0.16963 19.22)",
+          "oklch(49.29% 0.16963 19.22)",
+          "oklch(60.71% 0.16963 19.22)",
+          "oklch(72.14% 0.16963 19.22)",
+          "oklch(83.57% 0.16963 19.22)",
+          "oklch(95.00% 0.16963 19.22)"
         ],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#ac2834"
+        "rampKind": "synthesized-oklch-preview-only",
+        "lightCanonical": "#ac2834",
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05"
       },
       "sig-stop": {
         "role": "secondary",
@@ -136,89 +143,189 @@
         "canonical": "#8296ab",
         "purpose": "CANCELLED / SKIPPED。",
         "tonalRamp": [
-          "#010c1b",
-          "#162637",
-          "#324456",
-          "#516377",
-          "#718599",
-          "#93a8bd",
-          "#b7cce2",
-          "#e2f0ff"
+          "oklch(15.00% 0.03875 249.69)",
+          "oklch(26.43% 0.03875 249.69)",
+          "oklch(37.86% 0.03875 249.69)",
+          "oklch(49.29% 0.03875 249.69)",
+          "oklch(60.71% 0.03875 249.69)",
+          "oklch(72.14% 0.03875 249.69)",
+          "oklch(83.57% 0.03875 249.69)",
+          "oklch(95.00% 0.03875 249.69)"
         ],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#516171"
+        "rampKind": "synthesized-oklch-preview-only",
+        "lightCanonical": "#516171",
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05"
       },
       "ground-0": {
         "role": "neutral",
         "displayName": "无光地面 Unlit Ground",
-        "canonical": "#08090a",
+        "canonical": "#161719",
         "purpose": "应用底、画布地面、JSON/DSL 只读底。",
         "lightCanonical": "#f7f9fb",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.00426 264.47)",
+          "oklch(26.43% 0.00426 264.47)",
+          "oklch(37.86% 0.00426 264.47)",
+          "oklch(49.29% 0.00426 264.47)",
+          "oklch(60.71% 0.00426 264.47)",
+          "oklch(72.14% 0.00426 264.47)",
+          "oklch(83.57% 0.00426 264.47)",
+          "oklch(95.00% 0.00426 264.47)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "ground-1": {
         "role": "neutral",
         "displayName": "面板 Panel",
-        "canonical": "#101113",
+        "canonical": "#1c1d20",
         "purpose": "面板、顶栏、左列、粘顶层底色(不透明贴边,不靠投影)。",
         "lightCanonical": "#ffffff",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.00595 271.15)",
+          "oklch(26.43% 0.00595 271.15)",
+          "oklch(37.86% 0.00595 271.15)",
+          "oklch(49.29% 0.00595 271.15)",
+          "oklch(60.71% 0.00595 271.15)",
+          "oklch(72.14% 0.00595 271.15)",
+          "oklch(83.57% 0.00595 271.15)",
+          "oklch(95.00% 0.00595 271.15)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "ground-2": {
         "role": "neutral",
         "displayName": "抬升 Raised",
-        "canonical": "#18191c",
+        "canonical": "#232529",
         "purpose": "输入框、表头、次级按钮、中性芯片底。",
         "lightCanonical": "#eef1f5",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.00800 264.43)",
+          "oklch(26.43% 0.00800 264.43)",
+          "oklch(37.86% 0.00800 264.43)",
+          "oklch(49.29% 0.00800 264.43)",
+          "oklch(60.71% 0.00800 264.43)",
+          "oklch(72.14% 0.00800 264.43)",
+          "oklch(83.57% 0.00800 264.43)",
+          "oklch(95.00% 0.00800 264.43)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "ground-3": {
         "role": "neutral",
         "displayName": "悬停 Hover",
-        "canonical": "#232428",
+        "canonical": "#2b2e32",
         "purpose": "悬停底、选中行、禁用主按钮底。",
         "lightCanonical": "#e4e9ef",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.00839 255.56)",
+          "oklch(26.43% 0.00839 255.56)",
+          "oklch(37.86% 0.00839 255.56)",
+          "oklch(49.29% 0.00839 255.56)",
+          "oklch(60.71% 0.00839 255.56)",
+          "oklch(72.14% 0.00839 255.56)",
+          "oklch(83.57% 0.00839 255.56)",
+          "oklch(95.00% 0.00839 255.56)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "ground-4": {
         "role": "neutral",
         "displayName": "选中·按下 Pressed",
-        "canonical": "#2b2d31",
+        "canonical": "#34383d",
         "purpose": "按下底、滚动条拇指。",
         "lightCanonical": "#d8dfe7",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.01035 253.98)",
+          "oklch(26.43% 0.01035 253.98)",
+          "oklch(37.86% 0.01035 253.98)",
+          "oklch(49.29% 0.01035 253.98)",
+          "oklch(60.71% 0.01035 253.98)",
+          "oklch(72.14% 0.01035 253.98)",
+          "oklch(83.57% 0.01035 253.98)",
+          "oklch(95.00% 0.01035 253.98)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "line-0": {
         "role": "neutral",
         "displayName": "结构分割 Structural Hairline",
-        "canonical": "#222428",
+        "canonical": "#303338",
         "purpose": "1px 结构分割:表格行、面板头、分节上边线、画布网格。",
         "lightCanonical": "#dde3ea",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.00982 260.71)",
+          "oklch(26.43% 0.00982 260.71)",
+          "oklch(37.86% 0.00982 260.71)",
+          "oklch(49.29% 0.00982 260.71)",
+          "oklch(60.71% 0.00982 260.71)",
+          "oklch(72.14% 0.00982 260.71)",
+          "oklch(83.57% 0.00982 260.71)",
+          "oklch(95.00% 0.00982 260.71)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "line-1": {
         "role": "neutral",
         "displayName": "可见分隔 Visible Divider",
-        "canonical": "#303237",
+        "canonical": "#41454b",
         "purpose": "1px 可见分隔与面板边框:列分隔、面板外框、表头下边。",
         "lightCanonical": "#c9d2db",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.01146 258.36)",
+          "oklch(26.43% 0.01146 258.36)",
+          "oklch(37.86% 0.01146 258.36)",
+          "oklch(49.29% 0.01146 258.36)",
+          "oklch(60.71% 0.01146 258.36)",
+          "oklch(72.14% 0.01146 258.36)",
+          "oklch(83.57% 0.01146 258.36)",
+          "oklch(95.00% 0.01146 258.36)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "line-2": {
         "role": "neutral",
         "displayName": "可辨描边 Discernible Stroke",
         "canonical": "#72767d",
-        "purpose": "交互控件描边与 DAG 连线，默认暗色地面内外邻接最紧 3.85:1；浅色最紧 3.01:1。",
+        "purpose": "交互控件描边与 DAG 连线；本次地面上的实际对比度需验证。",
         "lightCanonical": "#808d95",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.01180 261.77)",
+          "oklch(26.43% 0.01180 261.77)",
+          "oklch(37.86% 0.01180 261.77)",
+          "oklch(49.29% 0.01180 261.77)",
+          "oklch(60.71% 0.01180 261.77)",
+          "oklch(72.14% 0.01180 261.77)",
+          "oklch(83.57% 0.01180 261.77)",
+          "oklch(95.00% 0.01180 261.77)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "ink-0": {
         "role": "neutral",
         "displayName": "主读数 Primary Reading",
         "canonical": "#eeeff1",
-        "purpose": "主文本;主操作按钮的底色(亮底深字)。",
+        "purpose": "主文本。",
         "lightCanonical": "#0d1319",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.00289 264.54)",
+          "oklch(26.43% 0.00289 264.54)",
+          "oklch(37.86% 0.00289 264.54)",
+          "oklch(49.29% 0.00289 264.54)",
+          "oklch(60.71% 0.00289 264.54)",
+          "oklch(72.14% 0.00289 264.54)",
+          "oklch(83.57% 0.00289 264.54)",
+          "oklch(95.00% 0.00289 264.54)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "ink-1": {
         "role": "neutral",
@@ -226,48 +333,113 @@
         "canonical": "#b2b5bc",
         "purpose": "次文本:表格内容、字段标签、幽灵按钮。",
         "lightCanonical": "#3d4a57",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.01047 267.34)",
+          "oklch(26.43% 0.01047 267.34)",
+          "oklch(37.86% 0.01047 267.34)",
+          "oklch(49.29% 0.01047 267.34)",
+          "oklch(60.71% 0.01047 267.34)",
+          "oklch(72.14% 0.01047 267.34)",
+          "oklch(83.57% 0.01047 267.34)",
+          "oklch(95.00% 0.01047 267.34)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "ink-2": {
         "role": "neutral",
         "displayName": "三级标签 Tertiary",
-        "canonical": "#969ba5",
-        "purpose": "表头、微标签、图例；暗色 ground-3 上 5.56:1。",
+        "canonical": "#a8adb6",
+        "purpose": "表头、微标签、图例和提示。",
         "lightCanonical": "#4e5a68",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.01408 262.37)",
+          "oklch(26.43% 0.01408 262.37)",
+          "oklch(37.86% 0.01408 262.37)",
+          "oklch(49.29% 0.01408 262.37)",
+          "oklch(60.71% 0.01408 262.37)",
+          "oklch(72.14% 0.01408 262.37)",
+          "oklch(83.57% 0.01408 262.37)",
+          "oklch(95.00% 0.01408 262.37)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "ink-3": {
         "role": "neutral",
         "displayName": "待填 Quaternary",
-        "canonical": "#888e99",
-        "purpose": "占位、时间戳缺口与禁用字；暗色 ground-2 上 5.34:1。",
+        "canonical": "#a0a5ae",
+        "purpose": "占位、时间戳缺口与禁用字。",
         "lightCanonical": "#5f6a71",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.01421 262.37)",
+          "oklch(26.43% 0.01421 262.37)",
+          "oklch(37.86% 0.01421 262.37)",
+          "oklch(49.29% 0.01421 262.37)",
+          "oklch(60.71% 0.01421 262.37)",
+          "oklch(72.14% 0.01421 262.37)",
+          "oklch(83.57% 0.01421 262.37)",
+          "oklch(95.00% 0.01421 262.37)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "sig-fail-hi": {
         "role": "secondary",
         "displayName": "sig-fail-hi",
         "canonical": "#ff8a8f",
         "purpose": "破坏性动作 hover 的字色（浅色档 #a03339）",
-        "tonalRamp": [],
-        "rampKind": "synthesized-oklch",
-        "lightCanonical": "#a03339"
+        "tonalRamp": [
+          "oklch(15.00% 0.14179 18.29)",
+          "oklch(26.43% 0.14179 18.29)",
+          "oklch(37.86% 0.14179 18.29)",
+          "oklch(49.29% 0.14179 18.29)",
+          "oklch(60.71% 0.14179 18.29)",
+          "oklch(72.14% 0.14179 18.29)",
+          "oklch(83.57% 0.14179 18.29)",
+          "oklch(95.00% 0.14179 18.29)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only",
+        "lightCanonical": "#a03339",
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05"
       },
       "primary-action": {
         "role": "primary",
         "displayName": "primary-action",
-        "canonical": "#eeeff1",
-        "purpose": "主操作实体：暗色近白、浅色近黑，正文与相邻地面均通过对比度门。",
+        "canonical": "#2ed3b2",
+        "purpose": "深色青绿实体；浅色保留深实体主操作。",
         "lightCanonical": "#0d1319",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.13767 175.11)",
+          "oklch(26.43% 0.13767 175.11)",
+          "oklch(37.86% 0.13767 175.11)",
+          "oklch(49.29% 0.13767 175.11)",
+          "oklch(60.71% 0.13767 175.11)",
+          "oklch(72.14% 0.13767 175.11)",
+          "oklch(83.57% 0.13767 175.11)",
+          "oklch(95.00% 0.13767 175.11)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       },
       "primary-ink": {
         "role": "primary",
         "displayName": "primary-ink",
-        "canonical": "#08090a",
-        "purpose": "主操作的对侧文字色；浅色档 #f7f9fb。",
+        "canonical": "#161719",
+        "purpose": "主操作文字，与 primary-action 配对。",
         "lightCanonical": "#f7f9fb",
-        "source": "UX-F1-a semantic CSS tokens, 2026-10-16"
+        "source": "web/canvas/src/styles/index.css; B layout v2, 2026-11-05",
+        "tonalRamp": [
+          "oklch(15.00% 0.00426 264.47)",
+          "oklch(26.43% 0.00426 264.47)",
+          "oklch(37.86% 0.00426 264.47)",
+          "oklch(49.29% 0.00426 264.47)",
+          "oklch(60.71% 0.00426 264.47)",
+          "oklch(72.14% 0.00426 264.47)",
+          "oklch(83.57% 0.00426 264.47)",
+          "oklch(95.00% 0.00426 264.47)"
+        ],
+        "rampKind": "synthesized-oklch-preview-only"
       }
     },
     "typographyMeta": {
@@ -281,11 +453,11 @@
       },
       "sm": {
         "displayName": "sm 密集正文",
-        "purpose": "表格、按钮、输入框、面板正文;按钮 500,主操作 600。"
+        "purpose": "13px 密集正文、按钮、输入框与表格；按钮 500，主操作 600。"
       },
       "base": {
         "displayName": "base 默认 UI",
-        "purpose": "body 默认字号 13.5px;body 行高 1.5,工具类落钉死行高 20px。"
+        "purpose": "body 默认字号 14px，行高 1.5；工具类行高 20px。"
       },
       "md": {
         "displayName": "md 面板标题",
@@ -355,43 +527,43 @@
     ],
     "breakpoints": [
       {
-        "name": "lg",
-        "value": "1024px",
-        "purpose": "字标副题「Agent 工作流编排平台」显示;全站仅此一处。"
+        "name": "workspace-narrow",
+        "value": "900px",
+        "purpose": "审批处理栏纵向排列，属性栏限宽；主导航无偏好时按初始窗口宽度确定收起。"
       },
       {
-        "name": "xl",
+        "name": "compact-window",
+        "value": "760px",
+        "purpose": "顶栏换行，工作流与执行详情纵向排列，阅读区缩减横向内边距。"
+      },
+      {
+        "name": "overview-stack",
+        "value": "1150px",
+        "purpose": "执行总览读数与分布纵向排列。"
+      },
+      {
+        "name": "pulse",
         "value": "1280px",
-        "purpose": "顶栏运行脉冲(执行中/待审批/失败)显示;全站仅此一处。"
-      },
-      {
-        "name": "desktop-only",
-        "value": "无移动端断点",
-        "purpose": "桌面优先;窄窗只保证不横向溢出(仅收尾截图复核)。"
+        "purpose": "运行脉冲显示阈值。"
       }
     ],
     "surfaces": {
-      "shellAndApprovals": {
-        "reference": "Linear",
-        "mode": "Operate",
-        "default": "dark",
-        "topbarHeight": "48px",
-        "routeHeaderHeight": "46px",
-        "approvalRowHeight": "44px",
-        "detailMaxWidth": "1056px",
-        "sharedTokenNames": "unchanged",
-        "verification": "docs/audits/UX-F1-a-VALIDATION.md",
-        "focusContract": "accent remains canonical interaction blue; shadcn menu focus backgrounds use ground-3 through data-slot adapter, never a duplicate token alias",
-        "focusOpacity": 0.85,
-        "primaryControlContract": "light primary-action #0d1319 / primary-ink #f7f9fb; usable primary boundary >=3, text >=4.5; existing disabled-state exemption only",
-        "selectKeyboardFocus": {
-          "selector": "[data-slot='select-item']:focus-visible",
-          "outline": "2px solid 85% accent",
-          "outlineOffset": "-2px",
-          "regression": "real author triggerDefinition Select, ArrowDown, both themes and 1440/1024"
-        }
-      },
-      "otherSurfaces": "n8n/Vercel/Temporal direction approved; delivery belongs to UX-F1-b/c/d"
+      "layoutV2": {
+        "authority": ".impeccable/mocks/20261105/layout-v2/{workflow,execution,approval-content,approval-history}.png",
+        "defaultTheme": "dark",
+        "themePreference": "localStorage braid.theme; auto/light/dark",
+        "navigationWidth": "12rem",
+        "workflowPropertiesWidth": "22.5rem",
+        "executionContextWidth": "16rem",
+        "executionGraphHeight": "clamp(18rem, 38vh, 30rem)",
+        "approvalDecisionWidth": "19rem",
+        "workflow": "宽画布，节点添加工具按需展开；无偏好时属性栏收起，列表按是否已有活动草稿决定收起。",
+        "execution": "身份与处置区之后是定义版本图，再下方是互斥证据标签区；列表与证据区独立收起。回滚目标、quiesce、回滚/续跑/取消及原权限与确认流程独立于证据标签和证据折叠。",
+        "approval": "内容/记录同页互斥切换；处理栏独立收起，驳回确认时保持可见。收起时按 r 再 Esc，恢复收起并将焦点交还「展开处理栏」。",
+        "verification": "仅源码与文档同步；前后端联调、浏览器与最终用户验收由主会话另行记录。",
+        "mockDataContract": "样例文字、数据与流程不构成业务契约。",
+        "navigationFocus": "收起时焦点交给顶栏「展开侧栏」；展开时交给侧栏内收起按钮。"
+      }
     }
   },
   "components": [
@@ -399,9 +571,9 @@
       "name": "Primary Button",
       "kind": "button",
       "refersTo": "button-primary",
-      "description": "主操作：暗色亮实体深字、浅色深实体浅字；文字≥4.5、实体边界≥3；hover/active朝对侧文字色混合。",
+      "description": "深色青绿主动作，浅色使用既有深实体；颜色随语义 token 切换。",
       "html": "<button class=\"ds-btn ds-btn-primary\" type=\"button\">保存草稿</button>",
-      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;height:2rem;padding:0 .75rem;border:1px solid var(--color-line-2);border-radius:8px;background:var(--color-ground-2);color:var(--color-ink-0);font-family:var(--font-sans);font-size:.781rem;font-weight:500;line-height:1.125rem;white-space:nowrap;cursor:pointer;transition:background-color 120ms cubic-bezier(.4,0,.2,1),border-color 120ms cubic-bezier(.4,0,.2,1),color 120ms cubic-bezier(.4,0,.2,1)}.ds-btn-primary{background:var(--color-primary-action);border-color:var(--color-primary-action);color:var(--color-primary-ink);font-weight:600}.ds-btn-primary:hover:not(:disabled){background:color-mix(in oklab,var(--color-primary-action) 88%,var(--color-primary-ink));border-color:color-mix(in oklab,var(--color-primary-action) 88%,var(--color-primary-ink))}.ds-btn-primary:active:not(:disabled){background:color-mix(in oklab,var(--color-primary-action) 76%,var(--color-primary-ink));border-color:color-mix(in oklab,var(--color-primary-action) 76%,var(--color-primary-ink))}.ds-btn-primary:disabled{background:var(--color-ground-3);border-color:var(--color-ground-3);color:var(--color-ink-3);cursor:not-allowed}.ds-btn:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;height:2rem;padding:0 .75rem;border:1px solid var(--color-line-2);border-radius:8px;background:var(--color-ground-2);color:var(--color-ink-0);font-family:var(--font-sans);font-size:.813rem;font-weight:500;line-height:1.125rem;white-space:nowrap;cursor:pointer;transition:background-color 120ms cubic-bezier(.4,0,.2,1),border-color 120ms cubic-bezier(.4,0,.2,1),color 120ms cubic-bezier(.4,0,.2,1)}.ds-btn-primary{background:var(--color-primary-action);border-color:var(--color-primary-action);color:var(--color-primary-ink);font-weight:600}.ds-btn-primary:hover:not(:disabled){background:color-mix(in oklab,var(--color-primary-action) 88%,var(--color-primary-ink));border-color:color-mix(in oklab,var(--color-primary-action) 88%,var(--color-primary-ink))}.ds-btn-primary:active:not(:disabled){background:color-mix(in oklab,var(--color-primary-action) 76%,var(--color-primary-ink));border-color:color-mix(in oklab,var(--color-primary-action) 76%,var(--color-primary-ink))}.ds-btn-primary:disabled{background:var(--color-ground-3);border-color:var(--color-ground-3);color:var(--color-ink-3);cursor:not-allowed}.ds-btn:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
     },
     {
       "name": "Secondary Button",
@@ -409,7 +581,7 @@
       "refersTo": "button-default",
       "description": "次级动作(发布、刷新、回滚、重试):抬升地面 + 1px 可辨描边;悬停只抬亮度。",
       "html": "<button class=\"ds-btn\" type=\"button\">发布</button>",
-      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;height:2rem;padding:0 .75rem;border:1px solid var(--color-line-2);border-radius:8px;background:var(--color-ground-2);color:var(--color-ink-0);font-family:var(--font-sans);font-size:.781rem;font-weight:500;line-height:1.125rem;white-space:nowrap;cursor:pointer;transition:background-color 120ms cubic-bezier(.4,0,.2,1),border-color 120ms cubic-bezier(.4,0,.2,1),color 120ms cubic-bezier(.4,0,.2,1)}.ds-btn:hover:not(:disabled){background:var(--color-ground-3);border-color:var(--color-ink-3)}.ds-btn:active:not(:disabled){background:var(--color-ground-4)}.ds-btn:disabled{color:var(--color-ink-3);border-color:var(--color-line-0);background:var(--color-ground-1);cursor:not-allowed}.ds-btn:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;height:2rem;padding:0 .75rem;border:1px solid var(--color-line-2);border-radius:8px;background:var(--color-ground-2);color:var(--color-ink-0);font-family:var(--font-sans);font-size:.813rem;font-weight:500;line-height:1.125rem;white-space:nowrap;cursor:pointer;transition:background-color 120ms cubic-bezier(.4,0,.2,1),border-color 120ms cubic-bezier(.4,0,.2,1),color 120ms cubic-bezier(.4,0,.2,1)}.ds-btn:hover:not(:disabled){background:var(--color-ground-3);border-color:var(--color-ink-3)}.ds-btn:active:not(:disabled){background:var(--color-ground-4)}.ds-btn:disabled{color:var(--color-ink-3);border-color:var(--color-line-0);background:var(--color-ground-1);cursor:not-allowed}.ds-btn:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
     },
     {
       "name": "Danger Button",
@@ -417,7 +589,7 @@
       "refersTo": "button-danger",
       "description": "破坏性动作(取消执行):透明底 + 55% 失败红边框;不可逆动作另给第二下确认。",
       "html": "<button class=\"ds-btn ds-btn-danger\" type=\"button\">取消执行</button>",
-      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;height:2rem;padding:0 .75rem;border:1px solid var(--color-line-2);border-radius:8px;background:var(--color-ground-2);color:var(--color-ink-0);font-family:var(--font-sans);font-size:.781rem;font-weight:500;line-height:1.125rem;white-space:nowrap;cursor:pointer;transition:background-color 120ms cubic-bezier(.4,0,.2,1),border-color 120ms cubic-bezier(.4,0,.2,1),color 120ms cubic-bezier(.4,0,.2,1)}.ds-btn-danger{background:transparent;border-color:color-mix(in oklab,var(--color-sig-fail) 55%,transparent);color:var(--color-sig-fail)}.ds-btn-danger:hover:not(:disabled){background:color-mix(in oklab,var(--color-sig-fail) 14%,transparent);border-color:var(--color-sig-fail);color:#ff8a8f}.ds-btn:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
+      "css": ".ds-btn{display:inline-flex;align-items:center;justify-content:center;gap:.4rem;height:2rem;padding:0 .75rem;border:1px solid var(--color-line-2);border-radius:8px;background:var(--color-ground-2);color:var(--color-ink-0);font-family:var(--font-sans);font-size:.813rem;font-weight:500;line-height:1.125rem;white-space:nowrap;cursor:pointer;transition:background-color 120ms cubic-bezier(.4,0,.2,1),border-color 120ms cubic-bezier(.4,0,.2,1),color 120ms cubic-bezier(.4,0,.2,1)}.ds-btn-danger{background:transparent;border-color:color-mix(in oklab,var(--color-sig-fail) 55%,transparent);color:var(--color-sig-fail)}.ds-btn-danger:hover:not(:disabled){background:color-mix(in oklab,var(--color-sig-fail) 14%,transparent);border-color:var(--color-sig-fail);color:#ff8a8f}.ds-btn:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
     },
     {
       "name": "Text Input",
@@ -425,7 +597,7 @@
       "refersTo": "input",
       "description": "标签永远在控件上方,错误紧贴控件下方并优先于提示;占位符 ink-3(ground-2 上 4.52:1)。",
       "html": "<label class=\"ds-field\"><span class=\"ds-field-label\">工作流名称</span><input class=\"ds-input\" type=\"text\" placeholder=\"例如 release-readiness\"><span class=\"ds-field-hint\">发布后此名称出现在执行列表</span></label>",
-      "css": ".ds-field{display:flex;flex-direction:column;gap:.3rem;font-family:var(--font-sans)}.ds-field-label{font-size:.719rem;font-weight:500;line-height:1rem;color:var(--color-ink-1)}.ds-field-hint{font-size:.719rem;line-height:1rem;color:var(--color-ink-2)}.ds-input{width:100%;min-width:0;padding:.3rem .5rem;background:var(--color-ground-2);border:1px solid var(--color-line-2);border-radius:8px;color:var(--color-ink-0);font-family:inherit;font-size:.781rem;line-height:1.125rem;transition:border-color 120ms cubic-bezier(.4,0,.2,1),background-color 120ms cubic-bezier(.4,0,.2,1)}.ds-input::placeholder{color:var(--color-ink-3)}.ds-input:hover{border-color:var(--color-ink-3)}.ds-input:focus{outline:none;border-color:var(--color-accent);background:var(--color-ground-1)}.ds-input:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 70%,transparent);outline-offset:1px}"
+      "css": ".ds-field{display:flex;flex-direction:column;gap:.3rem;font-family:var(--font-sans)}.ds-field-label{font-size:.719rem;font-weight:500;line-height:1rem;color:var(--color-ink-1)}.ds-field-hint{font-size:.719rem;line-height:1rem;color:var(--color-ink-2)}.ds-input{width:100%;min-width:0;padding:.3rem .5rem;background:var(--color-ground-2);border:1px solid var(--color-line-2);border-radius:8px;color:var(--color-ink-0);font-family:inherit;font-size:.813rem;line-height:1.125rem;transition:border-color 120ms cubic-bezier(.4,0,.2,1),background-color 120ms cubic-bezier(.4,0,.2,1)}.ds-input::placeholder{color:var(--color-ink-3)}.ds-input:hover{border-color:var(--color-ink-3)}.ds-input:focus{outline:none;border-color:var(--color-accent);background:var(--color-ground-1)}.ds-input:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 70%,transparent);outline-offset:1px}"
     },
     {
       "name": "Status Chip",
@@ -433,7 +605,7 @@
       "refersTo": "chip-status",
       "description": "色相 + 形状双编码:1px 状态色边框 + 同色 tint 底 + 11px 图标 + 中文标签;词表与 DDL ENUM 一一对应。",
       "html": "<span style=\"display:inline-flex;flex-wrap:wrap;gap:.4rem;align-items:center\"><span class=\"ds-chip\" data-state=\"RUNNING\"><svg width=\"11\" height=\"11\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" aria-hidden=\"true\"><path d=\"M21 12a9 9 0 1 1-6.219-8.56\"/></svg>执行中</span><span class=\"ds-chip\" data-state=\"WAITING_APPROVAL\"><svg width=\"11\" height=\"11\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><polyline points=\"12 6 12 12 16 14\"/></svg>等待审批</span><span class=\"ds-chip\" data-state=\"SUCCEEDED\"><svg width=\"11\" height=\"11\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m9 12 2 2 4-4\"/></svg>已成功</span><span class=\"ds-chip\" data-state=\"FAILED\"><svg width=\"11\" height=\"11\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\"/><path d=\"m15 9-6 6M9 9l6 6\"/></svg>已失败</span><span class=\"ds-chip\" data-state=\"PENDING\"><svg width=\"11\" height=\"11\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.75\" aria-hidden=\"true\"><circle cx=\"12\" cy=\"12\" r=\"10\" stroke-dasharray=\"4 3\"/></svg>待执行</span></span>",
-      "css": ".ds-chip{display:inline-flex;align-items:center;gap:.3rem;height:1.375rem;padding:0 .45rem;border:1px solid;border-radius:999px;font-family:var(--font-sans);font-size:.656rem;font-weight:600;line-height:.875rem;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap;font-variant-numeric:tabular-nums}.ds-chip[data-state='RUNNING'],.ds-chip[data-state='EXECUTING']{color:var(--color-sig-run);border-color:color-mix(in oklab,var(--color-sig-run) 45%,transparent);background:color-mix(in oklab,var(--color-sig-run) 12%,transparent)}.ds-chip[data-state='SUCCEEDED']{color:var(--color-sig-ok);border-color:color-mix(in oklab,var(--color-sig-ok) 45%,transparent);background:color-mix(in oklab,var(--color-sig-ok) 12%,transparent)}.ds-chip[data-state='WAITING_APPROVAL']{color:var(--color-sig-wait);border-color:color-mix(in oklab,var(--color-sig-wait) 50%,transparent);background:color-mix(in oklab,var(--color-sig-wait) 14%,transparent)}.ds-chip[data-state='FAILED'],.ds-chip[data-state='ROLLED_BACK']{color:var(--color-sig-fail);border-color:color-mix(in oklab,var(--color-sig-fail) 45%,transparent);background:color-mix(in oklab,var(--color-sig-fail) 12%,transparent)}.ds-chip[data-state='CANCELLED'],.ds-chip[data-state='SKIPPED']{color:var(--color-sig-stop);border-color:color-mix(in oklab,var(--color-sig-stop) 40%,transparent);background:color-mix(in oklab,var(--color-sig-stop) 10%,transparent)}.ds-chip[data-state='IDLE'],.ds-chip[data-state='PENDING']{color:var(--color-ink-2);border-color:var(--color-line-2);background:color-mix(in oklab,var(--color-sig-idle) 22%,transparent)}"
+      "css": ".ds-chip{display:inline-flex;align-items:center;gap:.3rem;height:1.375rem;padding:0 .45rem;border:1px solid;border-radius:999px;font-family:var(--font-sans);font-size:.656rem;font-weight:600;line-height:.875rem;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap;font-variant-numeric:tabular-nums}.ds-chip[data-state='RUNNING'],.ds-chip[data-state='EXECUTING']{color:var(--color-sig-run);border-color:color-mix(in oklab,var(--color-sig-run) 45%,transparent);background:color-mix(in oklab,var(--color-sig-run) 12%,var(--color-ground-1))}.ds-chip[data-state='SUCCEEDED']{color:var(--color-sig-ok);border-color:color-mix(in oklab,var(--color-sig-ok) 45%,transparent);background:color-mix(in oklab,var(--color-sig-ok) 12%,var(--color-ground-1))}.ds-chip[data-state='WAITING_APPROVAL']{color:var(--color-sig-wait);border-color:color-mix(in oklab,var(--color-sig-wait) 50%,transparent);background:color-mix(in oklab,var(--color-sig-wait) 14%,var(--color-ground-1))}.ds-chip[data-state='FAILED'],.ds-chip[data-state='ROLLED_BACK']{color:var(--color-sig-fail);border-color:color-mix(in oklab,var(--color-sig-fail) 45%,transparent);background:color-mix(in oklab,var(--color-sig-fail) 12%,var(--color-ground-1))}.ds-chip[data-state='CANCELLED'],.ds-chip[data-state='SKIPPED']{color:var(--color-sig-stop);border-color:color-mix(in oklab,var(--color-sig-stop) 40%,transparent);background:color-mix(in oklab,var(--color-sig-stop) 10%,var(--color-ground-1))}.ds-chip[data-state='IDLE'],.ds-chip[data-state='PENDING']{color:var(--color-ink-2);border-color:var(--color-line-2);background:color-mix(in oklab,var(--color-sig-idle) 22%,var(--color-ground-1))}"
     },
     {
       "name": "Metadata Badge",
@@ -449,96 +621,98 @@
       "refersTo": "panel",
       "description": "唯一的容器形态:12px 圆角 + 1px 可见分隔 + 发丝线头部;分节用发丝线 + 微标题,不做卡片套卡片。",
       "html": "<section class=\"ds-panel\"><header class=\"ds-panel-head\"><h2 class=\"ds-panel-title\">执行时间带</h2><span class=\"ds-panel-sub\">9 个节点 · 全程 15h42m</span></header><div class=\"ds-panel-body\">面板正文 16px 内边距。</div></section>",
-      "css": ".ds-panel{background:var(--color-ground-1);border:1px solid var(--color-line-1);border-radius:12px;font-family:var(--font-sans);color:var(--color-ink-1);overflow:hidden}.ds-panel-head{display:flex;align-items:center;gap:.75rem;min-height:2.75rem;padding:.5rem 1rem;border-bottom:1px solid var(--color-line-0)}.ds-panel-title{margin:0;font-size:.938rem;line-height:1.375rem;font-weight:600;color:var(--color-ink-0)}.ds-panel-sub{font-size:.719rem;line-height:1rem;color:var(--color-ink-2);font-variant-numeric:tabular-nums}.ds-panel-body{padding:1rem;font-size:.781rem;line-height:1.125rem;color:var(--color-ink-1)}"
+      "css": ".ds-panel{background:var(--color-ground-1);border:1px solid var(--color-line-1);border-radius:12px;font-family:var(--font-sans);color:var(--color-ink-1);overflow:hidden}.ds-panel-head{display:flex;align-items:center;gap:.75rem;min-height:2.75rem;padding:.5rem 1rem;border-bottom:1px solid var(--color-line-0)}.ds-panel-title{margin:0;font-size:.938rem;line-height:1.375rem;font-weight:600;color:var(--color-ink-0)}.ds-panel-sub{font-size:.719rem;line-height:1rem;color:var(--color-ink-2);font-variant-numeric:tabular-nums}.ds-panel-body{padding:1rem;font-size:.813rem;line-height:1.125rem;color:var(--color-ink-1)}"
     },
     {
       "name": "Nav Tab",
       "kind": "nav",
       "refersTo": "nav-tab",
-      "description": "主域导航：30px 紧凑按钮，当前域用 ground-3/ink-0；路由条只有一个可见h1。局部页签继续使用原tabs词汇。",
-      "html": "<a class=\"shell-tab\" aria-current=\"page\" href=\"/approvals\">审批</a>",
-      "css": ".shell-tab{display:inline-flex;align-items:center;gap:.45rem;height:1.875rem;padding:0 .75rem;border-radius:5px;color:var(--color-ink-2);font-size:var(--text-sm);font-weight:500;text-decoration:none}.shell-tab[aria-current=\"page\"]{color:var(--color-ink-0);background:var(--color-ground-3)}"
+      "description": "左侧主域导航当前项，青绿文字配低亮底。",
+      "html": "<a class=\"ds-nav\" href=\"#workflows\" aria-current=\"page\">工作流</a>",
+      "css": ".ds-nav{display:flex;align-items:center;height:2.375rem;padding:0 .75rem;border-radius:5px;font-family:var(--font-sans);font-size:var(--text-sm);font-weight:500;text-decoration:none;color:var(--color-ink-2)}.ds-nav:hover{color:var(--color-ink-0);background:var(--color-ground-2)}.ds-nav[aria-current=\"page\"]{color:var(--color-accent);background:var(--color-accent-soft)}.ds-nav:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
     },
     {
       "name": "Execution Ribbon Row",
       "kind": "custom",
       "description": "签名动作:每节点一行,横向按真实时间铺开;审批挂起段 135° 斜纹 = 时间在走、资源没占;段长度在共享时间轴上可比。",
       "html": "<div class=\"ds-ribbon\"><div class=\"ds-ribbon-row\"><div class=\"ds-ribbon-label\"><span class=\"ds-chip\" data-state=\"SUCCEEDED\">已成功</span><code class=\"ds-mono\">arch_reviewer</code><span class=\"ds-badge\">LLM</span><span class=\"ds-num\">28s</span></div><div class=\"ds-ribbon-track\"><span class=\"ds-seg\" data-state=\"SUCCEEDED\" style=\"left:0%;width:8%\"></span></div></div><div class=\"ds-ribbon-row\" data-selected=\"true\"><div class=\"ds-ribbon-label\"><span class=\"ds-chip\" data-state=\"WAITING_APPROVAL\">等待审批</span><code class=\"ds-mono\">human_review</code><span class=\"ds-badge\">审批</span><span class=\"ds-num\">15h41m</span></div><div class=\"ds-ribbon-track\"><span class=\"ds-seg\" data-state=\"WAITING_APPROVAL\" style=\"left:8%;width:92%\"></span></div></div><div class=\"ds-ribbon-row\"><div class=\"ds-ribbon-label\"><span class=\"ds-chip\" data-state=\"RUNNING\">执行中</span><code class=\"ds-mono\">judge</code><span class=\"ds-badge\">LLM</span><span class=\"ds-num\">15s</span></div><div class=\"ds-ribbon-track\"><span class=\"ds-seg\" data-state=\"RUNNING\" style=\"left:74%;width:6%\"></span></div></div><div class=\"ds-ribbon-axis\"><time>10-08 17:46:41</time><time>10-09 01:38:10</time><time>10-09 09:29:39</time></div></div>",
-      "css": ".ds-ribbon{display:grid;grid-template-columns:minmax(0,1fr);font-family:var(--font-sans);font-size:.719rem;line-height:1rem;color:var(--color-ink-1)}.ds-ribbon-row{display:grid;grid-template-columns:minmax(12rem,18rem) minmax(0,1fr);border-bottom:1px solid var(--color-line-0)}.ds-ribbon-row:hover{background:color-mix(in oklab,var(--color-ground-2) 70%,transparent)}.ds-ribbon-row[data-selected='true']{background:color-mix(in oklab,var(--color-accent-soft) 55%,transparent)}.ds-ribbon-label{display:flex;align-items:center;gap:.4rem;min-width:0;padding:.32rem .75rem .32rem 0}.ds-ribbon-track{position:relative;min-height:1.75rem}.ds-seg{position:absolute;top:.3rem;bottom:.3rem;min-width:2px;border-radius:3px}.ds-seg[data-state='RUNNING']{background:var(--color-sig-run)}.ds-seg[data-state='SUCCEEDED']{background:var(--color-sig-ok)}.ds-seg[data-state='FAILED']{background:var(--color-sig-fail)}.ds-seg[data-state='CANCELLED']{background:var(--color-sig-stop)}.ds-seg[data-state='WAITING_APPROVAL']{background-image:repeating-linear-gradient(135deg,var(--color-sig-wait) 0 3px,color-mix(in oklab,var(--color-sig-wait) 22%,var(--color-ground-1)) 3px 7px)}.ds-ribbon-axis{display:flex;justify-content:space-between;padding-top:.3rem;border-top:1px solid var(--color-line-1);color:var(--color-ink-2);font-size:.656rem;line-height:.875rem;font-variant-numeric:tabular-nums}.ds-chip{display:inline-flex;align-items:center;gap:.3rem;height:1.375rem;padding:0 .45rem;border:1px solid;border-radius:999px;font-size:.656rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}.ds-chip[data-state='SUCCEEDED']{color:var(--color-sig-ok);border-color:color-mix(in oklab,var(--color-sig-ok) 45%,transparent);background:color-mix(in oklab,var(--color-sig-ok) 12%,transparent)}.ds-chip[data-state='WAITING_APPROVAL']{color:var(--color-sig-wait);border-color:color-mix(in oklab,var(--color-sig-wait) 50%,transparent);background:color-mix(in oklab,var(--color-sig-wait) 14%,transparent)}.ds-chip[data-state='RUNNING']{color:var(--color-sig-run);border-color:color-mix(in oklab,var(--color-sig-run) 45%,transparent);background:color-mix(in oklab,var(--color-sig-run) 12%,transparent)}.ds-badge{display:inline-flex;align-items:center;gap:.3rem;height:1.375rem;padding:0 .45rem;border:1px solid var(--color-line-1);border-radius:999px;background:var(--color-ground-2);color:var(--color-ink-1);font-size:.656rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}.ds-mono{font-family:var(--font-mono);font-size:.94em;letter-spacing:-.01em;color:var(--color-ink-0)}.ds-num{margin-left:auto;color:var(--color-ink-2);font-variant-numeric:tabular-nums;font-feature-settings:'tnum' 1,'zero' 1}"
+      "css": ".ds-ribbon{display:grid;grid-template-columns:minmax(0,1fr);font-family:var(--font-sans);font-size:.719rem;line-height:1rem;color:var(--color-ink-1)}.ds-ribbon-row{display:grid;grid-template-columns:minmax(12rem,18rem) minmax(0,1fr);border-bottom:1px solid var(--color-line-0)}.ds-ribbon-row:hover{background:color-mix(in oklab,var(--color-ground-2) 70%,transparent)}.ds-ribbon-row[data-selected='true']{background:color-mix(in oklab,var(--color-accent-soft) 55%,transparent)}.ds-ribbon-label{display:flex;align-items:center;gap:.4rem;min-width:0;padding:.32rem .75rem .32rem 0}.ds-ribbon-track{position:relative;min-height:1.75rem}.ds-seg{position:absolute;top:.3rem;bottom:.3rem;min-width:2px;border-radius:3px}.ds-seg[data-state='RUNNING']{background:var(--color-sig-run)}.ds-seg[data-state='SUCCEEDED']{background:var(--color-sig-ok)}.ds-seg[data-state='FAILED']{background:var(--color-sig-fail)}.ds-seg[data-state='CANCELLED']{background:var(--color-sig-stop)}.ds-seg[data-state='WAITING_APPROVAL']{background-image:repeating-linear-gradient(135deg,var(--color-sig-wait) 0 3px,color-mix(in oklab,var(--color-sig-wait) 22%,var(--color-ground-1)) 3px 7px)}.ds-ribbon-axis{display:flex;justify-content:space-between;padding-top:.3rem;border-top:1px solid var(--color-line-1);color:var(--color-ink-2);font-size:.656rem;line-height:.875rem;font-variant-numeric:tabular-nums}.ds-chip{display:inline-flex;align-items:center;gap:.3rem;height:1.375rem;padding:0 .45rem;border:1px solid;border-radius:999px;font-size:.656rem;font-weight:600;letter-spacing:.07em;text-transform:uppercase;white-space:nowrap}.ds-chip[data-state='SUCCEEDED']{color:var(--color-sig-ok);border-color:color-mix(in oklab,var(--color-sig-ok) 45%,transparent);background:color-mix(in oklab,var(--color-sig-ok) 12%,var(--color-ground-1))}.ds-chip[data-state='WAITING_APPROVAL']{color:var(--color-sig-wait);border-color:color-mix(in oklab,var(--color-sig-wait) 50%,transparent);background:color-mix(in oklab,var(--color-sig-wait) 14%,var(--color-ground-1))}.ds-chip[data-state='RUNNING']{color:var(--color-sig-run);border-color:color-mix(in oklab,var(--color-sig-run) 45%,transparent);background:color-mix(in oklab,var(--color-sig-run) 12%,var(--color-ground-1))}.ds-badge{display:inline-flex;align-items:center;gap:.3rem;height:1.375rem;padding:0 .45rem;border:1px solid var(--color-line-1);border-radius:999px;background:var(--color-ground-2);color:var(--color-ink-1);font-size:.656rem;font-weight:600;letter-spacing:.06em;text-transform:uppercase;white-space:nowrap}.ds-mono{font-family:var(--font-mono);font-size:.94em;letter-spacing:-.01em;color:var(--color-ink-0)}.ds-num{margin-left:auto;color:var(--color-ink-2);font-variant-numeric:tabular-nums;font-feature-settings:'tnum' 1,'zero' 1}"
     },
     {
       "name": "Theme Segment",
-      "kind": "segmented-control",
-      "refersTo": "theme-control",
-      "description": "主题三态偏好(auto/light/dark):三颗等宽图标按钮,选中走 ground-4;落点只有 <html data-theme>,偏好存 localStorage。",
-      "html": "<div class=\"seg\" role=\"group\" aria-label=\"主题\"><button class=\"seg-item\" aria-pressed=\"false\">auto</button><button class=\"seg-item\" aria-pressed=\"true\">dark</button></div>",
-      "css": ".seg{display:inline-flex;gap:2px;padding:2px;background:var(--color-ground-2);border:1px solid var(--color-line-0);border-radius:var(--radius-control)}.seg-item{width:1.5rem;height:1.375rem;border:0;border-radius:calc(var(--radius-control)*.6);background:transparent;color:var(--color-ink-2)}.seg-item:hover{background:var(--color-ground-3);color:var(--color-ink-0)}.seg-item[aria-pressed='true']{background:var(--color-ground-4);color:var(--color-ink-0)}"
+      "kind": "custom",
+      "description": "默认深色，auto/light/dark 三态偏好；示例展示样式，实际偏好由 ThemeControl 保存。",
+      "html": "<div class=\"ds-seg\" role=\"group\" aria-label=\"主题\"><button class=\"ds-seg-item\" aria-pressed=\"false\">auto</button><button class=\"ds-seg-item\" aria-pressed=\"false\">light</button><button class=\"ds-seg-item\" aria-pressed=\"true\">dark</button></div>",
+      "css": ".ds-seg{display:inline-flex;gap:2px;padding:2px;background:var(--color-ground-2);border:1px solid var(--color-line-0);border-radius:var(--radius-control)}.ds-seg-item{width:1.5rem;height:1.375rem;border:0;border-radius:calc(var(--radius-control)*.6);background:transparent;color:var(--color-ink-2)}.ds-seg-item:hover{background:var(--color-ground-3);color:var(--color-ink-0)}.ds-seg-item[aria-pressed='true']{background:var(--color-ground-4);color:var(--color-ink-0)}.ds-seg-item:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
     },
     {
-      "name": "Collapsed Panel Rail",
-      "kind": "panel",
-      "refersTo": "side-rail",
-      "description": "折叠后的面板窄栏(工作流面左栏):2rem 宽 + 展开键,画布不贴边;折叠态存 localStorage。",
-      "html": "<div class=\"side-rail\"><button class=\"btn btn-quiet btn-sm btn-icon\" aria-label=\"展开工作流列表\">▸</button></div>",
-      "css": ".side-rail{display:flex;flex:none;align-items:flex-start;justify-content:center;width:2rem;padding-top:.5rem;border-right:1px solid var(--color-line-1);background:var(--color-ground-1)}"
+      "name": "Section Tab",
+      "kind": "custom",
+      "description": "审批与执行同页标签的视觉样例；实际方向键和面板切换由 SectionTabs 提供。",
+      "html": "<button class=\"ds-section-tab\" type=\"button\" role=\"tab\" aria-selected=\"true\">审批内容</button>",
+      "css": ".ds-section-tab{min-height:2.75rem;border:0;border-bottom:2px solid transparent;background:transparent;color:var(--color-ink-2);font-family:var(--font-sans);font-size:var(--text-sm);cursor:pointer}.ds-section-tab[aria-selected=\"true\"]{color:var(--color-accent);border-bottom-color:var(--color-accent)}.ds-section-tab:hover{color:var(--color-ink-0)}.ds-section-tab:focus-visible{outline:2px solid color-mix(in oklab,var(--color-accent) 85%,transparent);outline-offset:1px}"
     }
   ],
   "narrative": {
     "northStar": "分面取长，运营面安静而紧凑",
-    "overview": "D-2026-10-15-console-references：UX-F1-a 的壳层/导航/审批采用 Linear 中性近黑、1px 细线与紧凑行；画布、执行总览、执行列表分别由其他子票持有。双主题、键盘流、token 载体与安全契约保留。",
+    "overview": "2026-11-05 用户批准的 B 风格布局 v2 延续密集、可读的控制台，改用更柔和的近黑地面与青绿动作。主导航、工作流列表、属性栏、执行列表、证据区与审批处理栏按各自任务收展，让正在阅读或编辑的内容取得主要空间。用户明确选择的主题与折叠偏好优先。\n\n三个角色（author 编排、approver 审批、operator 值班）共用桌面工作区，长时间驻留与夜间值班要求清楚的文字层级、细线分组、可见焦点与状态双编码。状态色、动作色和节点类型色分别有语义，不能仅凭相近色相判断业务状态。\n\n本档由当前 `web/canvas/src/styles/` 与相关 TSX 提取。视觉依据是 `.impeccable/mocks/20261105/layout-v2/` 的 `workflow.png`、`execution.png`、`approval-content.png`、`approval-history.png`；图中的样例文字、数据和流程不构成业务契约。这里记录已实现结构，不代表前后端联调、浏览器验收或用户最终验收已通过。旧 UX-F1-a / T21.3 测量仅属于原版本，不能证明本次 token 与布局。",
     "keyCharacteristics": [
-      "四段亮度台阶(ground-0…ground-4)+ 三档发丝线(line-0/1/2)承担全部层级;零发光、零投影。",
-      "六态状态色相只做状态,每个状态同时有图标形状与中文标签。",
-      "自托管 Geist / Geist Mono 承担拉丁与数字面;CJK 由系统字体栈回落(用户拍板的有意取舍)。",
-      "一切 ID、计数、时长、时间戳走 tabular numerals;时间同时给相对与绝对两面。",
-      "签名动作 = 执行时间带:审批挂起段用 135° 斜纹——等待是有长度、有纹理的时刻,不是转圈。",
-      "两套世界、一条验收线:深色(默认)/浅色(日间形态)各持一套 token 值,正文 ≥4.5:1、非文本图形 ≥3:1 按**最不利地面**实测;切主题 = 换一套值,组件层零分支( `<html data-theme>` 承载 auto/light/dark)。",
-      "组件层只有一套语言:14 个基础原语自研;shadcn/ui 只进 8 个复合交互组件,Select/Checkbox 是「自研外壳 + shadcn 底层」的单点收敛,registry 自带外观由适配 CSS 收回自研词汇。"
+      "五级近黑地面与三档细线承担层级，不使用装饰性光晕。",
+      "青绿标识主动作、焦点与当前所在；状态继续配中文标签与图标形状。",
+      "工作流以宽画布为主，添加节点与属性按需展开。",
+      "执行详情上方是定义版本图，下方是可收起的证据标签区。",
+      "审批内容与审批记录同页互斥切换，处理栏可以收起。",
+      "自托管 Geist / Geist Mono、系统 CJK 回退与等宽数字保持既有阅读习惯。"
     ],
     "rules": [
       {
-        "name": "The Hue-Is-State Rule / 色相即状态",
-        "body": "六态色相只允许出现在状态本身与由状态派生的图形上(状态芯片、时间带段、节点卡描边、告警边框、脉冲圆点)。悬停、按下、选中、禁用一律走亮度台阶与发丝线,永不借状态色相。",
+        "name": "The Semantic-Color Rule / 色彩分工",
+        "body": "青绿交互 token 表达可操作与当前所在；`sig-*` 表达真实状态；画布类型色表达节点类型。即使色相相近，也必须用标签、图标与上下文区分。",
         "section": "colors"
       },
       {
-        "name": "The Focus-Hue Rule / 焦点色独占",
-        "body": "accent 蓝只做\"焦点、当前所在、可交互线索\";它一旦出现在状态芯片或时间带段上就是错误,反之状态色相也不得用来画焦点环。",
+        "name": "The One-Line-Two-Worlds Rule / 同一语义 token，两套主题",
+        "body": "颜色先在默认深色 `@theme` 定义，浅色只覆盖同名 token；组件不另建主题色板。无明确偏好时所有路由默认深色，用户选择 auto / light / dark 后全局沿用。",
         "section": "colors"
       },
       {
         "name": "The Measured-Grade Rule / 定档规则",
-        "body": "每档都按它真正落地的**最不利地面**定档(正文 ≥4.5:1、非文本图形 ≥3:1)，不留\"看起来更安静\"的欠对比档。T21.3 起两套世界各跑一遍，且两个脚本都是门(欠档即 exit 1)：契约面 .impeccable/contrast.mjs(15 对在册全过 + 1 对禁用态登记豁免)、渲染面 .impeccable/contrast-render.mjs(浏览器实测，背景按 1×1 canvas 真实合成；描边的内、外邻接都入样)。实测最紧：正文 深色 4.85:1 / 浅色 5.49:1，欠档 0；交互描边 line-2 内外最紧 深色 3.25 / 浅色 3.01。",
+        "body": "正文与占位文本要求至少 4.5:1，非文本必要图形至少 3:1；按实际最不利地面、状态底与焦点合成测量。token 对与真实浏览器分别验证；本次尚不能引用旧版本测量宣称通过。",
+        "section": "colors"
+      },
+      {
+        "name": "The Chip-Background-Is-Opaque Rule / 芯片底色不透明",
+        "body": "状态芯片用同色相混合不透明 `ground-1` 作底，防止标签对比度随所在行变化。",
         "section": "colors"
       },
       {
         "name": "The Two-Face Rule / 两面分工",
-        "body": "展示声音永远是自托管的 Geist;系统面只承担自托管文件里没有的 CJK 字形。CJK 不嵌字体是用户 2026-10-09 的拍板,不是遗漏:中文字体动辄 3–10MB 不进包,font-src 'self' 是 CSP 的唯一放宽项。代价是中文灰度由操作系统决定,这是接受的取舍——不要用\"补一个中文字体\"来\"修复\"它。",
+        "body": "展示声音永远是自托管的 Geist;系统面只承担自托管文件里没有的 CJK 字形。CJK 策略是用户 2026-10-09 的拍板(D-2026-10-09-ui-console 决策 5),不是遗漏:中文字体动辄 3–10MB 不进包,`font-src 'self'` 是 CSP 的唯一放宽项。代价是中文灰度由操作系统决定(macOS PingFang SC 与 Windows 微软雅黑略有差异),这是接受的取舍——不要用\"补一个中文字体\"来\"修复\"它,那会推翻用户决策并把 dist 从 ~137KB 推到数 MB。",
         "section": "typography"
       },
       {
         "name": "The Tabular Rule / 数字必等宽",
-        "body": "ID、计数、时长、时间戳、表格数字一律 font-variant-numeric: tabular-nums + font-feature-settings: 'tnum' 1, 'zero' 1。时间是一等公民:相对时长与绝对时刻同时在位。",
+        "body": "ID、计数、时长、时间戳、表格数字一律 `font-variant-numeric: tabular-nums` + `font-feature-settings: 'tnum' 1, 'zero' 1`(`.num`、`td.num`、`time`、`code`、`kbd`、`samp` 全部继承)。时间是一等公民:相对时长(`3m12s 前`)与绝对时刻(`2026-10-09 09:29:39`)同时在位。",
         "section": "typography"
       },
       {
         "name": "The Mono-Is-Machine-Readable Rule / 等宽只给机读",
-        "body": "Geist Mono 只给代码、JSON/DSL、node_id/trace_id 这类机读标识。数字对齐用 tabular numerals,不用等宽字体假扮\"技术感\"。",
+        "body": "Geist Mono 只给代码、JSON/DSL、`node_id`/`trace_id` 这类机读标识。数字对齐用 tabular numerals,不用等宽字体假扮\"技术感\"。",
         "section": "typography"
       },
       {
-        "name": "The No-Layout-Jump Rule / 布局不动",
-        "body": "悬停、选中、加载、错误都不改变主要列宽与面板位置;控制台不该边看边晃。",
+        "name": "The Deliberate-Disclosure Rule / 主动收展",
+        "body": "布局变化来自明确的展开、收起或选择动作；悬停、加载与错误不应无故挤动画布或阅读区。所有被收起的区域都有可见恢复入口。",
         "section": "layout"
       },
       {
         "name": "The Axis-Only-When-There-Is-Time Rule / 无时间不画轴",
-        "body": "执行还没开始(没有任何 started_at)时,时间带只给空轨与状态芯片,不画坐标轴、不编时间;PENDING 节点不画段。",
+        "body": "执行未开始且没有 `started_at` 时只给空轨与状态，不编时间；`PENDING` 不画时间段。",
         "section": "layout"
       },
       {
         "name": "The Zero-Glow Rule / 零发光零投影",
-        "body": "表面上不出现 box-shadow,也不出现发光(halo/glow/模糊光晕)。层级不够就调亮度台阶,分隔不够就加发丝线。",
+        "body": "表面上不出现 `box-shadow`,也不出现发光(halo/glow/模糊光晕)。层级不够就调亮度台阶,分隔不够就加发丝线。",
         "section": "elevation"
       },
       {
@@ -558,61 +732,48 @@
       },
       {
         "name": "The No-Invented-State Rule / 不发明状态",
-        "body": "状态色相只在有真实状态注入时出现;编辑面在没有 status 时不显示任何状态色,状态词表只认与 DDL ENUM 对应的那些值。",
+        "body": "状态色相只在有真实状态注入时出现;编辑面在没有 `status` 时不显示任何状态色,状态词表只认与 DDL ENUM 对应的那些值。",
         "section": "components"
       },
       {
         "name": "The One-Authored-Moment Rule / 只编排一次入场",
-        "body": "全站唯一被编排过的入场是时间带段的展开(320ms cubic-bezier(0.16, 1, 0.3, 1),scaleX 0.35→1 + 透明度);其余动效只有 120ms 的状态过渡与 1.4s 的骨架扫掠。不做逐区块入场。时长目前是实现里的字面量,尚未抽成 token。",
-        "section": "components"
-      },
-      {
-        "name": "The One-Line-Two-Worlds Rule / 一套线两套世界",
-        "body": "任何颜色 token 必须先在默认(深色)`@theme` 有值,浅色档只做覆盖;只活在浅色档的 token = 默认世界直接落空(T21.3 真踩过:primary-action / primary-ink / sig-fail-hi)。src/theme.test.ts 有锚。",
-        "section": "colors"
-      },
-      {
-        "name": "The Chip-Background-Is-Opaque Rule / 芯片底色不透明",
-        "body": "状态芯片底 = 同色相 10–14% 不透明盖 ground-1,不是半透明落在所在行上:半透明会让标签对比度随行状态漂移(实测选中行上浅色 3.2–4.0:1、深色 FAILED 3.88:1);改不透明后最紧 4.80 / 5.48。",
-        "section": "components"
-      },
-      {
-        "name": "The Theme-Is-Attribute Rule / 主题只落一个属性",
-        "body": "主题三态(auto/light/dark)只写 `<html data-theme>`,auto 由 CSS 媒体查询解析;组件不读主题、不分支。偏好走 localStorage(braid.theme),首绘前由同源外部启动脚本 assets/theme-boot.js 落定(内联脚本被 CSP script-src self 拦)。",
+        "body": "全站唯一被编排过的入场是时间带段的展开(320ms `cubic-bezier(0.16, 1, 0.3, 1)`,`scaleX 0.35→1` + 透明度);其余动效只有 120ms 的状态过渡与 1.4s 的骨架扫掠。不做逐区块入场。时长目前是实现里的字面量,尚未抽成 token。",
         "section": "components"
       }
     ],
     "dos": [
       "Do 先问\"现在是什么状态、卡了多久、下一步谁动\",再决定画什么。",
-      "Do 用亮度表达交互:主操作 = 亮底深字(ink-0 底 + ground-0 字),悬停/按下/选中走 ground-2→ground-4。",
-      "Do 每个状态同时给色相与形状(11px 图标 + 中文标签),WAITING_APPROVAL 给最暖的琥珀。",
+      "Do 用语义 token 表达交互：深色主动作使用青绿实体，普通悬停/按下使用中性地面，保留清楚的焦点与选中标识。",
+      "Do 每个状态同时给色相与形状(11px 图标 + 中文标签),`WAITING_APPROVAL` 给最暖的琥珀。",
       "Do 让等待有长度:挂起段按真实时间铺开并给「挂起 X · 未占 worker」。",
       "Do 所有数字等宽(tabular numerals),时间同时给相对与绝对两面。",
-      "Do 守住两档圆角(8px 控件 / 12px 面板)与 4px 基步节奏;表格行 7.2px 12px、面板正文 16px。",
-      "Do 把浏览器自带表面主题化:选区、caret、滚动条、焦点环、下划线偏移、color-scheme: dark。",
-      "Do 用发丝线分组(结构 line-0 / 分隔 line-1 / 交互描边 line-2),分节用\"发丝线 + 微标题\"。",
-      "Do 图标统一 1.75 笔画、默认 14px、aria-hidden,语义交给相邻文字或 aria-label。",
-      "Do 尊重 prefers-reduced-motion,并且贴边层用不透明地面色而不是投影。",
-      "Do 主题只落 data-theme 一个属性:组件不读主题,切主题 = 换一套 token 值;偏好 localStorage 与认证 token 的 sessionStorage 分离。",
-      "Do 状态芯片底色不透明:标签对比度不能随所在行变化。"
+      "Do 守住两档圆角(8px 控件 / 12px 面板)与 4px 基步节奏;表格行 `7.2px 12px`、面板正文 16px。",
+      "Do 把浏览器自带表面主题化:选区、caret、滚动条、焦点环、下划线偏移、`color-scheme: dark`。",
+      "Do 用发丝线分组(结构 `line-0` / 分隔 `line-1` / 交互描边 `line-2`),分节用\"发丝线 + 微标题\"。",
+      "Do 图标统一 1.75 笔画、默认 14px、`aria-hidden`,语义交给相邻文字或 `aria-label`。",
+      "Do 尊重 `prefers-reduced-motion`,并且贴边层用不透明地面色而不是投影。",
+      "Do 主题只落 `data-theme` 一个属性:组件不读主题、不分支,切主题 = 换一套 token 值;偏好走 `localStorage`,首绘前由同源外部启动脚本落定。",
+      "Do 把跨会话 UI 偏好(主题三态、区域折叠)放 `localStorage`,认证 token 留 `sessionStorage`——两种载体分离,互不引用。",
+      "Do 状态芯片底色不透明:标签对比度不能随所在行/悬停状态变化。"
     ],
     "donts": [
-      "Don't 用投影或发光。本世界零 box-shadow;投影只留给真正浮起的层,而 T21.1 没有任何一层用到。",
-      "Don't 把状态色相当交互色或装饰色,也别让 accent 蓝表达状态(色相只做状态,交互靠亮度)。",
+      "Don't 用投影或发光。本世界零 `box-shadow`;投影只留给真正浮起的层,而 T21.1 没有任何一层用到。",
+      "Don't 把青绿动作、执行状态和画布类型混为同一语义；状态必须来自真实数据并配文字与形状。",
       "Don't 只靠色相编码状态——色盲可达是产品硬约束,色相必须配形状。",
       "Don't 卡片套卡片:面板内用发丝线 + 微标题分节,不做描边小卡片;也不做同尺寸\"图标 + 标题 + 文字\"卡片阵列当页面结构。",
-      "Don't 用彩色 border-left/border-right(>1px)当选中态或强调;选中 = 亮度台阶 + 1px 偏移环。",
+      "Don't 用彩色 `border-left`/`border-right`(>1px)当选中态或强调;选中 = 亮度台阶 + 1px 偏移环。",
       "Don't 用渐变文字或玻璃拟态/装饰性模糊;强调靠字重与字号。",
       "Don't 拿 emoji 或 Unicode 字形当图标;图标一律是 lucide-react 的内联 SVG。",
       "Don't 把等宽字体当\"技术感\"装饰(只给代码、机读标识、JSON/DSL)。",
       "Don't 用系统字体当拉丁展示声音;也不要为了\"统一\"把 CJK 塞进自托管字体(推翻用户决策,且体积不划算)。",
-      "Don't 发明 DSL 里没有的执行状态:编辑面在没有 status 注入时不显示状态色,状态词表不扩写。",
-      "Don't 在时间数据不存在时画时间:无 started_at 不画坐标轴,PENDING 节点不画段。",
+      "Don't 发明 DSL 里没有的执行状态:编辑面在没有 `status` 注入时不显示状态色,状态词表不扩写。",
+      "Don't 在时间数据不存在时画时间:无 `started_at` 不画坐标轴,`PENDING` 节点不画段。",
       "Don't 用进度条、进度环或 sparkline 表达执行进度——DSL 里没有\"完成百分比\",时间带的长度就是进度信息。",
       "Don't 给标题加 kicker/eyebrow;微标签只做字段名、列名、分节名,不许出现在标题上方。",
-      "Don't 把浅色做成第二套视觉语言:浅色是同一世界的日间形态(同一批 token 键、同一套类词汇、同一批色相),深色仍是默认世界。",
-      "Don't 在组件层引第二套语言:shadcn 只到 8 个复合交互组件;基础原语与 Select/Checkbox 外壳保持自研,registry 自带外观 utility 必须被适配 CSS 收回。",
-      "Don't 用半透明底承载状态标签:对比度会随所在行漂移。"
+      "Don't 把浅色做成第二套视觉语言:浅色是同一世界的日间形态(同一批 token 键、同一套类词汇、同一批色相),不是新主题;全部路由无偏好时默认深色，用户明确选择后全局沿用。",
+      "Don't 在组件层引第二套语言:shadcn 只到 8 个复合交互组件,基础原语与 Select/Checkbox 外壳保持自研;registry 自带的外观 utility 必须被适配层收回(`styles/index.css` 末节),不许两套并存。",
+      "Don't 用半透明底承载状态标签:对比度会随所在行漂移(T21.3 实测曾掉到 3.2:1)。",
+      "Don't 做移动端布局:桌面优先,窄窗只保证不横向溢出。"
     ]
   }
 }

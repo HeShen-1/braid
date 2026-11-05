@@ -504,7 +504,8 @@ go test ./internal/reaper -run 'FlushKillMidDrain' -v -count=1
 | [docs/examples/](docs/examples/) | 端到端示例:DSL、样例输入、走链文档、审计事件序表 |
 | [deploy/README.md](deploy/README.md) | 部署配额与容量:连接池公式、Redis 契约、保留期、账号授权矩阵 |
 | [deploy/.env.example](deploy/.env.example) | env 键语义索引(逐键注释；生产实际透传键以 Compose/Helm 模板为准) |
-| [docs/ROADMAP.md](docs/ROADMAP.md) | 任务定义与依赖真源；当前 P4 M21/M22/M23，执行状态查 [GitHub issues](https://github.com/HeShen-1/braid/issues) |
+| [docs/P4-DELIVERY.md](docs/P4-DELIVERY.md) | P4 工程收官、验证边界与后续布局任务 |
+| [docs/ROADMAP.md](docs/ROADMAP.md) | 任务定义与依赖真源；P4 M21/M22/M23 与 M24 布局重设计，执行状态查 [GitHub issues](https://github.com/HeShen-1/braid/issues) |
 | [docs/ROADMAP-P2.md](docs/ROADMAP-P2.md) | P2 交付归档(M15-M17 + P2-DELIVERY) |
 | [docs/ROADMAP-P1.md](docs/ROADMAP-P1.md) | P1 交付归档(18 任务注记 + P1-DELIVERY) |
 | [docs/ROADMAP-P0.md](docs/ROADMAP-P0.md) | P0 交付归档(38 任务全量注记) |

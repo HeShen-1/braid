@@ -23,6 +23,7 @@ test('画布节点删除:文字入口 + 确认层;Delete/Backspace 同路;取消
   await expect(page.getByTestId(TID.editor)).toBeVisible()
   // 空画布尚无选中节点,删除入口不虚设。
   await expect(page.getByTestId(TID.nodeDelete)).toHaveCount(0)
+  if (!await page.locator('.editor-palette').evaluate((el) => (el as HTMLDetailsElement).open)) await page.getByText('添加节点', { exact: true }).click()
   await page.getByTestId(tid.paletteBtn('branch')).click()
   const branchCard = page.getByTestId(tid.nodeCard('branch'))
   await expect(branchCard).toBeVisible()
@@ -57,6 +58,7 @@ test('画布节点删除:文字入口 + 确认层;Delete/Backspace 同路;取消
   await expect(page.getByTestId(TID.editorJson)).not.toContainText('"branch"')
 
   // ⑥ 键盘 Delete 走同一条漏斗:先布防(Esc 收起后焦点回入口按钮),再确认才删
+  if (!await page.locator('.editor-palette').evaluate((el) => (el as HTMLDetailsElement).open)) await page.getByText('添加节点', { exact: true }).click()
   await page.getByTestId(tid.paletteBtn('llm')).click()
   const llmCard = page.getByTestId(tid.nodeCard('llm'))
   await expect(llmCard).toBeVisible()

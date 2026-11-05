@@ -83,6 +83,7 @@ test('所选版本固定:另端发布新版与列表刷新后仍执行原版;归
   const before = await request.get(`/api/v1/executions?name=${doc.name}`, { headers })
   expect(before.ok()).toBe(true)
   const beforeIds = (await before.json() as { items: { id: string }[] }).items.map((item) => item.id)
+  await page.getByRole('button', { name: '返回执行列表', exact: true }).click()
   const refused = page.waitForResponse((res) => res.request().method() === 'POST' && new URL(res.url()).pathname === '/api/v1/executions')
   await page.getByTestId(TID.triggerSubmit).click()
   const rejection = await refused

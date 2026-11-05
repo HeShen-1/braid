@@ -13,7 +13,7 @@
 // tid.nodeRow(id, inst) 测试锚,与时间带的行锚重名(e2e/测试立刻变 multiple);
 // 实例级细节本来也是时间带的职责。未传 instanceNo ⇒ 图上用 tid.nodeCard(id)。
 import { useEffect, useId, useMemo, useState } from 'react'
-import { ReactFlow } from '@xyflow/react'
+import { Background, Controls, ReactFlow, useNodesInitialized, useNodesState, useReactFlow, useStore, type Node } from '@xyflow/react'
 import { ChevronDown, ChevronUp, TriangleAlert } from 'lucide-react'
 import { ApiError, api } from './api.ts'
 import { toCanvas } from './model/convert.ts'
@@ -27,14 +27,16 @@ export function DefinitionGraph({
   version,
   statuses,
   onAuthExpired,
+  defaultOpen = false,
 }: {
+  defaultOpen?: boolean
   name: string
   version: number
   /** 节点 id → 当前执行的聚合状态;缺省 = 该节点这次没有执行行(图上不显示状态)。 */
   statuses: Record<string, string>
   onAuthExpired: () => void
 }) {
-  const [open, setOpen] = useState(false)
+  const [open, setOpen] = useState(defaultOpen)
   const [doc, setDoc] = useState<WorkflowDoc | null>(null)
   const [error, setError] = useState('')
   const [attempt, setAttempt] = useState(0)
@@ -79,16 +81,22 @@ export function DefinitionGraph({
   }, [doc])
 
   // 只读:位置来自定义版本(或自动布局),交互位全部关掉。
-  const flowNodes = (flow?.nodes ?? []).map((n) => ({
-    id: n.id,
-    type: n.type,
-    position: n.position,
-    data: { spec: n.data.spec, status: statuses[n.id] },
-    draggable: false,
-    connectable: false,
-    selectable: false,
-    focusable: false,
-  }))
+  // 受控节点必须接收尺寸变更，否则 nodesInitialized 不会在测量后稳定为 true。
+  // 状态轮询仅更新 data，保留已测尺寸以支持后续缩窗适配。
+  const [flowNodes, setFlowNodes, onNodesChange] = useNodesState<Node>([])
+  useEffect(() => {
+    setFlowNodes((previous) => (flow?.nodes ?? []).map((n) => ({
+      id: n.id,
+      type: n.type,
+      position: n.position,
+      measured: previous.find((node) => node.id === n.id)?.measured,
+      data: { spec: n.data.spec, status: statuses[n.id] },
+      draggable: false,
+      connectable: false,
+      selectable: false,
+      focusable: false,
+    })))
+  }, [flow, statuses, setFlowNodes])
   const flowEdges = (flow?.edges ?? []).map((e) => ({ ...e, selectable: false, focusable: false }))
 
   const counts = flow !== null ? ` · ${flow.nodes.length} 节点 · ${flow.edges.length} 边` : ''
@@ -140,6 +148,7 @@ export function DefinitionGraph({
               <div className="exec-graph-canvas">
                 <ReactFlow
                   nodes={flowNodes}
+                  onNodesChange={onNodesChange}
                   edges={flowEdges}
                   nodeTypes={nodeTypes}
                   fitView
@@ -155,7 +164,7 @@ export function DefinitionGraph({
                   preventScrolling={false}
                   minZoom={0.2}
                   maxZoom={1}
-                />
+                ><FitDefinition /><Background gap={22} size={1} color="var(--color-line-1)" /><Controls showInteractive={false} /></ReactFlow>
               </div>
             ) : null}
             {doc !== null && flow === null ? (
@@ -166,4 +175,16 @@ export function DefinitionGraph({
       </div>
     </section>
   )
+}
+
+/** 只读版本图随容器变化重新适配；编辑器的作者视口不受此规则影响。 */
+function FitDefinition() {
+  const initialized = useNodesInitialized()
+  const width = useStore((state) => state.width)
+  const height = useStore((state) => state.height)
+  const { fitView } = useReactFlow()
+  useEffect(() => {
+    if (initialized && width > 0 && height > 0) void fitView({ padding: 0.15, maxZoom: 1 })
+  }, [initialized, width, height, fitView])
+  return null
 }

@@ -10,6 +10,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Activity, Check, FilterX, Inbox, Play, RefreshCw, TriangleAlert, X } from 'lucide-react'
 import { ApiError, api, type DraftSummary, type ExecutionSummary } from './api.ts'
+import { EXEC_LIST_KEY, useCollapsed } from './prefs.ts'
 import { ExecutionDetail } from './ExecutionDetail.tsx'
 import { ExecutionOverview } from './ExecutionOverview.tsx'
 import { Select, TextArea, TextInput } from './ui/field.tsx'
@@ -226,12 +227,14 @@ export function ExecutionsView({
     }
   }, [canManage, selectedDef, inputRaw, busy, contractReady, currentContract, refresh, onSelect, onAuthExpired])
 
+  const [listCollapsed, setListCollapsed] = useCollapsed(EXEC_LIST_KEY)
   const showPager = execs.length > 0 && (total > PAGE_SIZE || offset > 0)
 
   return (
-    <div className="exec-view" data-detail={selectedId !== null}>
+    <div className="exec-view" data-detail={selectedId !== null} data-list-collapsed={listCollapsed}>
+      {selectedId !== null ? <div className="exec-list-toggle"><Button size="sm" variant="quiet" aria-expanded={!listCollapsed} aria-controls="execution-list-sidebar" onClick={() => setListCollapsed(!listCollapsed)}>{listCollapsed ? '展开执行列表' : '收起执行列表'}</Button></div> : null}
       {selectedId === null ? <ExecutionOverview onAuthExpired={onAuthExpired} /> : null}
-      <aside className="exec-rail" aria-label="执行列表与触发">
+      <aside id="execution-list-sidebar" hidden={selectedId !== null && listCollapsed} className="exec-rail" aria-label="执行列表与触发">
         <section className="exec-list" aria-label="执行列表" aria-busy={listLoading}>
           <PanelHead
             title="执行记录"
@@ -247,7 +250,7 @@ export function ExecutionsView({
               >刷新</Button>
             }
           />
-          <div className="exec-status-tabs" role="tablist" aria-label="执行状态视图">
+          {selectedId === null ? <div className="exec-status-tabs" role="tablist" aria-label="执行状态视图">
             {STATUS_OPTIONS.map((option, index) => (
               <button
                 key={option.value}
@@ -272,7 +275,7 @@ export function ExecutionsView({
                 }}
               >{option.label}</button>
             ))}
-          </div>
+          </div> : <div className="exec-context-filter"><Select label="执行状态" value={status} onChange={(value) => changeFilter(() => setStatus(value))}>{STATUS_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</Select></div>}
           <div className="exec-filters">
               <TextInput
                 label="按名称"
@@ -288,7 +291,7 @@ export function ExecutionsView({
                 </Button>
               ) : null}
           </div>
-          <div id="exec-list-results" role="tabpanel" aria-labelledby={`exec-status-${status || 'all'}`}>
+          <div id="exec-list-results" role={selectedId === null ? 'tabpanel' : 'region'} aria-label={selectedId === null ? undefined : '执行筛选结果'} aria-labelledby={selectedId === null ? `exec-status-${status || 'all'}` : undefined}>
           {listLoading ? <p className="panel-body text-sm text-ink-2" role="status">正在加载执行列表…</p> : listError !== '' ? (
             <Alert tone="error" icon={TriangleAlert}>
               <div><strong>执行列表读取失败</strong><p>{listError}</p><Button size="sm" onClick={() => void refresh()}>重试执行列表</Button></div>

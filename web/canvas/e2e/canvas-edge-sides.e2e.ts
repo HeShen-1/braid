@@ -42,7 +42,7 @@ async function collapsePanels(page: Page) {
   const left = page.getByTestId(TID.panelLeftToggle)
   if (await left.getAttribute('aria-label') === '收起工作流列表') await left.click()
   const right = page.getByTestId(TID.panelRightToggle)
-  if (await right.getAttribute('aria-pressed') === 'true') await right.click()
+  if (await right.getAttribute('aria-expanded') === 'true') await right.click()
 }
 
 function handleSelector(endpoint: Endpoint, kind: 'source' | 'target'): string {
@@ -259,6 +259,7 @@ async function reopen(page: Page, id: string, expected: WorkflowDoc): Promise<Pa
 
 async function createTool(page: Page, title: string): Promise<string> {
   const before = await canvasDoc(page)
+  if (!await page.locator('.editor-palette').evaluate((el) => (el as HTMLDetailsElement).open)) await page.getByText('添加节点', { exact: true }).click()
   await page.getByTestId(tid.paletteBtn('tool')).click()
   await expect(page.locator('.react-flow__node')).toHaveCount(before.nodes.length + 1)
   const added = (await canvasDoc(page)).nodes.filter((node) => !before.nodes.some((old) => old.id === node.id))

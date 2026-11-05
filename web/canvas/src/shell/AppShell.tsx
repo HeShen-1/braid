@@ -1,11 +1,10 @@
-// 壳:一条顶栏承载三件事——身份、域导航、系统脉冲。
-// 脉冲条是色相在壳层里唯一的工作:执行中 / 等待审批 / 失败 三个计数,
-// 其中"等待审批"是 braid 的核心运营数字(挂起不占 worker,但人在等)。
-import { useEffect, useState, type ReactNode } from 'react'
+// 共享工作区壳：可折叠导航、紧凑路由栏、身份与真实运行脉冲。
+import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { NavLink, useLocation } from 'react-router'
-import { Activity, LogOut, Stamp, Workflow } from 'lucide-react'
+import { Activity, LogOut, PanelLeftClose, PanelLeftOpen, Stamp, Workflow } from 'lucide-react'
 import { ApiError, api } from '../api.ts'
 import { useAuth } from '../auth.tsx'
+import { NAV_KEY, useCollapsed } from '../prefs.ts'
 import { I } from '../ui/I.tsx'
 import { TID } from '../ui/testids.ts'
 import { Wordmark } from './BrandMark.tsx'
@@ -81,6 +80,16 @@ function PulseStat({ tone, value, label }: { tone: string; value: number | undef
 const navClass = 'shell-tab'
 
 export function AppShell({ children }: { children: ReactNode }) {
+  const [navCollapsed, setNavCollapsed] = useCollapsed(NAV_KEY, window.innerWidth < 900)
+  const collapseNavRef = useRef<HTMLButtonElement>(null)
+  const expandNavRef = useRef<HTMLButtonElement>(null)
+  const previousCollapsed = useRef(navCollapsed)
+  useEffect(() => {
+    if (previousCollapsed.current !== navCollapsed) {
+      ;(navCollapsed ? expandNavRef : collapseNavRef).current?.focus()
+      previousCollapsed.current = navCollapsed
+    }
+  }, [navCollapsed])
   const { user, logout, roles, expiresAt } = useAuth()
   const { pathname } = useLocation()
   const domain = pathname.split('/')[1]
@@ -99,9 +108,9 @@ export function AppShell({ children }: { children: ReactNode }) {
   const remaining = expiresAt === null ? Infinity : new Date(expiresAt).getTime() - now
 
   return (
-    <div className="console-shell" data-testid={TID.shell}>
-      <header className="shell-topbar">
-        <Wordmark compact />
+    <div className="console-shell" data-testid={TID.shell} data-nav-collapsed={navCollapsed}>
+      <aside className="shell-sidebar" hidden={navCollapsed} id="console-navigation">
+        <div className="shell-brand"><Wordmark compact /><button ref={collapseNavRef} className="btn btn-quiet btn-sm" aria-label="收起侧栏" aria-expanded={!navCollapsed} aria-controls="console-navigation" onClick={() => setNavCollapsed(true)}><I glyph={PanelLeftClose} /><span className="sr-only">收起侧栏</span></button></div>
 
         <nav className="shell-nav" aria-label="主域导航">
           <NavLink to="/workflows" className={navClass} data-testid={TID.navWorkflows}>
@@ -110,14 +119,19 @@ export function AppShell({ children }: { children: ReactNode }) {
           </NavLink>
           <NavLink to="/executions" className={navClass} data-testid={TID.navExecutions}>
             <I glyph={Activity} />
-            执行
+            执行记录
           </NavLink>
           <NavLink to="/approvals" className={navClass} data-testid={TID.navApprovals}>
             <I glyph={Stamp} />
-            审批
+            审批待办
           </NavLink>
         </nav>
-
+        <p className="shell-sidebar-caption">Agent 工作流编排</p>
+      </aside>
+      <div className="shell-workspace">
+      <header className="shell-topbar">
+        {navCollapsed ? <button ref={expandNavRef} className="btn btn-quiet btn-sm shell-nav-restore" aria-expanded={false} aria-controls="console-navigation" onClick={() => setNavCollapsed(false)}><I glyph={PanelLeftOpen} />展开侧栏</button> : null}
+        <RouteHeader title={routeTitle} sub={routeContext} />
         <div className="shell-tools">
             <div className="shell-pulse" aria-label="运行脉冲" title="当前租户的执行计数；审批队列只列分配给当前账号的待办节点">
               <PulseStat tone="run" value={pulse?.running} label="执行中" />
@@ -127,7 +141,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             </div>
 
           <div className="shell-account">
-            <ThemeControl defaultTheme={domain === 'workflows' ? 'light' : 'dark'} />
+            <ThemeControl defaultTheme="dark" />
             <span className="shell-identity text-xs text-ink-1" data-testid={TID.whoami} title={`当前账号：${user} · ${roles.length > 0 ? roles.join(' / ') : '角色未知'}`}>
               <span className="mono shell-user">{user}</span><span className="shell-roles">{roles.length > 0 ? roles.join(' / ') : '角色未知'}</span>
             </span>
@@ -146,8 +160,6 @@ export function AppShell({ children }: { children: ReactNode }) {
         </div>
       </header>
 
-      <RouteHeader title={routeTitle} sub={routeContext} />
-
       {roles.length === 0 ? <p className="border-b border-line-0 px-4 py-2 text-sm text-ink-2" role="status">当前会话缺少角色信息，只读浏览；请重新登录以恢复相应写操作。</p> : null}
       {remaining <= 5 * 60_000 && remaining > 0 ? <p className="border-b border-line-0 px-4 py-2 text-sm text-ink-1" role="status">会话即将到期，请保存当前工作；到期后需要重新登录。</p> : null}
 
@@ -163,6 +175,7 @@ export function AppShell({ children }: { children: ReactNode }) {
       ) : null}
 
       <main className="shell-content">{children}</main>
+      </div>
     </div>
   )
 }

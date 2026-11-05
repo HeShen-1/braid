@@ -54,13 +54,13 @@ async function renderedText(page: Page) {
   }))
 }
 
-test('画布无偏好默认浅色，五类节点彩色且双主题对比度达标', async ({ page, request }) => {
+test('画布无偏好默认深色，五类节点可辨识且双主题对比度达标', async ({ page, request }) => {
   await page.setViewportSize({ width: 1440, height: 900 })
   const { id, doc } = await seed(request)
   await open(page, id)
 
-  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
-  await expect.poll(() => page.locator('.react-flow').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(247, 249, 251)')
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark')
+  await expect.poll(() => page.locator('.react-flow').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe('rgb(22, 23, 25)')
   const initial = JSON.parse(await page.getByTestId(TID.editorJson).textContent() ?? '{}')
   expect(initial.nodes).toEqual(doc.nodes)
   expect(initial.edges).toEqual(doc.edges)
@@ -69,13 +69,13 @@ test('画布无偏好默认浅色，五类节点彩色且双主题对比度达�
     await page.getByTestId(TID.themeControl).getByTestId(`theme-option-${theme}`).click()
     await expect(page.locator('html')).toHaveAttribute('data-theme', theme)
     await expect.poll(() => page.locator('.react-flow').evaluate((el) => getComputedStyle(el).backgroundColor)).toBe(
-      theme === 'light' ? 'rgb(247, 249, 251)' : 'rgb(8, 9, 10)',
+      theme === 'light' ? 'rgb(247, 249, 251)' : 'rgb(22, 23, 25)',
     )
     await expect.poll(async () => (await renderedTypes(page)).every((card) => contrast(card.background, card.foreground) >= 4.5)).toBe(true)
     await expect.poll(async () => (await renderedText(page)).every((item) => contrast(item.background, item.foreground) >= 4.5)).toBe(true)
     const cards = await renderedTypes(page)
     expect(new Set(cards.map((card) => card.type))).toEqual(new Set(['llm', 'tool', 'branch', 'approval', 'parallel']))
-    expect(new Set(cards.map((card) => card.background)).size).toBe(5)
+    expect(new Set(cards.map((card) => card.background)).size).toBe(theme === 'dark' ? 1 : 5)
     for (const card of cards) expect(contrast(card.background, card.foreground), `${theme}/${card.type}`).toBeGreaterThanOrEqual(4.5)
     await page.screenshot({ path: test.info().outputPath(`canvas-${theme}.png`), fullPage: true, animations: 'disabled' })
   }

@@ -76,8 +76,10 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
     expect(response.status()).toBe(201)
     const { id: execId } = await response.json() as { id: string }
     await expect(page.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'SUCCEEDED', { timeout: 60_000 })
+    await page.getByRole('tab', { name: '输入与输出', exact: true }).click()
     await expect(page.getByTestId(TID.execInput)).toContainText(input.text)
     await expect(page.getByTestId(TID.execDetail)).toContainText('执行墙钟（含跨轮间隔）')
+    await page.getByRole('tab', { name: '时间线', exact: true }).click()
     await expect(page.getByTestId(TID.execRibbon)).toContainText('跨轮墙钟')
 
     const readRound = async (round: number): Promise<NodeAttempt> => {
@@ -122,6 +124,7 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
       return rows
     }
     await expect.poll(async () => (await readAudit()).length, { timeout: 30_000 }).toBeGreaterThan(100)
+    await page.getByRole('tab', { name: '审计记录', exact: true }).click()
     const auditRefresh = page.getByRole('button', { name: '刷新审计', exact: true })
     await auditRefresh.click()
     await expect(page.getByTestId(TID.auditCount)).toContainText('已加载 100 条 · 仍有更多')
@@ -173,6 +176,7 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
     await page.getByRole('button', { name: '收起 Trace' }).click()
 
     // 原回滚漏斗：时间带选点→布防→显式确认→真实后端重跑。
+    await page.getByRole('tab', { name: '时间线', exact: true }).click()
     await page.getByTestId(tid.nodeRow('model', 0)).locator('button.ribbon-label').click()
     await page.getByTestId(TID.rollbackSubmit).click()
     expect(calls).toHaveLength(1)
@@ -180,6 +184,7 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
     await expect(page.getByTestId(TID.execFlash)).toBeVisible()
     await expect.poll(async () => calls.length, { timeout: 30_000 }).toBe(2)
     await expect(page.getByTestId(TID.execStatus)).toHaveAttribute('data-state', 'SUCCEEDED', { timeout: 60_000 })
+    await page.getByRole('tab', { name: '节点详情', exact: true }).click()
     await page.getByRole('button', { name: '刷新证据', exact: true }).click()
     await expect(page.getByTestId(tid.nodeRow('model', 0))).toContainText('累计 2 轮')
     await expect(page.getByTestId(tid.attemptRow(2))).toContainText('当前轮代')
@@ -242,6 +247,7 @@ test('完整证据：100+审计游标可达，回滚前后按轮核对输入/输
     await page.screenshot({ path: testInfo.outputPath('node-io-dark.png'), animations: 'disabled' })
     await page.getByTestId(tid.themeOption('light')).click()
     await expect(page.locator('html')).toHaveAttribute('data-theme', 'light')
+    await page.getByRole('tab', { name: '审计记录', exact: true }).click()
     await page.getByTestId(TID.auditList).locator('thead').scrollIntoViewIfNeeded()
     await page.screenshot({ path: testInfo.outputPath('audit-light.png'), animations: 'disabled' })
   } finally {

@@ -126,7 +126,7 @@ test('壳层与审批在两主题/桌面窄窗保持层级、对比度和键盘�
   for (const [nav, title] of [[TID.navWorkflows, '工作流'], [TID.navExecutions, '执行'], [TID.navApprovals, '审批']] as const) {
     await page.getByTestId(nav).click()
     await expect(page.getByRole('heading', { level: 1, name: title, exact: true })).toBeVisible()
-    await expect(page.getByRole('navigation', { name: '主域导航' }).locator('[aria-current="page"]')).toHaveText(title)
+    await expect(page.getByRole('navigation', { name: '主域导航' }).locator('[aria-current="page"]')).toHaveText(title === '执行' ? '执行记录' : title === '审批' ? '审批待办' : title)
   }
   const row = page.getByTestId(tid.approvalRow(item.id, item.node))
   for (const theme of ['dark', 'light'] as const) {

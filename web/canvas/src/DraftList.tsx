@@ -2,8 +2,8 @@
 // 顶部固定动作,列表滚动,底部计数。
 //
 // T21.3(七条反馈 ②):可收起。折叠态是跨会话 UI 偏好(localStorage,
-// 见 prefs.ts —— 与认证载体的 sessionStorage 分离,决策 6);收起后留一条
-// 窄栏而不是消失:画布不贴边,「这里本来有个面板」这件事不丢。
+// 见 prefs.ts —— 与认证载体的 sessionStorage 分离,决策 6);收起后释放列表宽度，
+// 画布工具区保留展开入口；进入具体草稿时默认收起。
 import { FilePlus2, PanelLeftClose, PanelLeftOpen, RefreshCw, TriangleAlert, Workflow } from 'lucide-react'
 import type { DraftSummary } from './api.ts'
 import { PANEL_LEFT_KEY, useCollapsed } from './prefs.ts'
@@ -35,20 +35,19 @@ export function DraftList({
   error?: string
   onRetry?: () => void
 }) {
-  const [collapsed, setCollapsed] = useCollapsed(PANEL_LEFT_KEY)
+  const [collapsed, setCollapsed] = useCollapsed(PANEL_LEFT_KEY, activeId !== null)
 
   if (collapsed) {
     return (
-      <div className="side-rail" data-testid={TID.draftList}>
+      <div className="workflow-list-restore" data-testid={TID.draftList}>
         <Button
           size="sm"
           variant="quiet"
-          iconOnly
           icon={PanelLeftOpen}
           aria-label="展开工作流列表"
           data-testid={TID.panelLeftToggle}
           onClick={() => setCollapsed(false)}
-        />
+        >工作流列表</Button>
       </div>
     )
   }

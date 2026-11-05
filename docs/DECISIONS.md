@@ -1043,3 +1043,9 @@
 - 写入面：前端 CanvasEditor/NodeViews/model dsl+convert+authoring 及必要 CSS、回归测试、共享 fixtures；后端 `internal/engine/dsl/schema.json` 与必要校验测试、`internal/api/canvas_contract_test.go`；完整重建 `internal/api/web/`；ROADMAP、本 D- 与验证/独审记录。零新 API、零迁移、零 go.mod/CI/认证/审计词表。实际最小 diff 由实现与独审核准。
 - 验收：连续至少四个新节点无重叠、自动选中及属性联动；四向普通端点真实拖线、服务端保存读回、关闭重开端点/布局一致；旧无记录/显式未绑定/branch case/default/陈旧锚点/删除与发布回归；前后端转换与 schema 双消费、正式 dist、真栈三件套、正常动效深浅主题桌面/窄窗、独审与最终准确 head/base 七门。
 - 保护面：修改 `internal/engine/` 属 AGENTS 的人工合并保护面，即便只改 schema。完成验证、独审、PR 与最终七门后保留用户在 GitHub 人工 merge；确认本 D- 本身不取消该规则。不得为自动合并绕开后端 schema。
+
+## D-2026-11-05-console-b-layout-v2
+- 状态：用户已确认 B 风格和布局 v2，并明确要求按效果图修改、注意前后端联调。
+- 范围：覆盖早期控制台视觉默认规则：默认深色中性炭灰、青绿主操作，保留用户显式主题偏好；三页共享可收起/恢复的主导航。工作流以画布为主，列表和属性面板按需打开；执行以版本图和下方证据标签组织；审批内容与审批记录互斥切换，决定表单为可收起右栏。
+- 边界：效果图的示例数据不是业务契约。沿用 API、权限、确认、审计与 DSL 无损行为；不修改认证存储、引擎、schema、迁移或发布范围。联调使用隔离测试栈，不触碰已有生产数据。
+- 验收：见 ROADMAP T24.1；视觉批准不替代真实接口/浏览器验证。
