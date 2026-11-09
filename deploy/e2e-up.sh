@@ -63,6 +63,9 @@ if [ -d "$LOGDIR" ]; then
   done
 fi
 
+# pid 文件可能已丢失，但残留 relay 会在数据面重新上线后自动连接。
+e2e_guard_relays "$E2E_MYSQL" "$E2E_REDIS"
+
 # ① 数据面(compose 项目 braid-e2e;healthcheck 内建,等 mysql 可 ping;
 # 落穿 = 响亮失败,不对不可达空库跑 migrate——对抗审计 LOW)。
 docker compose -f deploy/e2e.docker-compose.yml -p braid-e2e up -d
