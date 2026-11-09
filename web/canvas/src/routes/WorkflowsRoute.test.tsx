@@ -231,7 +231,7 @@ describe('WorkflowsRoute(发布成功反馈,F04)', () => {
     const user = userEvent.setup()
     mount(`/workflows/${draftId}`)
     await screen.findByTestId(TID.editor)
-    fireEvent.click(screen.getByTestId(tid.nodeCard('only')))
+    fireEvent.click(await screen.findByTestId(tid.nodeCard('only')))
     let unload = new Event('beforeunload', { cancelable: true })
     window.dispatchEvent(unload)
     expect(unload.defaultPrevented).toBe(false)

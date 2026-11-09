@@ -217,6 +217,8 @@ jobs:
           tag=$(grep -oE 'playwright:v[0-9.]+' .github/workflows/ci.yml | head -1 | cut -d: -f2 | tr -d v)
           dep=$(grep -oE '"@playwright/test": "[0-9.]+"' web/canvas/package.json | grep -oE '[0-9]+\.[0-9]+\.[0-9]+')
           [ "$tag" = "$dep" ] || { echo "::error::playwright 镜像 tag v$tag 与 @playwright/test $dep 失同步(两处必须同改)"; exit 1; }
+      - name: e2e process cleanup self-test
+        run: deploy/tests/e2e-down-selftest.sh
       - name: bring up e2e stack
         run: deploy/e2e-up.sh
       # 挂载用宿主同路径(-v "$PWD:$PWD"):spec 从 cwd 解析 fixture 绝对
@@ -242,5 +244,7 @@ jobs:
       - name: tear down e2e stack
         if: always()
         run: |
-          deploy/e2e-down.sh || true
+          status=0
+          deploy/e2e-down.sh || status=$?
           tail -n 40 log/e2e/*.log 2>/dev/null || true
+          exit "$status"
