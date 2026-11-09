@@ -7,6 +7,7 @@ import (
 
 // 语义校验发现码。稳定不变,调用方与测试按码断言。
 const (
+	IssueBranchJoin     = "branch_join"      // 不同互斥分支可到达同一节点，汇合后恒被剪枝
 	IssueCycle          = "cycle"            // 控制流有环
 	IssueEdgeEndpoint   = "edge_endpoint"    // 边指向不存在的节点
 	IssueDuplicateEdge  = "duplicate_edge"   // 重复边

@@ -44,6 +44,8 @@ describe('toCanvas(DSL → 画布)', () => {
 describe('autoLayout(分层)', () => {
   it('分支汇聚:report 深于 verdict,revise 与 report 同层不同行', () => {
     const doc = loadBase('all-node-types')
+    // 历史互斥汇合仍需可读、可布局；新定义的准入另由后端拦截。
+    doc.edges = [...(doc.edges ?? []), { from: 'revise', to: 'report' }]
     const layout = autoLayout(doc)
     expect(layout.get('read_doc')!.x).toBeLessThan(layout.get('parse')!.x)
     // 最长路径分层:verdict < revise < report(revise→report 边使 report 更深)。

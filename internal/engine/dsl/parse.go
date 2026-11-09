@@ -9,9 +9,16 @@ import (
 type Option func(*parseConfig)
 
 type parseConfig struct {
+	rejectBranchJoins bool
 	// toolAllowlist 非nil时启用发布级工具白名单校验(T5.4 发布路径接入;
 	// nil = 跳过,供草稿预览/测试使用,registry 建立前的默认态)。
 	toolAllowlist map[string]bool
+}
+
+// WithBranchJoinValidation 拒绝互斥分支汇合。用于保存、发布和新触发准入；
+// 默认解析仍可读取历史定义，避免改变已有执行的恢复/审计语义。
+func WithBranchJoinValidation() Option {
+	return func(c *parseConfig) { c.rejectBranchJoins = true }
 }
 
 // WithToolAllowlist 启用工具白名单校验:任何 tool 节点引用不在名单内的工具

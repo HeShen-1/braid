@@ -219,6 +219,19 @@ describe('NodePanel', () => {
     expect(labels).toEqual(['eq', 'ne', 'gt', 'gte', 'lt', 'lte', 'contains', 'exists'])
   })
 
+  it('空白审批人标记字段错误，填写后清除', async () => {
+    const user = userEvent.setup()
+    render(<NodeProbe initial={nodeFrom('all-node-types', 'review')} />)
+    const approvers = screen.getByLabelText('审批人(逗号分隔)')
+    await user.clear(approvers)
+    await user.type(approvers, ' , ')
+    expect(approvers).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getByRole('alert')).toHaveTextContent('至少填写 1 位审批人后才能保存或发布。')
+    await user.type(approvers, 'alice')
+    expect(approvers).not.toHaveAttribute('aria-invalid', 'true')
+    expect(screen.queryByText('至少填写 1 位审批人后才能保存或发布。')).not.toBeInTheDocument()
+  })
+
   it('就近错误:审批人重复当场指出(schema approvers uniqueItems)', async () => {
     const user = userEvent.setup()
     render(<NodeProbe initial={nodeFrom('all-node-types', 'review')} />)

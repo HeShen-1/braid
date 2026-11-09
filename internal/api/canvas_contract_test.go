@@ -50,7 +50,7 @@ func TestCanvasExportFixturesPassPublishValidation(t *testing.T) {
 			if !json.Valid(raw) {
 				t.Fatalf("not valid JSON")
 			}
-			if _, err := dsl.Parse(raw, dsl.WithToolAllowlist(allowlist...)); err != nil {
+			if _, err := dsl.Parse(raw, dsl.WithToolAllowlist(allowlist...), dsl.WithBranchJoinValidation()); err != nil {
 				// IssuesFrom(内部 errors.As)而非裸类型断言:Parse 将来
 				// 改为 wrap 错误时逐 issue 明细不降级(对抗审查 LOW)。
 				if issues := dsl.IssuesFrom(err); len(issues) > 0 {

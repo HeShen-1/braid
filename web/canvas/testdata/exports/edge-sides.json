@@ -130,10 +130,6 @@
     {
       "from": "verdict",
       "to": "revise"
-    },
-    {
-      "from": "revise",
-      "to": "report"
     }
   ],
   "nodes": [

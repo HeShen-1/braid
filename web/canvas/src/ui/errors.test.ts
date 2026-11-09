@@ -3,6 +3,11 @@ import { ApiError, type ExecutionDetail } from '../api.ts'
 import { apiErrorText, errorCodeText, executionFailureNode, executionFailureText } from './errors.ts'
 
 describe('共享错误词表', () => {
+  it('旧版本触发被分支汇合校验拦截时给出修正路径', () => {
+    const message = apiErrorText(new ApiError(400, 'branch_join', []))
+    expect(message).toContain('已阻止触发')
+    expect(message).toContain('发布新版本')
+  })
   it('已知原因可读，未知原码与网络故障各自保留', () => {
     expect(apiErrorText(new ApiError(403, 'role_denied', []))).toContain('当前账号没有执行此操作的角色权限')
     expect(apiErrorText(new ApiError(500, 'future_protocol_code', []))).toContain('future_protocol_code')

@@ -24,6 +24,7 @@ import (
 	"braid/internal/audit"
 	"braid/internal/auth"
 	"braid/internal/engine"
+	"braid/internal/engine/dsl"
 	"braid/internal/scheduler"
 )
 
@@ -161,13 +162,14 @@ type triggerOutcome struct {
 type triggerErrCode string
 
 const (
-	triggerBadName  triggerErrCode = "bad_definition_name"
-	triggerBadVer   triggerErrCode = "bad_version"
-	triggerBadInput triggerErrCode = "bad_input"
-	triggerBadIdem  triggerErrCode = "bad_idempotency_key"
-	triggerNotFound triggerErrCode = "not_found"
-	triggerConflict triggerErrCode = "conflict"
-	triggerInternal triggerErrCode = "internal"
+	triggerBranchJoin triggerErrCode = dsl.IssueBranchJoin
+	triggerBadName    triggerErrCode = "bad_definition_name"
+	triggerBadVer     triggerErrCode = "bad_version"
+	triggerBadInput   triggerErrCode = "bad_input"
+	triggerBadIdem    triggerErrCode = "bad_idempotency_key"
+	triggerNotFound   triggerErrCode = "not_found"
+	triggerConflict   triggerErrCode = "conflict"
+	triggerInternal   triggerErrCode = "internal"
 	// triggerFleetGate:mode=all 混跑窗硬闸拒(T15.6,D-t151 决策 6)——
 	// 在场实例未全宣告 approval_mode_all / 在场查询失败,均 fail-closed。
 	// REST 映射 503(混跑窗暂时态,升级完成后重试即解);MCP 面 generic
@@ -178,8 +180,9 @@ const (
 // triggerError 携带分类码;err 是 internal 面的底层错误(响亮日志用,
 // 绝不进任何协议面响应)。
 type triggerError struct {
-	code triggerErrCode
-	err  error
+	code   triggerErrCode
+	err    error
+	issues []dsl.Issue
 }
 
 // triggerCore 是 REST(POST /executions)与 MCP(braid_trigger_workflow,
@@ -216,6 +219,13 @@ func (s *Server) triggerCore(ctx context.Context, claims auth.Claims, req trigge
 		default:
 			return triggerOutcome{}, &triggerError{code: triggerInternal, err: err}
 		}
+	}
+	// 历史已发布版本也必须通过新触发准入；不重写历史状态或影响在途恢复。
+	if _, err := dsl.Parse(def.DSL, dsl.WithBranchJoinValidation()); err != nil {
+		if dsl.HasIssue(err, dsl.IssueBranchJoin) {
+			return triggerOutcome{}, &triggerError{code: triggerBranchJoin, issues: dsl.IssuesFrom(err)}
+		}
+		return triggerOutcome{}, &triggerError{code: triggerInternal, err: err}
 	}
 	// mode=all 混跑窗硬闸(T15.6):def.DSL 钉版快照判定,在场未全宣告
 	// 即拒(先于幂等键——重放同拒,误拒方向安全)。闸自身已落 slog +
@@ -323,6 +333,12 @@ func (s *Server) triggerExecution(c *gin.Context) {
 // 零判定;400 面码即 REST 错误码原值)。
 func writeTriggerError(c *gin.Context, terr *triggerError) {
 	switch terr.code {
+	case triggerBranchJoin:
+		issues := make([]issueDTO, 0, len(terr.issues))
+		for _, i := range terr.issues {
+			issues = append(issues, issueDTO{Code: i.Code, Node: i.Node, Ref: i.Ref, Detail: i.Detail})
+		}
+		c.JSON(http.StatusBadRequest, gin.H{"error": string(terr.code), "issues": issues})
 	case triggerBadName, triggerBadVer, triggerBadInput, triggerBadIdem:
 		c.JSON(http.StatusBadRequest, gin.H{"error": string(terr.code)})
 	case triggerNotFound:

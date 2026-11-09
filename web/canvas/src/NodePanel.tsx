@@ -48,8 +48,9 @@ function ApproversInput({ spec, update }: Sec<Extract<DslNode, { type: 'approval
       label="审批人(逗号分隔)"
       value={raw ?? spec.approvers.join(', ')}
       placeholder="alice, bob"
-      error={dupes.length > 0 ? `重复的审批人：${dupes.join('、')}（schema 要求名单唯一）` : undefined}
-      hint={spec.approvers.length === 0 ? '名单为空；发布校验要求至少 1 人' : undefined}
+      error={spec.approvers.length === 0
+        ? '至少填写 1 位审批人后才能保存或发布。'
+        : dupes.length > 0 ? `重复的审批人：${dupes.join('、')}（schema 要求名单唯一）` : undefined}
       onChange={commit}
     />
   )

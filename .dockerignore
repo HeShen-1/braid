@@ -5,6 +5,7 @@
 .git
 .worktrees
 .handoff
+.env
 deploy/.env
 deploy/prod.env
 deploy/t23.13-glm.env*
