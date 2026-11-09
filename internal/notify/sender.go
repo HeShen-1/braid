@@ -248,7 +248,9 @@ func (s *Sender) render(execID uint64, nodeID, nodeStatus string, deadline sql.N
 	for _, line := range strings.Split(strings.ReplaceAll(strings.ReplaceAll(snap.Instructions, "\r\n", "\n"), "\r", "\n"), "\n") {
 		fmt.Fprintf(&b, "> %s\n", line)
 	}
-	fmt.Fprintf(&b, "超时策略:%s(挂起 %.0f 小时后升级)\n", snap.OnTimeout, snap.TimeoutHours)
+	// 快照来自 time.Duration.Hours();12 位有效数字消除纳秒换算造成的浮点尾数。
+	// 在合法范围 0.1–2160 小时内,显示舍入误差不超过 18 微秒。
+	fmt.Fprintf(&b, "超时策略:%s(挂起 %.12g 小时后升级)\n", snap.OnTimeout, snap.TimeoutHours)
 	if deadline.Valid {
 		fmt.Fprintf(&b, "截止时刻:%s\n", deadline.Time.UTC().Format("2006-01-02 15:04:05 UTC"))
 	}

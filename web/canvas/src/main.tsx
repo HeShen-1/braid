@@ -8,6 +8,7 @@ import { LoginView } from './LoginView.tsx'
 import { AppLayout } from './shell/AppLayout.tsx'
 import { Skeleton } from './ui/primitives.tsx'
 import { applyTheme, readTheme } from './theme.ts'
+import { ApprovalLinkRedirect } from './routes/ApprovalLinkRedirect.tsx'
 
 // 主题先于挂载落定:index.html 的启动脚本已做过一次(无闪烁),这里兜住
 // 「启动脚本被策略拦掉 / 直接 import 本模块」的入口,幂等。无明确偏好时
@@ -81,6 +82,10 @@ const router = createBrowserRouter(
               <ExecutionsRoute />
             </Suspense>
           ),
+        },
+        {
+          path: 'executions/:executionId/approvals/:nodeId',
+          element: <ApprovalLinkRedirect />,
         },
         {
           path: 'approvals',
