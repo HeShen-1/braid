@@ -20,6 +20,7 @@ import (
 	"braid/internal/auth"
 	"braid/internal/db/sqltest"
 	"braid/internal/notify/notifytest"
+	"braid/internal/scheduler"
 	"braid/internal/snowflake"
 )
 
@@ -141,6 +142,37 @@ type auditRowSnapshot struct {
 	id      uint64
 	nodeID  sql.NullString
 	payload []byte
+}
+
+func TestRenderApprovalTimeoutHours(t *testing.T) {
+	s := &Sender{cfg: Config{ApprovalBaseURL: "https://braid.test.example"}}
+	tests := []struct {
+		name  string
+		hours float64
+		want  string
+	}{
+		{name: "minimum", hours: 0.1, want: "0.1"},
+		{name: "quarter", hours: 0.25, want: "0.25"},
+		{name: "duration float noise", hours: 0.29, want: "0.29"},
+		{name: "fractional", hours: 1.25, want: "1.25"},
+		{name: "fractional over a day", hours: 24.125, want: "24.125"},
+		{name: "fine precision", hours: 24.123456789, want: "24.123456789"},
+		{name: "default", hours: 72, want: "72"},
+		{name: "maximum", hours: 2160, want: "2160"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Scheduler stores Duration.Hours(), which may differ by a nanosecond
+			// from the DSL float after the time.Duration conversion.
+			hours := time.Duration(tt.hours * float64(time.Hour)).Hours()
+			_, body := s.render(7, "gate", "WAITING_APPROVAL", sql.NullTime{}, "wf", 1,
+				scheduler.ApprovalInput{TimeoutHours: hours, OnTimeout: "escalate"}, "escalated")
+			want := "超时策略:escalate(挂起 " + tt.want + " 小时后升级)"
+			if !strings.Contains(body, want) {
+				t.Errorf("rendered body missing %q:\n%s", want, body)
+			}
+		})
+	}
 }
 
 // TestNotifyApprovalDeliversContextAndLink(T4.5 验收核心):合法升级事件 →
