@@ -43,8 +43,8 @@
         },
         "report": {
           "position": {
-            "x": 1600,
-            "y": 40
+            "x": 1340,
+            "y": 180
           }
         }
       },
@@ -105,10 +105,6 @@
     {
       "from": "verdict",
       "to": "revise"
-    },
-    {
-      "from": "revise",
-      "to": "report"
     }
   ],
   "nodes": [

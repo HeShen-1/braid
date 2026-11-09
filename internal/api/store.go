@@ -107,7 +107,7 @@ const defCols = "id, name, version, dsl_version, status, description, dsl, dsl_h
 // parseDraft 校验 DSL 草稿形态(无白名单:白名单只在发布点收紧,
 // dsl.WithToolAllowlist 语义)并返回规范化字段。
 func parseDraft(doc []byte) (*dsl.Workflow, error) {
-	wf, err := dsl.Parse(doc)
+	wf, err := dsl.Parse(doc, dsl.WithBranchJoinValidation())
 	if err != nil {
 		return nil, asInvalidDSL(err)
 	}
@@ -402,7 +402,7 @@ func (s *Store) Publish(ctx context.Context, q DBTX, tenant, id uint64, actor st
 	if err := gate(ctx, q, cur); err != nil {
 		return Definition{}, err
 	}
-	if _, err := dsl.Parse(cur.DSL, dsl.WithToolAllowlist(allowlist...)); err != nil {
+	if _, err := dsl.Parse(cur.DSL, dsl.WithToolAllowlist(allowlist...), dsl.WithBranchJoinValidation()); err != nil {
 		return Definition{}, asInvalidDSL(err)
 	}
 	var next sql.NullInt64

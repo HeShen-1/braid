@@ -2,6 +2,7 @@
 import { ApiError, type ExecutionDetail, type NodeExecution } from '../api.ts'
 
 export const ERROR_TEXT: Record<string, string> = {
+  branch_join: '工作流包含不支持的互斥分支汇合，可能导致终审被跳过，已阻止触发。请将必经审批放在各分支内并发布新版本。',
   invalid_credentials: '用户名或密码错误。',
   user_disabled: '账号已停用。',
   too_many_attempts: '尝试次数过多，请稍后再试。',

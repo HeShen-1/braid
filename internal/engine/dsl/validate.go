@@ -29,6 +29,9 @@ func (wf *Workflow) validate(cfg parseConfig) []Issue {
 	v.checkNodes()
 	v.checkEdges()
 	v.checkCycles()
+	if cfg.rejectBranchJoins {
+		v.checkBranchJoins()
+	}
 	v.checkNodeRefs()
 	v.checkWorkflowOutputs()
 	return v.issues
