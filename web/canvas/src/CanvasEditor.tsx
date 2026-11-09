@@ -89,13 +89,20 @@ function Editor({
     return { ...start, width: Math.max(1, end.x - start.x), height: Math.max(1, end.y - start.y) }
   }, [screenToFlowPosition])
 
-  // 等新卡片完成实际尺寸测量后才核可见性。只显露本次新增节点,
-  // 不移动旧节点,也不改变用户已收起的属性面板偏好。
+  // 等新卡片完成实际尺寸测量后才核可见性。需要调整视口时保留邻近
+  // 的可见节点作为上下文,不移动旧节点,也不引入视口外的远距节点。
   const knownNodeIds = useRef(new Set(initial.nodes.map((n) => n.id)))
+  const lastCreatedNodeId = useRef<string | null>(null)
   const pendingReveal = useRef(new Set<string>())
   useEffect(() => {
-    for (const n of nodes) if (!knownNodeIds.current.has(n.id)) pendingReveal.current.add(n.id)
+    for (const n of nodes) {
+      if (!knownNodeIds.current.has(n.id)) {
+        pendingReveal.current.add(n.id)
+        lastCreatedNodeId.current = n.id
+      }
+    }
     knownNodeIds.current = new Set(nodes.map((n) => n.id))
+    if (lastCreatedNodeId.current && !knownNodeIds.current.has(lastCreatedNodeId.current)) lastCreatedNodeId.current = null
     pendingReveal.current = new Set([...pendingReveal.current].filter((id) => knownNodeIds.current.has(id)))
     if (!nodesInitialized || pendingReveal.current.size === 0) return
     const added = pendingReveal.current
@@ -105,7 +112,16 @@ function Editor({
     if (addedNodes.length !== added.size || addedNodes.some((n) => !n.measured?.width || !n.measured?.height)) return
     const outside = measured.some((n) => added.has(n.id) && !containsRect(visible, { ...n.position, ...nodeSize(n as FlowNode) }))
     pendingReveal.current = new Set()
-    if (outside) void fitView({ nodes: addedNodes, padding: 0.15, minZoom: 0.1, maxZoom: getZoom() })
+    if (outside) {
+      const addedNode = addedNodes[0]
+      const nearby = measured.find((n) => {
+        const size = nodeSize(n as FlowNode)
+        return !added.has(n.id) && containsRect(visible, { ...n.position, ...size }) &&
+          Math.abs(n.position.x - addedNode.position.x) < 0.5 &&
+          Math.abs(n.position.y + size.height + 24 - addedNode.position.y) < 0.5
+      })
+      void fitView({ nodes: nearby ? [...addedNodes, nearby] : addedNodes, padding: 0.15, minZoom: 0.1, maxZoom: getZoom() })
+    }
   }, [nodes, nodesInitialized, visibleCanvas, getNodes, getZoom, fitView])
 
   // 节点删除(T21.4 ④):危险动作只留一条漏斗 —— 面板「删除节点」入口与
@@ -182,6 +198,7 @@ function Editor({
     setSelectedId(sel.length === 1 ? sel[0].id : null)
   }, [])
   const onNodeClick = useCallback((_: unknown, node: FlowNode) => {
+    if (node.id !== lastCreatedNodeId.current) lastCreatedNodeId.current = null
     setShowWorkflowPanel(false)
     setSelectedId(node.id)
     setSideCollapsed(false)
@@ -198,7 +215,11 @@ function Editor({
         const id = nextNodeId(type === 'parallel' ? 'fan' : type, g.nodes.map((n) => n.id))
         const node = { id, type, position: { x: 0, y: 0 }, data: { spec: defaultSpec(type, id) }, selected: true }
         const occupied = g.nodes.map((n) => ({ ...n.position, ...nodeSize(n, rem) }))
-        node.position = newNodePosition(visible, nodeSize(node, rem), occupied)
+        const selected = g.nodes.find((n) => (n as FlowNode & { selected?: boolean }).selected)
+        const anchor = selected && selected.id === lastCreatedNodeId.current
+          ? { ...selected.position, ...nodeSize(selected, rem) }
+          : undefined
+        node.position = newNodePosition(visible, nodeSize(node, rem), occupied, 24, anchor)
         return { ...g, nodes: [...g.nodes.map((n) => ({ ...n, selected: false })), node] }
       })
     },

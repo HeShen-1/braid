@@ -135,6 +135,25 @@ describe('ApprovalDetail(审批详情)', () => {
     expect(ul.querySelectorAll('tbody tr')).toHaveLength(2)
   })
 
+  it('审批记录保留完整字段及列头，供窄容器逐条呈现', () => {
+    const comment = '长意见 '.repeat(100) + '末尾'
+    renderDetail({ detail: detail({ decisions: [{
+      id: 'd1', execution_id: '7', node_id: 'n1', round: 3,
+      decision: 'reject', decided_by: 'very-long-approver-name', comment,
+      decided_at: '2026-10-09T02:00:00Z',
+    }] }) })
+    const table = screen.getByTestId(TID.approvalTimeline)
+    expect([...table.querySelectorAll('th')].map((th) => [th.textContent, th.scope])).toEqual([
+      ['处理人', 'col'], ['决定', 'col'], ['处理意见', 'col'], ['时间', 'col'], ['轮次', 'col'],
+    ])
+    const cells = [...table.querySelectorAll<HTMLTableCellElement>('tbody td')]
+    expect(cells.map((cell) => cell.dataset.label)).toEqual(['处理人', '决定', '处理意见', '时间', '轮次'])
+    expect(cells[0]).toHaveTextContent('very-long-approver-name')
+    expect(cells[1]).toHaveTextContent('驳回')
+    expect(cells[2].textContent).toBe(comment)
+    expect(cells[4]).toHaveTextContent('第 3 轮')
+  })
+
   it('WAITING_APPROVAL:决定表单在场(备注 + 批准 + 驳回)', () => {
     renderDetail()
     expect(screen.getByTestId(TID.approvalComment)).toBeInTheDocument()

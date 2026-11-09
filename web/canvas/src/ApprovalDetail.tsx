@@ -184,15 +184,15 @@ export function ApprovalDetail({
         <div className="appr-history-scroll">
           <table className="table appr-history-table" data-testid={TID.approvalTimeline}>
             <caption className="sr-only">审批决定记录</caption>
-            <thead><tr><th>处理人</th><th>决定</th><th>处理意见</th><th>时间</th><th>轮次</th></tr></thead>
+            <thead><tr><th scope="col">处理人</th><th scope="col">决定</th><th scope="col">处理意见</th><th scope="col">时间</th><th scope="col">轮次</th></tr></thead>
             <tbody>{decisions.length === 0
               ? <tr><td colSpan={5} className="appr-history-empty">尚无审批决定，等待审批人处理。</td></tr>
               : decisions.map((dec) => <tr key={dec.id}>
-                <td className="mono">{dec.decided_by}</td>
-                <td className={dec.decision === 'reject' ? 'appr-decision-reject' : 'appr-decision-approve'}>{decisionLabel(dec.decision)}</td>
-                <td className="appr-history-comment">{dec.comment || '—'}</td>
-                <td className="num">{fmtDateTime(dec.decided_at)}</td>
-                <td className="num">第 {dec.round} 轮</td>
+                <td className="mono" data-label="处理人">{dec.decided_by}</td>
+                <td data-label="决定" className={dec.decision === 'reject' ? 'appr-decision-reject' : 'appr-decision-approve'}>{decisionLabel(dec.decision)}</td>
+                <td className="appr-history-comment" data-label="处理意见">{dec.comment || '—'}</td>
+                <td className="num" data-label="时间">{fmtDateTime(dec.decided_at)}</td>
+                <td className="num" data-label="轮次">第 {dec.round} 轮</td>
               </tr>)}</tbody>
           </table>
         </div>

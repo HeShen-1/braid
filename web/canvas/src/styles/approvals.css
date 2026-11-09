@@ -306,7 +306,7 @@
   .appr-head-body, .appr-reader { padding-inline: 1rem; }
 }
 
-.appr-history-scroll { overflow-x: auto; padding-top: 1rem; }
+.appr-history-scroll { container-type: inline-size; overflow-x: auto; padding-top: 1rem; }
 .appr-history-table { min-width: 36rem; table-layout: fixed; }
 .appr-history-table th:nth-child(1) { width: 15%; }
 .appr-history-table th:nth-child(2) { width: 12%; }
@@ -315,3 +315,36 @@
 .appr-history-table th:nth-child(5) { width: 11%; }
 .appr-history-comment { white-space: pre-wrap; overflow-wrap: anywhere; }
 .appr-history-table .appr-history-empty { height: 10rem; text-align: center; color: var(--color-ink-2); }
+
+/* 空间不足时按票纵向阅读；同一张表保留列头关联，不依赖横向滚动。 */
+@container (max-width: 36rem) {
+  .appr-history-table { display: block; min-width: 0; }
+  .appr-history-table thead {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+    white-space: nowrap;
+  }
+  .appr-history-table tbody { display: block; }
+  .appr-history-table tbody tr { display: block; padding: 0.5rem 0; border-bottom: 1px solid var(--color-line-0); }
+  .appr-history-table tbody tr:last-child { border-bottom: 0; }
+  .appr-history-table tbody td:not(.appr-history-empty) {
+    display: grid;
+    grid-template-columns: 4rem minmax(0, 1fr);
+    gap: 0.5rem;
+    padding: 0.25rem 0;
+    border: 0;
+    overflow-wrap: anywhere;
+    text-align: left;
+  }
+  .appr-history-table tbody td:not(.appr-history-empty)::before {
+    content: attr(data-label);
+    color: var(--color-ink-2);
+    font-family: var(--font-sans);
+    font-size: var(--text-xs);
+    white-space: nowrap;
+  }
+  .appr-history-table .appr-history-empty { display: block; height: auto; padding: 2rem 0; }
+}

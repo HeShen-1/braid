@@ -145,6 +145,26 @@ async function screenshot(page: Page, testInfo: TestInfo, name: string) {
   await testInfo.attach(name, { path, contentType: 'image/png' })
 }
 
+test('空白画布连续添加三名审批节点保持顺序并显露相邻节点', async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await page.goto('/')
+  await page.getByTestId(TID.loginUsername).fill(AUTHOR.username)
+  await page.getByTestId(TID.loginPassword).fill(AUTHOR.password)
+  await page.getByTestId(TID.loginSubmit).click()
+  await page.getByTestId(TID.draftNew).click()
+  const ids = []
+  for (let i = 0; i < 3; i++) ids.push(await addNode(page, testInfo, 'approval', 'ordered'))
+  const result = await geometry(page)
+  const [first, second, third] = ids.map((id) => result.cards.find((card) => card.id === id)!)
+  expect(second.y).toBeGreaterThanOrEqual(first.y + first.height)
+  expect(third.y).toBeGreaterThanOrEqual(second.y + second.height)
+  expect(Math.abs(first.x - second.x)).toBeLessThan(1)
+  expect(Math.abs(second.x - third.x)).toBeLessThan(1)
+  expect(second.y).toBeGreaterThanOrEqual(result.canvas.y - 0.5)
+  expect(second.y + second.height).toBeLessThanOrEqual(result.canvas.y + result.canvas.height + 0.5)
+  await screenshot(page, testInfo, 'ordered-approval-nodes')
+})
+
 for (const width of [1440, 1024]) {
   for (const theme of ['dark', 'light'] as const) {
     test(`新节点防堆叠与自动选中: ${width}px ${theme}, 键盘/折叠/长分支`, async ({ page }, testInfo) => {

@@ -29,8 +29,12 @@ function overlaps(a: Rect, b: Rect, gap: number): boolean {
     a.y < b.y + b.height + gap && a.y + a.height + gap > b.y
 }
 
-/** 优先可见区域内离中心最近的空位;拥挤时返回最近的区域外空位供视口显露。 */
-export function newNodePosition(visible: Rect, size: Size, occupied: Rect[], gap = 24): Point {
+/** 连续新增优先沿当前节点向下；其余情况优先视口内离中心最近的空位。 */
+export function newNodePosition(visible: Rect, size: Size, occupied: Rect[], gap = 24, anchor?: Rect): Point {
+  if (anchor && containsRect(visible, anchor)) {
+    const below = { x: anchor.x, y: anchor.y + anchor.height + gap }
+    if (occupied.every((r) => !overlaps({ ...below, ...size }, r, gap))) return below
+  }
   const center = { x: visible.x + (visible.width - size.width) / 2, y: visible.y + (visible.height - size.height) / 2 }
   // 候选落在视口/障碍物的边界上,避免固定网格漏掉足够容纳一张卡的空隙。
   const xs = [...new Set([center.x, visible.x, visible.x + visible.width - size.width,
