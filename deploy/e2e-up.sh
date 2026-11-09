@@ -16,6 +16,7 @@
 #   BRAID_E2E_BASE_URL=http://127.0.0.1:18081 npm --prefix web/canvas run test:e2e
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source deploy/e2e-process.sh
 
 E2E_MYSQL="root:braid_dev_root@tcp(127.0.0.1:13307)/braid"
 E2E_REDIS="127.0.0.1:16380"
@@ -34,9 +35,30 @@ LOGDIR="log/e2e"
 if [ -d "$LOGDIR" ]; then
   for f in "$LOGDIR"/*.pid; do
     [ -f "$f" ] || continue
-    if kill -0 "$(cat "$f")" 2>/dev/null; then
-      echo "e2e 组件进程仍在跑(pid 文件 $f),先停:deploy/e2e-down.sh" >&2
+    pid=$(cat "$f")
+    if ! [[ "$pid" =~ ^[1-9][0-9]*$ ]]; then
+      echo "e2e PID 文件无效($f),请人工核查" >&2
       exit 1
+    fi
+    if e2e_group_running "$pid"; then
+      echo "e2e 组件进程或进程组仍在跑(pid 文件 $f),先核查并停止" >&2
+      exit 1
+    else
+      result=$?
+      if [ "$result" -ne 1 ]; then
+        echo "无法检查 e2e 进程组(pid 文件 $f),请人工核查" >&2
+        exit 1
+      fi
+    fi
+    if kill -0 "$pid" 2>/dev/null; then
+      state=$(ps -o stat= -p "$pid" | tr -d '[:space:]') || {
+        echo "无法检查 e2e PID 状态($f),请人工核查" >&2
+        exit 1
+      }
+      if [[ -z "$state" || "$state" != Z* ]]; then
+        echo "e2e PID 仍在使用($f),请人工核查" >&2
+        exit 1
+      fi
     fi
   done
 fi
@@ -90,13 +112,20 @@ seed bob e2e-bob-pass-1 approver
 mkdir -p "$LOGDIR"
 start() { # $1=组件,其余 = 组件专属 env 赋值对(公共面统一注入)
   local comp="$1"
+  local pid starttime boot_id
   shift
+  # 旧身份先清除,避免新 PID 尚未登记时误用上次记录。
+  rm -f "$LOGDIR/$comp.identity"
   setsid nohup env "$@" \
     BRAID_MYSQL_DSN="$E2E_MYSQL" \
     BRAID_AUTH_JWT_SECRET="$E2E_JWT_SECRET" \
     BRAID_FILEREAD_DIRS="$E2E_FILEREAD_JSON" \
     go run "./cmd/$comp" > "$LOGDIR/$comp.log" 2>&1 &
-  echo $! > "$LOGDIR/$comp.pid"
+  pid=$!
+  echo "$pid" > "$LOGDIR/$comp.pid"
+  starttime=$(e2e_starttime "$pid")
+  boot_id=$(cat /proc/sys/kernel/random/boot_id)
+  printf '%s %s\n' "$boot_id" "$starttime" > "$LOGDIR/$comp.identity"
 }
 start reaper BRAID_REDIS_QUEUE_ADDR="$E2E_REDIS"
 for _ in $(seq 1 30); do
