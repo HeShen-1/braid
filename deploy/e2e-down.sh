@@ -28,6 +28,8 @@ own_pid() { # $1=组件 → echo 校验通过的 pid,失败输出空串
         echo "$1(pid $pid) 已停止" >&2
         return 2
       fi
+      echo "无法检查 $1(pid $pid) 的进程组,请人工核查" >&2
+      return 1
     fi
   fi
   if [[ "$pid" =~ ^[1-9][0-9]*$ ]] && [ -r "$LOGDIR/$1.identity" ] &&
@@ -94,19 +96,21 @@ if [ -d "$LOGDIR" ]; then
     [ "$cleanup_failed" -eq 0 ] && break
     sleep 1
   done
-  [ "$cleanup_failed" -eq 0 ] || echo "e2e 进程组仍活动或无法检查,请人工核查" >&2
+fi
+
+if [ "${skipped:-0}" -ne 0 ]; then
+  echo "身份未确认的 e2e 进程已跳过,保留数据面,请人工核查" >&2
+  exit 1
+fi
+if [ "${cleanup_failed:-0}" -ne 0 ]; then
+  echo "e2e 进程组仍活动或无法检查,保留数据面,请人工核查" >&2
+  exit 1
 fi
 
 compose_status=0
 docker compose -f deploy/e2e.docker-compose.yml -p braid-e2e down -v || compose_status=$?
 if [ "$compose_status" -ne 0 ]; then
   echo "e2e 数据面停止失败(退出码 $compose_status)" >&2
+  exit "$compose_status"
 fi
-if [ "${skipped:-0}" -ne 0 ]; then
-  echo "身份未确认的 e2e 进程已跳过,请人工核查" >&2
-elif [ "$compose_status" -eq 0 ] && [ "${cleanup_failed:-0}" -eq 0 ]; then
-  echo "e2e 栈已停(数据面 tmpfs 随 down 清空)"
-fi
-[ "$compose_status" -eq 0 ] || exit "$compose_status"
-[ "${skipped:-0}" -eq 0 ] || exit 1
-[ "${cleanup_failed:-0}" -eq 0 ] || exit 1
+echo "e2e 栈已停(数据面 tmpfs 随 down 清空)"

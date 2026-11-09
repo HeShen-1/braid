@@ -18,6 +18,11 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$tmp/deploy" "$tmp/log/e2e" "$tmp/bin"
 cp deploy/e2e-up.sh deploy/e2e-down.sh deploy/e2e-process.sh "$tmp/deploy/"
+# Keep this cleanup test independent of real host relays. Modify only the
+# disposable copy; production always inspects /proc.
+mkdir -p "$tmp/proc/self/ns"
+ln -s 'net:[test]' "$tmp/proc/self/ns/net"
+sed -i 's|e2e_guard_relays "$E2E_MYSQL" "$E2E_REDIS"|e2e_guard_relays "$E2E_MYSQL" "$E2E_REDIS" "'"$tmp"'/proc"|' "$tmp/deploy/e2e-up.sh"
 source deploy/e2e-process.sh
 boot_id=$(cat /proc/sys/kernel/random/boot_id)
 printf '#!/usr/bin/env bash\n[[ -z "${BRAID_FAKE_DOCKER_CALLS:-}" ]] || echo called >> "$BRAID_FAKE_DOCKER_CALLS"\nexit "${BRAID_FAKE_DOCKER_EXIT:-0}"\n' > "$tmp/bin/docker"
@@ -152,3 +157,5 @@ finally:
     zombie.wait(timeout=5)
 PY
 echo 'PASS: matching groups stopped; unknown identities preserved; failures reported; repeated down succeeds'
+python3 deploy/tests/e2e-down-preserve-selftest.py
+bash deploy/tests/e2e-relay-guard-selftest.sh
