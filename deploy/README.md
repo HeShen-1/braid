@@ -616,3 +616,47 @@ BRAID_LLM_TOKEN_BUDGET=10000
 Git 与 Docker build context 忽略，避免入库或进入镜像构建。
 api 只做注册与发布校验，无需文件挂载。Compose 此处沿用内置执行模式；
 Helm 的节点路径、只读挂载及 sandbox 口径见 [chart README](chart/README.md)。
+
+## 14. 审批超时邮件配置与验证
+
+生产 Compose 将 SMTP 配置和 `BRAID_APPROVAL_BASE_URL` 传入 worker；
+SMTP 主机未配置时不发送邮件；SMTP 与 IM 两个通道均未配置时，审批通知
+降级为 log-only。配置
+`BRAID_SMTP_HOST` 时，`BRAID_SMTP_FROM` 和绝对 HTTP(S) 形式的
+`BRAID_APPROVAL_BASE_URL` 必填，邮箱格式及 TLS 配置也会在启动时校验。
+`BRAID_SMTP_NOTIFY_TO` 是可选的运维副本和兜底地址，不是必填项。
+`deploy/.env.example` 的 SMTP 段开头仍有将其列为必填的旧注释；该段
+后续说明与当前代码均按可选处理。
+
+发送时按审批快照中的用户名查询同租户 `users.email`，各有邮箱的审批人
+分别收到邮件；配置了运维地址时另发副本。若既没有可解析的审批人邮箱，
+也没有运维地址，发送失败并进入重试/死信路径。发送成功与审计写入之间
+的故障窗口可能导致重投重复发送；不要把审计去重理解为邮件绝对不重复。
+
+邮件链接沿用 `/executions/<execution_id>/approvals/<node_id>`，控制台
+在认证后承接到对应审批详情；公开反代须按 [RUNBOOK §4](RUNBOOK.md#4-反代与控制台入口)
+转发执行与审批路径。隔离测试服务的送达和浏览器跳转证据见
+[审批邮件验证](../docs/audits/approval-mail/VALIDATION.md)，不代表真实外部
+邮箱或人员已收到邮件。
+
+`BRAID_SMTP_CA_FILE` 和 `BRAID_SMTP_TIMEOUT` 虽由 worker 配置解析，
+默认生产 Compose 和 Helm 模板未透传这两个键；需要时须明确添加环境变量，
+私有 CA 文件还须挂载到 worker。密钥仅通过部署环境注入，不放入仓库。
+
+## 15. E2E 测试栈的启动与清理
+
+`deploy/e2e-up.sh` 使用单独的 MySQL `13307`、Redis `16380` 和 API
+`18081`，数据面为临时测试栈。启动前会只读检查可见的相关 relay；
+发现可能连接数据面、身份或配置无法确认时拒绝启动，需人工核查。该
+检查受 `/proc` 可见性、进程名、地址形式和检查后并发启动限制，不能
+视为对所有进程的完整隔离。
+
+`deploy/e2e-down.sh` 只清理通过身份校验的测试进程组；遇到身份不明、
+进程检查失败或进程组未停止时返回失败并保留数据面，不能绕过提示直接
+删除卷。正常关闭会调用 Compose `down -v`；测试栈 MySQL 和 Redis 的
+tmpfs 数据随容器停止而清空。新旧栈不得共用这些端口或数据，尤其不得
+擅自终止来源不明的历史进程。
+
+清理与启动保护的隔离回归可运行 `bash deploy/tests/e2e-down-selftest.sh`；
+该自测使用临时进程和假 Docker。真实临时 Compose 卷保留验证及其范围见
+[测试记录](../docs/audits/test-stack-cleanup/FAILURE-GUARDS-VALIDATION.md)。

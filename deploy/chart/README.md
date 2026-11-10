@@ -64,14 +64,28 @@ helm upgrade braid deploy/chart -f my-braid-values.yaml \
 | values 键 | compose 键 | 说明 |
 |---|---|---|
 | `secrets.mysqlRootPassword` | MYSQL_ROOT_PASSWORD | MySQL root(mysql 容器 + migrate/grants Job 消费) |
-| `secrets.db{Api,Worker,Relay,Reaper}Password` | BRAID_DB_*_PASSWORD | 四组件账号;字符集限 [A-Za-z0-9._~@+%-](grants.sh 门,越界即拒) |
+| `secrets.db{Api,Worker,Relay,Reaper}Password` | BRAID_DB_*_PASSWORD | 四组件账号;字符集限 `A-Za-z0-9._~@+%-`（grants.sh 门,越界即拒） |
 | `secrets.authJwtSecret` | BRAID_AUTH_JWT_SECRET | openssl rand -hex 32 |
 | `secrets.llmApiKey` | BRAID_LLM_API_KEY | 仅经 env 注入 |
 | `config.llmBaseUrl` / `config.llmPriceTable` | BRAID_LLM_BASE_URL / _PRICE_TABLE | llm 组生产装配必需 |
 
-可选组(smtp / 工具白名单 / TRUSTED_PROXIES / toolTokenSecret)语义与
-`deploy/.env.example` 同源:空 = 相应降级或不注册,半配置启动即败由进程
-承载。
+可选组(smtp / 工具白名单 / TRUSTED_PROXIES / toolTokenSecret)的环境键
+见 `deploy/.env.example`；空配置可能降级或不注册，半配置由进程校验。
+SMTP 收件人等实际约束以 `internal/notify/config.go` 和下节为准。
+
+### 审批超时邮件
+
+`config.smtpHost` 开启 SMTP 后，需同时提供 `config.smtpFrom` 与绝对
+HTTP(S) 地址 `config.approvalBaseUrl`；其他认证和 TLS 配置由 worker
+校验。`config.smtpNotifyTo` 是可选的运维副本及兜底地址，审批人邮箱
+按同租户用户记录解析；无任何可解析收件人时发送失败。`secrets.smtpPassword`
+经 Secret 交给 worker，不应把实际凭证提交到仓库。
+
+邮件链接使用 `/executions/<execution_id>/approvals/<node_id>`，控制台
+认证后承接到对应审批详情，Ingress 须转发相关执行和审批路径。默认 chart
+不透传 `BRAID_SMTP_CA_FILE` 或 `BRAID_SMTP_TIMEOUT`；私有 CA 或自定义
+超时需要明确扩展 worker 环境变量和相应文件挂载。配置细节、重复发送
+边界及隔离验证记录见 [部署说明 §14](../README.md#14-审批超时邮件配置与验证)。
 
 ## 工具白名单、文件挂载与 token 预算(T23.3)
 
