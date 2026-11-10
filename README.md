@@ -10,22 +10,19 @@ braid 的护城河不在「有审批、有审计」(2026 年这已是标配),而
 ## 0. 控制台
 
 一个 SPA、一套设计系统、三块工作区:**工作流**(画布编排)、**执行**(观察与处置)、**审批**(待办与决定)。
-深色仪器盘世界的设计真源见 [DESIGN.md](DESIGN.md);界面语言为中文。
+侧栏可收起；执行详情以定义版本图和证据标签查看节点、时间线及审计；审批内容与审批记录在同页切换，处理栏可收起。
+支持深浅主题，设计说明见 [DESIGN.md](DESIGN.md);界面语言为中文。
 
-![控制台 · 执行面:执行时间带把「等待审批」画成有长度的斜纹段(资源没被占用,但时间在走)](docs/images/console-executions.png)
+![工作流画布：桌面下创建并连接审批节点](docs/audits/t24.3/canvas-desktop.png)
 
-![控制台 · 工作流面:画布编排 + 右侧属性面板 + 底部 DSL 预览](docs/images/console-workflows.png)
+![审批记录：桌面下查看处理人、决定和意见](docs/audits/t24.3/history-desktop.png)
 
-![控制台 · 审批面:待办队列 + 决定详情;`j/k` 移动、`Enter` 打开、`a` 批准、`r` 驳回、`Esc` 返回](docs/images/console-approvals.png)
+上图来自隔离测试栈的真实 Chromium 页面，更多桌面和窄视口截图及验证边界见
+[T24.3 验证记录](docs/audits/T24.3-VALIDATION.md)。
+仓内 `docs/images/console-*.png` 是旧版演示截图，不代表当前布局。
 
-截图取自本仓 `deploy/dev-up.sh` 的演示种子数据,由 [.impeccable/shot.mjs](.impeccable/shot.mjs) 生成。
-复拍前按 `web/canvas/.nvmrc` 使用 Node 26.10.0，先执行
-`npm --prefix web/canvas ci` 与 `npx --prefix web/canvas playwright install chromium`，
-并确认 API、演示账号、草稿及执行数据已就绪，再从仓库根运行
-`node .impeccable/shot.mjs docs/images --readme`。脚本默认连接
-`http://127.0.0.1:8081`、使用 dev 演示账号；其他隔离环境经
-`BRAID_BASE` / `BRAID_USER` / `BRAID_PASS` 注入，真实口令勿写进命令行。
-截图脚本只登录、导航和取图，不建号或生成演示数据；缺草稿/执行时会跳过对应图片。
+旧版演示截图采集脚本保存在 [.impeccable/shot.mjs](.impeccable/shot.mjs)；
+本次未复验它对当前布局的适配，不用它替代上述页面验证。
 
 ## 1. 架构总览
 
@@ -77,7 +74,7 @@ worker;审批决定经同一 outbox 通道触发续跑任务(`resume:<execution_
 |----|------|
 | 引擎底座 | 自研状态机(不用 Temporal):MySQL 单一真相源 + CAS 迁移;Redis 不参与状态裁决 |
 | 任务通道 | outbox(状态变更同事务)→ relay 投递 Asynq(MaxRetry=1,重试权威在平台节点层)→ reaper 对账兜底 |
-| 人在回路 | 挂起不占 worker;或签 P0;超时升级通知 + 保持等待,永不自动通过 |
+| 人在回路 | 挂起不占 worker;支持或签/会签;超时默认升级通知并保持等待，也可配置显式失败，永不自动通过 |
 | 数据流 | 显式引用 `{{nodes.<id>.output.<field>}}`,无共享黑板;每节点存输入快照(回滚/续跑地基) |
 | 安全 | 定义时白名单 × 执行时 RBAC 双重强制;http 工具 SSRF 三层修(静态白名单 + 拨号瞬间 IP 复核 + 每跳重校验);凭证 per-call scoped token |
 | 审计 | append-only(无 update 接口)、按执行日期分区、每行携带 OTel trace_id、PII 脱敏钩子、保留期可配 |
@@ -93,6 +90,15 @@ OIDC 回调返回 token JSON，尚无 Web SSO 按钮或回调会话接入，后�
 T23.12 / [#241](https://github.com/HeShen-1/braid/issues/241) 裁决。
 内置工具沙箱、工具包签名、db_query、双向 MCP、审计哈希链及会签也已有实现；
 是否可用于某个部署，仍取决于对应配置与模板接线，不能从能力清单推断默认全开。
+
+互斥 `branch` 的不同出口不能汇合到同一节点：草稿保存、发布及 REST/MCP 新触发会返回
+`branch_join` 校验提示。普通并行汇合仍受支持；需要终审时可在各分支分别设置审批节点。
+旧定义和执行仍可读取，已有在途执行与回滚恢复保持原语义，不会自动修正历史执行结果。
+详见 [T24.2 验证记录](docs/audits/T24.2-VALIDATION.md)。
+
+审批超时默认升级通知并继续等待，也可配置为显式失败；不会自动通过。通知通道取决于实际部署配置。邮件收件人根据审批人邮箱映射，
+可另设运维副本；邮件链接经登录后进入审批详情。隔离 SMTP 接收器与浏览器的验证范围见
+[审批邮件验证](docs/audits/approval-mail/VALIDATION.md)，不代表真实人员或外部邮件服务商已送达。
 
 ## 2. 快速上手
 
@@ -159,16 +165,16 @@ cp deploy/.env.example deploy/.env
 编辑 `deploy/.env`,打开并填好(其余保持注释即默认值):
 
 ```bash
-BRAID_MYSQL_DSN=root:braid_dev_root@tcp(127.0.0.1:3306)/braid
+BRAID_MYSQL_DSN='root:braid_dev_root@tcp(127.0.0.1:3306)/braid'
 BRAID_REDIS_QUEUE_ADDR=127.0.0.1:6379          # relay/worker 必填(无默认,空值启动即败)
 # JWT 密钥无默认值,缺省/短于 32 字节启动即败;生成:openssl rand -hex 32
 BRAID_AUTH_JWT_SECRET=
-BRAID_LLM_BASE_URL=<OpenAI 兼容端点,含版本路径>
-BRAID_LLM_API_KEY=<密钥仅经 env 注入,不进代码/日志/审计>
-BRAID_LLM_PRICE_TABLE={"glm-5.3":{"input_per_mtok":"2","output_per_mtok":"8","currency":"CNY"},"fallback":{"input_per_mtok":"2","output_per_mtok":"8","currency":"CNY"}}
+BRAID_LLM_BASE_URL='<OpenAI 兼容端点,含版本路径>'
+BRAID_LLM_API_KEY='<密钥仅经 env 注入,不进代码/日志/审计>'
+BRAID_LLM_PRICE_TABLE='{"glm-5.3":{"input_per_mtok":"2","output_per_mtok":"8","currency":"CNY"},"fallback":{"input_per_mtok":"2","output_per_mtok":"8","currency":"CNY"}}'
 # file_read 白名单;不设则工具不注册,发布即被拒。<仓库绝对路径> 必须换成
 # 本机真实绝对路径——照抄占位会静默把白名单指向不存在目录,执行期 file_read 被拒
-BRAID_FILEREAD_DIRS=["<仓库绝对路径>/docs/examples"]
+BRAID_FILEREAD_DIRS='["<仓库绝对路径>/docs/examples"]'
 ```
 
 **一键形态(T16.3,`braid seed`)**——配置后单命令跑通整条链:
@@ -367,6 +373,7 @@ skip,CI 侧以 `BRAID_TEST_REQUIRE_STACK=1` 升级为硬失败防假绿。任务
 | 静态检查 | `go vet ./... && golangci-lint run` | golangci-lint；与全量测试合为仓库三件套 |
 | 沙箱 e2e(真 docker 全链路,镜像测试内自建) | `go test ./internal/tools/ -run TestSandboxE2E` | Docker |
 | 浏览器 e2e(回滚-重跑旅程 + SPA 回退) | `deploy/e2e-up.sh` → `BRAID_E2E_BASE_URL=http://127.0.0.1:18081 npm --prefix web/canvas run test:e2e` → `deploy/e2e-down.sh` | Docker;首次 `npx --prefix web/canvas playwright install chromium` |
+| 测试栈保护自测 | `bash deploy/tests/e2e-down-selftest.sh` | Linux `/proc`、Python 3；使用临时进程和假 Docker |
 | 多副本故障演练(五臂注入) | `BRAID_TEST_REQUIRE_DRILL=1 go test ./internal/drill/ -run TestMultiReplicaDrill` | Docker(显式 opt-in,不进 CI 常规回归) |
 | 告警规则校验 | `promtool check rules deploy/prometheus/alerts.yml && promtool test rules deploy/prometheus/alerts_test.yml` | promtool |
 | 前端测试 / 构建 | `npm --prefix web/canvas test` / `npm --prefix web/canvas run build` | Node(首次 `npm --prefix web/canvas ci`) |
@@ -375,6 +382,12 @@ skip,CI 侧以 `BRAID_TEST_REQUIRE_STACK=1` 升级为硬失败防假绿。任务
 > (schema 后缀由 worktree 路径自动推导，无需共同手设)，缺省落槽位 0 与主仓互踩;主仓裸跑无需。
 > 改前端源码后必须 `npm --prefix web/canvas run build` 重建 dist 并同 commit 提交,
 > 否则 CI web 作业漂移门红。
+
+浏览器 e2e 使用独立测试端口和临时数据面。启动前若发现可能连接测试端口的 relay，
+或无法确认候选进程信息，脚本会拒绝启动；清理时若进程身份不明或无法确认退出，
+脚本返回失败并保留数据面，不执行 Compose `down -v`。应先只读核查进程归属，不能按名称批量终止。
+检查只覆盖当前 `/proc` 可见的已识别进程与常见回环地址，也不能消除检查后的并发启动窗口；
+详见[测试栈保护验证](docs/audits/test-stack-cleanup/FAILURE-GUARDS-VALIDATION.md)。
 
 ## 3. 性能基线(T15.5 实测)
 
@@ -503,6 +516,7 @@ go test ./internal/reaper -run 'FlushKillMidDrain' -v -count=1
 | [docs/CAPACITY.md](docs/CAPACITY.md) | 压测基线与容量模型(§3 性能章数字真源;复跑口径其 §2) |
 | [docs/examples/](docs/examples/) | 端到端示例:DSL、样例输入、走链文档、审计事件序表 |
 | [deploy/README.md](deploy/README.md) | 部署配额与容量:连接池公式、Redis 契约、保留期、账号授权矩阵 |
+| [deploy/chart/README.md](deploy/chart/README.md) | Helm 部署、必填配置与模板边界 |
 | [deploy/.env.example](deploy/.env.example) | env 键语义索引(逐键注释；生产实际透传键以 Compose/Helm 模板为准) |
 | [docs/P4-DELIVERY.md](docs/P4-DELIVERY.md) | P4 工程收官、验证边界与后续布局任务 |
 | [docs/ROADMAP.md](docs/ROADMAP.md) | 任务定义与依赖真源；P4 M21/M22/M23 与 M24 布局重设计，执行状态查 [GitHub issues](https://github.com/HeShen-1/braid/issues) |
@@ -510,4 +524,4 @@ go test ./internal/reaper -run 'FlushKillMidDrain' -v -count=1
 | [docs/ROADMAP-P1.md](docs/ROADMAP-P1.md) | P1 交付归档(18 任务注记 + P1-DELIVERY) |
 | [docs/ROADMAP-P0.md](docs/ROADMAP-P0.md) | P0 交付归档(38 任务全量注记) |
 | [docs/DECISIONS.md](docs/DECISIONS.md) | 全部实现级决策条目(D-<date>-<slug>) |
-| [docs/audits/](docs/audits/) | 复核与分层验证证据；历史交付原始计数保留，当前验收不能由历史勾选推定 |
+| [docs/audits/README.md](docs/audits/README.md) | 复核与分层验证证据索引；历史交付原始计数保留，当前验收不能由历史勾选推定 |

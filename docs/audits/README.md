@@ -23,5 +23,27 @@
 - [T23.3 验证记录](T23.3-VALIDATION.md)：正式 worker 工具、只读挂载、预算拒绝与最终 PR 准出回执。
 - [T23.4 验证记录](T23.4-VALIDATION.md)：min_success 无损往返、Go 发布契约及门禁顺序失误/补验记录。
 - [T23.5 验证记录](T23.5-VALIDATION.md)：保存后发布、脏态与迟到响应保护、浏览器旅程及最终 PR 准出回执。
+- [T23.6 验证记录](T23.6-VALIDATION.md)：界面选中版本与实际执行版本一致。
+- [T23.7 验证记录](T23.7-VALIDATION.md)：编排、分支连线与触发输入交互。
+- [T23.8 验证记录](T23.8-VALIDATION.md)：错误、加载与空态区分。
+- [T23.9 验证记录](T23.9-VALIDATION.md)：审计游标、节点轮次与执行证据。
+- [T23.10 验证记录](T23.10-VALIDATION.md)：版本、角色与审批闭环。
+- [T23.11 验证记录](T23.11-VALIDATION.md)：部署和能力文档事实同步。
+- [T23.12 验证记录](T23.12-VALIDATION.md)：SSO Web 入口与执行终态事件延期裁决登记。
+- [T23.13 验证记录](T23.13-VALIDATION.md)：正式配置独立环境验收。
 
-上述记录的完成证据汇总见[交付复核 §5](DELIVERY-RECHECK-2026-10-15.md#5-后续修复证据)；后续排期见 [M23 开发计划](../plans/M23-NEXT-WAVES-2026-10-15.md)。任务定义/依赖仍以 ROADMAP 为准，实时执行状态只查 GitHub issues。
+上述记录的完成证据汇总见[交付复核 §5](DELIVERY-RECHECK-2026-10-15.md#5-后续修复证据)；波次历史见 [M23 开发计划](../plans/M23-NEXT-WAVES-2026-10-15.md)。任务定义/依赖仍以 ROADMAP 为准，实时执行状态只查 GitHub issues。
+
+## 交互与布局验证
+
+- UX-F1：[父票汇总](UX-F1-VALIDATION.md)、[壳层与审批](UX-F1-a-VALIDATION.md)、[画布](UX-F1-b-VALIDATION.md)、[执行总览](UX-F1-c-VALIDATION.md)、[执行列表](UX-F1-d-VALIDATION.md)。
+- [UX-F2 画布插入与端点保存](UX-F2-VALIDATION.md)；[UX-F3 节点删除入口](UX-F3-VALIDATION.md)。
+- [T24.1 布局与前后端联调](T24.1-VALIDATION.md)，及其[独立收尾评审](T24.1-REVIEW.md)。评审保留当时的发现和证据边界，不代替后续修复与最终验证。
+- [T24.2 审批提示与互斥分支汇合](T24.2-VALIDATION.md)，含 [`t24.2/`](t24.2/) 中的浏览器截图。
+- [T24.3 审批记录窄屏与画布落位](T24.3-VALIDATION.md)，含 [`t24.3/`](t24.3/) 中的浏览器截图。
+
+## 通知与测试栈验证
+
+- [审批邮件链接与时长](approval-mail/VALIDATION.md)：隔离环境邮件、链接跳转和页面验证，相关截图保存在 [`approval-mail/`](approval-mail/)。
+- [测试栈进程清理与前端测试稳定性](test-stack-cleanup/VALIDATION.md)：初次清理修复和相关真实浏览器验证。
+- [清理失败与孤儿 relay 防护](test-stack-cleanup/FAILURE-GUARDS-VALIDATION.md)：清理失败时保留数据面、启动前检查及各项验证边界。
